@@ -24,6 +24,7 @@ type Meme struct {
 	OriginalName string    `json:"originalName"`
 	StoredName   string    `json:"storedName"`
 	FilePath     string    `json:"filePath"`
+	PreviewPath  string    `json:"previewPath,omitempty"`
 	ContentType  string    `json:"contentType"`
 	ContentHash  string    `json:"-"`
 	SizeBytes    int64     `json:"sizeBytes"`
@@ -68,6 +69,7 @@ type MemeStore struct {
 	dataFile        string
 	favoritesFile   string
 	uploadDir       string
+	previewDir      string
 	memes           []Meme
 	byID            map[string]Meme
 	byHash          map[string]Meme
@@ -91,6 +93,7 @@ func NewMemeStore(dataDir string) (*MemeStore, error) {
 		dataFile:        filepath.Join(dataDir, "index.json"),
 		favoritesFile:   filepath.Join(dataDir, "favorites.json"),
 		uploadDir:       uploadDir,
+		previewDir:      filepath.Join(dataDir, "thumbnails"),
 		memes:           []Meme{},
 		byID:            map[string]Meme{},
 		byHash:          map[string]Meme{},
@@ -131,6 +134,7 @@ func (s *MemeStore) List(userID, query string, favoritesOnly bool, tag string) [
 		}
 
 		meme.Favorite = isFavorite
+		decoratePreviewPath(&meme, s.previewDir)
 		out = append(out, meme)
 	}
 
@@ -174,6 +178,7 @@ func (s *MemeStore) GetByID(userID, id string) (Meme, error) {
 		return Meme{}, os.ErrNotExist
 	}
 	meme.Favorite = s.isFavoriteLocked(s.favoriteSetLocked(userID), meme.ID)
+	decoratePreviewPath(&meme, s.previewDir)
 	return meme, nil
 }
 
@@ -247,6 +252,10 @@ func (s *MemeStore) Create(input CreateInput) (Meme, error) {
 		Notes:        strings.TrimSpace(input.Notes),
 		CreatedAt:    now,
 		UpdatedAt:    now,
+	}
+
+	if err := ensurePreviewAsset(s.uploadDir, s.previewDir, &meme); err != nil {
+		// Thumbnail generation is best-effort.
 	}
 
 	s.mu.Lock()
@@ -334,6 +343,10 @@ func (s *MemeStore) Delete(id string) error {
 		if err := os.Remove(targetPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("remove upload file: %w", err)
 		}
+		thumbnailPath := filepath.Join(s.previewDir, thumbnailFileName(s.memes[i].StoredName))
+		if err := os.Remove(thumbnailPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove thumbnail file: %w", err)
+		}
 
 		favoritesChanged := s.removeFavoriteFromAllUsersLocked(s.memes[i].ID)
 		s.memes = append(s.memes[:i], s.memes[i+1:]...)
@@ -351,6 +364,23 @@ func (s *MemeStore) Delete(id string) error {
 
 func (s *MemeStore) UploadDir() string {
 	return s.uploadDir
+}
+
+func (s *MemeStore) ThumbnailDir() string {
+	return s.previewDir
+}
+
+func (s *MemeStore) EnsurePreviewAssets() error {
+	s.mu.RLock()
+	memes := append([]Meme(nil), s.memes...)
+	s.mu.RUnlock()
+
+	for i := range memes {
+		if err := ensurePreviewAsset(s.uploadDir, s.previewDir, &memes[i]); err != nil {
+			continue
+		}
+	}
+	return nil
 }
 
 func (s *MemeStore) loadMemes() error {

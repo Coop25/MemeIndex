@@ -876,12 +876,19 @@ function truncateWithCounter(value, maxLength = 48) {
 function buildPreview(meme) {
   if (meme.contentType.startsWith("image/")) {
     const img = document.createElement("img");
-    img.src = meme.filePath;
+    img.src = meme.previewPath || meme.filePath;
     img.alt = meme.originalName;
     return img;
   }
 
   if (meme.contentType.startsWith("video/")) {
+    if (meme.previewPath) {
+      const img = document.createElement("img");
+      img.src = meme.previewPath;
+      img.alt = meme.originalName;
+      return img;
+    }
+
     const video = document.createElement("video");
     video.src = meme.filePath;
     video.preload = "metadata";

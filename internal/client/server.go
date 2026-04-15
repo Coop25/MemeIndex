@@ -36,6 +36,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/auth/logout", s.handleLogout)
 	mux.HandleFunc("/api/auth/session", s.handleAuthSession)
 	mux.Handle("/uploads/", s.withPageAuth(http.StripPrefix("/uploads/", http.FileServer(http.Dir(s.managers.UploadDir())))))
+	if thumbnailDir := s.managers.ThumbnailDir(); strings.TrimSpace(thumbnailDir) != "" {
+		mux.Handle("/thumbnails/", s.withPageAuth(http.StripPrefix("/thumbnails/", http.FileServer(http.Dir(thumbnailDir)))))
+	}
 	mux.Handle("/static/", s.withPageAuth(http.StripPrefix("/static/", http.FileServer(http.Dir("static")))))
 	mux.Handle("/", s.withPageAuth(http.HandlerFunc(s.handleIndex)))
 	mux.Handle("/api/memes", s.withAPIAuth(http.HandlerFunc(s.handleMemes), permissionView))

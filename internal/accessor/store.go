@@ -14,6 +14,11 @@ type Store interface {
 	UploadDir() string
 }
 
+type PreviewAssetStore interface {
+	ThumbnailDir() string
+	EnsurePreviewAssets() error
+}
+
 type ReelSessionRecord struct {
 	History      []string
 	Position     int

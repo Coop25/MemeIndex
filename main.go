@@ -36,6 +36,7 @@ func main() {
 	}
 
 	memeManager := manager.NewMemeManager(store)
+	go runPreviewAssetBackfill(memeManager)
 	go runNightlyReelSessionCleanup(memeManager)
 	server := client.NewServer(config, memeManager)
 
@@ -58,4 +59,12 @@ func runNightlyReelSessionCleanup(memeManager *manager.MemeManager) {
 
 		log.Printf("nightly reel session cleanup completed")
 	}
+}
+
+func runPreviewAssetBackfill(memeManager *manager.MemeManager) {
+	if err := memeManager.EnsurePreviewAssets(); err != nil {
+		log.Printf("preview asset backfill failed: %v", err)
+		return
+	}
+	log.Printf("preview asset backfill completed")
 }

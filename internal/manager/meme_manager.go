@@ -122,6 +122,22 @@ func (m *MemeManager) UploadDir() string {
 	return m.store.UploadDir()
 }
 
+func (m *MemeManager) ThumbnailDir() string {
+	previewStore, ok := m.store.(accessor.PreviewAssetStore)
+	if !ok {
+		return ""
+	}
+	return previewStore.ThumbnailDir()
+}
+
+func (m *MemeManager) EnsurePreviewAssets() error {
+	previewStore, ok := m.store.(accessor.PreviewAssetStore)
+	if !ok {
+		return nil
+	}
+	return previewStore.EnsurePreviewAssets()
+}
+
 func normalizeTags(tags []string) []string {
 	out := make([]string, 0, len(tags))
 	for _, tag := range tags {

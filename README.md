@@ -13,6 +13,7 @@ MemeIndex is a self-hosted meme organizer built with Go and a lightweight fronte
 - Upload any file type through the browser
 - Store metadata in Postgres with a dedicated tags table for suggestions
 - Compute content hashes on upload so duplicate files can be skipped
+- Generate video thumbnails for lighter grid previews when `ffmpeg` is installed
 - Preview image and video files inline
 - Search by filename, notes, and tags
 - Mark favorites for quick filtering
@@ -49,6 +50,37 @@ task build
 ```
 
 The real `.env` file is ignored by git, so secrets stay local.
+
+## Bulk Upload Script
+
+This repo includes a PowerShell uploader at [`scripts/upload-memes.ps1`](/f:/GitHub/MemeIndex/scripts/upload-memes.ps1) for importing a large meme folder through the normal authenticated upload API.
+
+Example with the raw auth token:
+
+```powershell
+.\scripts\upload-memes.ps1 `
+  -FolderPath "F:\Memes\Backlog" `
+  -BaseUrl "https://memes.cooplabs.net" `
+  -SessionToken "PASTE_THE_RAW_TOKEN_HERE" `
+  -Recurse `
+  -BatchSize 10
+```
+
+Example if you copied the exact `memeindex_session` cookie value from the browser instead:
+
+```powershell
+.\scripts\upload-memes.ps1 `
+  -FolderPath "F:\Memes\Backlog" `
+  -BaseUrl "https://memes.cooplabs.net" `
+  -CookieValue "PASTE_THE_COOKIE_VALUE_HERE" `
+  -Recurse
+```
+
+Optional flags:
+
+- `-Tags "tag1,tag2"` applies the same comma-separated tags to every uploaded file in the batch
+- `-Notes "Imported backlog"` applies the same notes field to every uploaded file in the batch
+- `-DryRun` prints the files that would be uploaded without sending anything
 
 ## Configuration
 
@@ -148,6 +180,7 @@ Notes:
 - Postgres is not exposed by the compose file, so the app remains the only service talking to the database
 - the app env vars are declared directly in `docker-compose.yml`, and Docker Compose fills them from your shell or local `.env`
 - `MEMEINDEX_IMAGE` controls which published app image Compose pulls, and defaults to `ghcr.io/your-github-user-or-org/memeindex:latest`
+- if `ffmpeg` is available in the container or host environment, MemeIndex generates JPEG thumbnails for videos and backfills thumbnails for older imported videos in the background on startup
 
 ## GitHub Container Publishing
 

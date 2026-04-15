@@ -18,10 +18,10 @@ import (
 )
 
 type PostgresStore struct {
-	pool       *pgxpool.Pool
-	uploadDir  string
+	pool      *pgxpool.Pool
+	uploadDir string
 	previewDir string
-	dataDir    string
+	dataDir   string
 }
 
 func NewPostgresStore(ctx context.Context, databaseURL string, dataDir string) (*PostgresStore, error) {
@@ -44,10 +44,10 @@ func NewPostgresStore(ctx context.Context, databaseURL string, dataDir string) (
 	}
 
 	store := &PostgresStore{
-		pool:       pool,
-		uploadDir:  uploadDir,
+		pool:      pool,
+		uploadDir: uploadDir,
 		previewDir: filepath.Join(dataDir, "thumbnails"),
-		dataDir:    dataDir,
+		dataDir:   dataDir,
 	}
 
 	if err := store.ensureSchema(ctx); err != nil {
