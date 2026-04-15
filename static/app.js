@@ -137,11 +137,13 @@ let memeGridRenderFrame = null;
 let memeLoadMorePromise = null;
 let memeLoadMoreArmed = true;
 let memeLoadMoreLastTriggerScrollTop = 0;
+let memeLoadMoreCooldownUntil = 0;
 const drawerMediaQuery = window.matchMedia("(max-width: 1100px)");
 const MEME_PAGE_SIZE = 72;
 const MEME_INITIAL_LOAD_PAGES = 3;
-const MEME_LOAD_MORE_SCROLL_RATIO = 0.5;
 const MEME_LOAD_MORE_REARM_VIEWPORTS = 0.35;
+const MEME_LOAD_MORE_BOTTOM_THRESHOLD_PX = 120;
+const MEME_LOAD_MORE_COOLDOWN_MS = 5000;
 
 function getAuthInitials() {
   const label = state.auth.user?.display_name || state.auth.user?.username || "MemeIndex";
@@ -362,9 +364,12 @@ function shouldLoadMoreMemes() {
     return false;
   }
 
-  const scrollRange = Math.max(1, contentPanel.scrollHeight - contentPanel.clientHeight);
-  const scrollProgress = contentPanel.scrollTop / scrollRange;
-  return scrollProgress >= MEME_LOAD_MORE_SCROLL_RATIO;
+  if (Date.now() < memeLoadMoreCooldownUntil) {
+    return false;
+  }
+
+  const distanceToBottom = contentPanel.scrollHeight - (contentPanel.scrollTop + contentPanel.clientHeight);
+  return distanceToBottom <= MEME_LOAD_MORE_BOTTOM_THRESHOLD_PX;
 }
 
 function maybeRearmLoadMore() {
@@ -385,6 +390,7 @@ function maybeLoadMoreMemes() {
 
   memeLoadMoreArmed = false;
   memeLoadMoreLastTriggerScrollTop = contentPanel?.scrollTop ?? 0;
+  memeLoadMoreCooldownUntil = Date.now() + MEME_LOAD_MORE_COOLDOWN_MS;
   memeLoadMorePromise = fetchMemes({ reset: false })
     .catch((error) => {
       console.error(error);
@@ -404,6 +410,7 @@ async function fetchMemes({ reset = true } = {}) {
   if (reset) {
     memeLoadMoreArmed = true;
     memeLoadMoreLastTriggerScrollTop = 0;
+    memeLoadMoreCooldownUntil = 0;
   }
 
   state.library.loading = true;
