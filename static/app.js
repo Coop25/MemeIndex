@@ -542,8 +542,10 @@ function renderMemes({ append = false } = {}) {
   emptyState.classList.toggle("hidden", visibleMemes.length !== 0);
   if (!append) {
     contentPanel.scrollTop = 0;
+    queueRenderLoadedMemes({ force: true });
+    return;
   }
-  queueRenderLoadedMemes({ force: true });
+  queueRenderLoadedMemes();
 }
 
 function buildMemeCardElement(meme) {
@@ -680,10 +682,7 @@ function buildMemePageElement(pageIndex, memes, metrics) {
   const page = document.createElement("div");
   page.className = "meme-grid-page";
   page.dataset.pageIndex = `${pageIndex}`;
-  page.style.display = "grid";
-  page.style.gridColumn = "1 / -1";
-  page.style.gridTemplateColumns = `repeat(${metrics.columns}, minmax(0, 1fr))`;
-  page.style.gap = `${MEME_GRID_GAP}px`;
+  page.style.display = "contents";
 
   const fragment = document.createDocumentFragment();
   memes.forEach((meme) => {
@@ -733,8 +732,6 @@ function renderLoadedMemes({ force = false } = {}) {
       page = buildMemePageElement(pageIndex, pageMemes, metrics);
       memeGridPageCache.set(pageIndex, page);
     }
-    page.style.gridTemplateColumns = `repeat(${metrics.columns}, minmax(0, 1fr))`;
-    page.style.gap = `${MEME_GRID_GAP}px`;
     desiredPages.push(page);
   }
 
@@ -755,7 +752,7 @@ function renderLoadedMemes({ force = false } = {}) {
 
   desiredPages.forEach((page) => {
     const pageIndex = Number(page.dataset.pageIndex);
-    memeGridPageHeights.set(pageIndex, page.offsetHeight);
+    memeGridPageHeights.set(pageIndex, estimatePageHeight(pageIndex, memes.length, metrics));
   });
 
   const topHeight = sumPageHeights(0, startPage, memes.length, metrics);
