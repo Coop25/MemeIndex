@@ -1,0 +1,195 @@
+# MemeIndex
+
+MemeIndex is a self-hosted meme organizer built with Go and a lightweight frontend. It is designed for messy real-world meme folders where assets can be images, videos, audio, archives, PSDs, or whatever else needs to stay searchable.
+
+## Backend structure
+
+- `internal/client`: HTTP-facing layer, routing, config, and middleware
+- `internal/manager`: application orchestration and normalization
+- `internal/accessor`: file persistence and metadata storage
+
+## Features
+
+- Upload any file type through the browser
+- Store metadata in Postgres with a dedicated tags table for suggestions
+- Compute content hashes on upload so duplicate files can be skipped
+- Preview image and video files inline
+- Search by filename, notes, and tags
+- Mark favorites for quick filtering
+- Keep favorites per Discord user
+- Update notes and tags after upload
+- Delete files from the archive
+
+## Run locally
+
+```powershell
+$env:GOTELEMETRY='off'
+go run .
+```
+
+Then open `http://localhost:8080`.
+
+## Run with `.env`
+
+This repo now includes a `Taskfile.yml` so you can keep local settings in a `.env` file and inject them automatically at runtime.
+
+1. Install `task` if you do not already have it: https://taskfile.dev
+2. Copy `.env.example` to `.env`
+3. Fill in your real Discord values and allowed user IDs
+4. Run:
+
+```powershell
+task run
+```
+
+To build with the same env file loaded:
+
+```powershell
+task build
+```
+
+The real `.env` file is ignored by git, so secrets stay local.
+
+## Configuration
+
+- `MEMEINDEX_ADDR`: server bind address, default `:8080`
+- `MEMEINDEX_DATA_DIR`: data directory, default `data`
+- `MEMEINDEX_DATABASE_URL`: Postgres connection string. When empty, MemeIndex falls back to the legacy JSON store
+- `MEMEINDEX_DISCORD_CLIENT_ID`: Discord OAuth application client ID
+- `MEMEINDEX_DISCORD_CLIENT_SECRET`: Discord OAuth application client secret
+- `MEMEINDEX_DISCORD_REDIRECT_URL`: Discord OAuth callback URL, for example `http://localhost:8080/auth/callback`
+- `MEMEINDEX_DISCORD_DYNAMIC_REDIRECT`: when `true`, dev mode builds the callback URL from the current browser host, so `localhost` and your LAN IP can both work
+- `MEMEINDEX_SESSION_SECRET`: random secret used to sign auth cookies
+- `MEMEINDEX_COOKIE_SECURE`: set to `true` when serving over HTTPS so auth cookies are marked secure
+- `MEMEINDEX_VIEW_USER_IDS`: comma-separated Discord user IDs allowed to view the app
+- `MEMEINDEX_ADD_USER_IDS`: comma-separated Discord user IDs allowed to view and upload memes
+- `MEMEINDEX_MANAGE_USER_IDS`: comma-separated Discord user IDs allowed full meme management, including edit and delete
+
+If the Discord OAuth env vars are not set, MemeIndex keeps auth disabled and behaves like it does today. Once auth is enabled, the allowlists stack upward:
+
+- `VIEW`: browse memes, tags, uploads, and random reel
+- `ADD`: everything in `VIEW`, plus upload new memes
+- `MANAGE`: everything in `ADD`, plus edit metadata, favorite, and delete
+
+Example local setup:
+
+```powershell
+$env:MEMEINDEX_DATABASE_URL="postgres://memeindex:memeindex@localhost:5432/memeindex?sslmode=disable"
+$env:MEMEINDEX_DISCORD_CLIENT_ID="123456789012345678"
+$env:MEMEINDEX_DISCORD_CLIENT_SECRET="your-discord-client-secret"
+$env:MEMEINDEX_DISCORD_REDIRECT_URL="http://localhost:8080/auth/callback"
+$env:MEMEINDEX_DISCORD_DYNAMIC_REDIRECT="false"
+$env:MEMEINDEX_SESSION_SECRET="replace-this-with-a-long-random-string"
+$env:MEMEINDEX_VIEW_USER_IDS="111111111111111111,222222222222222222"
+$env:MEMEINDEX_ADD_USER_IDS="222222222222222222"
+$env:MEMEINDEX_MANAGE_USER_IDS="333333333333333333"
+```
+
+For local development across both your PC and phone, you can instead enable dynamic redirects:
+
+```powershell
+$env:MEMEINDEX_DISCORD_DYNAMIC_REDIRECT="true"
+```
+
+Then add both callback URLs in the Discord developer portal, for example:
+
+- `http://localhost:8080/auth/callback`
+- `http://192.168.1.123:8080/auth/callback`
+
+When enabled, MemeIndex will use whichever host you started from in the browser.
+
+## Docker Compose
+
+This repo now includes a `docker-compose.yml` that starts:
+
+- `app`: MemeIndex
+- `postgres`: Postgres for meme metadata, favorites, and tag suggestions
+- `cloudflared`: optional Cloudflare Tunnel sidecar for exposing only the app
+
+Bring it up with:
+
+```powershell
+docker compose up --build
+```
+
+Or with Task:
+
+```powershell
+task docker-up
+```
+
+The app is exposed on `http://localhost:8080`.
+
+To also start the optional Cloudflare Tunnel service:
+
+```powershell
+task docker-tunnel-up
+```
+
+Or directly:
+
+```powershell
+docker compose --profile tunnel up --build
+```
+
+Notes:
+
+- uploaded files still live on disk under `./data/uploads`
+- Postgres keeps metadata, favorites, and the dedicated tags table
+- Postgres also stores random reel sessions when `MEMEINDEX_DATABASE_URL` is enabled
+- on first Postgres startup, if the database is empty and legacy `data/index.json` or `data/favorites.json` files exist, MemeIndex imports them automatically
+- stale reel sessions are cleaned by the app every night at `00:00 UTC`
+- Postgres is not exposed by the compose file, so the app remains the only service talking to the database
+- the app env vars are declared directly in `docker-compose.yml`, and Docker Compose fills them from your shell or local `.env`
+
+### Cloudflare Tunnel
+
+The optional `cloudflared` service is meant to expose only MemeIndex, not Postgres.
+
+Set these before starting the tunnel profile:
+
+- `CLOUDFLARE_TUNNEL_TOKEN`: your Cloudflare tunnel token
+- `MEMEINDEX_DISCORD_REDIRECT_URL`: your public HTTPS callback URL, for example `https://memes.example.com/auth/callback`
+- `MEMEINDEX_COOKIE_SECURE=true`
+
+Recommended behavior behind Cloudflare Tunnel:
+
+- keep `MEMEINDEX_DISCORD_DYNAMIC_REDIRECT=false` in production
+- use a fixed public callback URL in Discord's developer portal
+- keep Postgres internal with no published `5432` port
+
+If you only want Cloudflare access and do not want local host exposure, remove or override the app's `8080:8080` port mapping in Compose for your deployment.
+
+## GitHub Prep
+
+For publishing this repo safely:
+
+- commit `.env.example`
+- do not commit `.env`
+- do not commit `data/`
+
+The included `.gitignore` is set up for that flow already.
+
+## Storage layout
+
+When using Postgres:
+
+- `data/uploads/`: stored files
+- Postgres `memes`: metadata rows
+- Postgres `tags`: normalized tag catalog for suggestions
+- Postgres `meme_tags`: meme-to-tag links
+- Postgres `user_favorites`: per-user favorites
+- Postgres `reel_sessions`: random reel history and position state
+
+When using the legacy file store:
+
+- `data/index.json`: metadata catalog
+- `data/favorites.json`: per-user favorite meme IDs
+- `data/uploads/`: stored files
+
+## Next ideas
+
+- Folder import and duplicate detection
+- Drag-and-drop uploads
+- Thumbnail generation for videos and documents
+- Discord guild and role-based authorization

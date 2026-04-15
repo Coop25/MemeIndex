@@ -1,0 +1,56 @@
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-memeindex}
+      POSTGRES_USER: ${POSTGRES_USER:-memeindex}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-memeindex}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-memeindex} -d ${POSTGRES_DB:-memeindex}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      MEMEINDEX_ADDR: ${MEMEINDEX_ADDR:-:8080}
+      MEMEINDEX_DATA_DIR: ${MEMEINDEX_DATA_DIR:-data}
+      MEMEINDEX_DATABASE_URL: postgres://${POSTGRES_USER:-memeindex}:${POSTGRES_PASSWORD:-memeindex}@postgres:5432/${POSTGRES_DB:-memeindex}?sslmode=disable
+      MEMEINDEX_DISCORD_CLIENT_ID: ${MEMEINDEX_DISCORD_CLIENT_ID:-}
+      MEMEINDEX_DISCORD_CLIENT_SECRET: ${MEMEINDEX_DISCORD_CLIENT_SECRET:-}
+      MEMEINDEX_DISCORD_REDIRECT_URL: ${MEMEINDEX_DISCORD_REDIRECT_URL:-}
+      MEMEINDEX_DISCORD_DYNAMIC_REDIRECT: ${MEMEINDEX_DISCORD_DYNAMIC_REDIRECT:-false}
+      MEMEINDEX_SESSION_SECRET: ${MEMEINDEX_SESSION_SECRET:-replace-with-a-long-random-string}
+      MEMEINDEX_COOKIE_SECURE: ${MEMEINDEX_COOKIE_SECURE:-false}
+      MEMEINDEX_VIEW_USER_IDS: ${MEMEINDEX_VIEW_USER_IDS:-}
+      MEMEINDEX_ADD_USER_IDS: ${MEMEINDEX_ADD_USER_IDS:-}
+      MEMEINDEX_MANAGE_USER_IDS: ${MEMEINDEX_MANAGE_USER_IDS:-}
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_started
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    environment:
+      CLOUDFLARE_TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    profiles:
+      - tunnel
+
+volumes:
+  postgres_data:

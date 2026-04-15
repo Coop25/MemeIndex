@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MemeIndex</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <button id="drawer-toggle" class="drawer-toggle hidden" type="button" aria-label="Open menu" aria-expanded="false">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="m9 6 6 6-6 6" />
+      </svg>
+    </button>
+    <button id="drawer-backdrop" class="drawer-backdrop hidden" type="button" aria-label="Close menu"></button>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <div class="sidebar-header-row">
+            <div class="brand-block">
+              <div class="brand-mark">MI</div>
+              <div class="brand-copy">
+                <p class="brand-kicker">Self-hosted archive</p>
+                <h1>MemeIndex</h1>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <nav class="sidebar-nav">
+          <button id="sidebar-toggle" class="nav-item sidebar-toggle-row" type="button" aria-label="Collapse sidebar" aria-expanded="true">
+            <span class="nav-label">Collapse</span>
+            <span class="nav-short" aria-hidden="true"><</span>
+            <svg class="sidebar-toggle-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m14.5 6-6 6 6 6" />
+            </svg>
+          </button>
+          <button class="nav-item is-active" type="button" data-view="library">
+            <span class="nav-label">Library</span>
+            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 11.5 12 5l8 6.5" />
+              <path d="M6.5 10.5V19h11v-8.5" />
+              <path d="M10 19v-5h4v5" />
+            </svg>
+            <span id="total-count" class="nav-count">0</span>
+          </button>
+          <button class="nav-item" type="button" data-view="favorites">
+            <span class="nav-label">Favorites</span>
+            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 20s-6.7-4.4-9.2-8C.8 9.2 2.2 5.5 6 5.5c2.2 0 3.6 1.3 4.4 2.6.8-1.3 2.2-2.6 4.4-2.6 3.8 0 5.2 3.7 3.2 6.5C18.7 15.6 12 20 12 20Z" />
+            </svg>
+            <span id="favorite-count" class="nav-count">0</span>
+          </button>
+          <button class="nav-item" type="button" data-view="videos">
+            <span class="nav-label">Videos</span>
+            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 7a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7Z" />
+              <path d="m15 10 5-3v10l-5-3" />
+            </svg>
+            <span id="video-count" class="nav-count">0</span>
+          </button>
+          <button class="nav-item" type="button" data-view="images">
+            <span class="nav-label">Images</span>
+            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 6a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6Z" />
+              <path d="m7 15 3-3 3 3 4-4 3 3" />
+              <path d="M9 9h.01" />
+            </svg>
+            <span id="image-count" class="nav-count">0</span>
+          </button>
+          <button class="nav-item" type="button" data-view="mp3s">
+            <span class="nav-label">MP3s</span>
+            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M5 13a7 7 0 0 1 14 0" />
+              <path d="M6 13h2a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1Z" />
+              <path d="M16 13h2a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1Z" />
+            </svg>
+            <span id="mp3-count" class="nav-count">0</span>
+          </button>
+          <button class="nav-item" type="button" data-view="untagged">
+            <span class="nav-label">Untagged</span>
+            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M20 10.5 12.5 18a2 2 0 0 1-2.8 0L4 12.3A2 2 0 0 1 3.4 11V5.5A1.5 1.5 0 0 1 4.9 4h5.5a2 2 0 0 1 1.4.6l7.6 7.6a2 2 0 0 1 0 2.3Z" />
+              <path d="m9 9 6 6" />
+            </svg>
+            <span id="untagged-count" class="nav-count">0</span>
+          </button>
+          <button class="nav-item" type="button" data-view="files">
+            <span class="nav-label">Files</span>
+            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M7 4.5h7l4 4V19a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1v-13a1.5 1.5 0 0 1 1-1.5Z" />
+              <path d="M14 4.5V9h4" />
+            </svg>
+            <span id="other-count" class="nav-count">0</span>
+          </button>
+        </nav>
+
+        <button id="open-random-reel" type="button" class="sidebar-action-button">
+          <span class="sidebar-action-label">Random Reel</span>
+          <svg class="sidebar-action-short" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M7 6h10" />
+            <path d="M7 12h10" />
+            <path d="M7 18h10" />
+          </svg>
+        </button>
+
+        <button id="open-upload-modal" type="button" class="sidebar-action-button sidebar-action-button-bottom">
+          <span class="sidebar-action-label">Add File</span>
+          <svg class="sidebar-action-short" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 5v14" />
+            <path d="M5 12h14" />
+          </svg>
+        </button>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div class="search-wrap">
+            <input id="tag-search-input" type="search" placeholder="Search tags" />
+            <div id="tag-search-suggestions" class="tag-suggestions hidden"></div>
+          </div>
+          <div id="auth-panel" class="auth-panel">
+            <button id="auth-trigger" class="auth-trigger" type="button" aria-label="Open account menu" aria-expanded="false" aria-haspopup="menu">
+              <img id="auth-avatar" class="auth-avatar hidden" alt="" />
+              <span id="auth-avatar-fallback" class="auth-avatar-fallback">MI</span>
+            </button>
+            <div id="auth-menu" class="auth-menu hidden" role="menu">
+              <div class="auth-menu-copy">
+                <span id="auth-name" class="auth-name">Local access</span>
+                <span id="auth-role" class="auth-role">Full access</span>
+              </div>
+              <a id="auth-logout" class="auth-link auth-link-danger hidden" href="/auth/logout" role="menuitem">Logout</a>
+            </div>
+          </div>
+        </header>
+
+        <section class="content-panel">
+          <div id="meme-grid-top-spacer" class="meme-grid-spacer hidden" aria-hidden="true"></div>
+          <div id="meme-grid" class="meme-grid"></div>
+          <div id="meme-grid-bottom-spacer" class="meme-grid-spacer hidden" aria-hidden="true"></div>
+          <div id="meme-grid-sentinel" class="meme-grid-sentinel hidden" aria-hidden="true"></div>
+          <p id="meme-grid-status" class="meme-grid-status hidden" aria-live="polite"></p>
+          <p id="empty-state" class="empty-state hidden">No memes match this view yet.</p>
+        </section>
+      </main>
+    </div>
+
+    <button id="overlay-close" class="overlay-close hidden" type="button" aria-label="Close details">X</button>
+
+    <dialog id="upload-modal" class="upload-modal">
+      <div class="upload-modal-shell">
+        <div class="upload-preview-wrap">
+          <div id="upload-preview" class="upload-preview">
+            <div class="file-icon upload-empty-preview">
+              <strong>DROP</strong>
+              <span>Choose a file to preview it before uploading.</span>
+            </div>
+          </div>
+        </div>
+        <div class="upload-modal-body">
+          <div class="upload-modal-header">
+            <div>
+              <p class="section-kicker">Upload</p>
+              <h2>Add To Library</h2>
+            </div>
+            <button id="upload-modal-close" class="upload-modal-close" type="button" aria-label="Close upload">X</button>
+          </div>
+          <p class="upload-modal-copy">Add images, videos, MP3s, archives, and other files, then tag them on the way in.</p>
+          <form id="upload-form" class="upload-form">
+            <label class="field">
+              <span>File</span>
+              <input id="upload-file-input" type="file" name="file" accept="image/*,video/*,audio/*,.mp3,.zip,.pdf,.psd,.gif,.webp" multiple required />
+            </label>
+            <label class="field">
+              <span>Tags</span>
+              <div class="tag-editor upload-tag-editor">
+                <div class="tag-control">
+                  <div id="upload-tag-chips" class="tag-token-list"></div>
+                  <input id="upload-tags-input" type="text" placeholder="Add a tag..." autocomplete="off" />
+                </div>
+                <div id="upload-tag-suggestions" class="tag-suggestions hidden"></div>
+              </div>
+              <input id="upload-tags-hidden" type="hidden" name="tags" />
+            </label>
+            <label class="field">
+              <span>Notes</span>
+              <textarea name="notes" rows="4" placeholder="Context, origin, or ideal use case"></textarea>
+            </label>
+            <button type="submit" class="primary-button">Upload</button>
+          </form>
+          <p id="upload-status" class="status-text"></p>
+        </div>
+      </div>
+    </dialog>
+
+    <template id="meme-card-template">
+      <article class="meme-card">
+        <div class="card-hitarea" role="button" tabindex="0" aria-label="Open meme details">
+          <div class="preview-frame"></div>
+          <div class="card-overlay">
+            <button class="favorite-button" type="button" aria-label="Favorite" data-tooltip="Favorite">
+              <svg class="favorite-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 20s-6.7-4.4-9.2-8C.8 9.2 2.2 5.5 6 5.5c2.2 0 3.6 1.3 4.4 2.6.8-1.3 2.2-2.6 4.4-2.6 3.8 0 5.2 3.7 3.2 6.5C18.7 15.6 12 20 12 20Z" />
+              </svg>
+            </button>
+          </div>
+          <div class="card-tags">
+            <div class="tag-list"></div>
+          </div>
+        </div>
+      </article>
+    </template>
+
+    <dialog id="meme-modal" class="meme-modal">
+      <div class="modal-shell">
+        <div class="modal-preview-wrap">
+          <div id="modal-preview" class="modal-preview"></div>
+        </div>
+        <div class="meme-body modal-body">
+          <div class="modal-heading">
+            <div>
+              <p class="section-kicker">Details</p>
+              <h3 id="modal-title" class="modal-title"></h3>
+            </div>
+            <button id="modal-close" class="modal-close-button" type="button" aria-label="Close details">X</button>
+          </div>
+          <p id="modal-meta" class="meta-line"></p>
+          <label class="field compact-field">
+            <span>Tags</span>
+            <div class="tag-editor">
+              <div class="tag-control">
+                <div id="modal-tag-chips" class="tag-token-list"></div>
+                <input id="modal-tags-input" type="text" placeholder="Add a tag..." autocomplete="off" />
+              </div>
+              <div id="modal-tag-suggestions" class="tag-suggestions hidden"></div>
+            </div>
+          </label>
+          <label class="field compact-field">
+            <span>Notes</span>
+            <textarea id="modal-notes-input" rows="7" placeholder="Add notes"></textarea>
+          </label>
+          <div class="card-actions modal-actions">
+            <button id="modal-favorite" class="action-button icon-action" type="button" aria-label="Favorite" data-tooltip="Favorite">
+              <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 20s-6.7-4.4-9.2-8C.8 9.2 2.2 5.5 6 5.5c2.2 0 3.6 1.3 4.4 2.6.8-1.3 2.2-2.6 4.4-2.6 3.8 0 5.2 3.7 3.2 6.5C18.7 15.6 12 20 12 20Z" />
+              </svg>
+            </button>
+            <a id="modal-open-link" class="action-button icon-action" target="_blank" rel="noreferrer" aria-label="Open Original" data-tooltip="Open Original">
+              <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M9 15 15 9" />
+                <path d="M10 8h6v6" />
+                <path d="M14 5h4v4" />
+                <path d="M10 5H6a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-4" />
+              </svg>
+            </a>
+            <button id="modal-save" class="action-button action-button-primary icon-action" type="button" aria-label="Save Changes" data-tooltip="Save Changes">
+              <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 6.5A1.5 1.5 0 0 1 6.5 5h9.9L19 7.6V18a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6.5Z" />
+                <path d="M8 5v5h7V5" />
+                <path d="M8 19v-5h8v5" />
+              </svg>
+            </button>
+            <button id="modal-delete" class="action-button action-button-danger icon-action" type="button" aria-label="Delete" data-tooltip="Delete">
+              <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M9 5h6" />
+                <path d="M5 7h14" />
+                <path d="M8 7v11a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V7" />
+                <path d="M10 10v6" />
+                <path d="M14 10v6" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="random-reel-modal" class="random-reel-modal">
+      <div class="random-reel-shell">
+        <button id="random-reel-close" class="random-reel-close" type="button" aria-label="Close random reel">X</button>
+        <div id="random-reel-stage" class="random-reel-stage">
+          <div id="random-reel-media" class="random-reel-media"></div>
+          <div id="random-reel-edge-banner" class="random-reel-edge-banner" aria-hidden="true">
+            <span class="random-reel-edge-title">You Reached The Top</span>
+            <span class="random-reel-edge-copy">Scroll down for another random meme.</span>
+          </div>
+        </div>
+        <div class="random-reel-sidebar">
+          <a id="random-reel-open" class="random-reel-copy" target="_blank" rel="noreferrer" aria-label="Open original file">
+            <p class="section-kicker">Random Reel</p>
+            <h2 id="random-reel-title" class="random-reel-title"></h2>
+            <p id="random-reel-meta" class="random-reel-meta"></p>
+          </a>
+          <div id="random-reel-tags" class="random-reel-tags"></div>
+          <div class="random-reel-actions">
+            <button id="random-reel-favorite" class="random-reel-nav random-reel-favorite" type="button" aria-label="Favorite meme" data-tooltip="Favorite">
+              <span class="random-reel-nav-icon" aria-hidden="true">&#9733;</span>
+            </button>
+            <button id="random-reel-prev" class="random-reel-nav" type="button" aria-label="Previous meme">
+              <span class="random-reel-nav-icon" aria-hidden="true">↑</span>
+              <span class="random-reel-nav-label">Up</span>
+            </button>
+            <button id="random-reel-next" class="random-reel-nav random-reel-nav-primary" type="button" aria-label="Next random meme">
+              <span class="random-reel-nav-icon" aria-hidden="true">↓</span>
+              <span class="random-reel-nav-label">Next</span>
+            </button>
+            <button id="random-reel-play" class="random-reel-nav" type="button" aria-label="Pause media" data-tooltip="Pause">
+              <span id="random-reel-play-icon" class="random-reel-nav-icon" aria-hidden="true">&#10074;&#10074;</span>
+            </button>
+            <label id="random-reel-volume-wrap" class="random-reel-volume" aria-label="Volume">
+              <button id="random-reel-volume-toggle" class="random-reel-volume-button" type="button" aria-label="Mute media">
+                <span id="random-reel-volume-icon" class="random-reel-volume-icon" aria-hidden="true">&#128266;</span>
+              </button>
+              <input id="random-reel-volume" class="random-reel-volume-slider" type="range" min="0" max="100" value="10" aria-label="Volume" />
+            </label>
+          </div>
+          <p id="random-reel-hint" class="random-reel-hint">Scroll down for a new random meme. Scroll up to go back.</p>
+        </div>
+      </div>
+    </dialog>
+
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

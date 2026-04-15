@@ -1,0 +1,30 @@
+version: "3"
+
+dotenv:
+  - .env
+
+tasks:
+  run:
+    desc: Run MemeIndex with environment variables loaded from .env
+    cmds:
+      - go run .
+
+  build:
+    desc: Build MemeIndex with environment variables loaded from .env
+    cmds:
+      - go build ./...
+
+  docker-up:
+    desc: Build and start MemeIndex with PostgreSQL in Docker Compose
+    cmds:
+      - docker compose up --build -d
+
+  docker-tunnel-up:
+    desc: Build and start MemeIndex, PostgreSQL, and the optional Cloudflare Tunnel service
+    cmds:
+      - docker compose --profile tunnel up --build -d
+
+  docker-down:
+    desc: Stop the Docker Compose stack
+    cmds:
+      - docker compose down
