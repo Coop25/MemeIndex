@@ -136,6 +136,7 @@ let memeGridObserver = null;
 let memeGridRenderFrame = null;
 let memeGridLastMountedRangeKey = "";
 let memeLoadMorePromise = null;
+let memeLoadMoreScrollLatch = null;
 const memeGridPageHeights = new Map();
 const memeGridPageCache = new Map();
 const drawerMediaQuery = window.matchMedia("(max-width: 1100px)");
@@ -363,6 +364,13 @@ function shouldLoadMoreMemes() {
 
   const scrollRange = Math.max(1, contentPanel.scrollHeight - contentPanel.clientHeight);
   const scrollProgress = contentPanel.scrollTop / scrollRange;
+  if (memeLoadMoreScrollLatch !== null) {
+    const rearmDistance = Math.max(contentPanel.clientHeight * 0.35, 240);
+    if (contentPanel.scrollTop <= (memeLoadMoreScrollLatch + rearmDistance)) {
+      return false;
+    }
+  }
+
   return scrollProgress >= MEME_LOAD_MORE_SCROLL_RATIO;
 }
 
@@ -371,6 +379,7 @@ function maybeLoadMoreMemes() {
     return memeLoadMorePromise || Promise.resolve();
   }
 
+  memeLoadMoreScrollLatch = contentPanel?.scrollTop ?? 0;
   memeLoadMorePromise = fetchMemes({ reset: false })
     .catch((error) => {
       console.error(error);
@@ -385,6 +394,10 @@ function maybeLoadMoreMemes() {
 async function fetchMemes({ reset = true } = {}) {
   if (state.library.loading) {
     return;
+  }
+
+  if (reset) {
+    memeLoadMoreScrollLatch = null;
   }
 
   state.library.loading = true;
