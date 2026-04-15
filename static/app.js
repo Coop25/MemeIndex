@@ -135,13 +135,14 @@ let randomReelStepLock = false;
 let memeGridObserver = null;
 let memeGridRenderFrame = null;
 let memeLoadMorePromise = null;
-let memeLoadMoreArmed = true;
-let memeLoadMoreLastTriggerScrollTop = 0;
 let memeLoadMoreCooldownUntil = 0;
+let memeLoadMoreMinScrollTop = 0;
+let memeLoadMoreLastScrollTop = 0;
+let memeLoadMoreScrollingDown = false;
+let memeLoadMoreLocked = false;
 const drawerMediaQuery = window.matchMedia("(max-width: 1100px)");
 const MEME_PAGE_SIZE = 72;
 const MEME_INITIAL_LOAD_PAGES = 3;
-const MEME_LOAD_MORE_REARM_VIEWPORTS = 0.35;
 const MEME_LOAD_MORE_BOTTOM_THRESHOLD_PX = 120;
 const MEME_LOAD_MORE_COOLDOWN_MS = 5000;
 
@@ -356,11 +357,11 @@ function syncMemeGridObserver() {
 }
 
 function shouldLoadMoreMemes() {
-  if (!contentPanel || !state.library.hasMore || state.library.loading || memeLoadMorePromise) {
+  if (!contentPanel || !state.library.hasMore || state.library.loading || memeLoadMorePromise || memeLoadMoreLocked) {
     return false;
   }
 
-  if (!memeLoadMoreArmed) {
+  if (!memeLoadMoreScrollingDown) {
     return false;
   }
 
@@ -368,19 +369,12 @@ function shouldLoadMoreMemes() {
     return false;
   }
 
+  if (contentPanel.scrollTop < memeLoadMoreMinScrollTop) {
+    return false;
+  }
+
   const distanceToBottom = contentPanel.scrollHeight - (contentPanel.scrollTop + contentPanel.clientHeight);
   return distanceToBottom <= MEME_LOAD_MORE_BOTTOM_THRESHOLD_PX;
-}
-
-function maybeRearmLoadMore() {
-  if (!contentPanel || memeLoadMoreArmed) {
-    return;
-  }
-
-  const rearmDistance = Math.max(contentPanel.clientHeight * MEME_LOAD_MORE_REARM_VIEWPORTS, 240);
-  if (contentPanel.scrollTop >= (memeLoadMoreLastTriggerScrollTop + rearmDistance)) {
-    memeLoadMoreArmed = true;
-  }
 }
 
 function maybeLoadMoreMemes() {
@@ -388,14 +382,21 @@ function maybeLoadMoreMemes() {
     return memeLoadMorePromise || Promise.resolve();
   }
 
-  memeLoadMoreArmed = false;
-  memeLoadMoreLastTriggerScrollTop = contentPanel?.scrollTop ?? 0;
+  const currentScrollTop = contentPanel?.scrollTop ?? 0;
+  memeLoadMoreLocked = true;
   memeLoadMoreCooldownUntil = Date.now() + MEME_LOAD_MORE_COOLDOWN_MS;
+  memeLoadMoreMinScrollTop = currentScrollTop + Math.max((contentPanel?.clientHeight ?? 0) * 0.75, 300);
   memeLoadMorePromise = fetchMemes({ reset: false })
     .catch((error) => {
       console.error(error);
     })
     .finally(() => {
+      const remainingCooldown = Math.max(0, memeLoadMoreCooldownUntil - Date.now());
+      window.setTimeout(() => {
+        memeLoadMoreLocked = false;
+        memeLoadMoreScrollingDown = false;
+        memeLoadMoreLastScrollTop = contentPanel?.scrollTop ?? 0;
+      }, remainingCooldown);
       memeLoadMorePromise = null;
     });
 
@@ -408,9 +409,11 @@ async function fetchMemes({ reset = true } = {}) {
   }
 
   if (reset) {
-    memeLoadMoreArmed = true;
-    memeLoadMoreLastTriggerScrollTop = 0;
     memeLoadMoreCooldownUntil = 0;
+    memeLoadMoreMinScrollTop = 0;
+    memeLoadMoreLastScrollTop = 0;
+    memeLoadMoreScrollingDown = false;
+    memeLoadMoreLocked = false;
   }
 
   state.library.loading = true;
@@ -2390,11 +2393,12 @@ window.addEventListener("resize", () => {
   syncResponsiveSidebar();
   queueRenderLoadedMemes({ force: true });
   syncMemeGridObserver();
-  maybeLoadMoreMemes();
 });
 
 contentPanel?.addEventListener("scroll", () => {
-  maybeRearmLoadMore();
+  const currentScrollTop = contentPanel.scrollTop;
+  memeLoadMoreScrollingDown = currentScrollTop > (memeLoadMoreLastScrollTop + 2);
+  memeLoadMoreLastScrollTop = currentScrollTop;
   maybeLoadMoreMemes();
 });
 
