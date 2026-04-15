@@ -15,14 +15,16 @@ tasks:
       - go build ./...
 
   docker-up:
-    desc: Build and start MemeIndex with PostgreSQL in Docker Compose
+    desc: Pull and start MemeIndex with PostgreSQL in Docker Compose
     cmds:
-      - docker compose up --build -d
+      - docker compose pull
+      - docker compose up -d
 
   docker-tunnel-up:
-    desc: Build and start MemeIndex, PostgreSQL, and the optional Cloudflare Tunnel service
+    desc: Pull and start MemeIndex, PostgreSQL, and the optional Cloudflare Tunnel service
     cmds:
-      - docker compose --profile tunnel up --build -d
+      - docker compose --profile tunnel pull
+      - docker compose --profile tunnel up -d
 
   docker-down:
     desc: Stop the Docker Compose stack

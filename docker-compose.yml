@@ -15,9 +15,8 @@ services:
       - postgres_data:/var/lib/postgresql/data
 
   app:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ${MEMEINDEX_IMAGE:-ghcr.io/Coop25/memeindex:latest}
+    pull_policy: always
     restart: unless-stopped
     depends_on:
       postgres:

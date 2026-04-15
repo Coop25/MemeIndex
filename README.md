@@ -109,7 +109,8 @@ This repo now includes a `docker-compose.yml` that starts:
 Bring it up with:
 
 ```powershell
-docker compose up --build
+docker compose pull
+docker compose up -d
 ```
 
 Or with Task:
@@ -129,7 +130,8 @@ task docker-tunnel-up
 Or directly:
 
 ```powershell
-docker compose --profile tunnel up --build
+docker compose --profile tunnel pull
+docker compose --profile tunnel up -d
 ```
 
 Notes:
@@ -141,6 +143,38 @@ Notes:
 - stale reel sessions are cleaned by the app every night at `00:00 UTC`
 - Postgres is not exposed by the compose file, so the app remains the only service talking to the database
 - the app env vars are declared directly in `docker-compose.yml`, and Docker Compose fills them from your shell or local `.env`
+- `MEMEINDEX_IMAGE` controls which published app image Compose pulls, and defaults to `ghcr.io/your-github-user-or-org/memeindex:latest`
+
+## GitHub Container Publishing
+
+This repo includes [`.github/workflows/docker-publish.yml`](/f:/GitHub/MemeIndex/.github/workflows/docker-publish.yml), which builds the app image in GitHub Actions and pushes it to GitHub Container Registry on:
+
+- pushes to `main`
+- version tags like `v1.0.0`
+- manual runs from the Actions tab
+
+The published image path is:
+
+```text
+ghcr.io/<owner>/<repo>
+```
+
+For this repository, that usually means a package name like `ghcr.io/<your-github-user-or-org>/memeindex`.
+
+### One-time setup
+
+1. Push this repository to GitHub.
+2. Update `.env` so `MEMEINDEX_IMAGE` points at your real package, for example `ghcr.io/example-org/memeindex:latest`.
+3. Run the workflow once by pushing to `main` or using `workflow_dispatch`.
+4. In GitHub, make the container package public if you want hosts to pull it without logging in.
+
+If you prefer to keep the package private, log in on the deployment host first:
+
+```powershell
+echo $env:GITHUB_TOKEN | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
+```
+
+Then Compose can pull the image normally.
 
 ### Cloudflare Tunnel
 
