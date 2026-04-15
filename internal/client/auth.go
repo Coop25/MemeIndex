@@ -36,7 +36,6 @@ type authContextKey string
 const authSessionContextKey authContextKey = "auth-session"
 
 type authSession struct {
-	ID          string
 	UserID      string
 	Username    string
 	DisplayName string
@@ -51,11 +50,19 @@ type authPermissions struct {
 	CanManage bool `json:"canManage"`
 }
 
+type authClaims struct {
+	Subject     string `json:"sub"`
+	Username    string `json:"username"`
+	DisplayName string `json:"display_name"`
+	AvatarURL   string `json:"avatar_url"`
+	IssuedAt    int64  `json:"iat"`
+	ExpiresAt   int64  `json:"exp"`
+}
+
 type authService struct {
 	config        DiscordAuthConfig
 	secret        []byte
 	client        *http.Client
-	sessions      map[string]authSession
 	pendingStates map[string]time.Time
 	mu            sync.RWMutex
 }
@@ -81,7 +88,6 @@ func newAuthService(config DiscordAuthConfig) *authService {
 		config:        config,
 		secret:        []byte(config.SessionSecret),
 		client:        &http.Client{Timeout: 15 * time.Second},
-		sessions:      map[string]authSession{},
 		pendingStates: map[string]time.Time{},
 	}
 }
@@ -140,10 +146,6 @@ func (a *authService) newStateToken() (string, error) {
 	return a.randomToken(32)
 }
 
-func (a *authService) newSessionID() (string, error) {
-	return a.randomToken(32)
-}
-
 func (a *authService) randomToken(size int) (string, error) {
 	bytes := make([]byte, size)
 	if _, err := rand.Read(bytes); err != nil {
@@ -156,6 +158,12 @@ func (a *authService) sign(value string) string {
 	mac := hmac.New(sha256.New, a.secret)
 	mac.Write([]byte(value))
 	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func (a *authService) signJWT(input string) string {
+	mac := hmac.New(sha256.New, a.secret)
+	mac.Write([]byte(input))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
 func (a *authService) signedValue(value string) string {
@@ -282,47 +290,10 @@ func (a *authService) consumeValidState(r *http.Request) bool {
 	return verifyOK && value == queryState
 }
 
-func (a *authService) setSessionCookie(w http.ResponseWriter, r *http.Request, sessionID string, expires time.Time) {
-	a.setCookie(w, r, authSessionCookieName, a.signedValue(sessionID), expires)
-}
-
-func (a *authService) sessionFromRequest(r *http.Request) (authSession, bool) {
-	signedSession, ok := a.readCookie(r, authSessionCookieName)
-	if !ok {
-		return authSession{}, false
-	}
-
-	sessionID, ok := a.verifySignedValue(signedSession)
-	if !ok {
-		return authSession{}, false
-	}
-
-	a.mu.RLock()
-	session, exists := a.sessions[sessionID]
-	a.mu.RUnlock()
-	if !exists {
-		return authSession{}, false
-	}
-
-	if time.Now().After(session.ExpiresAt) {
-		a.mu.Lock()
-		delete(a.sessions, sessionID)
-		a.mu.Unlock()
-		return authSession{}, false
-	}
-
-	return session, true
-}
-
-func (a *authService) createSession(user discordUser) (authSession, error) {
+func (a *authService) createSession(user discordUser) (authSession, string, error) {
 	permissions := a.permissionsForUser(user.ID)
 	if !permissions.CanView {
-		return authSession{}, errors.New("user is not authorized")
-	}
-
-	sessionID, err := a.newSessionID()
-	if err != nil {
-		return authSession{}, err
+		return authSession{}, "", errors.New("user is not authorized")
 	}
 
 	displayName := strings.TrimSpace(user.GlobalName)
@@ -330,20 +301,111 @@ func (a *authService) createSession(user discordUser) (authSession, error) {
 		displayName = user.Username
 	}
 
+	expiresAt := time.Now().Add(a.config.SessionDuration)
 	session := authSession{
-		ID:          sessionID,
 		UserID:      user.ID,
 		Username:    user.Username,
 		DisplayName: displayName,
 		AvatarURL:   discordAvatarURL(user),
 		Permissions: permissions,
-		ExpiresAt:   time.Now().Add(7 * 24 * time.Hour),
+		ExpiresAt:   expiresAt,
 	}
 
-	a.mu.Lock()
-	a.sessions[sessionID] = session
-	a.mu.Unlock()
-	return session, nil
+	token, err := a.issueSessionToken(session)
+	if err != nil {
+		return authSession{}, "", err
+	}
+
+	return session, token, nil
+}
+
+func (a *authService) setSessionCookie(w http.ResponseWriter, r *http.Request, token string, expires time.Time) {
+	a.setCookie(w, r, authSessionCookieName, token, expires)
+}
+
+func (a *authService) issueSessionToken(session authSession) (string, error) {
+	headerJSON, err := json.Marshal(map[string]string{
+		"alg": "HS256",
+		"typ": "JWT",
+	})
+	if err != nil {
+		return "", err
+	}
+
+	claimsJSON, err := json.Marshal(authClaims{
+		Subject:     session.UserID,
+		Username:    session.Username,
+		DisplayName: session.DisplayName,
+		AvatarURL:   session.AvatarURL,
+		IssuedAt:    time.Now().Unix(),
+		ExpiresAt:   session.ExpiresAt.Unix(),
+	})
+	if err != nil {
+		return "", err
+	}
+
+	encodedHeader := base64.RawURLEncoding.EncodeToString(headerJSON)
+	encodedClaims := base64.RawURLEncoding.EncodeToString(claimsJSON)
+	signingInput := encodedHeader + "." + encodedClaims
+	signature := a.signJWT(signingInput)
+	return signingInput + "." + signature, nil
+}
+
+func (a *authService) sessionFromRequest(r *http.Request) (authSession, bool) {
+	token, ok := a.readCookie(r, authSessionCookieName)
+	if !ok {
+		return authSession{}, false
+	}
+
+	claims, ok := a.parseSessionToken(token)
+	if !ok {
+		return authSession{}, false
+	}
+
+	permissions := a.permissionsForUser(claims.Subject)
+	if !permissions.CanView {
+		return authSession{}, false
+	}
+
+	return authSession{
+		UserID:      claims.Subject,
+		Username:    claims.Username,
+		DisplayName: claims.DisplayName,
+		AvatarURL:   claims.AvatarURL,
+		Permissions: permissions,
+		ExpiresAt:   time.Unix(claims.ExpiresAt, 0),
+	}, true
+}
+
+func (a *authService) parseSessionToken(token string) (authClaims, bool) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return authClaims{}, false
+	}
+
+	signingInput := parts[0] + "." + parts[1]
+	expectedSignature := a.signJWT(signingInput)
+	if !hmac.Equal([]byte(parts[2]), []byte(expectedSignature)) {
+		return authClaims{}, false
+	}
+
+	payloadJSON, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return authClaims{}, false
+	}
+
+	var claims authClaims
+	if err := json.Unmarshal(payloadJSON, &claims); err != nil {
+		return authClaims{}, false
+	}
+	if strings.TrimSpace(claims.Subject) == "" || claims.ExpiresAt <= 0 {
+		return authClaims{}, false
+	}
+	if time.Now().Unix() >= claims.ExpiresAt {
+		return authClaims{}, false
+	}
+
+	return claims, true
 }
 
 func discordAvatarURL(user discordUser) string {

@@ -422,23 +422,18 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session, err := s.auth.createSession(user)
+	session, token, err := s.auth.createSession(user)
 	if err != nil {
 		http.Error(w, "your Discord account is not authorized for MemeIndex", http.StatusForbidden)
 		return
 	}
 
-	s.auth.setSessionCookie(w, r, session.ID, session.ExpiresAt)
+	s.auth.setSessionCookie(w, r, token, session.ExpiresAt)
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if s.auth.enabled() {
-		if session, ok := s.auth.sessionFromRequest(r); ok {
-			s.auth.mu.Lock()
-			delete(s.auth.sessions, session.ID)
-			s.auth.mu.Unlock()
-		}
 		s.auth.clearCookie(w, r, authSessionCookieName)
 	}
 

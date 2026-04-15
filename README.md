@@ -60,6 +60,7 @@ The real `.env` file is ignored by git, so secrets stay local.
 - `MEMEINDEX_DISCORD_REDIRECT_URL`: Discord OAuth callback URL, for example `http://localhost:8080/auth/callback`
 - `MEMEINDEX_DISCORD_DYNAMIC_REDIRECT`: when `true`, dev mode builds the callback URL from the current browser host, so `localhost` and your LAN IP can both work
 - `MEMEINDEX_SESSION_SECRET`: random secret used to sign auth cookies
+- `MEMEINDEX_SESSION_DURATION_DAYS`: how long Discord login cookies stay valid, default `30`
 - `MEMEINDEX_COOKIE_SECURE`: set to `true` when serving over HTTPS so auth cookies are marked secure
 - `MEMEINDEX_VIEW_USER_IDS`: comma-separated Discord user IDs allowed to view the app
 - `MEMEINDEX_ADD_USER_IDS`: comma-separated Discord user IDs allowed to view and upload memes
@@ -71,6 +72,8 @@ If the Discord OAuth env vars are not set, MemeIndex keeps auth disabled and beh
 - `ADD`: everything in `VIEW`, plus upload new memes
 - `MANAGE`: everything in `ADD`, plus edit metadata, favorite, and delete
 
+Discord login uses a signed long-lived auth token. Permissions are recalculated from the allowlists on every request, so moving a user between `VIEW`, `ADD`, and `MANAGE` takes effect without rotating the token or forcing a fresh login.
+
 Example local setup:
 
 ```powershell
@@ -80,6 +83,7 @@ $env:MEMEINDEX_DISCORD_CLIENT_SECRET="your-discord-client-secret"
 $env:MEMEINDEX_DISCORD_REDIRECT_URL="http://localhost:8080/auth/callback"
 $env:MEMEINDEX_DISCORD_DYNAMIC_REDIRECT="false"
 $env:MEMEINDEX_SESSION_SECRET="replace-this-with-a-long-random-string"
+$env:MEMEINDEX_SESSION_DURATION_DAYS="30"
 $env:MEMEINDEX_VIEW_USER_IDS="111111111111111111,222222222222222222"
 $env:MEMEINDEX_ADD_USER_IDS="222222222222222222"
 $env:MEMEINDEX_MANAGE_USER_IDS="333333333333333333"

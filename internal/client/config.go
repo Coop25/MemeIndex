@@ -2,6 +2,7 @@ package client
 
 import (
 	"strings"
+	"time"
 
 	"github.com/kelseyhightower/envconfig"
 )
@@ -19,6 +20,7 @@ type DiscordAuthConfig struct {
 	RedirectURL     string
 	DynamicRedirect bool
 	SessionSecret   string
+	SessionDuration time.Duration
 	CookieSecure    bool
 	ViewUserIDs     map[string]struct{}
 	AddUserIDs      map[string]struct{}
@@ -38,6 +40,7 @@ type rawConfig struct {
 	DiscordRedirectURL     string   `envconfig:"DISCORD_REDIRECT_URL"`
 	DiscordDynamicRedirect bool     `envconfig:"DISCORD_DYNAMIC_REDIRECT" default:"false"`
 	SessionSecret          string   `envconfig:"SESSION_SECRET"`
+	SessionDurationDays    int      `envconfig:"SESSION_DURATION_DAYS" default:"30"`
 	CookieSecure           bool     `envconfig:"COOKIE_SECURE" default:"false"`
 	ViewUserIDs            []string `envconfig:"VIEW_USER_IDS"`
 	AddUserIDs             []string `envconfig:"ADD_USER_IDS"`
@@ -60,6 +63,7 @@ func LoadConfig() (Config, error) {
 			RedirectURL:     strings.TrimSpace(raw.DiscordRedirectURL),
 			DynamicRedirect: raw.DiscordDynamicRedirect,
 			SessionSecret:   strings.TrimSpace(raw.SessionSecret),
+			SessionDuration: sessionDurationFromDays(raw.SessionDurationDays),
 			CookieSecure:    raw.CookieSecure,
 			ViewUserIDs:     toSet(raw.ViewUserIDs),
 			AddUserIDs:      toSet(raw.AddUserIDs),
@@ -78,4 +82,11 @@ func toSet(rawValues []string) map[string]struct{} {
 		values[value] = struct{}{}
 	}
 	return values
+}
+
+func sessionDurationFromDays(days int) time.Duration {
+	if days <= 0 {
+		days = 30
+	}
+	return time.Duration(days) * 24 * time.Hour
 }
