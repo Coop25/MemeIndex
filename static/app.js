@@ -142,8 +142,9 @@ const drawerMediaQuery = window.matchMedia("(max-width: 1100px)");
 const MEME_PAGE_SIZE = 72;
 const MEME_GRID_MIN_WIDTH = 300;
 const MEME_GRID_GAP = 3;
-const MEME_GRID_MAX_MOUNTED_PAGES = 4;
-const MEME_LOAD_AHEAD_VIEWPORTS = 1.5;
+const MEME_GRID_MAX_MOUNTED_PAGES = 3;
+const MEME_INITIAL_LOAD_PAGES = 3;
+const MEME_LOAD_MORE_SCROLL_RATIO = 0.5;
 
 function getAuthInitials() {
   const label = state.auth.user?.display_name || state.auth.user?.username || "MemeIndex";
@@ -360,9 +361,9 @@ function shouldLoadMoreMemes() {
     return false;
   }
 
-  const distanceToBottom = contentPanel.scrollHeight - (contentPanel.scrollTop + contentPanel.clientHeight);
-  const loadAheadThreshold = contentPanel.clientHeight * MEME_LOAD_AHEAD_VIEWPORTS;
-  return distanceToBottom <= loadAheadThreshold;
+  const scrollRange = Math.max(1, contentPanel.scrollHeight - contentPanel.clientHeight);
+  const scrollProgress = contentPanel.scrollTop / scrollRange;
+  return scrollProgress >= MEME_LOAD_MORE_SCROLL_RATIO;
 }
 
 function maybeLoadMoreMemes() {
@@ -413,9 +414,17 @@ async function fetchMemes({ reset = true } = {}) {
   }
 }
 
+async function loadInitialMemes() {
+  await fetchMemes({ reset: true });
+
+  while (state.library.hasMore && state.memes.length < (MEME_PAGE_SIZE * MEME_INITIAL_LOAD_PAGES)) {
+    await fetchMemes({ reset: false });
+  }
+}
+
 async function applyTagSearch(rawValue) {
   state.filters.tag = normalizeTagValue(rawValue);
-  await fetchMemes({ reset: true });
+  await loadInitialMemes();
 }
 
 function queueTagSearch(rawValue) {
@@ -604,6 +613,9 @@ function updateMemeCardElement(card, meme) {
   }
 
   card.dataset.memeId = meme.id;
+  if (typeof meme._pageIndex === "number" && meme._pageIndex >= 0) {
+    card.dataset.pageIndex = `${meme._pageIndex}`;
+  }
   applyFavoriteStateToButton(card._favoriteButton, meme.favorite);
   card._favoriteButton.disabled = !canView();
   card._favoriteButton.title = canView() ? "" : "You do not have permission to favorite memes";
@@ -696,6 +708,7 @@ function buildMemePageElement(pageIndex, memes, metrics) {
 
   const fragment = document.createDocumentFragment();
   memes.forEach((meme) => {
+    meme._pageIndex = pageIndex;
     const card = buildMemeCardElement(meme);
     page._cards.push(card);
     fragment.appendChild(card);
@@ -1822,7 +1835,7 @@ async function persistCard(id, payload) {
     return false;
   }
 
-  await fetchMemes();
+  await loadInitialMemes();
   return true;
 }
 
@@ -1864,7 +1877,7 @@ async function deleteMeme(id) {
   }
 
   closeModal();
-  await fetchMemes();
+  await loadInitialMemes();
 }
 
 uploadForm.addEventListener("submit", async (event) => {
@@ -1903,7 +1916,7 @@ uploadForm.addEventListener("submit", async (event) => {
   } else {
     uploadStatus.textContent = "Upload complete.";
   }
-  await fetchMemes();
+  await loadInitialMemes();
   uploadModal.close();
 });
 
@@ -2054,7 +2067,7 @@ tagSearchInput.addEventListener("keydown", async (event) => {
 sidebarNavItems.forEach((item) => {
   item.addEventListener("click", () => {
     state.filters.view = item.dataset.view || "library";
-    fetchMemes({ reset: true }).catch((error) => {
+    loadInitialMemes().catch((error) => {
       console.error(error);
     });
     if (drawerMediaQuery.matches) {
@@ -2436,7 +2449,7 @@ function formatSize(bytes) {
 syncResponsiveSidebar();
 
 fetchAuthSession()
-  .then(() => fetchMemes())
+  .then(() => loadInitialMemes())
   .catch((error) => {
     console.error(error);
     uploadStatus.textContent = "Could not load existing memes.";

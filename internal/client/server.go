@@ -34,6 +34,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/auth/login", s.handleLogin)
 	mux.HandleFunc("/auth/callback", s.handleOAuthCallback)
 	mux.HandleFunc("/auth/logout", s.handleLogout)
+	mux.HandleFunc("/og-image.svg", s.handleOGImage)
 	mux.HandleFunc("/api/auth/session", s.handleAuthSession)
 	mux.Handle("/uploads/", s.withPageAuth(http.StripPrefix("/uploads/", http.FileServer(http.Dir(s.managers.UploadDir())))))
 	if thumbnailDir := s.managers.ThumbnailDir(); strings.TrimSpace(thumbnailDir) != "" {
@@ -56,6 +57,10 @@ func (s *Server) withPageAuth(next http.Handler) http.Handler {
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		session, ok := s.auth.sessionFromRequest(r)
+		if !ok && isLinkPreviewRequest(r) && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+			next.ServeHTTP(w, r)
+			return
+		}
 		if !ok || !session.Permissions.CanView {
 			http.Redirect(w, r, "/auth/login", http.StatusFound)
 			return
@@ -108,6 +113,62 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.ServeFile(w, r, filepath.Join("static", "index.html"))
+}
+
+func (s *Server) handleOGImage(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "image/svg+xml; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-label="MemeIndex">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0d1014"/>
+      <stop offset="55%" stop-color="#111821"/>
+      <stop offset="100%" stop-color="#0c1218"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3a8ff0"/>
+      <stop offset="100%" stop-color="#4cd3d3"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <circle cx="1060" cy="110" r="180" fill="#4cd3d3" fill-opacity="0.08"/>
+  <circle cx="150" cy="560" r="210" fill="#3a8ff0" fill-opacity="0.10"/>
+  <rect x="82" y="82" width="148" height="148" rx="36" fill="url(#accent)"/>
+  <text x="156" y="176" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="64" font-weight="800" fill="#081015">MI</text>
+  <text x="82" y="318" font-family="Segoe UI, Arial, sans-serif" font-size="86" font-weight="800" fill="#f2f5f7">MemeIndex</text>
+  <text x="82" y="382" font-family="Segoe UI, Arial, sans-serif" font-size="32" font-weight="600" fill="#4cd3d3" letter-spacing="4">SELF-HOSTED ARCHIVE</text>
+  <text x="82" y="470" font-family="Segoe UI, Arial, sans-serif" font-size="34" fill="#c9d4dc">Browse, tag, favorite, and organize your meme backlog.</text>
+  <text x="82" y="520" font-family="Segoe UI, Arial, sans-serif" font-size="34" fill="#c9d4dc">Images stay light. Videos can preview with generated thumbnails.</text>
+</svg>`))
+}
+
+func isLinkPreviewRequest(r *http.Request) bool {
+	userAgent := strings.ToLower(strings.TrimSpace(r.Header.Get("User-Agent")))
+	if userAgent == "" {
+		return false
+	}
+
+	linkPreviewAgents := []string{
+		"discordbot",
+		"slackbot",
+		"twitterbot",
+		"facebookexternalhit",
+		"linkedinbot",
+		"whatsapp",
+		"telegrambot",
+		"skypeuripreview",
+		"googlebot",
+		"bingbot",
+	}
+
+	for _, agent := range linkPreviewAgents {
+		if strings.Contains(userAgent, agent) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (s *Server) handleMemes(w http.ResponseWriter, r *http.Request) {
