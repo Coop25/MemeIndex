@@ -15,10 +15,10 @@ var ffmpegWarningOnce sync.Once
 type previewAssetResult string
 
 const (
-	previewAssetUnsupported   previewAssetResult = "unsupported"
+	previewAssetUnsupported previewAssetResult = "unsupported"
 	previewAssetAlreadyExists previewAssetResult = "already_exists"
-	previewAssetGenerated     previewAssetResult = "generated"
-	previewAssetUnavailable   previewAssetResult = "unavailable"
+	previewAssetGenerated previewAssetResult = "generated"
+	previewAssetUnavailable previewAssetResult = "unavailable"
 )
 
 func decoratePreviewPath(meme *Meme, previewDir string) {

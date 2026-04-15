@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -80,11 +81,65 @@ func (s *PostgresStore) ThumbnailDir() string {
 
 func (s *PostgresStore) EnsurePreviewAssets() error {
 	memes := s.List("", "", false, "")
+	totalVideos := 0
+	generated := 0
+	existing := 0
+	failed := 0
+
+	for _, meme := range memes {
+		if strings.HasPrefix(meme.ContentType, "video/") {
+			totalVideos += 1
+		}
+	}
+
+	if totalVideos == 0 {
+		log.Printf("preview asset backfill: no video memes found")
+		return nil
+	}
+
+	log.Printf("preview asset backfill: starting postgres video thumbnails for %d video(s)", totalVideos)
+
+	processedVideos := 0
 	for i := range memes {
-		if err := ensurePreviewAsset(s.uploadDir, s.previewDir, &memes[i]); err != nil {
+		if !strings.HasPrefix(memes[i].ContentType, "video/") {
+			continue
+		}
+
+		result, err := ensurePreviewAssetWithResult(s.uploadDir, s.previewDir, &memes[i])
+		processedVideos += 1
+		switch result {
+		case previewAssetGenerated:
+			generated += 1
+		case previewAssetAlreadyExists:
+			existing += 1
+		}
+		if err != nil {
+			failed += 1
+		}
+
+		if processedVideos%25 == 0 || processedVideos == totalVideos {
+			log.Printf(
+				"preview asset backfill: processed %d/%d videos (generated=%d existing=%d failed=%d)",
+				processedVideos,
+				totalVideos,
+				generated,
+				existing,
+				failed,
+			)
+		}
+
+		if err != nil {
 			continue
 		}
 	}
+
+	log.Printf(
+		"preview asset backfill: finished postgres video thumbnails (total=%d generated=%d existing=%d failed=%d)",
+		totalVideos,
+		generated,
+		existing,
+		failed,
+	)
 	return nil
 }
 

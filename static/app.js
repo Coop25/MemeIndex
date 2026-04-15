@@ -598,17 +598,31 @@ function updateMemeCardElement(card, meme) {
   card._favoriteButton.title = canView() ? "" : "You do not have permission to favorite memes";
 
   const existingPreview = card._previewFrame?.firstElementChild;
-  const previewMatches = existingPreview && existingPreview.dataset?.previewPath === meme.filePath;
+  const nextPreviewSrc = meme.previewPath || meme.filePath;
+  const previewMatches = existingPreview &&
+    existingPreview.dataset?.previewSrc === nextPreviewSrc &&
+    existingPreview.dataset?.previewKind === previewKindForMeme(meme);
   if (!previewMatches && card._previewFrame) {
     card._previewFrame.replaceChildren(buildPreview(meme));
     const preview = card._previewFrame.firstElementChild;
     if (preview) {
-      preview.dataset.previewPath = meme.filePath;
+      preview.dataset.previewSrc = nextPreviewSrc;
+      preview.dataset.previewKind = previewKindForMeme(meme);
     }
   }
 
   card._tags = meme.tags || [];
   return card;
+}
+
+function previewKindForMeme(meme) {
+  if (meme.contentType.startsWith("image/")) {
+    return "image";
+  }
+  if (meme.contentType.startsWith("video/")) {
+    return meme.previewPath ? "thumbnail" : "video";
+  }
+  return "file";
 }
 
 function getGridLayoutMetrics() {
