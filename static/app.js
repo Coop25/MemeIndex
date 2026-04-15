@@ -134,11 +134,17 @@ let randomReelTouchBlocked = false;
 let randomReelStepLock = false;
 let memeGridObserver = null;
 let memeGridRenderFrame = null;
+let memeGridRenderSequence = 0;
+let memeGridLastWindowKey = "";
+let memeGridLastScrollTop = 0;
+let memeGridLastScrollTime = 0;
+const memeCardCache = new Map();
 const drawerMediaQuery = window.matchMedia("(max-width: 1100px)");
 const MEME_PAGE_SIZE = 72;
 const MEME_GRID_MIN_WIDTH = 300;
 const MEME_GRID_GAP = 3;
 const MEME_GRID_OVERSCAN_ROWS = 4;
+const MEME_GRID_FAST_SCROLL_MAX_EXTRA_ROWS = 10;
 
 function getAuthInitials() {
   const label = state.auth.user?.display_name || state.auth.user?.username || "MemeIndex";
@@ -539,6 +545,7 @@ function renderMemes({ append = false } = {}) {
   emptyState.classList.toggle("hidden", visibleMemes.length !== 0);
   if (!append) {
     contentPanel.scrollTop = 0;
+    memeGridLastWindowKey = "";
   }
   renderVirtualMemeWindow();
 }
@@ -577,7 +584,33 @@ function buildMemeCardElement(meme) {
     });
   }
 
+  card._previewFrame = previewFrame;
+  card._favoriteButton = favoriteButton;
   card._tagList = tagList;
+  updateMemeCardElement(card, meme);
+  return card;
+}
+
+function updateMemeCardElement(card, meme) {
+  if (!card || !meme) {
+    return card;
+  }
+
+  card.dataset.memeId = meme.id;
+  applyFavoriteStateToButton(card._favoriteButton, meme.favorite);
+  card._favoriteButton.disabled = !canView();
+  card._favoriteButton.title = canView() ? "" : "You do not have permission to favorite memes";
+
+  const existingPreview = card._previewFrame?.firstElementChild;
+  const previewMatches = existingPreview && existingPreview.dataset?.previewPath === meme.filePath;
+  if (!previewMatches && card._previewFrame) {
+    card._previewFrame.replaceChildren(buildPreview(meme));
+    const preview = card._previewFrame.firstElementChild;
+    if (preview) {
+      preview.dataset.previewPath = meme.filePath;
+    }
+  }
+
   card._tags = meme.tags || [];
   return card;
 }
@@ -592,9 +625,12 @@ function getVirtualGridMetrics(totalItems) {
 }
 
 function renderVirtualMemeWindow() {
+  const renderSequence = ++memeGridRenderSequence;
   const memes = getVisibleMemes();
   if (!memes.length) {
-    memeGrid.innerHTML = "";
+    memeGrid.replaceChildren();
+    memeCardCache.clear();
+    memeGridLastWindowKey = "";
     memeGridTopSpacer.style.height = "0px";
     memeGridBottomSpacer.style.height = "0px";
     memeGridTopSpacer.classList.add("hidden");
@@ -605,21 +641,70 @@ function renderVirtualMemeWindow() {
   const { columns, rowHeight, totalRows } = getVirtualGridMetrics(memes.length);
   const viewportTop = contentPanel.scrollTop;
   const viewportBottom = viewportTop + contentPanel.clientHeight;
-  const startRow = Math.max(0, Math.floor(viewportTop / rowHeight) - MEME_GRID_OVERSCAN_ROWS);
-  const endRow = Math.min(totalRows, Math.ceil(viewportBottom / rowHeight) + MEME_GRID_OVERSCAN_ROWS);
+  const now = window.performance.now();
+  const scrollDelta = Math.abs(viewportTop - memeGridLastScrollTop);
+  const timeDelta = Math.max(16, now - memeGridLastScrollTime);
+  const scrollVelocityRows = scrollDelta / rowHeight / (timeDelta / 16.67);
+  const extraOverscanRows = Math.min(
+    MEME_GRID_FAST_SCROLL_MAX_EXTRA_ROWS,
+    Math.max(0, Math.ceil(scrollVelocityRows) - 1),
+  );
+  const overscanRows = MEME_GRID_OVERSCAN_ROWS + extraOverscanRows;
+  const startRow = Math.max(0, Math.floor(viewportTop / rowHeight) - overscanRows);
+  const endRow = Math.min(totalRows, Math.ceil(viewportBottom / rowHeight) + overscanRows);
   const startIndex = Math.max(0, startRow * columns);
   const endIndex = Math.min(memes.length, endRow * columns);
+  const windowKey = `${columns}:${startIndex}:${endIndex}`;
 
-  memeGrid.innerHTML = "";
-  const fragment = document.createDocumentFragment();
-  for (let index = startIndex; index < endIndex; index += 1) {
-    fragment.appendChild(buildMemeCardElement(memes[index]));
+  memeGridLastScrollTop = viewportTop;
+  memeGridLastScrollTime = now;
+
+  if (windowKey === memeGridLastWindowKey) {
+    return;
   }
-  memeGrid.appendChild(fragment);
+  memeGridLastWindowKey = windowKey;
+
+  const desiredCards = [];
+  const visibleIDs = new Set();
+  for (let index = startIndex; index < endIndex; index += 1) {
+    const meme = memes[index];
+    let card = memeCardCache.get(meme.id);
+    if (!card) {
+      card = buildMemeCardElement(meme);
+      memeCardCache.set(meme.id, card);
+    } else {
+      updateMemeCardElement(card, meme);
+    }
+    visibleIDs.add(meme.id);
+    desiredCards.push(card);
+  }
+
+  const activeIDs = new Set(memes.map((meme) => meme.id));
+  for (const [id] of memeCardCache) {
+    if (!activeIDs.has(id)) {
+      memeCardCache.delete(id);
+    }
+  }
+
+  desiredCards.forEach((card, index) => {
+    const currentNode = memeGrid.children[index];
+    if (currentNode !== card) {
+      memeGrid.insertBefore(card, currentNode || null);
+    }
+  });
+
+  Array.from(memeGrid.children).forEach((child) => {
+    const memeID = child.dataset?.memeId;
+    if (memeID && !visibleIDs.has(memeID)) {
+      child.remove();
+    }
+  });
+
+  if (renderSequence !== memeGridRenderSequence) {
+    return;
+  }
   memeGrid.querySelectorAll(".meme-card").forEach((card) => {
     layoutCardTags(card._tagList, card._tags);
-    delete card._tagList;
-    delete card._tags;
   });
 
   const topHeight = startRow * rowHeight;
@@ -1237,6 +1322,7 @@ function syncFavoriteUI(updatedMeme) {
   if (state.filters.view === "favorites") {
     if (!updatedMeme.favorite && card) {
       state.memes = state.memes.filter((meme) => meme.id !== updatedMeme.id);
+      memeCardCache.delete(updatedMeme.id);
       card.remove();
     }
     emptyState.classList.toggle("hidden", state.memes.length !== 0);
@@ -1264,6 +1350,7 @@ function updateMemeInState(updatedMeme) {
     ...state.memes[index],
     ...updatedMeme,
   };
+  memeGridLastWindowKey = "";
 
   return state.memes[index];
 }
