@@ -10,7 +10,7 @@ const state = {
       untagged: 0,
       files: 0,
     },
-    nextOffset: 0,
+    pageIndex: 0,
     hasMore: false,
     loading: false,
   },
@@ -57,6 +57,9 @@ const memeGridTopSpacer = document.querySelector("#meme-grid-top-spacer");
 const memeGridBottomSpacer = document.querySelector("#meme-grid-bottom-spacer");
 const memeGrid = document.querySelector("#meme-grid");
 const memeGridSentinel = document.querySelector("#meme-grid-sentinel");
+const memePagePrev = document.querySelector("#meme-page-prev");
+const memePageNext = document.querySelector("#meme-page-next");
+const memePageLabel = document.querySelector("#meme-page-label");
 const memeGridStatus = document.querySelector("#meme-grid-status");
 const emptyState = document.querySelector("#empty-state");
 const tagSearchInput = document.querySelector("#tag-search-input");
@@ -134,17 +137,8 @@ let randomReelTouchBlocked = false;
 let randomReelStepLock = false;
 let memeGridObserver = null;
 let memeGridRenderFrame = null;
-let memeLoadMorePromise = null;
-let memeLoadMoreCooldownUntil = 0;
-let memeLoadMoreMinScrollTop = 0;
-let memeLoadMoreLastScrollTop = 0;
-let memeLoadMoreScrollingDown = false;
-let memeLoadMoreLocked = false;
 const drawerMediaQuery = window.matchMedia("(max-width: 1100px)");
-const MEME_PAGE_SIZE = 72;
-const MEME_INITIAL_LOAD_PAGES = 3;
-const MEME_LOAD_MORE_BOTTOM_THRESHOLD_PX = 120;
-const MEME_LOAD_MORE_COOLDOWN_MS = 5000;
+const MEME_PAGE_SIZE = 100;
 
 function getAuthInitials() {
   const label = state.auth.user?.display_name || state.auth.user?.username || "MemeIndex";
@@ -337,93 +331,50 @@ function setMemeGridStatus(message = "", hidden = !message) {
   memeGridStatus.classList.toggle("hidden", hidden);
 }
 
+function syncMemePagination() {
+  const pageNumber = state.library.pageIndex + 1;
+  memePageLabel.textContent = state.library.loading
+    ? `Loading page ${pageNumber}...`
+    : `Page ${pageNumber}`;
+  memePagePrev.disabled = state.library.loading || state.library.pageIndex === 0;
+  memePageNext.disabled = state.library.loading || !state.library.hasMore;
+}
+
 function syncMemeGridObserver() {
   if (!memeGridSentinel) {
     return;
   }
 
   memeGridSentinel.classList.add("hidden");
+  syncMemePagination();
 
-  if (state.library.hasMore) {
-    setMemeGridStatus(state.library.loading ? "Loading more memes..." : "Scroll for more memes", false);
+  if (state.library.loading) {
+    setMemeGridStatus("Loading memes...", false);
     return;
   }
 
   if (state.memes.length > 0) {
-    setMemeGridStatus(`Loaded ${state.memes.length} meme${state.memes.length === 1 ? "" : "s"}.`, false);
+    const pageNumber = state.library.pageIndex + 1;
+    setMemeGridStatus(`Page ${pageNumber} - Showing ${state.memes.length} meme${state.memes.length === 1 ? "" : "s"}.`, false);
   } else {
     setMemeGridStatus("", true);
   }
 }
 
-function shouldLoadMoreMemes() {
-  if (!contentPanel || !state.library.hasMore || state.library.loading || memeLoadMorePromise || memeLoadMoreLocked) {
-    return false;
-  }
-
-  if (!memeLoadMoreScrollingDown) {
-    return false;
-  }
-
-  if (Date.now() < memeLoadMoreCooldownUntil) {
-    return false;
-  }
-
-  if (contentPanel.scrollTop < memeLoadMoreMinScrollTop) {
-    return false;
-  }
-
-  const distanceToBottom = contentPanel.scrollHeight - (contentPanel.scrollTop + contentPanel.clientHeight);
-  return distanceToBottom <= MEME_LOAD_MORE_BOTTOM_THRESHOLD_PX;
-}
-
-function maybeLoadMoreMemes() {
-  if (!shouldLoadMoreMemes()) {
-    return memeLoadMorePromise || Promise.resolve();
-  }
-
-  const currentScrollTop = contentPanel?.scrollTop ?? 0;
-  memeLoadMoreLocked = true;
-  memeLoadMoreCooldownUntil = Date.now() + MEME_LOAD_MORE_COOLDOWN_MS;
-  memeLoadMoreMinScrollTop = currentScrollTop + Math.max((contentPanel?.clientHeight ?? 0) * 0.75, 300);
-  memeLoadMorePromise = fetchMemes({ reset: false })
-    .catch((error) => {
-      console.error(error);
-    })
-    .finally(() => {
-      const remainingCooldown = Math.max(0, memeLoadMoreCooldownUntil - Date.now());
-      window.setTimeout(() => {
-        memeLoadMoreLocked = false;
-        memeLoadMoreScrollingDown = false;
-        memeLoadMoreLastScrollTop = contentPanel?.scrollTop ?? 0;
-      }, remainingCooldown);
-      memeLoadMorePromise = null;
-    });
-
-  return memeLoadMorePromise;
-}
-
-async function fetchMemes({ reset = true } = {}) {
+async function fetchMemes({ page = 0 } = {}) {
   if (state.library.loading) {
     return;
   }
 
-  if (reset) {
-    memeLoadMoreCooldownUntil = 0;
-    memeLoadMoreMinScrollTop = 0;
-    memeLoadMoreLastScrollTop = 0;
-    memeLoadMoreScrollingDown = false;
-    memeLoadMoreLocked = false;
-  }
-
   state.library.loading = true;
+  const requestedPage = Math.max(0, page);
   syncMemeGridObserver();
 
   try {
     const params = new URLSearchParams();
     if (state.filters.tag) params.set("tag", state.filters.tag);
     if (state.filters.view && state.filters.view !== "library") params.set("view", state.filters.view);
-    params.set("offset", reset ? "0" : `${state.library.nextOffset}`);
+    params.set("offset", `${requestedPage * MEME_PAGE_SIZE}`);
     params.set("limit", `${MEME_PAGE_SIZE}`);
 
     const response = await fetch(`/api/memes?${params.toString()}`);
@@ -432,11 +383,11 @@ async function fetchMemes({ reset = true } = {}) {
     }
 
     const payload = await response.json();
+    state.library.pageIndex = requestedPage;
     state.library.counts = payload.counts || state.library.counts;
     state.library.hasMore = !!payload.has_more;
-    state.library.nextOffset = Number(payload.next_offset || 0);
-    state.memes = reset ? (payload.memes || []) : [...state.memes, ...(payload.memes || [])];
-    renderMemes({ append: !reset });
+    state.memes = payload.memes || [];
+    renderMemes();
   } finally {
     state.library.loading = false;
     syncMemeGridObserver();
@@ -444,11 +395,7 @@ async function fetchMemes({ reset = true } = {}) {
 }
 
 async function loadInitialMemes() {
-  await fetchMemes({ reset: true });
-
-  while (state.library.hasMore && state.memes.length < (MEME_PAGE_SIZE * MEME_INITIAL_LOAD_PAGES)) {
-    await fetchMemes({ reset: false });
-  }
+  await fetchMemes({ page: 0 });
 }
 
 async function applyTagSearch(rawValue) {
@@ -582,17 +529,13 @@ async function fetchTopTagSuggestions() {
   }
 }
 
-function renderMemes({ append = false } = {}) {
+function renderMemes() {
   const visibleMemes = getVisibleMemes();
   renderSidebarCounts();
   renderSidebarViewState();
   emptyState.classList.toggle("hidden", visibleMemes.length !== 0);
-  if (!append) {
-    contentPanel.scrollTop = 0;
-    queueRenderLoadedMemes({ force: true });
-    return;
-  }
-  queueRenderLoadedMemes();
+  contentPanel.scrollTop = 0;
+  queueRenderLoadedMemes({ force: true });
 }
 
 function buildMemeCardElement(meme) {
@@ -642,9 +585,6 @@ function updateMemeCardElement(card, meme) {
   }
 
   card.dataset.memeId = meme.id;
-  if (typeof meme._pageIndex === "number" && meme._pageIndex >= 0) {
-    card.dataset.pageIndex = `${meme._pageIndex}`;
-  }
   applyFavoriteStateToButton(card._favoriteButton, meme.favorite);
   card._favoriteButton.disabled = !canView();
   card._favoriteButton.title = canView() ? "" : "You do not have permission to favorite memes";
@@ -677,7 +617,7 @@ function previewKindForMeme(meme) {
   return "file";
 }
 
-function renderLoadedMemes({ force = false } = {}) {
+function renderLoadedMemes() {
   const memes = getVisibleMemes();
   if (!memes.length) {
     memeGrid.replaceChildren();
@@ -686,50 +626,16 @@ function renderLoadedMemes({ force = false } = {}) {
     return;
   }
 
-  memes.forEach((meme, index) => {
-    meme._pageIndex = Math.floor(index / MEME_PAGE_SIZE);
-  });
-
   memeGridTopSpacer.classList.add("hidden");
   memeGridBottomSpacer.classList.add("hidden");
-
-  if (force) {
-    const fragment = document.createDocumentFragment();
-    memes.forEach((meme) => {
-      fragment.appendChild(buildMemeCardElement(meme));
-    });
-    memeGrid.replaceChildren(fragment);
-    memeGrid.querySelectorAll(".meme-card").forEach((card) => {
-      layoutCardTags(card._tagList, card._tags);
-    });
-    return;
-  }
-
-  const existingCards = Array.from(memeGrid.querySelectorAll(".meme-card"));
-  const existingIDs = new Set(existingCards.map((card) => card.dataset.memeId));
   const fragment = document.createDocumentFragment();
-  let appended = false;
 
   memes.forEach((meme) => {
-    if (existingIDs.has(meme.id)) {
-      const existingCard = getCardByMemeId(meme.id);
-      if (existingCard) {
-        updateMemeCardElement(existingCard, meme);
-        layoutCardTags(existingCard._tagList, existingCard._tags);
-      }
-      return;
-    }
-
     fragment.appendChild(buildMemeCardElement(meme));
-    appended = true;
   });
 
-  if (!appended) {
-    return;
-  }
-
-  memeGrid.appendChild(fragment);
-  Array.from(memeGrid.querySelectorAll(".meme-card")).slice(existingCards.length).forEach((card) => {
+  memeGrid.replaceChildren(fragment);
+  Array.from(memeGrid.querySelectorAll(".meme-card")).forEach((card) => {
     layoutCardTags(card._tagList, card._tags);
   });
 }
@@ -740,7 +646,7 @@ function queueRenderLoadedMemes(options = {}) {
       window.cancelAnimationFrame(memeGridRenderFrame);
       memeGridRenderFrame = null;
     }
-    renderLoadedMemes({ force: true });
+    renderLoadedMemes();
     return;
   }
 
@@ -2395,11 +2301,24 @@ window.addEventListener("resize", () => {
   syncMemeGridObserver();
 });
 
-contentPanel?.addEventListener("scroll", () => {
-  const currentScrollTop = contentPanel.scrollTop;
-  memeLoadMoreScrollingDown = currentScrollTop > (memeLoadMoreLastScrollTop + 2);
-  memeLoadMoreLastScrollTop = currentScrollTop;
-  maybeLoadMoreMemes();
+memePagePrev?.addEventListener("click", () => {
+  if (state.library.loading || state.library.pageIndex === 0) {
+    return;
+  }
+
+  fetchMemes({ page: state.library.pageIndex - 1 }).catch((error) => {
+    console.error(error);
+  });
+});
+
+memePageNext?.addEventListener("click", () => {
+  if (state.library.loading || !state.library.hasMore) {
+    return;
+  }
+
+  fetchMemes({ page: state.library.pageIndex + 1 }).catch((error) => {
+    console.error(error);
+  });
 });
 
 function authPanelContains(target) {

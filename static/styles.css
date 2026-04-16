@@ -704,6 +704,47 @@ body.sidebar-collapsed .sidebar-toggle-row .sidebar-toggle-icon {
   color: var(--muted);
 }
 
+.meme-pagination {
+  margin: 14px 0 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.meme-page-button {
+  width: 42px;
+  height: 42px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: rgba(18, 24, 31, 0.9);
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, opacity 120ms ease;
+}
+
+.meme-page-button:hover,
+.meme-page-button:focus-visible {
+  background: rgba(29, 38, 48, 0.96);
+  border-color: rgba(76, 211, 211, 0.35);
+}
+
+.meme-page-button:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.meme-page-label {
+  margin: 0;
+  min-width: 160px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 .meme-card {
   position: relative;
   border-radius: 0;
