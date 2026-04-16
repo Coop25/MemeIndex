@@ -149,20 +149,22 @@
         </header>
 
         <section class="content-panel">
+          <div class="library-toolbar">
+            <p id="meme-grid-status" class="meme-grid-status hidden" aria-live="polite"></p>
+            <div class="meme-pagination" aria-label="Meme pages">
+              <button id="meme-page-prev" class="meme-page-button" type="button" aria-label="Previous page" disabled>
+                <span aria-hidden="true"><</span>
+              </button>
+              <p id="meme-page-label" class="meme-page-label" aria-live="polite">Page 1</p>
+              <button id="meme-page-next" class="meme-page-button" type="button" aria-label="Next page" disabled>
+                <span aria-hidden="true">></span>
+              </button>
+            </div>
+          </div>
           <div id="meme-grid-top-spacer" class="meme-grid-spacer hidden" aria-hidden="true"></div>
           <div id="meme-grid" class="meme-grid"></div>
           <div id="meme-grid-bottom-spacer" class="meme-grid-spacer hidden" aria-hidden="true"></div>
           <div id="meme-grid-sentinel" class="meme-grid-sentinel hidden" aria-hidden="true"></div>
-          <div class="meme-pagination" aria-label="Meme pages">
-            <button id="meme-page-prev" class="meme-page-button" type="button" aria-label="Previous page" disabled>
-              <span aria-hidden="true"><</span>
-            </button>
-            <p id="meme-page-label" class="meme-page-label" aria-live="polite">Page 1</p>
-            <button id="meme-page-next" class="meme-page-button" type="button" aria-label="Next page" disabled>
-              <span aria-hidden="true">></span>
-            </button>
-          </div>
-          <p id="meme-grid-status" class="meme-grid-status hidden" aria-live="polite"></p>
           <p id="empty-state" class="empty-state hidden">No memes match this view yet.</p>
         </section>
       </main>

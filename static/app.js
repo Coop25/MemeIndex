@@ -137,6 +137,8 @@ let randomReelTouchBlocked = false;
 let randomReelStepLock = false;
 let memeGridObserver = null;
 let memeGridRenderFrame = null;
+let memePageFetchSequence = 0;
+let memePendingPageIndex = 0;
 const drawerMediaQuery = window.matchMedia("(max-width: 1100px)");
 const MEME_PAGE_SIZE = 100;
 
@@ -332,7 +334,7 @@ function setMemeGridStatus(message = "", hidden = !message) {
 }
 
 function syncMemePagination() {
-  const pageNumber = state.library.pageIndex + 1;
+  const pageNumber = (state.library.loading ? memePendingPageIndex : state.library.pageIndex) + 1;
   memePageLabel.textContent = state.library.loading
     ? `Loading page ${pageNumber}...`
     : `Page ${pageNumber}`;
@@ -366,8 +368,10 @@ async function fetchMemes({ page = 0 } = {}) {
     return;
   }
 
-  state.library.loading = true;
   const requestedPage = Math.max(0, page);
+  const fetchSequence = ++memePageFetchSequence;
+  state.library.loading = true;
+  memePendingPageIndex = requestedPage;
   syncMemeGridObserver();
 
   try {
@@ -383,13 +387,22 @@ async function fetchMemes({ page = 0 } = {}) {
     }
 
     const payload = await response.json();
+    if (fetchSequence !== memePageFetchSequence) {
+      return;
+    }
+
     state.library.pageIndex = requestedPage;
     state.library.counts = payload.counts || state.library.counts;
     state.library.hasMore = !!payload.has_more;
     state.memes = payload.memes || [];
     renderMemes();
   } finally {
+    if (fetchSequence !== memePageFetchSequence) {
+      return;
+    }
+
     state.library.loading = false;
+    memePendingPageIndex = state.library.pageIndex;
     syncMemeGridObserver();
   }
 }
