@@ -146,6 +146,8 @@ let memePageFetchSequence = 0;
 let memePendingPageIndex = 0;
 const drawerMediaQuery = window.matchMedia("(max-width: 1100px)");
 const MEME_PAGE_SIZE = 100;
+const MEDIA_VOLUME_STORAGE_KEY = "memeindex.mediaVolume";
+const DEFAULT_MEDIA_VOLUME = 0.10;
 
 function getAuthInitials() {
   const label = state.auth.user?.display_name || state.auth.user?.username || "MemeIndex";
@@ -829,9 +831,48 @@ function pickIcon(contentType) {
   return "FILE";
 }
 
+function clampMediaVolume(value) {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_MEDIA_VOLUME;
+  }
+  return Math.min(1, Math.max(0, value));
+}
+
+function loadPreferredMediaVolume() {
+  try {
+    const rawValue = window.localStorage.getItem(MEDIA_VOLUME_STORAGE_KEY);
+    if (rawValue == null || rawValue === "") {
+      return DEFAULT_MEDIA_VOLUME;
+    }
+
+    return clampMediaVolume(Number(rawValue));
+  } catch (error) {
+    return DEFAULT_MEDIA_VOLUME;
+  }
+}
+
+function persistPreferredMediaVolume(volume) {
+  const normalizedVolume = clampMediaVolume(volume);
+  try {
+    window.localStorage.setItem(MEDIA_VOLUME_STORAGE_KEY, `${normalizedVolume}`);
+  } catch (error) {
+    console.warn("Could not persist preferred media volume", error);
+  }
+}
+
+function syncStoredMediaVolumeFromElement(media) {
+  if (!(media instanceof HTMLMediaElement)) {
+    return;
+  }
+
+  const volume = media.muted ? 0 : media.volume;
+  persistPreferredMediaVolume(volume);
+}
+
 function applyDefaultMediaVolume(media) {
-  media.volume = 0.10;
-  media.muted = false;
+  const preferredVolume = loadPreferredMediaVolume();
+  media.volume = preferredVolume;
+  media.muted = preferredVolume === 0;
   media.defaultMuted = false;
 }
 
@@ -849,6 +890,9 @@ function buildModalPreview(meme) {
     video.controls = true;
     video.preload = "metadata";
     applyDefaultMediaVolume(video);
+    video.addEventListener("volumechange", () => {
+      syncStoredMediaVolumeFromElement(video);
+    });
     return video;
   }
 
@@ -858,6 +902,9 @@ function buildModalPreview(meme) {
     audio.controls = true;
     audio.preload = "metadata";
     applyDefaultMediaVolume(audio);
+    audio.addEventListener("volumechange", () => {
+      syncStoredMediaVolumeFromElement(audio);
+    });
     return audio;
   }
 
@@ -887,6 +934,9 @@ function buildRandomReelPreview(meme) {
     video.addEventListener("loadedmetadata", () => {
       applyDefaultMediaVolume(video);
     });
+    video.addEventListener("volumechange", () => {
+      syncStoredMediaVolumeFromElement(video);
+    });
     return video;
   }
 
@@ -899,6 +949,9 @@ function buildRandomReelPreview(meme) {
     applyDefaultMediaVolume(audio);
     audio.addEventListener("loadedmetadata", () => {
       applyDefaultMediaVolume(audio);
+    });
+    audio.addEventListener("volumechange", () => {
+      syncStoredMediaVolumeFromElement(audio);
     });
     return audio;
   }
@@ -1061,7 +1114,7 @@ function syncRandomReelMediaControls() {
     randomReelPlayIcon.innerHTML = "&#9654;";
     randomReelVolumeToggle.setAttribute("aria-label", "Mute media");
     randomReelVolumeIcon.innerHTML = "&#128266;";
-    randomReelVolume.value = "10";
+    randomReelVolume.value = `${Math.round(loadPreferredMediaVolume() * 100)}`;
     return;
   }
 
@@ -2090,6 +2143,7 @@ randomReelVolumeToggle?.addEventListener("click", () => {
   if (!media) return;
 
   media.muted = !media.muted;
+  syncStoredMediaVolumeFromElement(media);
   syncRandomReelMediaControls();
 });
 
@@ -2101,6 +2155,7 @@ randomReelVolume?.addEventListener("input", () => {
   const volume = Number(randomReelVolume.value) / 100;
   media.volume = volume;
   media.muted = volume === 0;
+  syncStoredMediaVolumeFromElement(media);
   syncRandomReelMediaControls();
 });
 
