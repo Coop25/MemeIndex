@@ -355,12 +355,7 @@ function syncMemeGridObserver() {
     return;
   }
 
-  if (state.memes.length > 0) {
-    const pageNumber = state.library.pageIndex + 1;
-    setMemeGridStatus(`Page ${pageNumber} - Showing ${state.memes.length} meme${state.memes.length === 1 ? "" : "s"}.`, false);
-  } else {
-    setMemeGridStatus("", true);
-  }
+  setMemeGridStatus("", true);
 }
 
 async function fetchMemes({ page = 0 } = {}) {

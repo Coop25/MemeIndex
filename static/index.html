@@ -149,9 +149,14 @@
         </header>
 
         <section class="content-panel">
-          <div class="library-toolbar">
-            <p id="meme-grid-status" class="meme-grid-status hidden" aria-live="polite"></p>
-            <div class="meme-pagination" aria-label="Meme pages">
+          <p id="meme-grid-status" class="meme-grid-status hidden" aria-live="polite"></p>
+          <div id="meme-grid-top-spacer" class="meme-grid-spacer hidden" aria-hidden="true"></div>
+          <div id="meme-grid" class="meme-grid"></div>
+          <div id="meme-grid-bottom-spacer" class="meme-grid-spacer hidden" aria-hidden="true"></div>
+          <div id="meme-grid-sentinel" class="meme-grid-sentinel hidden" aria-hidden="true"></div>
+          <p id="empty-state" class="empty-state hidden">No memes match this view yet.</p>
+          <div class="library-toolbar" aria-label="Meme pages">
+            <div class="meme-pagination">
               <button id="meme-page-prev" class="meme-page-button" type="button" aria-label="Previous page" disabled>
                 <span aria-hidden="true"><</span>
               </button>
@@ -161,11 +166,6 @@
               </button>
             </div>
           </div>
-          <div id="meme-grid-top-spacer" class="meme-grid-spacer hidden" aria-hidden="true"></div>
-          <div id="meme-grid" class="meme-grid"></div>
-          <div id="meme-grid-bottom-spacer" class="meme-grid-spacer hidden" aria-hidden="true"></div>
-          <div id="meme-grid-sentinel" class="meme-grid-sentinel hidden" aria-hidden="true"></div>
-          <p id="empty-state" class="empty-state hidden">No memes match this view yet.</p>
         </section>
       </main>
     </div>
