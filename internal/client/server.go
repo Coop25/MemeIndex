@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -112,12 +113,33 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if strings.TrimSpace(r.URL.Query().Get("refresh")) != "" {
+	refreshToken := strings.TrimSpace(r.URL.Query().Get("refresh"))
+	if refreshToken != "" {
 		w.Header().Set("Cache-Control", "no-store, max-age=0")
 		w.Header().Set("Pragma", "no-cache")
 	}
 
-	http.ServeFile(w, r, filepath.Join("static", "index.html"))
+	indexPath := filepath.Join("static", "index.html")
+	content, err := os.ReadFile(indexPath)
+	if err != nil {
+		http.Error(w, "failed to load index", http.StatusInternalServerError)
+		return
+	}
+
+	replaced := strings.ReplaceAll(string(content), "/static/styles.css", buildAssetURL("/static/styles.css", refreshToken))
+	replaced = strings.ReplaceAll(replaced, "/static/app.js", buildAssetURL("/static/app.js", refreshToken))
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(replaced))
+}
+
+func buildAssetURL(path string, refreshToken string) string {
+	query := url.Values{}
+	query.Set("v", BuildVersion())
+	if refreshToken != "" {
+		query.Set("r", refreshToken)
+	}
+	return path + "?" + query.Encode()
 }
 
 func (s *Server) handleOGImage(w http.ResponseWriter, r *http.Request) {

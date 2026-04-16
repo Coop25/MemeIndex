@@ -10,6 +10,8 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-X memeindex/intern
 
 FROM debian:bookworm-slim
 WORKDIR /app
+ARG APP_VERSION=dev
+ENV MEMEINDEX_VERSION=${APP_VERSION}
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates ffmpeg \

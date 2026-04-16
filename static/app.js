@@ -144,11 +144,8 @@ let memeGridObserver = null;
 let memeGridRenderFrame = null;
 let memePageFetchSequence = 0;
 let memePendingPageIndex = 0;
-let authVersionTapCount = 0;
-let authVersionTapTimeout = null;
 const drawerMediaQuery = window.matchMedia("(max-width: 1100px)");
 const MEME_PAGE_SIZE = 100;
-const AUTH_VERSION_REFRESH_TAP_TARGET = 6;
 
 function getAuthInitials() {
   const label = state.auth.user?.display_name || state.auth.user?.username || "MemeIndex";
@@ -158,7 +155,6 @@ function getAuthInitials() {
 }
 
 function closeAuthMenu() {
-  resetAuthVersionTapSequence();
   authMenu.classList.add("hidden");
   authTrigger.setAttribute("aria-expanded", "false");
 }
@@ -258,39 +254,11 @@ async function expectAuthorized(response, failureMessage) {
   return true;
 }
 
-function resetAuthVersionTapSequence() {
-  authVersionTapCount = 0;
-  authVersion?.classList.remove("is-armed");
-  if (authVersionTapTimeout) {
-    window.clearTimeout(authVersionTapTimeout);
-    authVersionTapTimeout = null;
-  }
-}
-
 function forceFreshHTMLReload() {
   const url = new URL(window.location.href);
   url.searchParams.set("refresh", `${Date.now()}`);
   closeAuthMenu();
   window.location.replace(url.toString());
-}
-
-function handleAuthVersionTap() {
-  authVersionTapCount += 1;
-  authVersion?.classList.toggle("is-armed", authVersionTapCount > 0);
-
-  if (authVersionTapTimeout) {
-    window.clearTimeout(authVersionTapTimeout);
-  }
-
-  if (authVersionTapCount >= AUTH_VERSION_REFRESH_TAP_TARGET) {
-    resetAuthVersionTapSequence();
-    forceFreshHTMLReload();
-    return;
-  }
-
-  authVersionTapTimeout = window.setTimeout(() => {
-    resetAuthVersionTapSequence();
-  }, 1800);
 }
 
 function setSidebarCollapsed(collapsed) {
@@ -2038,7 +2006,7 @@ authTrigger?.addEventListener("click", (event) => {
 
 authVersion?.addEventListener("click", (event) => {
   event.stopPropagation();
-  handleAuthVersionTap();
+  forceFreshHTMLReload();
 });
 
 document.addEventListener("click", (event) => {
