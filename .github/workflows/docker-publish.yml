@@ -6,6 +6,9 @@ on:
       - main
     tags:
       - "v*"
+  release:
+    types:
+      - published
   workflow_dispatch:
 
 permissions:
@@ -38,8 +41,25 @@ jobs:
           tags: |
             type=ref,event=branch
             type=ref,event=tag
+            type=raw,value=${{ github.event.release.tag_name }},enable=${{ github.event_name == 'release' }}
             type=sha
             type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Resolve app version
+        id: app_version
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "release" && -n "${{ github.event.release.tag_name }}" ]]; then
+            version="${{ github.event.release.tag_name }}"
+          elif [[ "${{ github.ref_type }}" == "tag" && -n "${{ github.ref_name }}" ]]; then
+            version="${{ github.ref_name }}"
+          elif [[ -n "${{ steps.meta.outputs.version }}" ]]; then
+            version="${{ steps.meta.outputs.version }}"
+          else
+            version="dev-${GITHUB_SHA::7}"
+          fi
+
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push image
         uses: docker/build-push-action@v6
@@ -47,5 +67,7 @@ jobs:
           context: .
           file: ./Dockerfile
           push: true
+          build-args: |
+            APP_VERSION=${{ steps.app_version.outputs.version }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

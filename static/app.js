@@ -18,6 +18,7 @@ const state = {
     enabled: false,
     authenticated: true,
     user: null,
+    version: "dev",
     permissions: {
       canView: true,
       canAdd: true,
@@ -44,6 +45,8 @@ const authAvatar = document.querySelector("#auth-avatar");
 const authAvatarFallback = document.querySelector("#auth-avatar-fallback");
 const authName = document.querySelector("#auth-name");
 const authRole = document.querySelector("#auth-role");
+const authVersion = document.querySelector("#auth-version");
+const authVersionValue = document.querySelector("#auth-version-value");
 const authLogout = document.querySelector("#auth-logout");
 const uploadModalClose = document.querySelector("#upload-modal-close");
 const uploadPreview = document.querySelector("#upload-preview");
@@ -141,8 +144,11 @@ let memeGridObserver = null;
 let memeGridRenderFrame = null;
 let memePageFetchSequence = 0;
 let memePendingPageIndex = 0;
+let authVersionTapCount = 0;
+let authVersionTapTimeout = null;
 const drawerMediaQuery = window.matchMedia("(max-width: 1100px)");
 const MEME_PAGE_SIZE = 100;
+const AUTH_VERSION_REFRESH_TAP_TARGET = 6;
 
 function getAuthInitials() {
   const label = state.auth.user?.display_name || state.auth.user?.username || "MemeIndex";
@@ -152,6 +158,7 @@ function getAuthInitials() {
 }
 
 function closeAuthMenu() {
+  resetAuthVersionTapSequence();
   authMenu.classList.add("hidden");
   authTrigger.setAttribute("aria-expanded", "false");
 }
@@ -185,8 +192,9 @@ function renderAuthState() {
   const displayName = state.auth.user?.display_name || state.auth.user?.username || "Local access";
   authName.textContent = displayName;
   authRole.textContent = permissionLabel();
+  authVersionValue.textContent = state.auth.version || "dev";
   authAvatarFallback.textContent = getAuthInitials();
-  authTrigger.title = `${displayName} (${permissionLabel()})`;
+  authTrigger.title = `${displayName} (${permissionLabel()}) - ${state.auth.version || "dev"}`;
   authLogout.href = state.auth.logoutURL || "/auth/logout";
   authLogout.classList.toggle("hidden", !state.auth.enabled || !state.auth.authenticated);
   openUploadModalButton.disabled = !canAdd();
@@ -219,6 +227,7 @@ async function fetchAuthSession() {
     enabled: !!payload.enabled,
     authenticated: payload.authenticated !== false,
     user: payload.user || null,
+    version: payload.version || "dev",
     permissions: payload.permissions || {
       canView: false,
       canAdd: false,
@@ -247,6 +256,41 @@ async function expectAuthorized(response, failureMessage) {
   }
 
   return true;
+}
+
+function resetAuthVersionTapSequence() {
+  authVersionTapCount = 0;
+  authVersion?.classList.remove("is-armed");
+  if (authVersionTapTimeout) {
+    window.clearTimeout(authVersionTapTimeout);
+    authVersionTapTimeout = null;
+  }
+}
+
+function forceFreshHTMLReload() {
+  const url = new URL(window.location.href);
+  url.searchParams.set("refresh", `${Date.now()}`);
+  closeAuthMenu();
+  window.location.replace(url.toString());
+}
+
+function handleAuthVersionTap() {
+  authVersionTapCount += 1;
+  authVersion?.classList.toggle("is-armed", authVersionTapCount > 0);
+
+  if (authVersionTapTimeout) {
+    window.clearTimeout(authVersionTapTimeout);
+  }
+
+  if (authVersionTapCount >= AUTH_VERSION_REFRESH_TAP_TARGET) {
+    resetAuthVersionTapSequence();
+    forceFreshHTMLReload();
+    return;
+  }
+
+  authVersionTapTimeout = window.setTimeout(() => {
+    resetAuthVersionTapSequence();
+  }, 1800);
 }
 
 function setSidebarCollapsed(collapsed) {
@@ -1990,6 +2034,11 @@ drawerBackdrop?.addEventListener("click", () => {
 authTrigger?.addEventListener("click", (event) => {
   event.stopPropagation();
   toggleAuthMenu();
+});
+
+authVersion?.addEventListener("click", (event) => {
+  event.stopPropagation();
+  handleAuthVersionTap();
 });
 
 document.addEventListener("click", (event) => {

@@ -17,6 +17,8 @@ func main() {
 		log.Fatalf("config load failed: %v", err)
 	}
 
+	log.Printf("MemeIndex version: %s", client.BuildVersion())
+
 	var (
 		store accessor.Store
 	)

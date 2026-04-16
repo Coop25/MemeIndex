@@ -112,6 +112,11 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if strings.TrimSpace(r.URL.Query().Get("refresh")) != "" {
+		w.Header().Set("Cache-Control", "no-store, max-age=0")
+		w.Header().Set("Pragma", "no-cache")
+	}
+
 	http.ServeFile(w, r, filepath.Join("static", "index.html"))
 }
 
@@ -513,6 +518,7 @@ func (s *Server) handleAuthSession(w http.ResponseWriter, r *http.Request) {
 	if !s.auth.enabled() {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"enabled": false,
+			"version": BuildVersion(),
 			"permissions": authPermissions{
 				CanView:   true,
 				CanAdd:    true,
@@ -528,6 +534,7 @@ func (s *Server) handleAuthSession(w http.ResponseWriter, r *http.Request) {
 			"enabled":       true,
 			"authenticated": false,
 			"login_url":     "/auth/login",
+			"version":       BuildVersion(),
 		})
 		return
 	}
@@ -543,6 +550,7 @@ func (s *Server) handleAuthSession(w http.ResponseWriter, r *http.Request) {
 		},
 		"permissions": session.Permissions,
 		"logout_url":  "/auth/logout",
+		"version":     BuildVersion(),
 	})
 }
 
