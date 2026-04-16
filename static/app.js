@@ -60,6 +60,7 @@ const memeGridSentinel = document.querySelector("#meme-grid-sentinel");
 const memePagePrev = document.querySelector("#meme-page-prev");
 const memePageNext = document.querySelector("#meme-page-next");
 const memePageLabel = document.querySelector("#meme-page-label");
+const memeGridLoader = document.querySelector("#meme-grid-loader");
 const memeGridStatus = document.querySelector("#meme-grid-status");
 const emptyState = document.querySelector("#empty-state");
 const tagSearchInput = document.querySelector("#tag-search-input");
@@ -91,6 +92,7 @@ const modalFavorite = document.querySelector("#modal-favorite");
 const randomReelModal = document.querySelector("#random-reel-modal");
 const randomReelStage = document.querySelector("#random-reel-stage");
 const randomReelMedia = document.querySelector("#random-reel-media");
+const randomReelLoader = document.querySelector("#random-reel-loader");
 const randomReelEdgeBanner = document.querySelector("#random-reel-edge-banner");
 const randomReelTitle = document.querySelector("#random-reel-title");
 const randomReelMeta = document.querySelector("#random-reel-meta");
@@ -333,6 +335,15 @@ function setMemeGridStatus(message = "", hidden = !message) {
   memeGridStatus.classList.toggle("hidden", hidden);
 }
 
+function setMemeGridLoading(loading) {
+  if (!memeGridLoader) {
+    return;
+  }
+
+  memeGridLoader.classList.toggle("hidden", !loading);
+  memeGridLoader.setAttribute("aria-hidden", String(!loading));
+}
+
 function syncMemePagination() {
   const pageNumber = (state.library.loading ? memePendingPageIndex : state.library.pageIndex) + 1;
   memePageLabel.textContent = state.library.loading
@@ -349,6 +360,7 @@ function syncMemeGridObserver() {
 
   memeGridSentinel.classList.add("hidden");
   syncMemePagination();
+  setMemeGridLoading(state.library.loading);
 
   if (state.library.loading) {
     setMemeGridStatus("Loading memes...", false);
@@ -963,6 +975,20 @@ async function fetchRandomReelStep(direction = "next") {
   return payload;
 }
 
+function setRandomReelLoading(loading, label = "Loading meme...") {
+  randomReelStage.classList.toggle("is-loading", loading);
+  if (!randomReelLoader) {
+    return;
+  }
+
+  const labelNode = randomReelLoader.querySelector(".loading-label");
+  if (labelNode) {
+    labelNode.textContent = label;
+  }
+  randomReelLoader.classList.toggle("hidden", !loading);
+  randomReelLoader.setAttribute("aria-hidden", String(!loading));
+}
+
 function renderRandomReelMeme(meme) {
   if (!meme) return;
 
@@ -1076,11 +1102,13 @@ function beginRandomReelTransition(direction) {
   resetRandomReelDrag();
   randomReelStage.classList.remove("is-stepping-next", "is-stepping-prev");
   void randomReelStage.offsetWidth;
-  randomReelStage.classList.add(direction > 0 ? "is-stepping-next" : "is-stepping-prev", "is-loading");
+  randomReelStage.classList.add(direction > 0 ? "is-stepping-next" : "is-stepping-prev");
+  setRandomReelLoading(true, "Loading meme...");
 }
 
 function endRandomReelTransition() {
-  randomReelStage.classList.remove("is-stepping-next", "is-stepping-prev", "is-loading");
+  randomReelStage.classList.remove("is-stepping-next", "is-stepping-prev");
+  setRandomReelLoading(false);
   resetRandomReelDrag();
 }
 
@@ -1131,21 +1159,31 @@ async function stepRandomReel(direction) {
 }
 
 async function openRandomReel() {
-  await resetRandomReelSession();
-  const payload = await fetchRandomReelStep("next");
-  if (!payload?.meme) {
-    window.alert("No memes available yet.");
-    return;
-  }
-
-  randomReelCanGoPrev = !!payload.can_go_prev;
-  renderRandomReelMeme(payload.meme);
-
   if (!randomReelModal.open) {
     randomReelModal.showModal();
   }
   setRandomReelScrollLock(true);
-  showRandomReelUI();
+  showRandomReelUI(false);
+  setRandomReelLoading(true, "Loading reel...");
+
+  try {
+    await resetRandomReelSession();
+    const payload = await fetchRandomReelStep("next");
+    if (!payload?.meme) {
+      closeRandomReel();
+      window.alert("No memes available yet.");
+      return;
+    }
+
+    randomReelCanGoPrev = !!payload.can_go_prev;
+    renderRandomReelMeme(payload.meme);
+    showRandomReelUI();
+  } catch (error) {
+    closeRandomReel();
+    throw error;
+  } finally {
+    setRandomReelLoading(false);
+  }
 }
 
 function closeRandomReel() {

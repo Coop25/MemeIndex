@@ -725,6 +725,58 @@ body.sidebar-collapsed .sidebar-toggle-row .sidebar-toggle-icon {
   backdrop-filter: blur(10px);
 }
 
+.loading-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: #eef9fb;
+}
+
+.loading-spinner {
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  border: 2px solid rgba(255, 255, 255, 0.16);
+  border-top-color: var(--accent);
+  border-right-color: rgba(58, 143, 240, 0.92);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.03),
+    0 0 18px rgba(76, 211, 211, 0.18);
+  animation: throbber-spin 760ms linear infinite;
+}
+
+.loading-label {
+  font-size: 0.84rem;
+  letter-spacing: 0.02em;
+  color: rgba(238, 249, 251, 0.88);
+}
+
+.loading-indicator-grid {
+  position: sticky;
+  top: 12px;
+  z-index: 4;
+  width: fit-content;
+  max-width: min(100%, 420px);
+  margin: 0 0 12px auto;
+  padding: 10px 14px;
+  background: rgba(10, 15, 20, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  backdrop-filter: blur(14px);
+  box-shadow:
+    0 14px 30px rgba(0, 0, 0, 0.24),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+}
+
+@keyframes throbber-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .meme-pagination {
   display: flex;
   align-items: center;
@@ -1125,6 +1177,25 @@ body.sidebar-collapsed .sidebar-toggle-row .sidebar-toggle-icon {
   display: grid;
   place-items: center;
   transition: transform 180ms ease, opacity 180ms ease, filter 180ms ease;
+}
+
+.loading-indicator-reel {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 4;
+  min-width: 170px;
+  justify-content: center;
+  padding: 14px 18px;
+  background: rgba(7, 11, 16, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  box-shadow:
+    0 20px 44px rgba(0, 0, 0, 0.34),
+    0 0 28px rgba(76, 211, 211, 0.12);
+  backdrop-filter: blur(14px);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
 }
 
 .random-reel-stage.is-dragging::before {
@@ -2169,6 +2240,15 @@ body.random-reel-open {
     overflow: auto;
     height: auto;
     min-height: 100%;
+  }
+
+  body.drawer-mode {
+    overflow: auto;
+  }
+
+  body.drawer-mode.drawer-open,
+  body.random-reel-open {
+    overflow: hidden;
   }
 
   .app-shell {

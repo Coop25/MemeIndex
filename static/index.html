@@ -149,6 +149,10 @@
         </header>
 
         <section class="content-panel">
+          <div id="meme-grid-loader" class="loading-indicator loading-indicator-grid hidden" aria-live="polite" aria-hidden="true">
+            <span class="loading-spinner" aria-hidden="true"></span>
+            <span class="loading-label">Loading memes...</span>
+          </div>
           <p id="meme-grid-status" class="meme-grid-status hidden" aria-live="polite"></p>
           <div id="meme-grid-top-spacer" class="meme-grid-spacer hidden" aria-hidden="true"></div>
           <div id="meme-grid" class="meme-grid"></div>
@@ -304,6 +308,10 @@
         <button id="random-reel-close" class="random-reel-close" type="button" aria-label="Close random reel">X</button>
         <div id="random-reel-stage" class="random-reel-stage">
           <div id="random-reel-media" class="random-reel-media"></div>
+          <div id="random-reel-loader" class="loading-indicator loading-indicator-reel hidden" aria-live="polite" aria-hidden="true">
+            <span class="loading-spinner" aria-hidden="true"></span>
+            <span class="loading-label">Loading meme...</span>
+          </div>
           <div id="random-reel-edge-banner" class="random-reel-edge-banner" aria-hidden="true">
             <span class="random-reel-edge-title">You Reached The Top</span>
             <span class="random-reel-edge-copy">Scroll down for another random meme.</span>
