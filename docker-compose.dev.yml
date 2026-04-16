@@ -1,0 +1,8 @@
+services:
+  app:
+    build:
+      context: .
+      args:
+        APP_VERSION: local-dev
+    image: memeindex:dev
+    pull_policy: never

@@ -255,7 +255,27 @@
     <dialog id="meme-modal" class="meme-modal">
       <div class="modal-shell">
         <div class="modal-preview-wrap">
+          <button id="modal-panel-toggle" class="modal-panel-toggle" type="button" aria-label="Open details" aria-expanded="false">
+            Details
+          </button>
+          <button id="modal-close" class="modal-close-button" type="button" aria-label="Close details">X</button>
           <div id="modal-preview" class="modal-preview"></div>
+          <div id="modal-media-controls" class="modal-media-controls hidden">
+            <div id="modal-progress-wrap" class="modal-progress-wrap hidden">
+              <span id="modal-current-time" class="modal-time-label">0:00</span>
+              <input id="modal-progress" class="modal-progress-slider" type="range" min="0" max="1000" value="0" step="1" aria-label="Playback progress" />
+              <span id="modal-duration" class="modal-time-label">0:00</span>
+            </div>
+            <button id="modal-play" class="random-reel-nav" type="button" aria-label="Pause media" data-tooltip="Pause">
+              <span id="modal-play-icon" class="random-reel-nav-icon" aria-hidden="true">&#10074;&#10074;</span>
+            </button>
+            <label id="modal-volume-wrap" class="random-reel-volume" aria-label="Volume">
+              <button id="modal-volume-toggle" class="random-reel-volume-button" type="button" aria-label="Mute media">
+                <span id="modal-volume-icon" class="random-reel-volume-icon" aria-hidden="true">&#128266;</span>
+              </button>
+              <input id="modal-volume" class="random-reel-volume-slider" type="range" min="0" max="100" value="10" aria-label="Volume" />
+            </label>
+          </div>
         </div>
         <div class="meme-body modal-body">
           <div class="modal-heading">
@@ -263,7 +283,6 @@
               <p class="section-kicker">Details</p>
               <h3 id="modal-title" class="modal-title"></h3>
             </div>
-            <button id="modal-close" class="modal-close-button" type="button" aria-label="Close details">X</button>
           </div>
           <p id="modal-meta" class="meta-line"></p>
           <label class="field compact-field">

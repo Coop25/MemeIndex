@@ -20,6 +20,13 @@ tasks:
       - docker compose pull
       - docker compose up -d
 
+  docker-dev-up:
+    desc: Build and start MemeIndex locally in Docker Compose using the local source tree
+    env:
+      MEMEINDEX_HOST_PORT: "8081"
+    cmds:
+      - docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+
   docker-tunnel-up:
     desc: Pull and start MemeIndex, PostgreSQL, and the optional Cloudflare Tunnel service
     cmds:
@@ -30,3 +37,10 @@ tasks:
     desc: Stop the Docker Compose stack
     cmds:
       - docker compose down
+
+  docker-dev-down:
+    desc: Stop the local Docker Compose dev stack
+    env:
+      MEMEINDEX_HOST_PORT: "8081"
+    cmds:
+      - docker compose -f docker-compose.yml -f docker-compose.dev.yml down

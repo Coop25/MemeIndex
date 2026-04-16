@@ -178,6 +178,33 @@ Notes:
 - on first Postgres startup, if the database is empty and legacy `data/index.json` or `data/favorites.json` files exist, MemeIndex imports them automatically
 - stale reel sessions are cleaned by the app every night at `00:00 UTC`
 - Postgres is not exposed by the compose file, so the app remains the only service talking to the database
+
+## Local Container Development
+
+If you want to test changes in a local container instead of deploying first, this repo now includes a [`docker-compose.dev.yml`](/f:/GitHub/MemeIndex/docker-compose.dev.yml) override that builds the app from your local source tree.
+
+Run it with:
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+```
+
+Or with Task:
+
+```powershell
+task docker-dev-up
+```
+
+That keeps Postgres in Docker Compose, but swaps the app service from the published GHCR image to a local image build tagged `memeindex:dev`.
+
+Notes:
+
+- the local dev container defaults to `http://localhost:8081` so it can coexist with anything already using `8080`
+- the shared compose file now uses `MEMEINDEX_HOST_PORT` for host port binding, defaulting to `8080`
+- if you run compose directly, you can choose a different host port with `MEMEINDEX_HOST_PORT`, for example `MEMEINDEX_HOST_PORT=8090`
+- this is a rebuild loop, not hot reload, so after code changes you should rerun `task docker-dev-up`
+- for the fastest inner loop while editing Go or frontend files, `task run` is still quicker than rebuilding the container each time
+- to stop the local dev stack, run `task docker-dev-down`
 - the app env vars are declared directly in `docker-compose.yml`, and Docker Compose fills them from your shell or local `.env`
 - `MEMEINDEX_IMAGE` controls which published app image Compose pulls, and defaults to `ghcr.io/your-github-user-or-org/memeindex:latest`
 - if `ffmpeg` is available in the container or host environment, MemeIndex generates JPEG thumbnails for videos and backfills thumbnails for older imported videos in the background on startup

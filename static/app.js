@@ -84,6 +84,18 @@ const modalPreview = document.querySelector("#modal-preview");
 const modalTitle = document.querySelector("#modal-title");
 const modalMeta = document.querySelector("#modal-meta");
 const modalCloseButton = document.querySelector("#modal-close");
+const modalPanelToggle = document.querySelector("#modal-panel-toggle");
+const modalMediaControls = document.querySelector("#modal-media-controls");
+const modalProgressWrap = document.querySelector("#modal-progress-wrap");
+const modalCurrentTime = document.querySelector("#modal-current-time");
+const modalProgress = document.querySelector("#modal-progress");
+const modalDuration = document.querySelector("#modal-duration");
+const modalPlay = document.querySelector("#modal-play");
+const modalPlayIcon = document.querySelector("#modal-play-icon");
+const modalVolumeWrap = document.querySelector("#modal-volume-wrap");
+const modalVolumeToggle = document.querySelector("#modal-volume-toggle");
+const modalVolumeIcon = document.querySelector("#modal-volume-icon");
+const modalVolume = document.querySelector("#modal-volume");
 const modalTagChips = document.querySelector("#modal-tag-chips");
 const modalTagsInput = document.querySelector("#modal-tags-input");
 const modalTagSuggestions = document.querySelector("#modal-tag-suggestions");
@@ -145,9 +157,11 @@ let memeGridRenderFrame = null;
 let memePageFetchSequence = 0;
 let memePendingPageIndex = 0;
 const drawerMediaQuery = window.matchMedia("(max-width: 1100px)");
+const modalDetailsDrawerMediaQuery = window.matchMedia("(max-width: 1100px)");
 const MEME_PAGE_SIZE = 100;
 const MEDIA_VOLUME_STORAGE_KEY = "memeindex.mediaVolume";
 const DEFAULT_MEDIA_VOLUME = 0.10;
+const MODAL_PROGRESS_SCALE_MAX = 1000;
 
 function getAuthInitials() {
   const label = state.auth.user?.display_name || state.auth.user?.username || "MemeIndex";
@@ -887,9 +901,15 @@ function buildModalPreview(meme) {
   if (meme.contentType.startsWith("video/")) {
     const video = document.createElement("video");
     video.src = meme.filePath;
-    video.controls = true;
+    video.autoplay = true;
+    video.loop = true;
+    video.playsInline = true;
+    video.controls = false;
     video.preload = "metadata";
     applyDefaultMediaVolume(video);
+    video.addEventListener("loadedmetadata", () => {
+      applyDefaultMediaVolume(video);
+    });
     video.addEventListener("volumechange", () => {
       syncStoredMediaVolumeFromElement(video);
     });
@@ -899,9 +919,14 @@ function buildModalPreview(meme) {
   if (meme.contentType.startsWith("audio/")) {
     const audio = document.createElement("audio");
     audio.src = meme.filePath;
-    audio.controls = true;
+    audio.controls = false;
+    audio.autoplay = true;
+    audio.loop = true;
     audio.preload = "metadata";
     applyDefaultMediaVolume(audio);
+    audio.addEventListener("loadedmetadata", () => {
+      applyDefaultMediaVolume(audio);
+    });
     audio.addEventListener("volumechange", () => {
       syncStoredMediaVolumeFromElement(audio);
     });
@@ -1411,7 +1436,17 @@ function openModal(id) {
 
   activeMemeId = id;
   modalPreview.innerHTML = "";
-  modalPreview.appendChild(buildModalPreview(meme));
+  const preview = buildModalPreview(meme);
+  modalPreview.appendChild(preview);
+  if (preview instanceof HTMLMediaElement) {
+    preview.addEventListener("play", syncModalMediaControls);
+    preview.addEventListener("pause", syncModalMediaControls);
+    preview.addEventListener("timeupdate", syncModalMediaControls);
+    preview.addEventListener("durationchange", syncModalMediaControls);
+    preview.addEventListener("ended", syncModalMediaControls);
+    preview.addEventListener("volumechange", syncModalMediaControls);
+    preview.addEventListener("loadedmetadata", syncModalMediaControls);
+  }
   modalTitle.textContent = meme.originalName;
   modalMeta.textContent = `${formatSize(meme.sizeBytes)} * ${meme.contentType}`;
   setModalTags(meme.tags || []);
@@ -1434,11 +1469,15 @@ function openModal(id) {
     notes: meme.notes || "",
     tags: getModalTagValues().sort().join(", "),
   };
+  memeModal.classList.remove("details-open");
+  modalPanelToggle?.setAttribute("aria-expanded", "false");
+  modalPanelToggle?.setAttribute("aria-label", "Open details");
 
   if (!memeModal.open) {
     memeModal.showModal();
   }
   overlayClose.classList.remove("hidden");
+  syncModalMediaControls();
 }
 
 function hasUnsavedModalChanges() {
@@ -1464,10 +1503,114 @@ function closeModal() {
   if (memeModal.open) {
     memeModal.close();
   }
+  memeModal.classList.remove("details-open");
+  modalPanelToggle?.setAttribute("aria-expanded", "false");
+  modalPanelToggle?.setAttribute("aria-label", "Open details");
   activeMemeId = null;
   modalSnapshot = null;
   overlayClose.classList.add("hidden");
   return true;
+}
+
+function syncModalPanelToggle() {
+  if (!modalPanelToggle) {
+    return;
+  }
+
+  const expanded = memeModal.classList.contains("details-open");
+  modalPanelToggle.setAttribute("aria-expanded", String(expanded));
+  modalPanelToggle.setAttribute("aria-label", expanded ? "Close details" : "Open details");
+}
+
+function toggleModalDetailsPanel(forceOpen) {
+  if (!memeModal) {
+    return;
+  }
+
+  const nextState = typeof forceOpen === "boolean"
+    ? forceOpen
+    : !memeModal.classList.contains("details-open");
+  memeModal.classList.toggle("details-open", nextState);
+  syncModalPanelToggle();
+}
+
+function formatMediaTime(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) {
+    return "0:00";
+  }
+
+  const totalSeconds = Math.floor(seconds);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const remainingSeconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, "0")}:${String(remainingSeconds).padStart(2, "0")}`;
+  }
+
+  return `${minutes}:${String(remainingSeconds).padStart(2, "0")}`;
+}
+
+function getModalMediaControlTarget() {
+  return modalPreview.querySelector("video, audio");
+}
+
+function syncModalMediaControls() {
+  const media = getModalMediaControlTarget();
+  const supportsMediaControls = !!media;
+
+  modalMediaControls?.classList.toggle("hidden", !supportsMediaControls);
+  modalPlay.disabled = !supportsMediaControls;
+  modalVolumeToggle.disabled = !supportsMediaControls;
+  modalVolume.disabled = !supportsMediaControls;
+  modalVolumeWrap.classList.toggle("hidden", !supportsMediaControls);
+  const isVideo = media instanceof HTMLVideoElement;
+  modalProgressWrap?.classList.toggle("hidden", !isVideo);
+
+  if (!supportsMediaControls) {
+    modalPlay.setAttribute("aria-label", "Play media");
+    modalPlay.setAttribute("data-tooltip", "Play");
+    modalPlayIcon.innerHTML = "&#9654;";
+    modalVolumeToggle.setAttribute("aria-label", "Mute media");
+    modalVolumeIcon.innerHTML = "&#128266;";
+    modalVolume.value = `${Math.round(loadPreferredMediaVolume() * 100)}`;
+    if (modalCurrentTime) modalCurrentTime.textContent = "0:00";
+    if (modalDuration) modalDuration.textContent = "0:00";
+    if (modalProgress) modalProgress.value = "0";
+    return;
+  }
+
+  const paused = media.paused;
+  const muted = media.muted || media.volume === 0;
+
+  modalPlay.setAttribute("aria-label", paused ? "Play media" : "Pause media");
+  modalPlay.setAttribute("data-tooltip", paused ? "Play" : "Pause");
+  modalPlayIcon.innerHTML = paused ? "&#9654;" : "&#10074;&#10074;";
+
+  modalVolumeToggle.setAttribute("aria-label", muted ? "Unmute media" : "Mute media");
+  modalVolumeIcon.innerHTML = muted ? "&#128263;" : "&#128266;";
+  modalVolume.value = `${Math.round((media.muted ? 0 : media.volume) * 100)}`;
+
+  if (!isVideo) {
+    return;
+  }
+
+  const duration = Number.isFinite(media.duration) ? media.duration : 0;
+  const currentTime = Number.isFinite(media.currentTime) ? media.currentTime : 0;
+  const progressValue = duration > 0
+    ? Math.round((currentTime / duration) * MODAL_PROGRESS_SCALE_MAX)
+    : 0;
+
+  if (modalCurrentTime) {
+    modalCurrentTime.textContent = formatMediaTime(currentTime);
+  }
+  if (modalDuration) {
+    modalDuration.textContent = formatMediaTime(duration);
+  }
+  if (modalProgress) {
+    modalProgress.value = `${Math.max(0, Math.min(MODAL_PROGRESS_SCALE_MAX, progressValue))}`;
+    modalProgress.disabled = duration <= 0;
+  }
 }
 
 function splitTags(raw) {
@@ -2076,9 +2219,15 @@ modalCloseButton?.addEventListener("click", () => {
   closeModal();
 });
 
+modalPanelToggle?.addEventListener("click", () => {
+  toggleModalDetailsPanel();
+});
+
 memeModal.addEventListener("close", () => {
   activeMemeId = null;
   modalSnapshot = null;
+  memeModal.classList.remove("details-open");
+  syncModalPanelToggle();
   overlayClose.classList.add("hidden");
 });
 
@@ -2090,6 +2239,78 @@ memeModal.addEventListener("click", (event) => {
 memeModal.addEventListener("cancel", (event) => {
   event.preventDefault();
   closeModal();
+});
+
+modalPreview?.addEventListener("click", async (event) => {
+  const media = modalPreview.querySelector("video");
+  if (!media || event.target !== media) {
+    return;
+  }
+
+  try {
+    if (media.paused) {
+      await media.play();
+    } else {
+      media.pause();
+    }
+  } catch (error) {
+    console.error(error);
+  }
+
+  syncModalMediaControls();
+});
+
+modalPlay?.addEventListener("click", async () => {
+  const media = getModalMediaControlTarget();
+  if (!media) return;
+
+  try {
+    if (media.paused) {
+      await media.play();
+    } else {
+      media.pause();
+    }
+  } catch (error) {
+    console.error(error);
+  }
+
+  syncModalMediaControls();
+});
+
+modalVolumeToggle?.addEventListener("click", () => {
+  const media = getModalMediaControlTarget();
+  if (!media) return;
+
+  media.muted = !media.muted;
+  syncStoredMediaVolumeFromElement(media);
+  syncModalMediaControls();
+});
+
+modalVolume?.addEventListener("input", () => {
+  const media = getModalMediaControlTarget();
+  if (!media) return;
+
+  const volume = Number(modalVolume.value) / 100;
+  media.volume = volume;
+  media.muted = volume === 0;
+  syncStoredMediaVolumeFromElement(media);
+  syncModalMediaControls();
+});
+
+modalProgress?.addEventListener("input", () => {
+  const media = getModalMediaControlTarget();
+  if (!(media instanceof HTMLVideoElement)) {
+    return;
+  }
+
+  const duration = Number.isFinite(media.duration) ? media.duration : 0;
+  if (duration <= 0) {
+    return;
+  }
+
+  const progressRatio = Number(modalProgress.value) / MODAL_PROGRESS_SCALE_MAX;
+  media.currentTime = Math.max(0, Math.min(duration, duration * progressRatio));
+  syncModalMediaControls();
 });
 
 randomReelClose?.addEventListener("click", () => {
@@ -2437,6 +2658,14 @@ memePageNext?.addEventListener("click", () => {
   fetchMemes({ page: state.library.pageIndex + 1 }).catch((error) => {
     console.error(error);
   });
+});
+
+modalDetailsDrawerMediaQuery.addEventListener("change", () => {
+  if (!modalDetailsDrawerMediaQuery.matches) {
+    toggleModalDetailsPanel(false);
+  } else {
+    syncModalPanelToggle();
+  }
 });
 
 function authPanelContains(target) {

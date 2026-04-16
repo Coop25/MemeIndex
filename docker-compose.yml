@@ -36,7 +36,7 @@ services:
       MEMEINDEX_ADD_USER_IDS: ${MEMEINDEX_ADD_USER_IDS:-}
       MEMEINDEX_MANAGE_USER_IDS: ${MEMEINDEX_MANAGE_USER_IDS:-}
     ports:
-      - "8080:8080"
+      - "${MEMEINDEX_HOST_PORT:-8080}:8080"
     volumes:
       - ./data:/app/data
 
