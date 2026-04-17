@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -16,6 +17,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"memeindex/internal/dbschema"
 )
 
 type PostgresStore struct {
@@ -170,6 +173,8 @@ func (s *PostgresStore) List(userID, query string, favoritesOnly bool, tag strin
 		LEFT JOIN meme_tags mt ON mt.meme_id = m.id
 		LEFT JOIN tags t ON t.id = mt.tag_id
 		WHERE
+			COALESCE(m.hidden_from_app, FALSE) = FALSE
+			AND
 			(
 				$2 = '' OR
 				LOWER(m.original_name) LIKE '%' || $2 || '%' OR
@@ -255,6 +260,39 @@ func (s *PostgresStore) GetByID(userID, id string) (Meme, error) {
 	return s.getByID(ctx, s.pool, normalizeFavoriteUserID(userID), strings.TrimSpace(id))
 }
 
+func (s *PostgresStore) GetAnyByID(id string) (Meme, error) {
+	ctx := context.Background()
+	row := s.pool.QueryRow(ctx, `
+		SELECT
+			m.id,
+			m.original_name,
+			m.stored_name,
+			m.file_path,
+			m.content_type,
+			m.size_bytes,
+			COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL), '{}') AS tags,
+			m.notes,
+			FALSE AS favorite,
+			m.created_at,
+			m.updated_at
+		FROM memes m
+		LEFT JOIN meme_tags mt ON mt.meme_id = m.id
+		LEFT JOIN tags t ON t.id = mt.tag_id
+		WHERE m.id = $1
+		GROUP BY m.id
+	`, strings.TrimSpace(id))
+
+	meme, err := scanMemeRow(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Meme{}, os.ErrNotExist
+		}
+		return Meme{}, err
+	}
+	decoratePreviewPath(&meme, s.previewDir)
+	return meme, nil
+}
+
 func (s *PostgresStore) Random(excludedIDs []string) (Meme, error) {
 	ctx := context.Background()
 
@@ -271,7 +309,8 @@ func (s *PostgresStore) Random(excludedIDs []string) (Meme, error) {
 	err := s.pool.QueryRow(ctx, `
 		SELECT m.id
 		FROM memes m
-		WHERE NOT (m.id = ANY($1::text[]))
+		WHERE COALESCE(m.hidden_from_app, FALSE) = FALSE
+			AND NOT (m.id = ANY($1::text[]))
 		ORDER BY random()
 		LIMIT 1
 	`, normalizedExcluded).Scan(&id)
@@ -279,6 +318,7 @@ func (s *PostgresStore) Random(excludedIDs []string) (Meme, error) {
 		err = s.pool.QueryRow(ctx, `
 			SELECT m.id
 			FROM memes m
+			WHERE COALESCE(m.hidden_from_app, FALSE) = FALSE
 			ORDER BY random()
 			LIMIT 1
 		`).Scan(&id)
@@ -370,6 +410,11 @@ func (s *PostgresStore) Create(input CreateInput) (Meme, error) {
 		return Meme{}, err
 	}
 
+	if err := s.insertAuditLog(ctx, tx, meme.ID, "uploaded", input.Actor, fmt.Sprintf("Uploaded %s", meme.OriginalName)); err != nil {
+		_ = os.Remove(targetPath)
+		return Meme{}, err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		_ = os.Remove(targetPath)
 		return Meme{}, err
@@ -390,6 +435,11 @@ func (s *PostgresStore) Update(userID, id string, update MemeUpdate) (Meme, erro
 	update.Tags = normalizeTags(update.Tags)
 	update.Notes = strings.TrimSpace(update.Notes)
 
+	existing, err := s.getByID(ctx, tx, userID, id)
+	if err != nil {
+		return Meme{}, err
+	}
+
 	commandTag, err := tx.Exec(ctx, `
 		UPDATE memes
 		SET notes = $2, updated_at = $3
@@ -409,6 +459,18 @@ func (s *PostgresStore) Update(userID, id string, update MemeUpdate) (Meme, erro
 		return Meme{}, err
 	}
 
+	addedTags, removedTags := diffAuditTags(existing.Tags, update.Tags)
+	for _, tag := range addedTags {
+		if err := s.insertAuditLog(ctx, tx, id, "tag_added", update.Actor, fmt.Sprintf("Added tag %q", tag)); err != nil {
+			return Meme{}, err
+		}
+	}
+	for _, tag := range removedTags {
+		if err := s.insertAuditLog(ctx, tx, id, "tag_removed", update.Actor, fmt.Sprintf("Removed tag %q", tag)); err != nil {
+			return Meme{}, err
+		}
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return Meme{}, err
 	}
@@ -424,35 +486,58 @@ func (s *PostgresStore) SetFavorite(userID, id string, favorite bool) (Meme, err
 	return s.GetByID(userID, id)
 }
 
-func (s *PostgresStore) Delete(id string) error {
+func (s *PostgresStore) Delete(input DeleteInput) (DeleteResult, error) {
 	ctx := context.Background()
-	id = strings.TrimSpace(id)
+	id := strings.TrimSpace(input.ID)
 	var storedName string
 	err := s.pool.QueryRow(ctx, `SELECT stored_name FROM memes WHERE id = $1`, id).Scan(&storedName)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return os.ErrNotExist
+			return DeleteResult{}, os.ErrNotExist
 		}
-		return err
+		return DeleteResult{}, err
+	}
+
+	if !input.Actor.IsSuperAdmin {
+		_, err := s.pool.Exec(ctx, `
+			UPDATE memes
+			SET hidden_from_app = TRUE,
+				pending_delete = TRUE,
+				delete_requested_by_user_id = $2,
+				delete_requested_at = NOW(),
+				updated_at = NOW()
+			WHERE id = $1
+		`, id, strings.TrimSpace(input.Actor.UserID))
+		if err != nil {
+			return DeleteResult{}, err
+		}
+		if err := s.insertAuditLog(ctx, s.pool, id, "delete_requested", input.Actor, "Requested delete approval"); err != nil {
+			return DeleteResult{}, err
+		}
+		return DeleteResult{PendingApproval: true}, nil
 	}
 
 	commandTag, err := s.pool.Exec(ctx, `DELETE FROM memes WHERE id = $1`, id)
 	if err != nil {
-		return err
+		return DeleteResult{}, err
 	}
 	if commandTag.RowsAffected() == 0 {
-		return os.ErrNotExist
+		return DeleteResult{}, os.ErrNotExist
+	}
+
+	if err := s.insertAuditLog(ctx, s.pool, id, "deleted", input.Actor, "Deleted meme"); err != nil {
+		return DeleteResult{}, err
 	}
 
 	targetPath := filepath.Join(s.uploadDir, storedName)
 	if err := os.Remove(targetPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove upload file: %w", err)
+		return DeleteResult{}, fmt.Errorf("remove upload file: %w", err)
 	}
 	thumbnailPath := filepath.Join(s.previewDir, thumbnailFileName(storedName))
 	if err := os.Remove(thumbnailPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove thumbnail file: %w", err)
+		return DeleteResult{}, fmt.Errorf("remove thumbnail file: %w", err)
 	}
-	return nil
+	return DeleteResult{Deleted: true}, nil
 }
 
 func (s *PostgresStore) LoadReelSessions() (map[string]ReelSessionRecord, error) {
@@ -517,60 +602,8 @@ func (s *PostgresStore) CleanupStaleReelSessions(before time.Time) error {
 }
 
 func (s *PostgresStore) ensureSchema(ctx context.Context) error {
-	_, err := s.pool.Exec(ctx, `
-		CREATE TABLE IF NOT EXISTS memes (
-			id TEXT PRIMARY KEY,
-			original_name TEXT NOT NULL,
-			stored_name TEXT NOT NULL,
-			file_path TEXT NOT NULL,
-			content_type TEXT NOT NULL,
-			content_hash TEXT,
-			size_bytes BIGINT NOT NULL,
-			notes TEXT NOT NULL DEFAULT '',
-			created_at TIMESTAMPTZ NOT NULL,
-			updated_at TIMESTAMPTZ NOT NULL
-		);
-
-		CREATE TABLE IF NOT EXISTS tags (
-			id BIGSERIAL PRIMARY KEY,
-			name TEXT NOT NULL UNIQUE
-		);
-
-		CREATE TABLE IF NOT EXISTS meme_tags (
-			meme_id TEXT NOT NULL REFERENCES memes(id) ON DELETE CASCADE,
-			tag_id BIGINT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
-			PRIMARY KEY (meme_id, tag_id)
-		);
-
-		CREATE TABLE IF NOT EXISTS user_favorites (
-			user_id TEXT NOT NULL,
-			meme_id TEXT NOT NULL REFERENCES memes(id) ON DELETE CASCADE,
-			PRIMARY KEY (user_id, meme_id)
-		);
-
-		CREATE TABLE IF NOT EXISTS reel_sessions (
-			id TEXT PRIMARY KEY,
-			history JSONB NOT NULL,
-			position INTEGER NOT NULL,
-			last_activity TIMESTAMPTZ NOT NULL
-		);
-
-		CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name);
-		CREATE INDEX IF NOT EXISTS idx_meme_tags_tag_id ON meme_tags(tag_id);
-		CREATE INDEX IF NOT EXISTS idx_user_favorites_user_id ON user_favorites(user_id);
-		CREATE INDEX IF NOT EXISTS idx_memes_created_at ON memes(created_at DESC);
-		CREATE INDEX IF NOT EXISTS idx_reel_sessions_last_activity ON reel_sessions(last_activity);
-	`)
-	if err != nil {
+	if err := dbschema.Apply(ctx, s.pool, "001_memes_core.sql", "002_memes_compat.sql"); err != nil {
 		return fmt.Errorf("ensure schema: %w", err)
-	}
-	_, err = s.pool.Exec(ctx, `
-		ALTER TABLE memes ADD COLUMN IF NOT EXISTS content_hash TEXT;
-		CREATE INDEX IF NOT EXISTS idx_memes_content_hash
-		ON memes(content_hash);
-	`)
-	if err != nil {
-		return fmt.Errorf("ensure content hash schema: %w", err)
 	}
 	return nil
 }
@@ -812,6 +845,7 @@ func (s *PostgresStore) getByID(ctx context.Context, db queryable, userID, id st
 		LEFT JOIN meme_tags mt ON mt.meme_id = m.id
 		LEFT JOIN tags t ON t.id = mt.tag_id
 		WHERE m.id = $2
+			AND COALESCE(m.hidden_from_app, FALSE) = FALSE
 		GROUP BY m.id
 	`, userID, id)
 	if err != nil {
@@ -895,20 +929,326 @@ func (s *PostgresStore) setFavoriteInExecutor(ctx context.Context, db queryable,
 }
 
 func (s *PostgresStore) getByHash(ctx context.Context, contentHash string) (Meme, error) {
-	var id string
-	err := s.pool.QueryRow(ctx, `
-		SELECT id
-		FROM memes
-		WHERE content_hash = $1
+	rows, err := s.pool.Query(ctx, `
+		SELECT
+			m.id,
+			m.original_name,
+			m.stored_name,
+			m.file_path,
+			m.content_type,
+			m.size_bytes,
+			COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL), '{}') AS tags,
+			m.notes,
+			FALSE AS favorite,
+			m.created_at,
+			m.updated_at
+		FROM memes m
+		LEFT JOIN meme_tags mt ON mt.meme_id = m.id
+		LEFT JOIN tags t ON t.id = mt.tag_id
+		WHERE m.content_hash = $1
+		GROUP BY m.id
 		LIMIT 1
-	`, strings.TrimSpace(contentHash)).Scan(&id)
+	`, strings.TrimSpace(contentHash))
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return Meme{}, os.ErrNotExist
-		}
 		return Meme{}, err
 	}
-	return s.getByID(ctx, s.pool, normalizeFavoriteUserID(""), id)
+	defer rows.Close()
+	if !rows.Next() {
+		return Meme{}, os.ErrNotExist
+	}
+	meme, err := scanMemeRow(rows)
+	if err != nil {
+		return Meme{}, err
+	}
+	decoratePreviewPath(&meme, s.previewDir)
+	return meme, nil
+}
+
+func (s *PostgresStore) ListMemeAudit(id string, limit int) ([]MemeAuditEntry, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	rows, err := s.pool.Query(context.Background(), `
+		SELECT id, meme_id, action, actor_user_id, actor_username, actor_display_name, actor_avatar_url, description, created_at
+		FROM meme_audit_logs
+		WHERE meme_id = $1
+		ORDER BY created_at DESC, id DESC
+		LIMIT $2
+	`, strings.TrimSpace(id), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []MemeAuditEntry{}
+	for rows.Next() {
+		var entry MemeAuditEntry
+		if err := rows.Scan(
+			&entry.ID,
+			&entry.MemeID,
+			&entry.Action,
+			&entry.Actor.UserID,
+			&entry.Actor.Username,
+			&entry.Actor.DisplayName,
+			&entry.Actor.AvatarURL,
+			&entry.Description,
+			&entry.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, entry)
+	}
+	return out, rows.Err()
+}
+
+func (s *PostgresStore) ListAuditFeed(offset int, limit int) (PagedAuditFeed, error) {
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 250 {
+		limit = 250
+	}
+
+	var total int
+	if err := s.pool.QueryRow(context.Background(), `SELECT COUNT(*) FROM meme_audit_logs`).Scan(&total); err != nil {
+		return PagedAuditFeed{}, err
+	}
+
+	rows, err := s.pool.Query(context.Background(), `
+		SELECT
+			l.id,
+			l.meme_id,
+			l.action,
+			l.actor_user_id,
+			l.actor_username,
+			l.actor_display_name,
+			l.actor_avatar_url,
+			l.description,
+			l.created_at,
+			COALESCE(m.original_name, '') AS meme_original_name,
+			COALESCE(m.content_type, '') AS meme_content_type,
+			COALESCE(m.file_path, '') AS meme_file_path
+		FROM meme_audit_logs l
+		LEFT JOIN memes m ON m.id = l.meme_id
+		ORDER BY l.created_at DESC, l.id DESC
+		OFFSET $1
+		LIMIT $2
+	`, offset, limit)
+	if err != nil {
+		return PagedAuditFeed{}, err
+	}
+	defer rows.Close()
+
+	out := []GlobalMemeAuditEntry{}
+	for rows.Next() {
+		var entry GlobalMemeAuditEntry
+		if err := rows.Scan(
+			&entry.ID,
+			&entry.MemeID,
+			&entry.Action,
+			&entry.Actor.UserID,
+			&entry.Actor.Username,
+			&entry.Actor.DisplayName,
+			&entry.Actor.AvatarURL,
+			&entry.Description,
+			&entry.CreatedAt,
+			&entry.MemeOriginalName,
+			&entry.MemeContentType,
+			&entry.MemeFilePath,
+		); err != nil {
+			return PagedAuditFeed{}, err
+		}
+		out = append(out, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return PagedAuditFeed{}, err
+	}
+	return PagedAuditFeed{
+		Events:     out,
+		Total:      total,
+		HasMore:    offset+len(out) < total,
+		NextOffset: min(offset+len(out), total),
+	}, nil
+}
+
+func (s *PostgresStore) ListPendingDeletes(offset int, limit int) (PagedPendingDeletes, error) {
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+
+	var total int
+	if err := s.pool.QueryRow(context.Background(), `SELECT COUNT(*) FROM memes WHERE COALESCE(pending_delete, FALSE) = TRUE`).Scan(&total); err != nil {
+		return PagedPendingDeletes{}, err
+	}
+
+	rows, err := s.pool.Query(context.Background(), `
+		SELECT
+			m.id,
+			m.original_name,
+			m.stored_name,
+			m.file_path,
+			m.content_type,
+			m.size_bytes,
+			COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL), '{}') AS tags,
+			m.notes,
+			FALSE AS favorite,
+			m.created_at,
+			m.updated_at,
+			COALESCE(u.user_id, m.delete_requested_by_user_id) AS requested_by_user_id,
+			COALESCE(u.username, '') AS requested_by_username,
+			COALESCE(u.display_name, '') AS requested_by_display_name,
+			COALESCE(u.avatar_url, '') AS requested_by_avatar_url,
+			m.delete_requested_at
+		FROM memes m
+		LEFT JOIN meme_tags mt ON mt.meme_id = m.id
+		LEFT JOIN tags t ON t.id = mt.tag_id
+		LEFT JOIN app_users u ON u.user_id = m.delete_requested_by_user_id
+		WHERE COALESCE(m.pending_delete, FALSE) = TRUE
+		GROUP BY m.id, u.user_id, u.username, u.display_name, u.avatar_url, m.delete_requested_at
+		ORDER BY m.delete_requested_at ASC NULLS LAST, m.created_at DESC
+		OFFSET $1
+		LIMIT $2
+	`, offset, limit)
+	if err != nil {
+		return PagedPendingDeletes{}, err
+	}
+	defer rows.Close()
+
+	out := []PendingDeleteRecord{}
+	for rows.Next() {
+		var record PendingDeleteRecord
+		if err := rows.Scan(
+			&record.Meme.ID,
+			&record.Meme.OriginalName,
+			&record.Meme.StoredName,
+			&record.Meme.FilePath,
+			&record.Meme.ContentType,
+			&record.Meme.SizeBytes,
+			&record.Meme.Tags,
+			&record.Meme.Notes,
+			&record.Meme.Favorite,
+			&record.Meme.CreatedAt,
+			&record.Meme.UpdatedAt,
+			&record.RequestedBy.UserID,
+			&record.RequestedBy.Username,
+			&record.RequestedBy.DisplayName,
+			&record.RequestedBy.AvatarURL,
+			&record.RequestedAt,
+		); err != nil {
+			return PagedPendingDeletes{}, err
+		}
+		decoratePreviewPath(&record.Meme, s.previewDir)
+		out = append(out, record)
+	}
+	if err := rows.Err(); err != nil {
+		return PagedPendingDeletes{}, err
+	}
+	return PagedPendingDeletes{
+		Memes:      out,
+		Total:      total,
+		HasMore:    offset+len(out) < total,
+		NextOffset: min(offset+len(out), total),
+	}, nil
+}
+
+func (s *PostgresStore) ApprovePendingDelete(id string, actor AuditActor) error {
+	ctx := context.Background()
+	id = strings.TrimSpace(id)
+
+	var storedName string
+	err := s.pool.QueryRow(ctx, `SELECT stored_name FROM memes WHERE id = $1 AND COALESCE(pending_delete, FALSE) = TRUE`, id).Scan(&storedName)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return os.ErrNotExist
+		}
+		return err
+	}
+
+	if err := s.insertAuditLog(ctx, s.pool, id, "delete_approved", actor, "Approved delete request"); err != nil {
+		return err
+	}
+	if _, err := s.pool.Exec(ctx, `DELETE FROM memes WHERE id = $1`, id); err != nil {
+		return err
+	}
+
+	targetPath := filepath.Join(s.uploadDir, storedName)
+	if err := os.Remove(targetPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove upload file: %w", err)
+	}
+	thumbnailPath := filepath.Join(s.previewDir, thumbnailFileName(storedName))
+	if err := os.Remove(thumbnailPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove thumbnail file: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) RejectPendingDelete(id string, actor AuditActor) error {
+	ctx := context.Background()
+	commandTag, err := s.pool.Exec(ctx, `
+		UPDATE memes
+		SET hidden_from_app = FALSE,
+			pending_delete = FALSE,
+			delete_requested_by_user_id = '',
+			delete_requested_at = NULL,
+			updated_at = NOW()
+		WHERE id = $1 AND COALESCE(pending_delete, FALSE) = TRUE
+	`, strings.TrimSpace(id))
+	if err != nil {
+		return err
+	}
+	if commandTag.RowsAffected() == 0 {
+		return os.ErrNotExist
+	}
+	return s.insertAuditLog(ctx, s.pool, strings.TrimSpace(id), "delete_rejected", actor, "Rejected delete request")
+}
+
+func (s *PostgresStore) insertAuditLog(ctx context.Context, db queryable, memeID, action string, actor AuditActor, description string) error {
+	_, err := db.Exec(ctx, `
+		INSERT INTO meme_audit_logs (
+			meme_id, action, actor_user_id, actor_username, actor_display_name, actor_avatar_url, description, created_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+	`, strings.TrimSpace(memeID), strings.TrimSpace(action), strings.TrimSpace(actor.UserID), strings.TrimSpace(actor.Username), strings.TrimSpace(actor.DisplayName), strings.TrimSpace(actor.AvatarURL), strings.TrimSpace(description))
+	return err
+}
+
+func diffAuditTags(current []string, next []string) ([]string, []string) {
+	currentSet := map[string]struct{}{}
+	nextSet := map[string]struct{}{}
+	for _, tag := range normalizeTags(current) {
+		currentSet[tag] = struct{}{}
+	}
+	for _, tag := range normalizeTags(next) {
+		nextSet[tag] = struct{}{}
+	}
+
+	added := []string{}
+	removed := []string{}
+	for tag := range nextSet {
+		if _, ok := currentSet[tag]; !ok {
+			added = append(added, tag)
+		}
+	}
+	for tag := range currentSet {
+		if _, ok := nextSet[tag]; !ok {
+			removed = append(removed, tag)
+		}
+	}
+	slices.Sort(added)
+	slices.Sort(removed)
+	return added, removed
 }
 
 func scanMemeRow(row interface{ Scan(dest ...any) error }) (Meme, error) {

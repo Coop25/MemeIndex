@@ -94,17 +94,21 @@ Optional flags:
 - `MEMEINDEX_SESSION_SECRET`: random secret used to sign auth cookies
 - `MEMEINDEX_SESSION_DURATION_DAYS`: how long Discord login cookies stay valid, default `30`
 - `MEMEINDEX_COOKIE_SECURE`: set to `true` when serving over HTTPS so auth cookies are marked secure
+- `MEMEINDEX_SUPER_ADMIN_USER_IDS`: comma-separated Discord user IDs that should always have full access plus user-management access
 - `MEMEINDEX_VIEW_USER_IDS`: comma-separated Discord user IDs allowed to view the app
 - `MEMEINDEX_ADD_USER_IDS`: comma-separated Discord user IDs allowed to view and upload memes
-- `MEMEINDEX_MANAGE_USER_IDS`: comma-separated Discord user IDs allowed full meme management, including edit and delete
+- `MEMEINDEX_MANAGE_USER_IDS`: legacy alias for super admins, still supported for compatibility
 
-If the Discord OAuth env vars are not set, MemeIndex keeps auth disabled and behaves like it does today. Once auth is enabled, the allowlists stack upward:
+If the Discord OAuth env vars are not set, MemeIndex keeps auth disabled and behaves like it does today.
 
 - `VIEW`: browse memes, tags, uploads, and random reel
-- `ADD`: everything in `VIEW`, plus upload new memes
-- `MANAGE`: everything in `ADD`, plus edit metadata, favorite, and delete
+- `UPLOAD`: everything in `VIEW`, plus upload new memes
+- `ADD TAGS`: add tags to existing memes
+- `REMOVE TAGS`: remove tags from existing memes
+- `DELETE`: delete memes
+- `SUPER ADMIN`: full access plus the users modal, where all non-super-admin permissions can be toggled and stored in Postgres
 
-Discord login uses a signed long-lived auth token. Permissions are recalculated from the allowlists on every request, so moving a user between `VIEW`, `ADD`, and `MANAGE` takes effect without rotating the token or forcing a fresh login.
+When Postgres is enabled, MemeIndex imports any missing IDs from `VIEW_USER_IDS` and `ADD_USER_IDS` into the users table on startup. Super admins come from env, while all other user permissions are stored in the database and recalculated on every request without rotating auth cookies.
 
 Example local setup:
 
@@ -116,6 +120,7 @@ $env:MEMEINDEX_DISCORD_REDIRECT_URL="http://localhost:8080/auth/callback"
 $env:MEMEINDEX_DISCORD_DYNAMIC_REDIRECT="false"
 $env:MEMEINDEX_SESSION_SECRET="replace-this-with-a-long-random-string"
 $env:MEMEINDEX_SESSION_DURATION_DAYS="30"
+$env:MEMEINDEX_SUPER_ADMIN_USER_IDS="333333333333333333"
 $env:MEMEINDEX_VIEW_USER_IDS="111111111111111111,222222222222222222"
 $env:MEMEINDEX_ADD_USER_IDS="222222222222222222"
 $env:MEMEINDEX_MANAGE_USER_IDS="333333333333333333"

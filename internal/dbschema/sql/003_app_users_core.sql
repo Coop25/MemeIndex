@@ -1,0 +1,14 @@
+CREATE TABLE IF NOT EXISTS app_users (
+    user_id TEXT PRIMARY KEY,
+    username TEXT NOT NULL DEFAULT '',
+    display_name TEXT NOT NULL DEFAULT '',
+    avatar_url TEXT NOT NULL DEFAULT '',
+    last_active_at BIGINT NOT NULL DEFAULT 0,
+    can_view BOOLEAN NOT NULL DEFAULT FALSE,
+    can_upload BOOLEAN NOT NULL DEFAULT FALSE,
+    can_add_tags BOOLEAN NOT NULL DEFAULT FALSE,
+    can_remove_tags BOOLEAN NOT NULL DEFAULT FALSE,
+    can_delete_memes BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

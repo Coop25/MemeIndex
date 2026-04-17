@@ -20,13 +20,25 @@ type Server struct {
 	config   Config
 	managers *manager.MemeManager
 	auth     *authService
+	users    authUserStore
 }
 
 func NewServer(config Config, memeManager *manager.MemeManager) *Server {
+	userStore, err := newAuthUserStore(context.Background(), config.DatabaseURL)
+	if err != nil {
+		log.Fatalf("auth user store init failed: %v", err)
+	}
+	if userStore != nil {
+		if err := userStore.BootstrapFromConfig(context.Background(), config.DiscordAuth); err != nil {
+			log.Fatalf("auth user bootstrap failed: %v", err)
+		}
+	}
+
 	return &Server{
 		config:   config,
 		managers: memeManager,
-		auth:     newAuthService(config.DiscordAuth),
+		auth:     newAuthService(config.DiscordAuth, userStore),
+		users:    userStore,
 	}
 }
 
@@ -37,6 +49,11 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/auth/logout", s.handleLogout)
 	mux.HandleFunc("/og-image.svg", s.handleOGImage)
 	mux.HandleFunc("/api/auth/session", s.handleAuthSession)
+	mux.Handle("/api/users", s.withAPIAuth(http.HandlerFunc(s.handleUsers), permissionManageUsers))
+	mux.Handle("/api/users/", s.withAPIAuth(http.HandlerFunc(s.handleUserByID), permissionManageUsers))
+	mux.Handle("/api/admin/audit-logs", s.withAPIAuth(http.HandlerFunc(s.handleAuditLogs), permissionManageUsers))
+	mux.Handle("/api/admin/memes/pending-delete", s.withAPIAuth(http.HandlerFunc(s.handlePendingDeleteQueue), permissionManageUsers))
+	mux.Handle("/api/admin/memes/", s.withAPIAuth(http.HandlerFunc(s.handleAdminMemeActions), permissionManageUsers))
 	mux.Handle("/uploads/", s.withPageAuth(http.StripPrefix("/uploads/", http.FileServer(http.Dir(s.managers.UploadDir())))))
 	if thumbnailDir := s.managers.ThumbnailDir(); strings.TrimSpace(thumbnailDir) != "" {
 		mux.Handle("/thumbnails/", s.withPageAuth(http.StripPrefix("/thumbnails/", http.FileServer(http.Dir(thumbnailDir)))))
@@ -98,12 +115,16 @@ func (s *Server) withAPIAuth(next http.Handler, minimum permissionLevel) http.Ha
 
 func hasPermission(permissions authPermissions, minimum permissionLevel) bool {
 	switch minimum {
-	case permissionManage:
-		return permissions.CanManage
-	case permissionAdd:
-		return permissions.CanAdd || permissions.CanManage
+	case permissionManageUsers:
+		return permissions.CanManageUsers
+	case permissionDeleteMemes:
+		return permissions.CanDeleteMemes || permissions.CanManageUsers
+	case permissionMetadata:
+		return permissions.CanAddTags || permissions.CanRemoveTags || permissions.CanManageUsers
+	case permissionUpload:
+		return permissions.CanUpload || permissions.CanManageUsers
 	default:
-		return permissions.CanView || permissions.CanAdd || permissions.CanManage
+		return permissions.CanView || permissions.CanUpload || permissions.CanManage
 	}
 }
 
@@ -203,7 +224,7 @@ func (s *Server) handleMemes(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		s.listMemes(w, r)
 	case http.MethodPost:
-		if !s.requirePermission(w, r, permissionAdd) {
+		if !s.requirePermission(w, r, permissionUpload) {
 			return
 		}
 		s.createMeme(w, r)
@@ -246,12 +267,9 @@ func (s *Server) handleMemeByID(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodPatch:
-		if !s.requirePermission(w, r, permissionManage) {
-			return
-		}
 		s.updateMeme(w, r, id)
 	case http.MethodDelete:
-		if !s.requirePermission(w, r, permissionManage) {
+		if !s.requirePermission(w, r, permissionDeleteMemes) {
 			return
 		}
 		s.deleteMeme(w, r, id)
@@ -309,7 +327,8 @@ func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		meme, err := s.managers.CreateMeme(
+		meme, err := s.managers.CreateMemeAs(
+			currentAuditActor(r),
 			src,
 			fileHeader.Header,
 			fileHeader.Filename,
@@ -353,11 +372,49 @@ func (s *Server) updateMeme(w http.ResponseWriter, r *http.Request, id string) {
 		return
 	}
 
-	meme, err := s.managers.UpdateMeme(currentUserID(r), id, payload)
+	session, ok := sessionFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusForbidden, map[string]any{
+			"error": "insufficient permissions",
+		})
+		return
+	}
+
+	existing, err := s.managers.GetMeme(currentUserID(r), id)
 	if errors.Is(err, os.ErrNotExist) {
 		http.NotFound(w, r)
 		return
 	}
+	if err != nil {
+		log.Printf("load meme for update failed: %v", err)
+		http.Error(w, "failed to load meme", http.StatusInternalServerError)
+		return
+	}
+
+	currentTags := normalizePermissionTags(existing.Tags)
+	nextTags := normalizePermissionTags(payload.Tags)
+	addedTags, removedTags := diffTags(currentTags, nextTags)
+	payload.Actor = currentAuditActor(r)
+
+	if len(addedTags) > 0 && !session.Permissions.CanAddTags && !session.Permissions.CanManageUsers {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "missing add-tag permission"})
+		return
+	}
+	if len(removedTags) > 0 && !session.Permissions.CanRemoveTags && !session.Permissions.CanManageUsers {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "missing remove-tag permission"})
+		return
+	}
+	if strings.TrimSpace(payload.Notes) != strings.TrimSpace(existing.Notes) &&
+		!session.Permissions.CanAddTags && !session.Permissions.CanRemoveTags && !session.Permissions.CanManageUsers {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "missing metadata permission"})
+		return
+	}
+	if payload.Favorite != existing.Favorite && !session.Permissions.CanView {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "missing favorite permission"})
+		return
+	}
+
+	meme, err := s.managers.UpdateMeme(currentUserID(r), id, payload)
 	if err != nil {
 		log.Printf("update meme failed: %v", err)
 		http.Error(w, "failed to update meme", http.StatusInternalServerError)
@@ -391,7 +448,7 @@ func (s *Server) updateFavorite(w http.ResponseWriter, r *http.Request, id strin
 }
 
 func (s *Server) deleteMeme(w http.ResponseWriter, r *http.Request, id string) {
-	err := s.managers.DeleteMeme(id)
+	result, err := s.managers.DeleteMeme(id, currentAuditActor(r))
 	if errors.Is(err, os.ErrNotExist) {
 		http.NotFound(w, r)
 		return
@@ -399,6 +456,13 @@ func (s *Server) deleteMeme(w http.ResponseWriter, r *http.Request, id string) {
 	if err != nil {
 		log.Printf("delete meme failed: %v", err)
 		http.Error(w, "failed to delete meme", http.StatusInternalServerError)
+		return
+	}
+
+	if result.PendingApproval {
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"pending_approval": true,
+		})
 		return
 	}
 
@@ -415,6 +479,276 @@ func (s *Server) handleTags(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"tags": s.managers.SuggestTags(query, 8),
 	})
+}
+
+func (s *Server) handlePendingDeleteQueue(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	offset := parseQueryInt(r, "offset", 0)
+	limit := parseQueryInt(r, "limit", 50)
+	records, err := s.managers.ListPendingDeletes(offset, limit)
+	if err != nil {
+		log.Printf("list pending deletes failed: %v", err)
+		http.Error(w, "failed to load pending deletes", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, records)
+}
+
+func (s *Server) handleAuditLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	offset := parseQueryInt(r, "offset", 0)
+	limit := parseQueryInt(r, "limit", 100)
+	events, err := s.managers.ListAuditFeed(offset, limit)
+	if err != nil {
+		log.Printf("list audit logs failed: %v", err)
+		http.Error(w, "failed to load audit logs", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, events)
+}
+
+func (s *Server) handleAdminMemeActions(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/admin/memes/")
+	if path == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	switch {
+	case r.Method == http.MethodGet && !strings.Contains(path, "/"):
+		id := strings.TrimSuffix(path, "/")
+		if id == "" {
+			http.NotFound(w, r)
+			return
+		}
+		s.handleAdminMemeByID(w, r, id)
+	case strings.HasSuffix(path, "/audit"):
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		id := strings.TrimSuffix(strings.TrimSuffix(path, "/audit"), "/")
+		s.handleMemeAudit(w, r, id)
+	case strings.HasSuffix(path, "/approve-delete"):
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		id := strings.TrimSuffix(strings.TrimSuffix(path, "/approve-delete"), "/")
+		if err := s.managers.ApprovePendingDelete(id, currentAuditActor(r)); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				http.NotFound(w, r)
+				return
+			}
+			log.Printf("approve delete failed: %v", err)
+			http.Error(w, "failed to approve delete", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	case strings.HasSuffix(path, "/reject-delete"):
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		id := strings.TrimSuffix(strings.TrimSuffix(path, "/reject-delete"), "/")
+		if err := s.managers.RejectPendingDelete(id, currentAuditActor(r)); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				http.NotFound(w, r)
+				return
+			}
+			log.Printf("reject delete failed: %v", err)
+			http.Error(w, "failed to reject delete", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (s *Server) handleAdminMemeByID(w http.ResponseWriter, r *http.Request, id string) {
+	meme, err := s.managers.GetAdminMeme(id)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			http.NotFound(w, r)
+			return
+		}
+		log.Printf("get admin meme failed: %v", err)
+		http.Error(w, "failed to load meme", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, meme)
+}
+
+func (s *Server) handleMemeAudit(w http.ResponseWriter, r *http.Request, id string) {
+	limit := parseQueryInt(r, "limit", 100)
+	audit, err := s.managers.ListMemeAudit(id, limit)
+	if err != nil {
+		log.Printf("list meme audit failed: %v", err)
+		http.Error(w, "failed to load meme audit", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"events": audit,
+	})
+}
+
+func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
+	if s.users == nil {
+		http.Error(w, "user management requires a database", http.StatusNotImplemented)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		s.listUsers(w, r)
+	case http.MethodPost:
+		s.createManagedUser(w, r)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleUserByID(w http.ResponseWriter, r *http.Request) {
+	if s.users == nil {
+		http.Error(w, "user management requires a database", http.StatusNotImplemented)
+		return
+	}
+
+	userID := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/api/users/"))
+	if userID == "" || strings.Contains(userID, "/") {
+		http.NotFound(w, r)
+		return
+	}
+
+	if _, isSuperAdmin := s.config.DiscordAuth.SuperAdminUserIDs[userID]; isSuperAdmin {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "super admin users are configured from environment variables",
+		})
+		return
+	}
+
+	if r.Method != http.MethodPatch {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	s.updateManagedUser(w, r, userID)
+}
+
+func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
+	records, err := s.users.ListUsers(r.Context())
+	if err != nil {
+		log.Printf("list users failed: %v", err)
+		http.Error(w, "failed to load users", http.StatusInternalServerError)
+		return
+	}
+
+	byID := map[string]managedUserRecord{}
+	for _, record := range records {
+		normalized := strings.TrimSpace(record.UserID)
+		if normalized == "" {
+			continue
+		}
+		record.Permissions = s.auth.permissionsForUser(normalized)
+		byID[normalized] = record
+	}
+
+	out := make([]map[string]any, 0, len(byID)+len(s.config.DiscordAuth.SuperAdminUserIDs))
+	for _, record := range byID {
+		_, isSuperAdmin := s.config.DiscordAuth.SuperAdminUserIDs[record.UserID]
+		out = append(out, managedUserPayload(record, isSuperAdmin))
+	}
+
+	for userID := range s.config.DiscordAuth.SuperAdminUserIDs {
+		if _, exists := byID[userID]; exists {
+			continue
+		}
+		out = append(out, managedUserPayload(managedUserRecord{
+			UserID:      userID,
+			DisplayName: "Super Admin",
+			Permissions: s.auth.permissionsForUser(userID),
+		}, true))
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"users": out})
+}
+
+func (s *Server) createManagedUser(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		UserID string `json:"user_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	userID := strings.TrimSpace(payload.UserID)
+	if userID == "" {
+		http.Error(w, "user_id is required", http.StatusBadRequest)
+		return
+	}
+	if _, isSuperAdmin := s.config.DiscordAuth.SuperAdminUserIDs[userID]; isSuperAdmin {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "super admin users are configured from environment variables",
+		})
+		return
+	}
+
+	record, err := s.users.CreateUser(r.Context(), userID)
+	if err != nil {
+		log.Printf("create user failed: %v", err)
+		http.Error(w, "failed to create user", http.StatusInternalServerError)
+		return
+	}
+	record.Permissions = s.auth.permissionsForUser(record.UserID)
+	writeJSON(w, http.StatusCreated, managedUserPayload(record, false))
+}
+
+func (s *Server) updateManagedUser(w http.ResponseWriter, r *http.Request, userID string) {
+	var payload struct {
+		CanView        bool `json:"canView"`
+		CanUpload      bool `json:"canUpload"`
+		CanAddTags     bool `json:"canAddTags"`
+		CanRemoveTags  bool `json:"canRemoveTags"`
+		CanDeleteMemes bool `json:"canDeleteMemes"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	permissions := authPermissions{
+		CanView:        payload.CanView,
+		CanUpload:      payload.CanUpload,
+		CanAddTags:     payload.CanAddTags,
+		CanRemoveTags:  payload.CanRemoveTags,
+		CanDeleteMemes: payload.CanDeleteMemes,
+	}
+	if permissions.CanUpload || permissions.CanAddTags || permissions.CanRemoveTags || permissions.CanDeleteMemes {
+		permissions.CanView = true
+	}
+
+	record, err := s.users.UpdateUserPermissions(r.Context(), userID, permissions)
+	if err != nil {
+		log.Printf("update user failed: %v", err)
+		http.Error(w, "failed to update user", http.StatusInternalServerError)
+		return
+	}
+	record.Permissions = s.auth.permissionsForUser(record.UserID)
+	writeJSON(w, http.StatusOK, managedUserPayload(record, false))
 }
 
 func (s *Server) handleRandomMeme(w http.ResponseWriter, r *http.Request) {
@@ -542,9 +876,14 @@ func (s *Server) handleAuthSession(w http.ResponseWriter, r *http.Request) {
 			"enabled": false,
 			"version": BuildVersion(),
 			"permissions": authPermissions{
-				CanView:   true,
-				CanAdd:    true,
-				CanManage: true,
+				CanView:        true,
+				CanUpload:      true,
+				CanAddTags:     true,
+				CanRemoveTags:  true,
+				CanDeleteMemes: true,
+				CanManageUsers: true,
+				CanAdd:         true,
+				CanManage:      true,
 			},
 		})
 		return
@@ -574,6 +913,80 @@ func (s *Server) handleAuthSession(w http.ResponseWriter, r *http.Request) {
 		"logout_url":  "/auth/logout",
 		"version":     BuildVersion(),
 	})
+}
+
+func managedUserPayload(record managedUserRecord, isSuperAdmin bool) map[string]any {
+	displayName := strings.TrimSpace(record.DisplayName)
+	if displayName == "" {
+		displayName = strings.TrimSpace(record.Username)
+	}
+
+	return map[string]any{
+		"user_id":        record.UserID,
+		"username":       record.Username,
+		"display_name":   displayName,
+		"avatar_url":     record.AvatarURL,
+		"last_active_at": record.LastActiveAt,
+		"permissions":    record.Permissions,
+		"is_super_admin": isSuperAdmin,
+	}
+}
+
+func currentAuditActor(r *http.Request) accessor.AuditActor {
+	session, ok := sessionFromContext(r.Context())
+	if !ok {
+		return accessor.AuditActor{}
+	}
+
+	return accessor.AuditActor{
+		UserID:       session.UserID,
+		Username:     session.Username,
+		DisplayName:  session.DisplayName,
+		AvatarURL:    session.AvatarURL,
+		IsSuperAdmin: session.Permissions.CanManageUsers,
+	}
+}
+
+func normalizePermissionTags(tags []string) []string {
+	out := make([]string, 0, len(tags))
+	seen := map[string]struct{}{}
+	for _, tag := range tags {
+		normalized := strings.ToLower(strings.TrimSpace(tag))
+		if normalized == "" {
+			continue
+		}
+		if _, exists := seen[normalized]; exists {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	return out
+}
+
+func diffTags(current []string, next []string) ([]string, []string) {
+	currentSet := map[string]struct{}{}
+	nextSet := map[string]struct{}{}
+	for _, tag := range current {
+		currentSet[tag] = struct{}{}
+	}
+	for _, tag := range next {
+		nextSet[tag] = struct{}{}
+	}
+
+	added := []string{}
+	removed := []string{}
+	for tag := range nextSet {
+		if _, exists := currentSet[tag]; !exists {
+			added = append(added, tag)
+		}
+	}
+	for tag := range currentSet {
+		if _, exists := nextSet[tag]; !exists {
+			removed = append(removed, tag)
+		}
+	}
+	return added, removed
 }
 
 func contextWithSession(ctx context.Context, session authSession) context.Context {

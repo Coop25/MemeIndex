@@ -76,6 +76,17 @@ func (m *MemeManager) CreateMeme(file io.Reader, header textproto.MIMEHeader, fi
 	})
 }
 
+func (m *MemeManager) CreateMemeAs(actor accessor.AuditActor, file io.Reader, header textproto.MIMEHeader, filename string, tags []string, notes string) (accessor.Meme, error) {
+	return m.store.Create(accessor.CreateInput{
+		File:     file,
+		Header:   header,
+		Filename: filename,
+		Tags:     normalizeTags(tags),
+		Notes:    strings.TrimSpace(notes),
+		Actor:    actor,
+	})
+}
+
 func (m *MemeManager) UpdateMeme(userID, id string, update accessor.MemeUpdate) (accessor.Meme, error) {
 	update.Tags = normalizeTags(update.Tags)
 	update.Notes = strings.TrimSpace(update.Notes)
@@ -86,8 +97,23 @@ func (m *MemeManager) SetFavorite(userID, id string, favorite bool) (accessor.Me
 	return m.store.SetFavorite(strings.TrimSpace(userID), strings.TrimSpace(id), favorite)
 }
 
-func (m *MemeManager) DeleteMeme(id string) error {
-	return m.store.Delete(strings.TrimSpace(id))
+func (m *MemeManager) GetMeme(userID, id string) (accessor.Meme, error) {
+	return m.store.GetByID(strings.TrimSpace(userID), strings.TrimSpace(id))
+}
+
+func (m *MemeManager) GetAdminMeme(id string) (accessor.Meme, error) {
+	store, ok := m.store.(accessor.AdminMemeStore)
+	if ok {
+		return store.GetAnyByID(strings.TrimSpace(id))
+	}
+	return m.store.GetByID("", strings.TrimSpace(id))
+}
+
+func (m *MemeManager) DeleteMeme(id string, actor accessor.AuditActor) (accessor.DeleteResult, error) {
+	return m.store.Delete(accessor.DeleteInput{
+		ID:    strings.TrimSpace(id),
+		Actor: actor,
+	})
 }
 
 func (m *MemeManager) SuggestTags(prefix string, limit int) []string {
@@ -136,6 +162,46 @@ func (m *MemeManager) EnsurePreviewAssets() error {
 		return nil
 	}
 	return previewStore.EnsurePreviewAssets()
+}
+
+func (m *MemeManager) ListMemeAudit(id string, limit int) ([]accessor.MemeAuditEntry, error) {
+	store, ok := m.store.(accessor.AuditLogStore)
+	if !ok {
+		return nil, nil
+	}
+	return store.ListMemeAudit(strings.TrimSpace(id), limit)
+}
+
+func (m *MemeManager) ListAuditFeed(offset int, limit int) (accessor.PagedAuditFeed, error) {
+	store, ok := m.store.(accessor.AuditLogStore)
+	if !ok {
+		return accessor.PagedAuditFeed{}, nil
+	}
+	return store.ListAuditFeed(offset, limit)
+}
+
+func (m *MemeManager) ListPendingDeletes(offset int, limit int) (accessor.PagedPendingDeletes, error) {
+	store, ok := m.store.(accessor.AuditLogStore)
+	if !ok {
+		return accessor.PagedPendingDeletes{}, nil
+	}
+	return store.ListPendingDeletes(offset, limit)
+}
+
+func (m *MemeManager) ApprovePendingDelete(id string, actor accessor.AuditActor) error {
+	store, ok := m.store.(accessor.AuditLogStore)
+	if !ok {
+		return nil
+	}
+	return store.ApprovePendingDelete(strings.TrimSpace(id), actor)
+}
+
+func (m *MemeManager) RejectPendingDelete(id string, actor accessor.AuditActor) error {
+	store, ok := m.store.(accessor.AuditLogStore)
+	if !ok {
+		return nil
+	}
+	return store.RejectPendingDelete(strings.TrimSpace(id), actor)
 }
 
 func normalizeTags(tags []string) []string {

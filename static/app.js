@@ -14,6 +14,20 @@ const state = {
     hasMore: false,
     loading: false,
   },
+  admin: {
+    audit: {
+      offset: 0,
+      limit: 100,
+      total: 0,
+      hasMore: false,
+    },
+    queue: {
+      offset: 0,
+      limit: 25,
+      total: 0,
+      hasMore: false,
+    },
+  },
   auth: {
     enabled: false,
     authenticated: true,
@@ -47,15 +61,43 @@ const authName = document.querySelector("#auth-name");
 const authRole = document.querySelector("#auth-role");
 const authVersion = document.querySelector("#auth-version");
 const authVersionValue = document.querySelector("#auth-version-value");
+const authManageUsers = document.querySelector("#auth-manage-users");
+const authDeleteQueue = document.querySelector("#auth-delete-queue");
+const authAuditLogs = document.querySelector("#auth-audit-logs");
 const authLogout = document.querySelector("#auth-logout");
 const uploadModalClose = document.querySelector("#upload-modal-close");
+const usersModal = document.querySelector("#users-modal");
+const usersModalClose = document.querySelector("#users-modal-close");
+const usersAddForm = document.querySelector("#users-add-form");
+const usersAddID = document.querySelector("#users-add-id");
+const usersModalStatus = document.querySelector("#users-modal-status");
+const usersList = document.querySelector("#users-list");
+const deleteQueueModal = document.querySelector("#delete-queue-modal");
+const deleteQueueClose = document.querySelector("#delete-queue-close");
+const deleteQueueStatus = document.querySelector("#delete-queue-status");
+const deleteQueueList = document.querySelector("#delete-queue-list");
+const auditLogsModal = document.querySelector("#audit-logs-modal");
+const auditLogsClose = document.querySelector("#audit-logs-close");
+const auditLogsStatus = document.querySelector("#audit-logs-status");
+const auditLogsList = document.querySelector("#audit-logs-list");
 const uploadPreview = document.querySelector("#upload-preview");
+const uploadPreviewWrap = document.querySelector(".upload-preview-wrap");
 const uploadFileInput = document.querySelector("#upload-file-input");
 const uploadTagChips = document.querySelector("#upload-tag-chips");
 const uploadTagsInput = document.querySelector("#upload-tags-input");
 const uploadTagSuggestions = document.querySelector("#upload-tag-suggestions");
 const uploadTagsHidden = document.querySelector("#upload-tags-hidden");
 const contentPanel = document.querySelector(".content-panel");
+const adminView = document.querySelector("#admin-view");
+const adminViewKicker = document.querySelector("#admin-view-kicker");
+const adminViewTitle = document.querySelector("#admin-view-title");
+const adminViewCopy = document.querySelector("#admin-view-copy");
+const adminViewStatus = document.querySelector("#admin-view-status");
+const adminViewTable = document.querySelector("#admin-view-table");
+const adminPagination = document.querySelector("#admin-pagination");
+const adminPagePrev = document.querySelector("#admin-page-prev");
+const adminPageNext = document.querySelector("#admin-page-next");
+const adminPageLabel = document.querySelector("#admin-page-label");
 const memeGridTopSpacer = document.querySelector("#meme-grid-top-spacer");
 const memeGridBottomSpacer = document.querySelector("#meme-grid-bottom-spacer");
 const memeGrid = document.querySelector("#meme-grid");
@@ -81,10 +123,14 @@ const cardTemplate = document.querySelector("#meme-card-template");
 const memeModal = document.querySelector("#meme-modal");
 const overlayClose = document.querySelector("#overlay-close");
 const modalPreview = document.querySelector("#modal-preview");
+const modalPreviewWrap = document.querySelector(".modal-preview-wrap");
+const modalBody = document.querySelector("#meme-modal .modal-body");
 const modalTitle = document.querySelector("#modal-title");
 const modalMeta = document.querySelector("#modal-meta");
 const modalCloseButton = document.querySelector("#modal-close");
 const modalPanelToggle = document.querySelector("#modal-panel-toggle");
+const modalDrawerToggle = document.querySelector("#modal-drawer-toggle");
+const modalDrawerClose = document.querySelector("#modal-drawer-close");
 const modalMediaControls = document.querySelector("#modal-media-controls");
 const modalProgressWrap = document.querySelector("#modal-progress-wrap");
 const modalCurrentTime = document.querySelector("#modal-current-time");
@@ -104,6 +150,8 @@ const modalOpenLink = document.querySelector("#modal-open-link");
 const modalSave = document.querySelector("#modal-save");
 const modalDelete = document.querySelector("#modal-delete");
 const modalFavorite = document.querySelector("#modal-favorite");
+const modalAuditSection = document.querySelector("#modal-audit-section");
+const modalAuditList = document.querySelector("#modal-audit-list");
 const randomReelModal = document.querySelector("#random-reel-modal");
 const randomReelStage = document.querySelector("#random-reel-stage");
 const randomReelMedia = document.querySelector("#random-reel-media");
@@ -137,6 +185,7 @@ let uploadSuggestionState = [];
 let activeUploadSuggestionIndex = -1;
 let uploadTagSuggestionAbortController = null;
 let uploadPreviewURL = null;
+let uploadDragDepth = 0;
 let topTagSuggestionState = [];
 let activeTopTagSuggestionIndex = -1;
 let topTagSuggestionAbortController = null;
@@ -147,6 +196,7 @@ let randomReelCanGoPrev = false;
 let randomReelWheelLock = false;
 let randomReelWheelTimeout = null;
 let randomReelUITimeout = null;
+let memeModalUITimeout = null;
 let randomReelTouchStartY = null;
 let randomReelTouchDeltaY = 0;
 let randomReelTouchActive = false;
@@ -156,6 +206,15 @@ let memeGridObserver = null;
 let memeGridRenderFrame = null;
 let memePageFetchSequence = 0;
 let memePendingPageIndex = 0;
+let managedUsersState = [];
+let deleteQueueState = [];
+let auditLogState = [];
+
+function getActiveAdminPageState() {
+  if (isAdminAuditView()) return state.admin.audit;
+  if (isAdminDeleteQueueView()) return state.admin.queue;
+  return null;
+}
 const drawerMediaQuery = window.matchMedia("(max-width: 1100px)");
 const modalDetailsDrawerMediaQuery = window.matchMedia("(max-width: 1100px)");
 const MEME_PAGE_SIZE = 100;
@@ -185,18 +244,59 @@ function canView() {
   return !!state.auth.permissions?.canView;
 }
 
+function canUpload() {
+  return !!state.auth.permissions?.canUpload || !!state.auth.permissions?.canAdd;
+}
+
 function canAdd() {
-  return !!state.auth.permissions?.canAdd;
+  return canUpload();
+}
+
+function canAddTags() {
+  return !!state.auth.permissions?.canAddTags || !!state.auth.permissions?.canManage;
+}
+
+function canRemoveTags() {
+  return !!state.auth.permissions?.canRemoveTags || !!state.auth.permissions?.canManage;
+}
+
+function canDeleteMemes() {
+  return !!state.auth.permissions?.canDeleteMemes || !!state.auth.permissions?.canManage;
+}
+
+function canManageUsers() {
+  return !!state.auth.permissions?.canManageUsers;
+}
+
+function canEditMetadata() {
+  return canAddTags() || canRemoveTags() || canManageUsers();
 }
 
 function canManage() {
-  return !!state.auth.permissions?.canManage;
+  return canEditMetadata() || canDeleteMemes() || canManageUsers();
+}
+
+function isAdminAuditView() {
+  return state.filters.view === "admin-audit-logs";
+}
+
+function isAdminDeleteQueueView() {
+  return state.filters.view === "admin-delete-queue";
+}
+
+function isAdminView() {
+  return isAdminAuditView() || isAdminDeleteQueueView();
 }
 
 function permissionLabel() {
-  if (canManage()) return "Manage";
-  if (canAdd()) return "View + Add";
-  if (canView()) return "View only";
+  if (canManageUsers()) return "Super Admin";
+  const permissions = [];
+  if (canView()) permissions.push("View");
+  if (canUpload()) permissions.push("Upload");
+  if (canAddTags()) permissions.push("Add tags");
+  if (canRemoveTags()) permissions.push("Remove tags");
+  if (canDeleteMemes()) permissions.push("Delete memes");
+  if (permissions.length > 0) return permissions.join(" • ");
   return "No access";
 }
 
@@ -209,9 +309,12 @@ function renderAuthState() {
   authTrigger.title = `${displayName} (${permissionLabel()}) - ${state.auth.version || "dev"}`;
   authLogout.href = state.auth.logoutURL || "/auth/logout";
   authLogout.classList.toggle("hidden", !state.auth.enabled || !state.auth.authenticated);
-  openUploadModalButton.disabled = !canAdd();
-  openUploadModalButton.setAttribute("aria-disabled", String(!canAdd()));
-  openUploadModalButton.title = canAdd() ? "Add File" : "You do not have permission to upload";
+  authManageUsers?.classList.toggle("hidden", !canManageUsers());
+  authDeleteQueue?.classList.toggle("hidden", !canManageUsers());
+  authAuditLogs?.classList.toggle("hidden", !canManageUsers());
+  openUploadModalButton.disabled = !canUpload();
+  openUploadModalButton.setAttribute("aria-disabled", String(!canUpload()));
+  openUploadModalButton.title = canUpload() ? "Add File" : "You do not have permission to upload";
 
   if (state.auth.user?.avatar_url) {
     authAvatar.src = state.auth.user.avatar_url;
@@ -242,6 +345,11 @@ async function fetchAuthSession() {
     version: payload.version || "dev",
     permissions: payload.permissions || {
       canView: false,
+      canUpload: false,
+      canAddTags: false,
+      canRemoveTags: false,
+      canDeleteMemes: false,
+      canManageUsers: false,
       canAdd: false,
       canManage: false,
     },
@@ -268,6 +376,486 @@ async function expectAuthorized(response, failureMessage) {
   }
 
   return true;
+}
+
+async function fetchManagedUsers() {
+  const response = await fetch("/api/users");
+  if (!(await expectAuthorized(response, "Failed to load users."))) {
+    return null;
+  }
+
+  const payload = await response.json();
+  managedUsersState = payload.users || [];
+  renderManagedUsers();
+  return managedUsersState;
+}
+
+async function fetchDeleteQueue() {
+  const queueState = state.admin.queue;
+  const params = new URLSearchParams({
+    offset: `${queueState.offset}`,
+    limit: `${queueState.limit}`,
+  });
+  const response = await fetch(`/api/admin/memes/pending-delete?${params.toString()}`);
+  if (!(await expectAuthorized(response, "Failed to load delete queue."))) {
+    return null;
+  }
+
+  const payload = await response.json();
+  deleteQueueState = payload.memes || [];
+  queueState.total = Number(payload.total || 0);
+  queueState.hasMore = !!payload.has_more;
+  renderDeleteQueue();
+  syncAdminPagination();
+  return deleteQueueState;
+}
+
+async function fetchAuditLogs() {
+  const auditState = state.admin.audit;
+  const params = new URLSearchParams({
+    offset: `${auditState.offset}`,
+    limit: `${auditState.limit}`,
+  });
+  const response = await fetch(`/api/admin/audit-logs?${params.toString()}`);
+  if (!(await expectAuthorized(response, "Failed to load audit logs."))) {
+    return null;
+  }
+
+  const payload = await response.json();
+  auditLogState = payload.events || [];
+  auditState.total = Number(payload.total || 0);
+  auditState.hasMore = !!payload.has_more;
+  renderAuditLogs();
+  syncAdminPagination();
+  return auditLogState;
+}
+
+async function fetchMemeAudit(memeID, limit = 5) {
+  const response = await fetch(`/api/admin/memes/${encodeURIComponent(memeID)}/audit?limit=${encodeURIComponent(limit)}`);
+  if (!(await expectAuthorized(response, "Failed to load activity."))) {
+    return null;
+  }
+
+  const payload = await response.json();
+  return payload.events || [];
+}
+
+function userPermissionSummary(user) {
+  if (user.is_super_admin) {
+    return "Super Admin";
+  }
+
+  const labels = [];
+  if (user.permissions?.canView) labels.push("View");
+  if (user.permissions?.canUpload) labels.push("Upload");
+  if (user.permissions?.canAddTags) labels.push("Add tags");
+  if (user.permissions?.canRemoveTags) labels.push("Remove tags");
+  if (user.permissions?.canDeleteMemes) labels.push("Delete");
+  return labels.length > 0 ? labels.join(" * ") : "No permissions yet";
+}
+
+function formatLastActive(unixSeconds) {
+  const timestamp = Number(unixSeconds || 0);
+  if (!Number.isFinite(timestamp) || timestamp <= 0) {
+    return "No activity recorded yet";
+  }
+
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(new Date(timestamp * 1000));
+  } catch (error) {
+    return new Date(timestamp * 1000).toLocaleString();
+  }
+}
+
+function formatDateTime(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "Unknown time";
+  }
+
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(date);
+  } catch (error) {
+    return date.toLocaleString();
+  }
+}
+
+function escapeHTML(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll("\"", "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function renderManagedUsers() {
+  if (!usersList) return;
+
+  usersList.innerHTML = "";
+  if (managedUsersState.length === 0) {
+    usersList.innerHTML = `<p class="users-empty">No managed users yet.</p>`;
+    return;
+  }
+
+  managedUsersState.forEach((user) => {
+    const card = document.createElement("article");
+    card.className = "users-card";
+    card.dataset.userId = user.user_id;
+
+    const avatar = user.avatar_url
+      ? `<img class="users-avatar" src="${escapeHTML(user.avatar_url)}" alt="" />`
+      : `<div class="users-avatar users-avatar-fallback">${escapeHTML((user.display_name || user.username || user.user_id || "U").trim().slice(0, 2).toUpperCase())}</div>`;
+
+    const disabledAttr = user.is_super_admin ? "disabled" : "";
+    const checked = (value) => value ? "checked" : "";
+
+    card.innerHTML = `
+      <div class="users-card-head">
+        <div class="users-identity">
+          ${avatar}
+          <div class="users-copy">
+            <strong>${escapeHTML(user.display_name || user.username || "Awaiting Discord login")}</strong>
+            <span>${user.username ? `@${escapeHTML(user.username)}` : "Discord profile will appear after first login"}</span>
+            <code>${escapeHTML(user.user_id)}</code>
+            <span>Last active: ${escapeHTML(formatLastActive(user.last_active_at))}</span>
+          </div>
+        </div>
+        <div class="users-badges">
+          <span class="users-scope">${escapeHTML(userPermissionSummary(user))}</span>
+          ${user.is_super_admin ? '<span class="users-super-admin">Env Super Admin</span>' : ""}
+        </div>
+      </div>
+      <div class="users-permissions">
+        <label><input type="checkbox" data-scope="canView" ${checked(user.permissions?.canView)} ${disabledAttr} /> <span>View</span></label>
+        <label><input type="checkbox" data-scope="canUpload" ${checked(user.permissions?.canUpload)} ${disabledAttr} /> <span>Upload</span></label>
+        <label><input type="checkbox" data-scope="canAddTags" ${checked(user.permissions?.canAddTags)} ${disabledAttr} /> <span>Add tags</span></label>
+        <label><input type="checkbox" data-scope="canRemoveTags" ${checked(user.permissions?.canRemoveTags)} ${disabledAttr} /> <span>Remove tags</span></label>
+        <label><input type="checkbox" data-scope="canDeleteMemes" ${checked(user.permissions?.canDeleteMemes)} ${disabledAttr} /> <span>Delete memes</span></label>
+      </div>
+      ${user.is_super_admin ? "" : '<div class="users-card-actions"><button class="primary-button users-save-button" type="button">Save</button></div>'}
+    `;
+
+    const saveButton = card.querySelector(".users-save-button");
+    if (saveButton) {
+      saveButton.addEventListener("click", async () => {
+        const permissions = {
+          canView: !!card.querySelector('input[data-scope="canView"]')?.checked,
+          canUpload: !!card.querySelector('input[data-scope="canUpload"]')?.checked,
+          canAddTags: !!card.querySelector('input[data-scope="canAddTags"]')?.checked,
+          canRemoveTags: !!card.querySelector('input[data-scope="canRemoveTags"]')?.checked,
+          canDeleteMemes: !!card.querySelector('input[data-scope="canDeleteMemes"]')?.checked,
+        };
+        if (permissions.canUpload || permissions.canAddTags || permissions.canRemoveTags || permissions.canDeleteMemes) {
+          permissions.canView = true;
+          const viewToggle = card.querySelector('input[data-scope="canView"]');
+          if (viewToggle) {
+            viewToggle.checked = true;
+          }
+        }
+
+        const response = await fetch(`/api/users/${encodeURIComponent(user.user_id)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(permissions),
+        });
+        if (!(await expectAuthorized(response, "Failed to save user permissions."))) {
+          return;
+        }
+
+        usersModalStatus.textContent = `Saved permissions for ${user.display_name || user.username || user.user_id}.`;
+        await fetchManagedUsers();
+      });
+    }
+
+    usersList.appendChild(card);
+  });
+}
+
+async function openUsersModal() {
+  if (!canManageUsers() || !usersModal) return;
+  usersModalStatus.textContent = "Loading users...";
+  if (!usersModal.open) {
+    usersModal.showModal();
+  }
+  const users = await fetchManagedUsers();
+  usersModalStatus.textContent = users ? "" : "Could not load users.";
+}
+
+function renderDeleteQueue() {
+  const target = isAdminDeleteQueueView() && adminViewTable ? adminViewTable : deleteQueueList;
+  if (!target) return;
+
+  target.innerHTML = "";
+  if (deleteQueueState.length === 0) {
+    target.innerHTML = `<p class="users-empty">No pending delete requests.</p>`;
+    return;
+  }
+
+  const table = document.createElement("div");
+  table.className = "admin-table";
+  table.innerHTML = `
+    <div class="admin-table-head">
+      <span>Preview</span>
+      <span>Meme</span>
+      <span>Requested By</span>
+      <span>Requested At</span>
+      <span>Actions</span>
+    </div>
+  `;
+
+  deleteQueueState.forEach((entry) => {
+    const card = document.createElement("article");
+    card.className = "admin-table-row delete-queue-table-row";
+    const requestedBy = entry.requested_by?.display_name || entry.requested_by?.username || entry.requested_by?.user_id || "Unknown user";
+    const previewMarkup = buildDeleteQueuePreviewMarkup(entry.meme);
+    card.innerHTML = `
+      <div class="admin-table-cell admin-table-preview-cell" data-label="Preview">
+        <div class="delete-queue-preview-wrap admin-inline-preview">
+          ${previewMarkup}
+        </div>
+      </div>
+      <div class="admin-table-cell" data-label="Meme">
+        <div class="users-copy">
+          <strong>${escapeHTML(entry.meme?.originalName || "Unknown meme")}</strong>
+          <span>${escapeHTML(formatSize(Number(entry.meme?.sizeBytes || 0)))} * ${escapeHTML(entry.meme?.contentType || "unknown")}</span>
+          <code>${escapeHTML(entry.meme?.id || "")}</code>
+        </div>
+      </div>
+      <div class="admin-table-cell" data-label="Requested By">
+        <div class="users-copy">
+          <strong>${escapeHTML(requestedBy)}</strong>
+          <span>${escapeHTML(entry.requested_by?.username ? `@${entry.requested_by.username}` : entry.requested_by?.user_id || "")}</span>
+        </div>
+      </div>
+      <div class="admin-table-cell" data-label="Requested At">
+        <span>${escapeHTML(formatDateTime(entry.requested_at))}</span>
+      </div>
+      <div class="admin-table-cell" data-label="Actions">
+        <div class="admin-row-actions">
+          <button class="ghost-button queue-open-modal-button" type="button">Open In Editor</button>
+          <a class="ghost-button delete-queue-open-button" href="${escapeHTML(entry.meme?.filePath || "#")}" target="_blank" rel="noreferrer">Open Original</a>
+          <button class="ghost-button queue-reject-button" type="button">Keep Meme</button>
+          <button class="danger-button queue-approve-button" type="button">Approve Delete</button>
+        </div>
+      </div>
+    `;
+
+    card.querySelector(".queue-open-modal-button")?.addEventListener("click", () => {
+      openModalWithMeme(entry.meme);
+    });
+
+    card.querySelector(".queue-reject-button")?.addEventListener("click", async () => {
+      const response = await fetch(`/api/admin/memes/${encodeURIComponent(entry.meme.id)}/reject-delete`, {
+        method: "POST",
+      });
+      if (!(await expectAuthorized(response, "Failed to reject delete."))) {
+        return;
+      }
+      deleteQueueStatus.textContent = `Kept ${entry.meme.originalName}.`;
+      if (deleteQueueState.length === 1 && state.admin.queue.offset > 0) {
+        state.admin.queue.offset = Math.max(0, state.admin.queue.offset - state.admin.queue.limit);
+      }
+      await fetchDeleteQueue();
+      await loadInitialMemes();
+    });
+
+    card.querySelector(".queue-approve-button")?.addEventListener("click", async () => {
+      const response = await fetch(`/api/admin/memes/${encodeURIComponent(entry.meme.id)}/approve-delete`, {
+        method: "POST",
+      });
+      if (!(await expectAuthorized(response, "Failed to approve delete."))) {
+        return;
+      }
+      deleteQueueStatus.textContent = `Deleted ${entry.meme.originalName}.`;
+      if (deleteQueueState.length === 1 && state.admin.queue.offset > 0) {
+        state.admin.queue.offset = Math.max(0, state.admin.queue.offset - state.admin.queue.limit);
+      }
+      await fetchDeleteQueue();
+      await loadInitialMemes();
+    });
+
+    table.appendChild(card);
+  });
+
+  target.appendChild(table);
+}
+
+async function openDeleteQueueModal() {
+  if (!canManageUsers() || !deleteQueueModal) return;
+  deleteQueueStatus.textContent = "Loading delete queue...";
+  if (!deleteQueueModal.open) {
+    deleteQueueModal.showModal();
+  }
+  const entries = await fetchDeleteQueue();
+  deleteQueueStatus.textContent = entries ? "" : "Could not load delete queue.";
+}
+
+function renderAuditLogs() {
+  const target = isAdminAuditView() && adminViewTable ? adminViewTable : auditLogsList;
+  if (!target) return;
+
+  target.innerHTML = "";
+  if (auditLogState.length === 0) {
+    target.innerHTML = `<p class="users-empty">No audit activity recorded yet.</p>`;
+    return;
+  }
+
+  const table = document.createElement("div");
+  table.className = "admin-table";
+  table.innerHTML = `
+    <div class="admin-table-head audit-log-table-head">
+      <span>Time</span>
+      <span>Action</span>
+      <span>Actor</span>
+      <span>Meme</span>
+      <span>Actions</span>
+    </div>
+  `;
+
+  auditLogState.forEach((event) => {
+    const row = document.createElement("article");
+    row.className = "admin-table-row audit-log-table-row";
+    const actorName = event.actor?.display_name || event.actor?.username || event.actor?.user_id || "Unknown user";
+    const actorHandle = event.actor?.username ? `@${event.actor.username}` : "";
+    const memeTitle = event.meme_original_name || "Unknown or deleted meme";
+    const canOpenEditor = !!event.meme_id && !!event.meme_file_path;
+    const actionsMarkup = canOpenEditor
+      ? `
+        <div class="admin-row-actions">
+          <button class="ghost-button audit-log-open-modal-button" type="button">Open In Editor</button>
+          <a class="ghost-button audit-log-open-button" href="${escapeHTML(event.meme_file_path)}" target="_blank" rel="noreferrer">Open File</a>
+        </div>
+      `
+      : `<span class="users-empty">Meme no longer available</span>`;
+
+    row.innerHTML = `
+      <div class="admin-table-cell" data-label="Time">
+        <span>${escapeHTML(formatDateTime(event.created_at))}</span>
+      </div>
+      <div class="admin-table-cell" data-label="Action">
+        <div class="users-copy">
+          <strong>${escapeHTML(event.description || event.action || "Activity")}</strong>
+          <span>${escapeHTML((event.action || "activity").replaceAll("_", " "))}</span>
+        </div>
+      </div>
+      <div class="admin-table-cell" data-label="Actor">
+        <div class="users-copy">
+          <strong>${escapeHTML(actorName)}</strong>
+          <span>${escapeHTML(actorHandle || event.actor?.user_id || "")}</span>
+        </div>
+      </div>
+      <div class="admin-table-cell" data-label="Meme">
+        <div class="users-copy">
+          <strong>${escapeHTML(memeTitle)}</strong>
+          <span>${escapeHTML(event.meme_content_type || "Unknown type")}</span>
+          <code>${escapeHTML(event.meme_id || "")}</code>
+        </div>
+      </div>
+      <div class="admin-table-cell" data-label="Actions">
+        ${actionsMarkup}
+      </div>
+    `;
+
+    row.querySelector(".audit-log-open-modal-button")?.addEventListener("click", async () => {
+      await openAdminMemeByID(event.meme_id);
+    });
+
+    table.appendChild(row);
+  });
+
+  target.appendChild(table);
+}
+
+async function openAuditLogsModal() {
+  if (!canManageUsers() || !auditLogsModal) return;
+  auditLogsStatus.textContent = "Loading audit logs...";
+  if (!auditLogsModal.open) {
+    auditLogsModal.showModal();
+  }
+  const events = await fetchAuditLogs();
+  auditLogsStatus.textContent = events ? "" : "Could not load audit logs.";
+}
+
+function buildDeleteQueuePreviewMarkup(meme) {
+  if (!meme) {
+    return `<div class="file-icon"><strong>FILE</strong><span>Missing meme</span></div>`;
+  }
+
+  const filePath = escapeHTML(meme.filePath || "#");
+  const previewPath = escapeHTML(meme.previewPath || meme.filePath || "#");
+  const originalName = escapeHTML(meme.originalName || "Queued meme");
+  const contentType = `${meme.contentType || ""}`;
+
+  if (contentType.startsWith("image/")) {
+    return `<img class="delete-queue-preview-media" src="${filePath}" alt="${originalName}" loading="lazy" />`;
+  }
+
+  if (contentType.startsWith("video/")) {
+    return `
+      <video class="delete-queue-preview-media" src="${filePath}" controls preload="metadata" playsinline muted></video>
+    `;
+  }
+
+  if (contentType.startsWith("audio/")) {
+    return `
+      <div class="delete-queue-audio-preview">
+        <div class="file-icon">
+          <strong>${escapeHTML(pickIcon(contentType))}</strong>
+          <span>${escapeHTML(contentType)}</span>
+        </div>
+        <audio src="${filePath}" controls preload="metadata"></audio>
+      </div>
+    `;
+  }
+
+  return `
+    <a class="delete-queue-file-preview" href="${filePath}" target="_blank" rel="noreferrer">
+      <div class="file-icon">
+        <strong>${escapeHTML(pickIcon(contentType || originalName))}</strong>
+        <span>${escapeHTML(contentType || "file")}</span>
+        <span>Open original to review</span>
+      </div>
+    </a>
+  `;
+}
+
+async function loadModalAudit(memeID) {
+  if (!modalAuditSection || !modalAuditList) return;
+  if (!canManageUsers()) {
+    setModalAuditVisibility(false);
+    return;
+  }
+
+  setModalAuditVisibility(true);
+  modalAuditList.innerHTML = `<p class="users-empty">Loading activity...</p>`;
+  const events = await fetchMemeAudit(memeID, 5);
+  if (!events) {
+    modalAuditList.innerHTML = `<p class="users-empty">Could not load activity.</p>`;
+    return;
+  }
+  if (events.length === 0) {
+    modalAuditList.innerHTML = `<p class="users-empty">No activity recorded yet.</p>`;
+    return;
+  }
+
+  modalAuditList.innerHTML = "";
+  events.forEach((event) => {
+    const row = document.createElement("div");
+    row.className = "modal-audit-entry";
+    const actorName = event.actor?.display_name || event.actor?.username || event.actor?.user_id || "Unknown user";
+    row.innerHTML = `
+      <strong>${escapeHTML(event.description || event.action || "Activity")}</strong>
+      <span>${escapeHTML(actorName)} * ${escapeHTML(formatDateTime(event.created_at))}</span>
+    `;
+    modalAuditList.appendChild(row);
+  });
 }
 
 function forceFreshHTMLReload() {
@@ -398,6 +986,33 @@ function syncMemeGridObserver() {
   setMemeGridStatus("", true);
 }
 
+function renderContentMode() {
+  const adminMode = isAdminView();
+  adminView?.classList.toggle("hidden", !adminMode);
+  adminPagination?.classList.toggle("hidden", !adminMode);
+  memeGridLoader?.classList.toggle("hidden", adminMode || !state.library.loading);
+  memeGridStatus?.classList.toggle("hidden", adminMode || memeGridStatus.textContent === "");
+  memeGridTopSpacer?.classList.toggle("hidden", adminMode);
+  memeGridBottomSpacer?.classList.toggle("hidden", adminMode);
+  memeGrid?.classList.toggle("hidden", adminMode);
+  memeGridSentinel?.classList.toggle("hidden", adminMode);
+  emptyState?.classList.toggle("hidden", adminMode || state.memes.length !== 0);
+  document.querySelector(".library-toolbar")?.classList.toggle("hidden", adminMode);
+}
+
+function syncAdminPagination() {
+  const pageState = getActiveAdminPageState();
+  if (!adminPagination || !adminPagePrev || !adminPageNext || !adminPageLabel || !pageState) {
+    return;
+  }
+
+  const pageNumber = Math.floor(pageState.offset / pageState.limit) + 1;
+  const totalPages = Math.max(1, Math.ceil((pageState.total || 0) / pageState.limit));
+  adminPageLabel.textContent = `Page ${pageNumber} of ${totalPages}`;
+  adminPagePrev.disabled = pageState.offset <= 0;
+  adminPageNext.disabled = !pageState.hasMore;
+}
+
 async function fetchMemes({ page = 0 } = {}) {
   if (state.library.loading) {
     return;
@@ -443,7 +1058,34 @@ async function fetchMemes({ page = 0 } = {}) {
 }
 
 async function loadInitialMemes() {
+  renderSidebarViewState();
+  renderContentMode();
+  if (isAdminAuditView()) {
+    adminViewKicker.textContent = "Admin";
+    adminViewTitle.textContent = "Audit Logs";
+    adminViewCopy.textContent = "A full activity log with actor, action, target meme, and quick-open access for review.";
+    adminViewStatus.textContent = "Loading audit logs...";
+    adminViewTable.innerHTML = "";
+    syncAdminPagination();
+    const events = await fetchAuditLogs();
+    adminViewStatus.textContent = events ? "" : "Could not load audit logs.";
+    renderContentMode();
+    return;
+  }
+  if (isAdminDeleteQueueView()) {
+    adminViewKicker.textContent = "Admin";
+    adminViewTitle.textContent = "Delete Review Queue";
+    adminViewCopy.textContent = "Review pending meme deletions, inspect the media, and either keep the meme or approve the delete.";
+    adminViewStatus.textContent = "Loading delete queue...";
+    adminViewTable.innerHTML = "";
+    syncAdminPagination();
+    const entries = await fetchDeleteQueue();
+    adminViewStatus.textContent = entries ? "" : "Could not load delete queue.";
+    renderContentMode();
+    return;
+  }
   await fetchMemes({ page: 0 });
+  renderContentMode();
 }
 
 async function applyTagSearch(rawValue) {
@@ -582,6 +1224,7 @@ function renderMemes() {
   renderSidebarCounts();
   renderSidebarViewState();
   emptyState.classList.toggle("hidden", visibleMemes.length !== 0);
+  renderContentMode();
   contentPanel.scrollTop = 0;
   queueRenderLoadedMemes({ force: true });
 }
@@ -1162,6 +1805,13 @@ function clearRandomReelUIHideTimer() {
   }
 }
 
+function clearMemeModalUIHideTimer() {
+  if (memeModalUITimeout) {
+    window.clearTimeout(memeModalUITimeout);
+    memeModalUITimeout = null;
+  }
+}
+
 function setRandomReelScrollLock(locked) {
   document.body.classList.toggle("random-reel-open", locked);
 }
@@ -1217,6 +1867,23 @@ function showRandomReelUI(autohide = true) {
   randomReelUITimeout = window.setTimeout(() => {
     randomReelModal.classList.add("random-reel-ui-hidden");
   }, 4000);
+}
+
+function hideMemeModalUI() {
+  clearMemeModalUIHideTimer();
+  if (!memeModal?.open) return;
+  memeModal.classList.add("meme-modal-ui-hidden");
+}
+
+function showMemeModalUI(autohide = true) {
+  clearMemeModalUIHideTimer();
+  memeModal?.classList.remove("meme-modal-ui-hidden");
+  if (!autohide || !memeModal?.open) {
+    return;
+  }
+  memeModalUITimeout = window.setTimeout(() => {
+    hideMemeModalUI();
+  }, 2500);
 }
 
 async function stepRandomReel(direction) {
@@ -1306,6 +1973,31 @@ function clearUploadPreview() {
     uploadPreviewURL = null;
   }
   uploadPreview.innerHTML = `<div class="file-icon upload-empty-preview"><strong>DROP</strong><span>Choose one or more files to preview the first item before uploading.</span></div>`;
+}
+
+function setUploadDragActive(active) {
+  uploadPreviewWrap?.classList.toggle("is-drag-active", active);
+}
+
+function setUploadFiles(files) {
+  if (!uploadFileInput) return;
+  if (!files || files.length === 0) {
+    uploadFileInput.value = "";
+    renderUploadPreview(null, 0);
+    return;
+  }
+
+  try {
+    const dataTransfer = new DataTransfer();
+    for (const file of files) {
+      dataTransfer.items.add(file);
+    }
+    uploadFileInput.files = dataTransfer.files;
+  } catch (error) {
+    console.warn("Could not assign dropped files to upload input", error);
+  }
+
+  renderUploadPreview(files[0], files.length);
 }
 
 function renderUploadPreview(file, totalFiles = 1) {
@@ -1430,11 +2122,36 @@ function updateMemeInState(updatedMeme) {
   return state.memes[index];
 }
 
-function openModal(id) {
-  const meme = getMemeById(id);
+function setModalAuditVisibility(visible) {
+  if (!modalAuditSection) return;
+  modalAuditSection.classList.toggle("hidden", !visible);
+  modalAuditSection.style.display = visible ? "" : "none";
+  if (!visible && modalAuditList) {
+    modalAuditList.innerHTML = "";
+  }
+}
+
+async function openAdminMemeByID(id) {
+  if (!id) return;
+  const existing = getMemeById(id);
+  if (existing) {
+    openModalWithMeme(existing);
+    return;
+  }
+
+  const response = await fetch(`/api/admin/memes/${encodeURIComponent(id)}`);
+  if (!(await expectAuthorized(response, "Failed to load meme."))) {
+    return;
+  }
+  const meme = await response.json();
+  openModalWithMeme(meme);
+}
+
+function openModalWithMeme(meme) {
   if (!meme) return;
 
-  activeMemeId = id;
+  activeMemeId = meme.id;
+  setModalAuditVisibility(canManageUsers());
   modalPreview.innerHTML = "";
   const preview = buildModalPreview(meme);
   modalPreview.appendChild(preview);
@@ -1456,14 +2173,14 @@ function openModal(id) {
   modalNotesInput.value = meme.notes || "";
   modalOpenLink.href = meme.filePath;
   applyFavoriteStateToButton(modalFavorite, meme.favorite);
-  modalTagsInput.disabled = !canManage();
-  modalNotesInput.readOnly = !canManage();
+  modalTagsInput.disabled = !canAddTags();
+  modalNotesInput.readOnly = !canEditMetadata();
   modalFavorite.disabled = !canView();
-  modalSave.disabled = !canManage();
-  modalDelete.disabled = !canManage();
+  modalSave.disabled = !canEditMetadata();
+  modalDelete.disabled = !canDeleteMemes();
   modalFavorite.title = canView() ? "" : "You do not have permission to favorite memes";
-  modalSave.title = canManage() ? "" : "You do not have permission to edit memes";
-  modalDelete.title = canManage() ? "" : "You do not have permission to delete memes";
+  modalSave.title = canEditMetadata() ? "" : "You do not have permission to edit metadata";
+  modalDelete.title = canDeleteMemes() ? "" : "You do not have permission to delete memes";
   modalSnapshot = {
     favorite: !!meme.favorite,
     notes: meme.notes || "",
@@ -1477,11 +2194,24 @@ function openModal(id) {
     memeModal.showModal();
   }
   overlayClose.classList.remove("hidden");
+  showMemeModalUI();
   syncModalMediaControls();
+  loadModalAudit(meme.id).catch((error) => {
+    console.error(error);
+    if (modalAuditList) {
+      modalAuditList.innerHTML = `<p class="users-empty">Could not load activity.</p>`;
+    }
+  });
+}
+
+function openModal(id) {
+  const meme = getMemeById(id);
+  if (!meme) return;
+  openModalWithMeme(meme);
 }
 
 function hasUnsavedModalChanges() {
-  if (!canManage()) return false;
+  if (!canEditMetadata()) return false;
   if (!activeMemeId || !modalSnapshot) return false;
   return (
     modalFavorite.classList.contains("is-active") !== modalSnapshot.favorite ||
@@ -1491,6 +2221,7 @@ function hasUnsavedModalChanges() {
 }
 
 function closeModal() {
+  clearMemeModalUIHideTimer();
   if (hasUnsavedModalChanges()) {
     const shouldClose = window.confirm("Discard unsaved changes?");
     if (!shouldClose) return false;
@@ -1503,23 +2234,30 @@ function closeModal() {
   if (memeModal.open) {
     memeModal.close();
   }
+  memeModal.classList.remove("meme-modal-ui-hidden");
   memeModal.classList.remove("details-open");
   modalPanelToggle?.setAttribute("aria-expanded", "false");
   modalPanelToggle?.setAttribute("aria-label", "Open details");
   activeMemeId = null;
   modalSnapshot = null;
+  setModalAuditVisibility(false);
   overlayClose.classList.add("hidden");
   return true;
 }
 
 function syncModalPanelToggle() {
-  if (!modalPanelToggle) {
+  if (!modalPanelToggle && !modalDrawerToggle) {
     return;
   }
 
   const expanded = memeModal.classList.contains("details-open");
-  modalPanelToggle.setAttribute("aria-expanded", String(expanded));
-  modalPanelToggle.setAttribute("aria-label", expanded ? "Close details" : "Open details");
+  modalPanelToggle?.setAttribute("aria-expanded", String(expanded));
+  modalPanelToggle?.setAttribute("aria-label", expanded ? "Close details" : "Open details");
+  if (modalDrawerToggle) {
+    modalDrawerToggle.setAttribute("aria-expanded", String(expanded));
+    modalDrawerToggle.setAttribute("aria-label", expanded ? "Close details" : "Open details");
+    modalDrawerToggle.textContent = "Details";
+  }
 }
 
 function toggleModalDetailsPanel(forceOpen) {
@@ -1568,6 +2306,7 @@ function syncModalMediaControls() {
   modalProgressWrap?.classList.toggle("hidden", !isVideo);
 
   if (!supportsMediaControls) {
+    showMemeModalUI();
     modalPlay.setAttribute("aria-label", "Play media");
     modalPlay.setAttribute("data-tooltip", "Play");
     modalPlayIcon.innerHTML = "&#9654;";
@@ -1658,7 +2397,7 @@ function getModalTagValues() {
 }
 
 function addModalTag(rawTag) {
-  if (!canManage()) return;
+  if (!canAddTags()) return;
   const tag = normalizeTagValue(rawTag);
   if (!tag || modalTagState.some((entry) => entry.value === tag)) return;
   modalTagState = [...modalTagState, createModalTag(tag)];
@@ -1670,7 +2409,7 @@ function addModalTag(rawTag) {
 }
 
 function removeModalTag(tagIdToRemove) {
-  if (!canManage()) return;
+  if (!canRemoveTags()) return;
   modalTagState = modalTagState.filter((tag) => tag.id !== tagIdToRemove);
   if (!normalizeTagValue(modalTagsInput.value)) {
     modalSuggestionState = [];
@@ -1696,7 +2435,9 @@ function renderTagEditor() {
     removeButton.setAttribute("aria-label", `Remove ${tag.value}`);
     removeButton.dataset.tagId = tag.id;
     removeButton.textContent = "x";
+    removeButton.disabled = !canRemoveTags();
     removeButton.addEventListener("pointerdown", (event) => {
+      if (!canRemoveTags()) return;
       event.preventDefault();
       event.stopPropagation();
       removeModalTag(tag.id);
@@ -1736,7 +2477,7 @@ function renderTagSuggestions() {
 }
 
 async function fetchTagSuggestions() {
-  if (!canManage()) return;
+  if (!canAddTags()) return;
   const needle = normalizeTagValue(modalTagsInput.value);
   if (!needle) {
     if (tagSuggestionAbortController) {
@@ -1914,8 +2655,8 @@ async function fetchUploadTagSuggestions() {
 }
 
 async function persistCard(id, payload) {
-  if (!canManage()) {
-    window.alert("You do not have permission to edit memes.");
+  if (!canEditMetadata()) {
+    window.alert("You do not have permission to edit metadata.");
     return false;
   }
 
@@ -1956,7 +2697,7 @@ async function persistFavorite(id, favorite) {
 }
 
 async function deleteMeme(id) {
-  if (!canManage()) {
+  if (!canDeleteMemes()) {
     window.alert("You do not have permission to delete memes.");
     return;
   }
@@ -1967,6 +2708,12 @@ async function deleteMeme(id) {
 
   const response = await fetch(`/api/memes/${id}`, { method: "DELETE" });
   if (!(await expectAuthorized(response, "Delete failed."))) {
+    return;
+  }
+
+  if (response.status === 202) {
+    closeModal();
+    await loadInitialMemes();
     return;
   }
 
@@ -2020,6 +2767,8 @@ openUploadModalButton.addEventListener("click", () => {
   uploadForm.reset();
   resetUploadTags();
   clearUploadPreview();
+  setUploadDragActive(false);
+  uploadDragDepth = 0;
   uploadModal.showModal();
 });
 
@@ -2031,23 +2780,141 @@ openRandomReelButton?.addEventListener("click", () => {
 
 uploadModalClose.addEventListener("click", () => {
   clearUploadPreview();
+  setUploadDragActive(false);
+  uploadDragDepth = 0;
   uploadModal.close();
 });
 
 uploadModal.addEventListener("click", (event) => {
   if (event.target !== uploadModal) return;
   clearUploadPreview();
+  setUploadDragActive(false);
+  uploadDragDepth = 0;
   uploadModal.close();
 });
 
 uploadModal.addEventListener("cancel", (event) => {
   event.preventDefault();
   clearUploadPreview();
+  setUploadDragActive(false);
+  uploadDragDepth = 0;
   uploadModal.close();
+});
+
+usersModalClose?.addEventListener("click", () => {
+  usersModal?.close();
+});
+
+usersModal?.addEventListener("click", (event) => {
+  if (event.target !== usersModal) return;
+  usersModal.close();
+});
+
+usersModal?.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  usersModal.close();
+});
+
+deleteQueueClose?.addEventListener("click", () => {
+  deleteQueueModal?.close();
+});
+
+deleteQueueModal?.addEventListener("click", (event) => {
+  if (event.target !== deleteQueueModal) return;
+  deleteQueueModal.close();
+});
+
+deleteQueueModal?.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  deleteQueueModal.close();
+});
+
+auditLogsClose?.addEventListener("click", () => {
+  auditLogsModal?.close();
+});
+
+auditLogsModal?.addEventListener("click", (event) => {
+  if (event.target !== auditLogsModal) return;
+  auditLogsModal.close();
+});
+
+auditLogsModal?.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  auditLogsModal.close();
+});
+
+usersAddForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!canManageUsers()) return;
+
+  const userID = usersAddID?.value?.trim();
+  if (!userID) {
+    usersModalStatus.textContent = "Enter a Discord user ID first.";
+    return;
+  }
+
+  usersModalStatus.textContent = "Adding user...";
+  const response = await fetch("/api/users", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: userID }),
+  });
+  if (!(await expectAuthorized(response, "Failed to add user."))) {
+    usersModalStatus.textContent = "Could not add user.";
+    return;
+  }
+
+  usersModalStatus.textContent = `Added ${userID}.`;
+  if (usersAddID) {
+    usersAddID.value = "";
+  }
+  await fetchManagedUsers();
 });
 
 uploadFileInput.addEventListener("change", () => {
   renderUploadPreview(uploadFileInput.files?.[0], uploadFileInput.files?.length ?? 0);
+});
+
+uploadPreviewWrap?.addEventListener("dragenter", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  uploadDragDepth += 1;
+  setUploadDragActive(true);
+});
+
+uploadPreviewWrap?.addEventListener("dragover", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = "copy";
+  }
+  setUploadDragActive(true);
+});
+
+uploadPreviewWrap?.addEventListener("dragleave", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  uploadDragDepth = Math.max(0, uploadDragDepth - 1);
+  if (uploadDragDepth === 0) {
+    setUploadDragActive(false);
+  }
+});
+
+uploadPreviewWrap?.addEventListener("drop", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  uploadDragDepth = 0;
+  setUploadDragActive(false);
+
+  const files = [...(event.dataTransfer?.files || [])].filter((file) => file && file.size >= 0);
+  if (files.length === 0) {
+    return;
+  }
+
+  setUploadFiles(files);
+  uploadStatus.textContent = files.length > 1
+    ? `${files.length} files ready to upload.`
+    : `${files[0].name} ready to upload.`;
 });
 
 uploadTagsInput.addEventListener("input", () => {
@@ -2205,6 +3072,57 @@ authVersion?.addEventListener("click", (event) => {
   forceFreshHTMLReload();
 });
 
+authManageUsers?.addEventListener("click", (event) => {
+  event.stopPropagation();
+  closeAuthMenu();
+  openUsersModal().catch((error) => {
+    console.error(error);
+    usersModalStatus.textContent = "Could not load users.";
+  });
+});
+
+authDeleteQueue?.addEventListener("click", (event) => {
+  event.stopPropagation();
+  closeAuthMenu();
+  state.admin.queue.offset = 0;
+  state.filters.view = "admin-delete-queue";
+  loadInitialMemes().catch((error) => {
+    console.error(error);
+    adminViewStatus.textContent = "Could not load delete queue.";
+  });
+});
+
+authAuditLogs?.addEventListener("click", (event) => {
+  event.stopPropagation();
+  closeAuthMenu();
+  state.admin.audit.offset = 0;
+  state.filters.view = "admin-audit-logs";
+  loadInitialMemes().catch((error) => {
+    console.error(error);
+    adminViewStatus.textContent = "Could not load audit logs.";
+  });
+});
+
+adminPagePrev?.addEventListener("click", () => {
+  const pageState = getActiveAdminPageState();
+  if (!pageState || pageState.offset <= 0) return;
+  pageState.offset = Math.max(0, pageState.offset - pageState.limit);
+  loadInitialMemes().catch((error) => {
+    console.error(error);
+    adminViewStatus.textContent = "Could not load admin page.";
+  });
+});
+
+adminPageNext?.addEventListener("click", () => {
+  const pageState = getActiveAdminPageState();
+  if (!pageState || !pageState.hasMore) return;
+  pageState.offset += pageState.limit;
+  loadInitialMemes().catch((error) => {
+    console.error(error);
+    adminViewStatus.textContent = "Could not load admin page.";
+  });
+});
+
 document.addEventListener("click", (event) => {
   if (!authPanelContains(event.target)) {
     closeAuthMenu();
@@ -2212,27 +3130,56 @@ document.addEventListener("click", (event) => {
 });
 
 overlayClose.addEventListener("click", () => {
+  showMemeModalUI(false);
   closeModal();
 });
 
 modalCloseButton?.addEventListener("click", () => {
+  showMemeModalUI(false);
   closeModal();
 });
 
 modalPanelToggle?.addEventListener("click", () => {
+  showMemeModalUI();
   toggleModalDetailsPanel();
 });
 
+modalDrawerToggle?.addEventListener("click", () => {
+  showMemeModalUI();
+  toggleModalDetailsPanel();
+});
+
+modalDrawerClose?.addEventListener("click", () => {
+  showMemeModalUI(false);
+  closeModal();
+});
+
 memeModal.addEventListener("close", () => {
+  clearMemeModalUIHideTimer();
   activeMemeId = null;
   modalSnapshot = null;
+  memeModal.classList.remove("meme-modal-ui-hidden");
   memeModal.classList.remove("details-open");
   syncModalPanelToggle();
   overlayClose.classList.add("hidden");
 });
 
 memeModal.addEventListener("click", (event) => {
-  if (event.target !== memeModal) return;
+  const clickedDrawerControl = modalPanelToggle?.contains(event.target)
+    || modalDrawerToggle?.contains(event.target)
+    || modalDrawerClose?.contains(event.target)
+    || modalCloseButton?.contains(event.target);
+
+  if (memeModal.classList.contains("details-open") && modalBody && !modalBody.contains(event.target) && !clickedDrawerControl) {
+    showMemeModalUI();
+    toggleModalDetailsPanel(false);
+    return;
+  }
+
+  if (event.target !== memeModal) {
+    showMemeModalUI();
+    return;
+  }
   closeModal();
 });
 
@@ -2241,11 +3188,27 @@ memeModal.addEventListener("cancel", (event) => {
   closeModal();
 });
 
+memeModal?.addEventListener("mousemove", () => {
+  if (!memeModal.open) {
+    return;
+  }
+  showMemeModalUI();
+});
+
+modalPreviewWrap?.addEventListener("mouseenter", () => {
+  if (!memeModal.open) {
+    return;
+  }
+  showMemeModalUI();
+});
+
 modalPreview?.addEventListener("click", async (event) => {
   const media = modalPreview.querySelector("video");
   if (!media || event.target !== media) {
     return;
   }
+
+  showMemeModalUI();
 
   try {
     if (media.paused) {
@@ -2261,6 +3224,7 @@ modalPreview?.addEventListener("click", async (event) => {
 });
 
 modalPlay?.addEventListener("click", async () => {
+  showMemeModalUI();
   const media = getModalMediaControlTarget();
   if (!media) return;
 
@@ -2278,6 +3242,7 @@ modalPlay?.addEventListener("click", async () => {
 });
 
 modalVolumeToggle?.addEventListener("click", () => {
+  showMemeModalUI();
   const media = getModalMediaControlTarget();
   if (!media) return;
 
@@ -2287,6 +3252,7 @@ modalVolumeToggle?.addEventListener("click", () => {
 });
 
 modalVolume?.addEventListener("input", () => {
+  showMemeModalUI();
   const media = getModalMediaControlTarget();
   if (!media) return;
 
@@ -2298,6 +3264,7 @@ modalVolume?.addEventListener("input", () => {
 });
 
 modalProgress?.addEventListener("input", () => {
+  showMemeModalUI();
   const media = getModalMediaControlTarget();
   if (!(media instanceof HTMLVideoElement)) {
     return;
@@ -2421,6 +3388,20 @@ randomReelModal?.addEventListener("click", (event) => {
     return;
   }
   closeRandomReel();
+});
+
+randomReelModal?.addEventListener("mousemove", () => {
+  if (!randomReelModal.open) {
+    return;
+  }
+  showRandomReelUI();
+});
+
+randomReelModal?.addEventListener("mouseenter", () => {
+  if (!randomReelModal.open) {
+    return;
+  }
+  showRandomReelUI();
 });
 
 randomReelModal?.addEventListener("cancel", (event) => {
@@ -2547,7 +3528,7 @@ window.addEventListener("keydown", (event) => {
 });
 
 modalSave.addEventListener("click", async () => {
-  if (!canManage()) return;
+  if (!canEditMetadata()) return;
   if (!activeMemeId) return;
   const saved = await persistCard(activeMemeId, {
     favorite: modalFavorite.classList.contains("is-active"),
@@ -2573,12 +3554,13 @@ modalFavorite.addEventListener("click", async () => {
 });
 
 modalDelete.addEventListener("click", async () => {
-  if (!canManage()) return;
+  if (!canDeleteMemes()) return;
   if (!activeMemeId) return;
   await deleteMeme(activeMemeId);
 });
 
 modalTagsInput.addEventListener("input", () => {
+  if (!canAddTags()) return;
   activeSuggestionIndex = -1;
   fetchTagSuggestions();
 });
@@ -2599,6 +3581,9 @@ modalTagsInput.addEventListener("keydown", (event) => {
   }
 
   if ((event.key === "Enter" || event.key === "Tab" || event.key === ",") && modalTagsInput.value.trim()) {
+    if (!canAddTags()) {
+      return;
+    }
     event.preventDefault();
     if (activeSuggestionIndex >= 0 && modalSuggestionState[activeSuggestionIndex]) {
       addModalTag(modalSuggestionState[activeSuggestionIndex]);
@@ -2609,6 +3594,9 @@ modalTagsInput.addEventListener("keydown", (event) => {
   }
 
   if (event.key === "Backspace" && !modalTagsInput.value && modalTagState.length > 0) {
+    if (!canRemoveTags()) {
+      return;
+    }
     removeModalTag(modalTagState[modalTagState.length - 1].id);
   }
 

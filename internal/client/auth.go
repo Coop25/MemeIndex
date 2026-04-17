@@ -26,9 +26,11 @@ const (
 type permissionLevel string
 
 const (
-	permissionView   permissionLevel = "view"
-	permissionAdd    permissionLevel = "add"
-	permissionManage permissionLevel = "manage"
+	permissionView        permissionLevel = "view"
+	permissionUpload      permissionLevel = "upload"
+	permissionMetadata    permissionLevel = "metadata"
+	permissionDeleteMemes permissionLevel = "delete_memes"
+	permissionManageUsers permissionLevel = "manage_users"
 )
 
 type authContextKey string
@@ -45,9 +47,14 @@ type authSession struct {
 }
 
 type authPermissions struct {
-	CanView   bool `json:"canView"`
-	CanAdd    bool `json:"canAdd"`
-	CanManage bool `json:"canManage"`
+	CanView        bool `json:"canView"`
+	CanUpload      bool `json:"canUpload"`
+	CanAddTags     bool `json:"canAddTags"`
+	CanRemoveTags  bool `json:"canRemoveTags"`
+	CanDeleteMemes bool `json:"canDeleteMemes"`
+	CanManageUsers bool `json:"canManageUsers"`
+	CanAdd         bool `json:"canAdd"`
+	CanManage      bool `json:"canManage"`
 }
 
 type authClaims struct {
@@ -63,6 +70,7 @@ type authService struct {
 	config        DiscordAuthConfig
 	secret        []byte
 	client        *http.Client
+	users         authUserStore
 	pendingStates map[string]time.Time
 	mu            sync.RWMutex
 }
@@ -79,7 +87,7 @@ type discordUser struct {
 	Discriminator string `json:"discriminator"`
 }
 
-func newAuthService(config DiscordAuthConfig) *authService {
+func newAuthService(config DiscordAuthConfig, users authUserStore) *authService {
 	if !config.Enabled() {
 		return nil
 	}
@@ -88,6 +96,7 @@ func newAuthService(config DiscordAuthConfig) *authService {
 		config:        config,
 		secret:        []byte(config.SessionSecret),
 		client:        &http.Client{Timeout: 15 * time.Second},
+		users:         users,
 		pendingStates: map[string]time.Time{},
 	}
 }
@@ -291,6 +300,12 @@ func (a *authService) consumeValidState(r *http.Request) bool {
 }
 
 func (a *authService) createSession(user discordUser) (authSession, string, error) {
+	if a.users != nil {
+		if err := a.users.UpsertDiscordProfile(context.Background(), user); err != nil {
+			return authSession{}, "", err
+		}
+	}
+
 	permissions := a.permissionsForUser(user.ID)
 	if !permissions.CanView {
 		return authSession{}, "", errors.New("user is not authorized")
@@ -362,6 +377,12 @@ func (a *authService) sessionFromRequest(r *http.Request) (authSession, bool) {
 		return authSession{}, false
 	}
 
+	if a.users != nil {
+		if err := a.users.UpsertSessionProfile(context.Background(), claims); err != nil {
+			return authSession{}, false
+		}
+	}
+
 	permissions := a.permissionsForUser(claims.Subject)
 	if !permissions.CanView {
 		return authSession{}, false
@@ -416,23 +437,39 @@ func discordAvatarURL(user discordUser) string {
 }
 
 func (a *authService) permissionsForUser(userID string) authPermissions {
-	_, canManage := a.config.ManageUserIDs[userID]
-	_, canAdd := a.config.AddUserIDs[userID]
-	_, canView := a.config.ViewUserIDs[userID]
-
-	if canManage {
-		canAdd = true
-		canView = true
-	}
-	if canAdd {
-		canView = true
+	normalizedUserID := strings.TrimSpace(userID)
+	if normalizedUserID == "" {
+		return authPermissions{}
 	}
 
-	return authPermissions{
-		CanView:   canView,
-		CanAdd:    canAdd,
-		CanManage: canManage,
+	permissions := authPermissions{}
+	if a.users != nil {
+		record, ok, err := a.users.GetUser(context.Background(), normalizedUserID)
+		if err == nil && ok {
+			permissions = record.Permissions
+		}
 	}
+
+	if _, isSuperAdmin := a.config.SuperAdminUserIDs[normalizedUserID]; isSuperAdmin {
+		permissions = authPermissions{
+			CanView:        true,
+			CanUpload:      true,
+			CanAddTags:     true,
+			CanRemoveTags:  true,
+			CanDeleteMemes: true,
+			CanManageUsers: true,
+		}
+	}
+
+	if permissions.CanUpload {
+		permissions.CanView = true
+	}
+	if permissions.CanAddTags || permissions.CanRemoveTags || permissions.CanDeleteMemes || permissions.CanManageUsers {
+		permissions.CanView = true
+	}
+	permissions.CanAdd = permissions.CanUpload
+	permissions.CanManage = permissions.CanAddTags || permissions.CanRemoveTags || permissions.CanDeleteMemes || permissions.CanManageUsers
+	return permissions
 }
 
 func (a *authService) exchangeCode(ctx context.Context, code string, redirectURL string) (string, error) {

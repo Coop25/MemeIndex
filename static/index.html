@@ -155,12 +155,47 @@
                 <span id="auth-version-value" class="auth-version-value">dev</span>
                 <span class="auth-version-hint">Refresh frontend</span>
               </button>
+              <button id="auth-manage-users" class="auth-version-button hidden" type="button" role="menuitem" aria-label="Manage users and permissions">
+                <span class="auth-version-label">Users</span>
+                <span class="auth-version-value">Admin</span>
+                <span class="auth-version-hint">Manage permissions</span>
+              </button>
+              <button id="auth-delete-queue" class="auth-version-button hidden" type="button" role="menuitem" aria-label="Review pending delete requests">
+                <span class="auth-version-label">Queue</span>
+                <span class="auth-version-value">Review</span>
+                <span class="auth-version-hint">Approve deletes</span>
+              </button>
+              <button id="auth-audit-logs" class="auth-version-button hidden" type="button" role="menuitem" aria-label="Review audit logs">
+                <span class="auth-version-label">Logs</span>
+                <span class="auth-version-value">Audit</span>
+                <span class="auth-version-hint">View activity</span>
+              </button>
               <a id="auth-logout" class="auth-link auth-link-danger hidden" href="/auth/logout" role="menuitem">Logout</a>
             </div>
           </div>
         </header>
 
         <section class="content-panel">
+          <section id="admin-view" class="admin-view hidden" aria-live="polite">
+            <div class="admin-view-header">
+              <div>
+                <p id="admin-view-kicker" class="section-kicker">Admin</p>
+                <h2 id="admin-view-title">Audit Logs</h2>
+              </div>
+              <p id="admin-view-copy" class="admin-view-copy"></p>
+            </div>
+            <p id="admin-view-status" class="status-text"></p>
+            <div id="admin-view-table" class="admin-view-table"></div>
+            <div id="admin-pagination" class="admin-pagination hidden" aria-label="Admin page navigation">
+              <button id="admin-page-prev" class="meme-page-button" type="button" aria-label="Previous admin page" disabled>
+                <span aria-hidden="true"><</span>
+              </button>
+              <p id="admin-page-label" class="meme-page-label" aria-live="polite">Page 1</p>
+              <button id="admin-page-next" class="meme-page-button" type="button" aria-label="Next admin page" disabled>
+                <span aria-hidden="true">></span>
+              </button>
+            </div>
+          </section>
           <div id="meme-grid-loader" class="loading-indicator loading-indicator-grid hidden" aria-live="polite" aria-hidden="true">
             <span class="loading-spinner" aria-hidden="true"></span>
             <span class="loading-label">Loading memes...</span>
@@ -234,6 +269,64 @@
       </div>
     </dialog>
 
+    <dialog id="users-modal" class="upload-modal users-modal">
+      <div class="upload-modal-shell">
+        <div class="upload-modal-body users-modal-body">
+          <div class="upload-modal-header">
+            <div>
+              <p class="section-kicker">Admin</p>
+              <h2>Users</h2>
+            </div>
+            <button id="users-modal-close" class="upload-modal-close" type="button" aria-label="Close users">X</button>
+          </div>
+          <p class="upload-modal-copy">Add Discord users, then toggle who can view, upload, edit tags, and delete memes.</p>
+          <form id="users-add-form" class="users-add-form">
+            <label class="field compact-field">
+              <span>Discord User ID</span>
+              <input id="users-add-id" type="text" placeholder="123456789012345678" autocomplete="off" />
+            </label>
+            <button id="users-add-submit" type="submit" class="primary-button">Add User</button>
+          </form>
+          <p id="users-modal-status" class="status-text"></p>
+          <div id="users-list" class="users-list"></div>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="delete-queue-modal" class="upload-modal users-modal delete-queue-modal">
+      <div class="upload-modal-shell">
+        <div class="upload-modal-body users-modal-body">
+          <div class="upload-modal-header">
+            <div>
+              <p class="section-kicker">Admin</p>
+              <h2>Delete Queue</h2>
+            </div>
+            <button id="delete-queue-close" class="upload-modal-close" type="button" aria-label="Close delete queue">X</button>
+          </div>
+          <p class="upload-modal-copy">Memes deleted by non-super-admins stay hidden from the app until you approve or reject the request.</p>
+          <p id="delete-queue-status" class="status-text"></p>
+          <div id="delete-queue-list" class="users-list"></div>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="audit-logs-modal" class="upload-modal users-modal audit-logs-modal">
+      <div class="upload-modal-shell">
+        <div class="upload-modal-body users-modal-body">
+          <div class="upload-modal-header">
+            <div>
+              <p class="section-kicker">Admin</p>
+              <h2>Audit Logs</h2>
+            </div>
+            <button id="audit-logs-close" class="upload-modal-close" type="button" aria-label="Close audit logs">X</button>
+          </div>
+          <p class="upload-modal-copy">Recent upload, tag, moderation, and delete activity across the app. Only super admins can view this feed.</p>
+          <p id="audit-logs-status" class="status-text"></p>
+          <div id="audit-logs-list" class="users-list audit-logs-list"></div>
+        </div>
+      </div>
+    </dialog>
+
     <template id="meme-card-template">
       <article class="meme-card">
         <div class="card-hitarea" role="button" tabindex="0" aria-label="Open meme details">
@@ -279,10 +372,18 @@
         </div>
         <div class="meme-body modal-body">
           <div class="modal-heading">
-            <div>
+            <div class="modal-heading-bar">
               <p class="section-kicker">Details</p>
-              <h3 id="modal-title" class="modal-title"></h3>
+              <div class="modal-drawer-actions">
+                <button id="modal-drawer-toggle" class="modal-drawer-button" type="button" aria-label="Close details" aria-expanded="true">
+                  Details
+                </button>
+                <button id="modal-drawer-close" class="modal-drawer-button modal-drawer-close" type="button" aria-label="Close details modal">
+                  X
+                </button>
+              </div>
             </div>
+            <h3 id="modal-title" class="modal-title"></h3>
           </div>
           <p id="modal-meta" class="meta-line"></p>
           <label class="field compact-field">
@@ -299,6 +400,12 @@
             <span>Notes</span>
             <textarea id="modal-notes-input" rows="7" placeholder="Add notes"></textarea>
           </label>
+          <section id="modal-audit-section" class="modal-audit-section hidden">
+            <div class="modal-audit-header">
+              <span>Activity</span>
+            </div>
+            <div id="modal-audit-list" class="modal-audit-list"></div>
+          </section>
           <div class="card-actions modal-actions">
             <button id="modal-favorite" class="action-button icon-action" type="button" aria-label="Favorite" data-tooltip="Favorite">
               <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true">

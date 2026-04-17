@@ -36,6 +36,60 @@ type Meme struct {
 	UpdatedAt    time.Time `json:"updatedAt"`
 }
 
+type AuditActor struct {
+	UserID       string `json:"user_id"`
+	Username     string `json:"username"`
+	DisplayName  string `json:"display_name"`
+	AvatarURL    string `json:"avatar_url"`
+	IsSuperAdmin bool   `json:"is_super_admin"`
+}
+
+type MemeAuditEntry struct {
+	ID          int64      `json:"id"`
+	MemeID      string     `json:"meme_id"`
+	Action      string     `json:"action"`
+	Actor       AuditActor `json:"actor"`
+	Description string     `json:"description"`
+	CreatedAt   time.Time  `json:"created_at"`
+}
+
+type GlobalMemeAuditEntry struct {
+	MemeAuditEntry
+	MemeOriginalName string `json:"meme_original_name"`
+	MemeContentType  string `json:"meme_content_type"`
+	MemeFilePath     string `json:"meme_file_path"`
+}
+
+type PagedAuditFeed struct {
+	Events     []GlobalMemeAuditEntry `json:"events"`
+	Total      int                    `json:"total"`
+	HasMore    bool                   `json:"has_more"`
+	NextOffset int                    `json:"next_offset"`
+}
+
+type PagedPendingDeletes struct {
+	Memes      []PendingDeleteRecord `json:"memes"`
+	Total      int                   `json:"total"`
+	HasMore    bool                  `json:"has_more"`
+	NextOffset int                   `json:"next_offset"`
+}
+
+type PendingDeleteRecord struct {
+	Meme        Meme       `json:"meme"`
+	RequestedBy AuditActor `json:"requested_by"`
+	RequestedAt time.Time  `json:"requested_at"`
+}
+
+type DeleteInput struct {
+	ID    string
+	Actor AuditActor
+}
+
+type DeleteResult struct {
+	Deleted         bool `json:"deleted"`
+	PendingApproval bool `json:"pending_approval"`
+}
+
 type persistedMeme struct {
 	ID           string    `json:"id"`
 	OriginalName string    `json:"originalName"`
@@ -51,9 +105,10 @@ type persistedMeme struct {
 }
 
 type MemeUpdate struct {
-	Tags     []string `json:"tags"`
-	Notes    string   `json:"notes"`
-	Favorite bool     `json:"favorite"`
+	Tags     []string   `json:"tags"`
+	Notes    string     `json:"notes"`
+	Favorite bool       `json:"favorite"`
+	Actor    AuditActor `json:"-"`
 }
 
 type CreateInput struct {
@@ -63,6 +118,7 @@ type CreateInput struct {
 	Tags        []string
 	Notes       string
 	ContentType string
+	Actor       AuditActor
 }
 
 type MemeStore struct {
@@ -330,9 +386,11 @@ func (s *MemeStore) SetFavorite(userID, id string, favorite bool) (Meme, error) 
 	return Meme{}, os.ErrNotExist
 }
 
-func (s *MemeStore) Delete(id string) error {
+func (s *MemeStore) Delete(input DeleteInput) (DeleteResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	id := strings.TrimSpace(input.ID)
 
 	for i := range s.memes {
 		if s.memes[i].ID != id {
@@ -342,25 +400,27 @@ func (s *MemeStore) Delete(id string) error {
 		s.removeFromIndexesLocked(s.memes[i])
 		targetPath := filepath.Join(s.uploadDir, s.memes[i].StoredName)
 		if err := os.Remove(targetPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("remove upload file: %w", err)
+			return DeleteResult{}, fmt.Errorf("remove upload file: %w", err)
 		}
 		thumbnailPath := filepath.Join(s.previewDir, thumbnailFileName(s.memes[i].StoredName))
 		if err := os.Remove(thumbnailPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("remove thumbnail file: %w", err)
+			return DeleteResult{}, fmt.Errorf("remove thumbnail file: %w", err)
 		}
 
 		favoritesChanged := s.removeFavoriteFromAllUsersLocked(s.memes[i].ID)
 		s.memes = append(s.memes[:i], s.memes[i+1:]...)
 		if err := s.saveMemesLocked(); err != nil {
-			return err
+			return DeleteResult{}, err
 		}
 		if favoritesChanged {
-			return s.saveFavoritesLocked()
+			if err := s.saveFavoritesLocked(); err != nil {
+				return DeleteResult{}, err
+			}
 		}
-		return nil
+		return DeleteResult{Deleted: true}, nil
 	}
 
-	return os.ErrNotExist
+	return DeleteResult{}, os.ErrNotExist
 }
 
 func (s *MemeStore) UploadDir() string {

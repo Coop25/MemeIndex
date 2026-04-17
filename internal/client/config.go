@@ -15,16 +15,16 @@ type Config struct {
 }
 
 type DiscordAuthConfig struct {
-	ClientID        string
-	ClientSecret    string
-	RedirectURL     string
-	DynamicRedirect bool
-	SessionSecret   string
-	SessionDuration time.Duration
-	CookieSecure    bool
-	ViewUserIDs     map[string]struct{}
-	AddUserIDs      map[string]struct{}
-	ManageUserIDs   map[string]struct{}
+	ClientID          string
+	ClientSecret      string
+	RedirectURL       string
+	DynamicRedirect   bool
+	SessionSecret     string
+	SessionDuration   time.Duration
+	CookieSecure      bool
+	SuperAdminUserIDs map[string]struct{}
+	ViewUserIDs       map[string]struct{}
+	AddUserIDs        map[string]struct{}
 }
 
 func (c DiscordAuthConfig) Enabled() bool {
@@ -42,6 +42,7 @@ type rawConfig struct {
 	SessionSecret          string   `envconfig:"SESSION_SECRET"`
 	SessionDurationDays    int      `envconfig:"SESSION_DURATION_DAYS" default:"30"`
 	CookieSecure           bool     `envconfig:"COOKIE_SECURE" default:"false"`
+	SuperAdminUserIDs      []string `envconfig:"SUPER_ADMIN_USER_IDS"`
 	ViewUserIDs            []string `envconfig:"VIEW_USER_IDS"`
 	AddUserIDs             []string `envconfig:"ADD_USER_IDS"`
 	ManageUserIDs          []string `envconfig:"MANAGE_USER_IDS"`
@@ -65,9 +66,12 @@ func LoadConfig() (Config, error) {
 			SessionSecret:   strings.TrimSpace(raw.SessionSecret),
 			SessionDuration: sessionDurationFromDays(raw.SessionDurationDays),
 			CookieSecure:    raw.CookieSecure,
-			ViewUserIDs:     toSet(raw.ViewUserIDs),
-			AddUserIDs:      toSet(raw.AddUserIDs),
-			ManageUserIDs:   toSet(raw.ManageUserIDs),
+			SuperAdminUserIDs: mergeSets(
+				toSet(raw.SuperAdminUserIDs),
+				toSet(raw.ManageUserIDs),
+			),
+			ViewUserIDs: toSet(raw.ViewUserIDs),
+			AddUserIDs:  toSet(raw.AddUserIDs),
 		},
 	}, nil
 }
@@ -89,4 +93,14 @@ func sessionDurationFromDays(days int) time.Duration {
 		days = 30
 	}
 	return time.Duration(days) * 24 * time.Hour
+}
+
+func mergeSets(sets ...map[string]struct{}) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, set := range sets {
+		for key := range set {
+			out[key] = struct{}{}
+		}
+	}
+	return out
 }
