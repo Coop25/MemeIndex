@@ -504,7 +504,13 @@ function renderManagedUsers() {
     return;
   }
 
-  managedUsersState.forEach((user) => {
+  const sortedUsers = [...managedUsersState].sort((left, right) => {
+    const leftLastActive = Number(left?.last_active_at || 0);
+    const rightLastActive = Number(right?.last_active_at || 0);
+    return rightLastActive - leftLastActive;
+  });
+
+  sortedUsers.forEach((user) => {
     const card = document.createElement("article");
     card.className = "users-card";
     card.dataset.userId = user.user_id;

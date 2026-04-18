@@ -181,15 +181,14 @@ textarea {
 }
 
 .brand-mark {
-  width: 46px;
-  height: 46px;
-  border-radius: 14px;
-  display: grid;
-  place-items: center;
-  background: linear-gradient(135deg, var(--accent-2) 0%, var(--accent) 100%);
-  color: #081015;
-  font-weight: 800;
+  width: 60px;
+  height: 60px;
+  border-radius: 18px;
+  display: block;
+  object-fit: cover;
   flex: 0 0 auto;
+  background: transparent;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.24);
 }
 
 .brand-kicker,
@@ -3149,9 +3148,9 @@ body.random-reel-open {
   }
 
   .brand-mark {
-    width: 40px;
-    height: 40px;
-    border-radius: 12px;
+    width: 52px;
+    height: 52px;
+    border-radius: 16px;
   }
 
   .brand-block h1 {
