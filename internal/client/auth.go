@@ -307,10 +307,6 @@ func (a *authService) createSession(user discordUser) (authSession, string, erro
 	}
 
 	permissions := a.permissionsForUser(user.ID)
-	if !permissions.CanView {
-		return authSession{}, "", errors.New("user is not authorized")
-	}
-
 	displayName := strings.TrimSpace(user.GlobalName)
 	if displayName == "" {
 		displayName = user.Username
@@ -384,10 +380,6 @@ func (a *authService) sessionFromRequest(r *http.Request) (authSession, bool) {
 	}
 
 	permissions := a.permissionsForUser(claims.Subject)
-	if !permissions.CanView {
-		return authSession{}, false
-	}
-
 	return authSession{
 		UserID:      claims.Subject,
 		Username:    claims.Username,

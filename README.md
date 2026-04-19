@@ -97,7 +97,6 @@ Optional flags:
 - `MEMEINDEX_SUPER_ADMIN_USER_IDS`: comma-separated Discord user IDs that should always have full access plus user-management access
 - `MEMEINDEX_VIEW_USER_IDS`: comma-separated Discord user IDs allowed to view the app
 - `MEMEINDEX_ADD_USER_IDS`: comma-separated Discord user IDs allowed to view and upload memes
-- `MEMEINDEX_MANAGE_USER_IDS`: legacy alias for super admins, still supported for compatibility
 
 If the Discord OAuth env vars are not set, MemeIndex keeps auth disabled and behaves like it does today.
 
@@ -123,7 +122,6 @@ $env:MEMEINDEX_SESSION_DURATION_DAYS="30"
 $env:MEMEINDEX_SUPER_ADMIN_USER_IDS="333333333333333333"
 $env:MEMEINDEX_VIEW_USER_IDS="111111111111111111,222222222222222222"
 $env:MEMEINDEX_ADD_USER_IDS="222222222222222222"
-$env:MEMEINDEX_MANAGE_USER_IDS="333333333333333333"
 ```
 
 For local development across both your PC and phone, you can instead enable dynamic redirects:

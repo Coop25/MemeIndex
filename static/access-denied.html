@@ -1,0 +1,535 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MemeIndex - Forbidden</title>
+    <link rel="apple-touch-icon" sizes="180x180" href="/static/favicon/apple-touch-icon.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon/favicon-16x16.png" />
+    <link rel="shortcut icon" href="/static/favicon/favicon.ico" />
+    <link rel="stylesheet" href="/static/styles.css" />
+    <style>
+      :root {
+        --forbidden-bg:
+          radial-gradient(circle at top left, rgba(58, 143, 240, 0.15), transparent 24%),
+          radial-gradient(circle at bottom right, rgba(76, 211, 211, 0.12), transparent 28%),
+          linear-gradient(180deg, #091119 0%, #0c141d 100%);
+        --forbidden-panel:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.028), rgba(255, 255, 255, 0.01)),
+          rgba(13, 19, 27, 0.96);
+        --forbidden-line: rgba(255, 255, 255, 0.08);
+        --forbidden-text: #edf4f7;
+        --forbidden-muted: rgba(210, 223, 231, 0.76);
+        --forbidden-accent: #4cd3d3;
+        --forbidden-alert: #ff8b7a;
+        --forbidden-alert-deep: rgba(121, 13, 13, 0.86);
+      }
+
+      body.forbidden-page {
+        margin: 0;
+        min-height: 100vh;
+        color: var(--forbidden-text);
+        background: var(--forbidden-bg);
+      }
+
+      .forbidden-wrap {
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 28px;
+      }
+
+      .forbidden-card {
+        width: min(100%, 1180px);
+        display: grid;
+        grid-template-columns: minmax(320px, 0.9fr) minmax(360px, 1.1fr);
+        gap: 0;
+        border: 1px solid var(--forbidden-line);
+        background: var(--forbidden-panel);
+        box-shadow: 0 30px 80px rgba(0, 0, 0, 0.32);
+        overflow: hidden;
+      }
+
+      .forbidden-visual {
+        position: relative;
+        min-height: 620px;
+        padding: 30px;
+        background:
+          radial-gradient(circle at 20% 18%, rgba(58, 143, 240, 0.16), transparent 22%),
+          radial-gradient(circle at 80% 82%, rgba(76, 211, 211, 0.12), transparent 24%),
+          linear-gradient(180deg, rgba(10, 17, 24, 0.96), rgba(8, 13, 19, 0.98));
+      }
+
+      .visual-noise,
+      .visual-noise::before,
+      .visual-noise::after {
+        position: absolute;
+        border: 1px solid rgba(255, 255, 255, 0.07);
+        opacity: 0.6;
+      }
+
+      .visual-noise {
+        left: 42px;
+        top: 42px;
+        width: 22px;
+        height: 22px;
+        border-radius: 6px;
+      }
+
+      .visual-noise::before,
+      .visual-noise::after {
+        content: "";
+      }
+
+      .visual-noise::before {
+        left: 42px;
+        top: 126px;
+        width: 14px;
+        height: 14px;
+        border-radius: 999px;
+      }
+
+      .visual-noise::after {
+        left: 254px;
+        top: 28px;
+        width: 18px;
+        height: 18px;
+        transform: rotate(45deg);
+      }
+
+      .scanner-stage {
+        position: relative;
+        z-index: 1;
+        width: 100%;
+        max-width: 520px;
+        height: 100%;
+        min-height: 560px;
+        margin: 0 auto;
+      }
+
+      .scanner-shell {
+        position: absolute;
+        inset: 28px 10px 28px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background:
+          linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02)),
+          rgba(11, 18, 26, 0.98);
+        box-shadow:
+          inset 0 0 0 1px rgba(255,255,255,0.03),
+          0 36px 64px rgba(0, 0, 0, 0.34),
+          0 0 0 1px rgba(76, 211, 211, 0.06);
+      }
+
+      .scanner-shell::before {
+        content: "";
+        position: absolute;
+        inset: 18px;
+        border: 1px solid rgba(76, 211, 211, 0.18);
+        background:
+          linear-gradient(180deg, rgba(76, 211, 211, 0.05), rgba(76, 211, 211, 0.01)),
+          rgba(5, 12, 17, 0.92);
+      }
+
+      .scanner-title {
+        position: absolute;
+        left: 24px;
+        top: 16px;
+        z-index: 2;
+        color: rgba(176, 226, 221, 0.76);
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      .scanner-window {
+        position: absolute;
+        inset: 52px 24px 92px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        background: linear-gradient(180deg, rgba(4, 10, 14, 0.95), rgba(7, 12, 18, 0.98));
+        overflow: hidden;
+        box-shadow: inset 0 0 28px rgba(76, 211, 211, 0.05);
+      }
+
+      .scanner-window::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background:
+          repeating-linear-gradient(
+            180deg,
+            rgba(255,255,255,0.024) 0 2px,
+            transparent 2px 6px
+          );
+        opacity: 0.45;
+        pointer-events: none;
+      }
+
+      .scan-line {
+        position: absolute;
+        left: 0;
+        right: 0;
+        height: 8px;
+        background: linear-gradient(90deg, transparent, rgba(76, 211, 211, 0.95), transparent);
+        box-shadow: 0 0 22px rgba(76, 211, 211, 0.55);
+        animation: scanLine 2.8s linear infinite;
+        transition: background 180ms ease, box-shadow 180ms ease;
+      }
+
+      .scan-line.is-alert {
+        background: linear-gradient(90deg, transparent, rgba(255, 92, 92, 0.98), transparent);
+        box-shadow: 0 0 30px rgba(255, 92, 92, 0.8);
+      }
+
+      .scanner-core {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: 220px;
+        height: 220px;
+        transform: translate(-50%, -50%);
+      }
+
+      .core-ring {
+        position: absolute;
+        inset: 0;
+        border-radius: 50%;
+        border: 2px solid rgba(76, 211, 211, 0.2);
+      }
+
+      .core-ring.one {
+        animation: ringPulse 2.8s ease-in-out infinite;
+      }
+
+      .core-ring.two {
+        inset: 24px;
+        animation: ringPulse 2.8s ease-in-out infinite 0.35s;
+      }
+
+      .core-ring.three {
+        inset: 48px;
+        animation: ringPulse 2.8s ease-in-out infinite 0.7s;
+      }
+
+      .core-dot {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: 24px;
+        height: 24px;
+        border-radius: 50%;
+        transform: translate(-50%, -50%);
+        background: rgba(76, 211, 211, 0.95);
+        box-shadow: 0 0 30px rgba(76, 211, 211, 0.75);
+      }
+
+      .alert-flash {
+        position: absolute;
+        inset: 0;
+        background:
+          radial-gradient(circle at center, rgba(255, 112, 112, 0.28), rgba(130, 0, 0, 0.56)),
+          var(--forbidden-alert-deep);
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      .alert-flash.is-active {
+        animation: alertFlash 5.2s ease-in-out;
+      }
+
+      .alert-message {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        z-index: 3;
+        transform: translate(-50%, -50%);
+        width: min(84%, 320px);
+        padding: 20px 22px;
+        border: 1px solid rgba(255, 128, 128, 0.42);
+        background: rgba(23, 4, 4, 0.78);
+        box-shadow: 0 0 34px rgba(255, 72, 72, 0.24);
+        font-family: "Consolas", "Courier New", monospace;
+        text-align: center;
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      .alert-message.is-active {
+        animation: alertMessageIn 5.2s ease-in-out;
+      }
+
+      .alert-message-line {
+        color: #ffb3b3;
+        font-size: clamp(1.1rem, 3vw, 1.55rem);
+        font-weight: 800;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        text-shadow: 0 0 10px rgba(255, 139, 122, 0.4);
+      }
+
+      .scanner-footer {
+        position: absolute;
+        left: 24px;
+        right: 24px;
+        bottom: 24px;
+        display: flex;
+        justify-content: center;
+      }
+
+      .try-again-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 190px;
+        padding: 14px 22px;
+        border: 1px solid transparent;
+        background: linear-gradient(135deg, #8bf2ea, #4cd3d3);
+        color: #071218;
+        text-decoration: none;
+        font-weight: 800;
+        box-shadow: 0 14px 28px rgba(76, 211, 211, 0.24);
+        transition: transform 140ms ease, opacity 140ms ease;
+      }
+
+      .try-again-button:hover {
+        transform: translateY(-2px);
+      }
+
+      .try-again-button.is-loading {
+        pointer-events: none;
+        opacity: 0.94;
+      }
+
+      .forbidden-copy {
+        padding: 42px 40px;
+        display: grid;
+        align-content: center;
+        gap: 18px;
+      }
+
+      .forbidden-copy h1 {
+        margin: 0;
+        font-size: clamp(4.2rem, 9vw, 7rem);
+        line-height: 0.84;
+        letter-spacing: -0.08em;
+        color: #ff9a3b;
+      }
+
+      .forbidden-title {
+        margin: 0;
+        font-size: clamp(1.7rem, 4vw, 2.5rem);
+        line-height: 1;
+        letter-spacing: -0.04em;
+      }
+
+      .forbidden-copy p {
+        margin: 0;
+        max-width: 22rem;
+        color: var(--forbidden-muted);
+        font-size: 1rem;
+        line-height: 1.6;
+      }
+
+      .forbidden-kicker {
+        margin: 0;
+        color: #8bf2ea;
+        font-size: 0.8rem;
+        font-weight: 800;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+      }
+
+      @keyframes scanLine {
+        0% { top: -6px; opacity: 0.2; }
+        10% { opacity: 1; }
+        50% { top: calc(100% - 6px); opacity: 1; }
+        100% { top: -6px; opacity: 0.2; }
+      }
+
+      @keyframes ringPulse {
+        0%, 100% { transform: scale(0.96); opacity: 0.22; }
+        50% { transform: scale(1.04); opacity: 0.6; }
+      }
+
+      @keyframes alertFlash {
+        0% { opacity: 0; }
+        8% { opacity: 0.9; }
+        16% { opacity: 0.32; }
+        24% { opacity: 0.82; }
+        36% { opacity: 0.56; }
+        72% { opacity: 0.56; }
+        88% { opacity: 0.18; }
+        100% { opacity: 0; }
+      }
+
+      @keyframes alertMessageIn {
+        0% { opacity: 0; transform: translate(-50%, -46%); }
+        10% { opacity: 1; transform: translate(-50%, -50%); }
+        84% { opacity: 1; transform: translate(-50%, -50%); }
+        100% { opacity: 0; transform: translate(-50%, -52%); }
+      }
+
+      @media (max-width: 1040px) {
+        .forbidden-card {
+          grid-template-columns: 1fr;
+        }
+
+        .forbidden-visual {
+          min-height: 500px;
+          order: 2;
+        }
+
+        .forbidden-copy {
+          order: 1;
+          padding-bottom: 10px;
+        }
+      }
+
+      @media (max-width: 640px) {
+        .forbidden-wrap {
+          padding: 14px;
+        }
+
+        .forbidden-copy {
+          padding: 28px 22px 10px;
+        }
+
+        .forbidden-visual {
+          min-height: 420px;
+          padding: 18px;
+        }
+
+        .scanner-stage {
+          min-height: 400px;
+        }
+
+        .scanner-shell {
+          inset: 12px 0 14px;
+        }
+
+        .scanner-window {
+          inset: 46px 14px 84px;
+        }
+
+        .scanner-core {
+          width: 170px;
+          height: 170px;
+        }
+
+        .core-ring.two {
+          inset: 18px;
+        }
+
+        .core-ring.three {
+          inset: 36px;
+        }
+
+        .scanner-footer {
+          left: 14px;
+          right: 14px;
+          bottom: 16px;
+        }
+
+        .try-again-button {
+          width: 100%;
+          min-width: 0;
+        }
+      }
+    </style>
+  </head>
+  <body class="forbidden-page">
+    <div class="forbidden-wrap">
+      <section class="forbidden-card" aria-labelledby="forbidden-title">
+        <div class="forbidden-visual">
+          <div class="visual-noise" aria-hidden="true"></div>
+          <div class="scanner-stage" aria-hidden="true">
+            <div class="scanner-shell">
+              <div class="scanner-title">MemeIndex Access Scanner</div>
+              <div class="scanner-window">
+                <div id="scanner-scan-line" class="scan-line"></div>
+                <div class="scanner-core">
+                  <div class="core-ring one"></div>
+                  <div class="core-ring two"></div>
+                  <div class="core-ring three"></div>
+                  <div class="core-dot"></div>
+                </div>
+                <div id="scanner-alert-flash" class="alert-flash"></div>
+                <div id="scanner-alert-message" class="alert-message">
+                  <div class="alert-message-line">Access Denied!</div>
+                </div>
+              </div>
+              <div class="scanner-footer">
+                <a id="forbidden-recheck" class="try-again-button" href="/">Try Again</a>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="forbidden-copy">
+          <p class="forbidden-kicker">You Shall Not Browse</p>
+          <h1>403</h1>
+          <h2 id="forbidden-title" class="forbidden-title">Forbidden</h2>
+          <p>You do not have access to view this resource.</p>
+        </div>
+      </section>
+    </div>
+    <script>
+      (() => {
+        const alertFlash = document.getElementById("scanner-alert-flash");
+        const alertMessage = document.getElementById("scanner-alert-message");
+        const scanLine = document.getElementById("scanner-scan-line");
+        const recheckButton = document.getElementById("forbidden-recheck");
+        const alertDurationMs = 5200;
+        const minCooldownAfterAlertMs = 4200;
+        let lastAlertStartedAt = 0;
+
+        function triggerAlert() {
+          if (!alertFlash || !alertMessage || !scanLine) return;
+          lastAlertStartedAt = Date.now();
+          alertFlash.classList.remove("is-active");
+          alertMessage.classList.remove("is-active");
+          scanLine.classList.remove("is-alert");
+          void alertFlash.offsetWidth;
+          alertFlash.classList.add("is-active");
+          alertMessage.classList.add("is-active");
+          scanLine.classList.add("is-alert");
+          window.setTimeout(() => {
+            alertFlash.classList.remove("is-active");
+            alertMessage.classList.remove("is-active");
+            scanLine.classList.remove("is-alert");
+          }, alertDurationMs);
+        }
+
+        function scheduleAlert() {
+          const randomDelay = 1800 + Math.floor(Math.random() * 3400);
+          const earliestNextAllowedAt = lastAlertStartedAt + alertDurationMs + minCooldownAfterAlertMs;
+          const nextDelay = Math.max(randomDelay, earliestNextAllowedAt - Date.now());
+          window.setTimeout(() => {
+            triggerAlert();
+            scheduleAlert();
+          }, nextDelay);
+        }
+
+        scheduleAlert();
+
+        if (recheckButton) {
+          recheckButton.addEventListener("click", (event) => {
+            event.preventDefault();
+            if (recheckButton.classList.contains("is-loading")) {
+              return;
+            }
+
+            recheckButton.classList.add("is-loading");
+            recheckButton.textContent = "Trying Again...";
+            triggerAlert();
+
+            window.setTimeout(() => {
+              window.location.href = recheckButton.getAttribute("href") || "/";
+            }, 700);
+          });
+        }
+      })();
+    </script>
+  </body>
+</html>

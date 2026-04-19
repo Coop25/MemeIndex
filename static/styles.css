@@ -2032,6 +2032,15 @@ body.random-reel-open {
   box-shadow: 0 18px 40px rgba(0, 0, 0, 0.18);
 }
 
+.users-card-pending {
+  border-color: rgba(248, 197, 107, 0.28);
+  background:
+    radial-gradient(circle at top right, rgba(248, 197, 107, 0.08), transparent 38%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.022), rgba(255, 255, 255, 0.01)),
+    rgba(22, 18, 12, 0.94);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.18), inset 0 0 0 1px rgba(248, 197, 107, 0.08);
+}
+
 .users-card-head {
   display: flex;
   justify-content: space-between;
@@ -2103,7 +2112,8 @@ body.random-reel-open {
 }
 
 .users-scope,
-.users-super-admin {
+.users-super-admin,
+.users-pending-badge {
   padding: 5px 9px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(8, 12, 16, 0.5);
@@ -2118,6 +2128,12 @@ body.random-reel-open {
 
 .users-super-admin {
   color: var(--accent);
+}
+
+.users-pending-badge {
+  color: #f8c56b;
+  border-color: rgba(248, 197, 107, 0.24);
+  background: rgba(248, 197, 107, 0.08);
 }
 
 .users-permissions {
@@ -2152,10 +2168,14 @@ body.random-reel-open {
 .users-card-actions {
   display: flex;
   justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: nowrap;
+  align-items: center;
 }
 
-.users-card-actions .primary-button {
-  min-width: 140px;
+.users-card-actions .primary-button,
+.users-card-actions .danger-button {
+  min-width: 132px;
 }
 
 .users-empty {

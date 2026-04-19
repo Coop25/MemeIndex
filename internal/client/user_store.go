@@ -28,10 +28,12 @@ type authUserStore interface {
 	BootstrapFromConfig(ctx context.Context, config DiscordAuthConfig) error
 	UpsertDiscordProfile(ctx context.Context, user discordUser) error
 	UpsertSessionProfile(ctx context.Context, claims authClaims) error
+	RecordDeniedVisitor(ctx context.Context, claims authClaims) error
 	GetUser(ctx context.Context, userID string) (managedUserRecord, bool, error)
 	ListUsers(ctx context.Context) ([]managedUserRecord, error)
 	CreateUser(ctx context.Context, userID string) (managedUserRecord, error)
 	UpdateUserPermissions(ctx context.Context, userID string, permissions authPermissions) (managedUserRecord, error)
+	DeleteUser(ctx context.Context, userID string) error
 }
 
 type postgresAuthUserStore struct {
@@ -57,7 +59,7 @@ func newAuthUserStore(ctx context.Context, databaseURL string) (authUserStore, e
 }
 
 func (s *postgresAuthUserStore) ensureSchema(ctx context.Context) error {
-	if err := dbschema.Apply(ctx, s.pool, "003_app_users_core.sql", "004_app_users_compat.sql"); err != nil {
+	if err := dbschema.Apply(ctx, s.pool, "003_app_users_core.sql", "004_app_users_compat.sql", "005_app_user_readd_required.sql"); err != nil {
 		return fmt.Errorf("ensure app_users schema: %w", err)
 	}
 	return nil
@@ -103,7 +105,11 @@ func (s *postgresAuthUserStore) BootstrapFromConfig(ctx context.Context, config 
 		if _, err := s.pool.Exec(ctx, `
 			INSERT INTO app_users (
 				user_id, can_view, can_upload, can_add_tags, can_remove_tags, can_delete_memes
-			) VALUES ($1, $2, $3, $4, $5, $6)
+			)
+			SELECT $1, $2, $3, $4, $5, $6
+			WHERE NOT EXISTS (
+				SELECT 1 FROM app_user_readd_required WHERE user_id = $1
+			)
 			ON CONFLICT (user_id) DO NOTHING
 		`, entry.UserID, entry.Permissions.CanView, entry.Permissions.CanUpload, entry.Permissions.CanAddTags, entry.Permissions.CanRemoveTags, entry.Permissions.CanDeleteMemes); err != nil {
 			return fmt.Errorf("seed auth user %s: %w", entry.UserID, err)
@@ -118,13 +124,20 @@ func (s *postgresAuthUserStore) UpsertDiscordProfile(ctx context.Context, user d
 	if userID == "" {
 		return errors.New("user id is required")
 	}
+	blocked, err := s.isReAddRequired(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if blocked {
+		return nil
+	}
 
 	displayName := strings.TrimSpace(user.GlobalName)
 	if displayName == "" {
 		displayName = strings.TrimSpace(user.Username)
 	}
 
-	_, err := s.pool.Exec(ctx, `
+	_, err = s.pool.Exec(ctx, `
 		INSERT INTO app_users (user_id, username, display_name, avatar_url, last_active_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, NOW())
 		ON CONFLICT (user_id) DO UPDATE
@@ -141,6 +154,41 @@ func (s *postgresAuthUserStore) UpsertDiscordProfile(ctx context.Context, user d
 }
 
 func (s *postgresAuthUserStore) UpsertSessionProfile(ctx context.Context, claims authClaims) error {
+	userID := strings.TrimSpace(claims.Subject)
+	if userID == "" {
+		return errors.New("session subject is required")
+	}
+	blocked, err := s.isReAddRequired(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if blocked {
+		return nil
+	}
+
+	username := strings.TrimSpace(claims.Username)
+	displayName := strings.TrimSpace(claims.DisplayName)
+	if displayName == "" {
+		displayName = username
+	}
+
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO app_users (user_id, username, display_name, avatar_url, last_active_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, NOW())
+		ON CONFLICT (user_id) DO UPDATE
+		SET username = CASE WHEN EXCLUDED.username <> '' THEN EXCLUDED.username ELSE app_users.username END,
+			display_name = CASE WHEN EXCLUDED.display_name <> '' THEN EXCLUDED.display_name ELSE app_users.display_name END,
+			avatar_url = CASE WHEN EXCLUDED.avatar_url <> '' THEN EXCLUDED.avatar_url ELSE app_users.avatar_url END,
+			last_active_at = EXCLUDED.last_active_at,
+			updated_at = NOW()
+	`, userID, username, displayName, strings.TrimSpace(claims.AvatarURL), time.Now().Unix())
+	if err != nil {
+		return fmt.Errorf("upsert session profile: %w", err)
+	}
+	return nil
+}
+
+func (s *postgresAuthUserStore) RecordDeniedVisitor(ctx context.Context, claims authClaims) error {
 	userID := strings.TrimSpace(claims.Subject)
 	if userID == "" {
 		return errors.New("session subject is required")
@@ -163,9 +211,24 @@ func (s *postgresAuthUserStore) UpsertSessionProfile(ctx context.Context, claims
 			updated_at = NOW()
 	`, userID, username, displayName, strings.TrimSpace(claims.AvatarURL), time.Now().Unix())
 	if err != nil {
-		return fmt.Errorf("upsert session profile: %w", err)
+		return fmt.Errorf("record denied visitor: %w", err)
 	}
 	return nil
+}
+
+func (s *postgresAuthUserStore) isReAddRequired(ctx context.Context, userID string) (bool, error) {
+	var exists bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1
+			FROM app_user_readd_required
+			WHERE user_id = $1
+		)
+	`, userID).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("check re-add requirement: %w", err)
+	}
+	return exists, nil
 }
 
 func (s *postgresAuthUserStore) GetUser(ctx context.Context, userID string) (managedUserRecord, bool, error) {
@@ -278,13 +341,30 @@ func (s *postgresAuthUserStore) CreateUser(ctx context.Context, userID string) (
 		return managedUserRecord{}, errors.New("user id is required")
 	}
 
-	_, err := s.pool.Exec(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return managedUserRecord{}, fmt.Errorf("begin create user: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM app_user_readd_required
+		WHERE user_id = $1
+	`, normalized); err != nil {
+		return managedUserRecord{}, fmt.Errorf("clear re-add requirement: %w", err)
+	}
+
+	_, err = tx.Exec(ctx, `
 		INSERT INTO app_users (user_id, updated_at)
 		VALUES ($1, NOW())
 		ON CONFLICT (user_id) DO NOTHING
 	`, normalized)
 	if err != nil {
 		return managedUserRecord{}, fmt.Errorf("create user: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return managedUserRecord{}, fmt.Errorf("commit create user: %w", err)
 	}
 
 	return s.getUserByID(ctx, normalized)
@@ -296,7 +376,20 @@ func (s *postgresAuthUserStore) UpdateUserPermissions(ctx context.Context, userI
 		return managedUserRecord{}, errors.New("user id is required")
 	}
 
-	_, err := s.pool.Exec(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return managedUserRecord{}, fmt.Errorf("begin update user permissions: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM app_user_readd_required
+		WHERE user_id = $1
+	`, normalized); err != nil {
+		return managedUserRecord{}, fmt.Errorf("clear re-add requirement: %w", err)
+	}
+
+	_, err = tx.Exec(ctx, `
 		INSERT INTO app_users (
 			user_id, can_view, can_upload, can_add_tags, can_remove_tags, can_delete_memes, updated_at
 		) VALUES ($1, $2, $3, $4, $5, $6, NOW())
@@ -312,5 +405,44 @@ func (s *postgresAuthUserStore) UpdateUserPermissions(ctx context.Context, userI
 		return managedUserRecord{}, fmt.Errorf("update user permissions: %w", err)
 	}
 
+	if err := tx.Commit(ctx); err != nil {
+		return managedUserRecord{}, fmt.Errorf("commit update user permissions: %w", err)
+	}
+
 	return s.getUserByID(ctx, normalized)
+}
+
+func (s *postgresAuthUserStore) DeleteUser(ctx context.Context, userID string) error {
+	normalized := strings.TrimSpace(userID)
+	if normalized == "" {
+		return errors.New("user id is required")
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin delete user: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM app_users
+		WHERE user_id = $1
+	`, normalized); err != nil {
+		return fmt.Errorf("delete user: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO app_user_readd_required (user_id)
+		VALUES ($1)
+		ON CONFLICT (user_id) DO UPDATE
+		SET blocked_at = NOW()
+	`, normalized); err != nil {
+		return fmt.Errorf("mark user for manual re-add: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit delete user: %w", err)
+	}
+
+	return nil
 }

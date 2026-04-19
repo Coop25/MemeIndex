@@ -327,6 +327,37 @@ function renderAuthState() {
   }
 }
 
+function redirectToForbidden() {
+  window.location.href = "/forbidden";
+}
+
+async function redirectToForbiddenIfViewAccessWasRevoked() {
+  try {
+    const response = await fetch("/api/auth/session", {
+      credentials: "same-origin",
+      cache: "no-store",
+    });
+    if (response.status === 401) {
+      window.location.href = "/auth/login";
+      return true;
+    }
+    if (!response.ok) {
+      return false;
+    }
+
+    const payload = await response.json();
+    const permissions = payload.permissions || {};
+    if (payload.enabled && payload.authenticated !== false && !permissions.canView) {
+      redirectToForbidden();
+      return true;
+    }
+  } catch (error) {
+    console.error(error);
+  }
+
+  return false;
+}
+
 async function fetchAuthSession() {
   const response = await fetch("/api/auth/session");
   if (response.status === 401) {
@@ -356,6 +387,11 @@ async function fetchAuthSession() {
     logoutURL: payload.logout_url || "/auth/logout",
   };
 
+  if (state.auth.enabled && state.auth.authenticated && !state.auth.permissions?.canView) {
+    redirectToForbidden();
+    return;
+  }
+
   renderAuthState();
 }
 
@@ -366,6 +402,13 @@ async function expectAuthorized(response, failureMessage) {
   }
 
   if (response.status === 403) {
+    if (await redirectToForbiddenIfViewAccessWasRevoked()) {
+      return false;
+    }
+    if (!state.auth.permissions?.canView) {
+      redirectToForbidden();
+      return false;
+    }
     window.alert("You do not have permission to do that.");
     return false;
   }
@@ -454,6 +497,20 @@ function userPermissionSummary(user) {
   return labels.length > 0 ? labels.join(" * ") : "No permissions yet";
 }
 
+function hasZeroPermissions(user) {
+  if (user?.is_super_admin) {
+    return false;
+  }
+
+  const permissions = user?.permissions || {};
+  return !permissions.canView
+    && !permissions.canUpload
+    && !permissions.canAddTags
+    && !permissions.canRemoveTags
+    && !permissions.canDeleteMemes
+    && !permissions.canManageUsers;
+}
+
 function formatLastActive(unixSeconds) {
   const timestamp = Number(unixSeconds || 0);
   if (!Number.isFinite(timestamp) || timestamp <= 0) {
@@ -511,9 +568,9 @@ function renderManagedUsers() {
   });
 
   sortedUsers.forEach((user) => {
-    const card = document.createElement("article");
-    card.className = "users-card";
-    card.dataset.userId = user.user_id;
+      const card = document.createElement("article");
+    card.className = hasZeroPermissions(user) ? "users-card users-card-pending" : "users-card";
+      card.dataset.userId = user.user_id;
 
     const avatar = user.avatar_url
       ? `<img class="users-avatar" src="${escapeHTML(user.avatar_url)}" alt="" />`
@@ -533,11 +590,12 @@ function renderManagedUsers() {
             <span>Last active: ${escapeHTML(formatLastActive(user.last_active_at))}</span>
           </div>
         </div>
-        <div class="users-badges">
-          <span class="users-scope">${escapeHTML(userPermissionSummary(user))}</span>
-          ${user.is_super_admin ? '<span class="users-super-admin">Env Super Admin</span>' : ""}
+          <div class="users-badges">
+            <span class="users-scope">${escapeHTML(userPermissionSummary(user))}</span>
+            ${hasZeroPermissions(user) ? '<span class="users-pending-badge">Pending Access</span>' : ""}
+            ${user.is_super_admin ? '<span class="users-super-admin">Env Super Admin</span>' : ""}
+          </div>
         </div>
-      </div>
       <div class="users-permissions">
         <label><input type="checkbox" data-scope="canView" ${checked(user.permissions?.canView)} ${disabledAttr} /> <span>View</span></label>
         <label><input type="checkbox" data-scope="canUpload" ${checked(user.permissions?.canUpload)} ${disabledAttr} /> <span>Upload</span></label>
@@ -545,12 +603,13 @@ function renderManagedUsers() {
         <label><input type="checkbox" data-scope="canRemoveTags" ${checked(user.permissions?.canRemoveTags)} ${disabledAttr} /> <span>Remove tags</span></label>
         <label><input type="checkbox" data-scope="canDeleteMemes" ${checked(user.permissions?.canDeleteMemes)} ${disabledAttr} /> <span>Delete memes</span></label>
       </div>
-      ${user.is_super_admin ? "" : '<div class="users-card-actions"><button class="primary-button users-save-button" type="button">Save</button></div>'}
-    `;
+      ${user.is_super_admin ? "" : '<div class="users-card-actions"><button class="danger-button users-delete-button" type="button">Remove User</button><button class="primary-button users-save-button" type="button">Save</button></div>'}
+      `;
 
-    const saveButton = card.querySelector(".users-save-button");
-    if (saveButton) {
-      saveButton.addEventListener("click", async () => {
+      const saveButton = card.querySelector(".users-save-button");
+      const deleteButton = card.querySelector(".users-delete-button");
+      if (saveButton) {
+        saveButton.addEventListener("click", async () => {
         const permissions = {
           canView: !!card.querySelector('input[data-scope="canView"]')?.checked,
           canUpload: !!card.querySelector('input[data-scope="canUpload"]')?.checked,
@@ -575,13 +634,32 @@ function renderManagedUsers() {
           return;
         }
 
-        usersModalStatus.textContent = `Saved permissions for ${user.display_name || user.username || user.user_id}.`;
-        await fetchManagedUsers();
-      });
-    }
+          usersModalStatus.textContent = `Saved permissions for ${user.display_name || user.username || user.user_id}.`;
+          await fetchManagedUsers();
+        });
+      }
+      if (deleteButton) {
+        deleteButton.addEventListener("click", async () => {
+          const label = user.display_name || user.username || user.user_id;
+          const confirmed = window.confirm(`Remove ${label} completely?\n\nThey will lose stored access and will not be auto-added again on Discord login until an admin manually adds them back.`);
+          if (!confirmed) {
+            return;
+          }
 
-    usersList.appendChild(card);
-  });
+          const response = await fetch(`/api/users/${encodeURIComponent(user.user_id)}`, {
+            method: "DELETE",
+          });
+          if (!(await expectAuthorized(response, "Failed to remove user."))) {
+            return;
+          }
+
+          usersModalStatus.textContent = `Removed ${label}. They will need to be manually added again before permissions can be restored.`;
+          await fetchManagedUsers();
+        });
+      }
+
+      usersList.appendChild(card);
+    });
 }
 
 async function openUsersModal() {
@@ -994,6 +1072,7 @@ function syncMemeGridObserver() {
 
 function renderContentMode() {
   const adminMode = isAdminView();
+  const canBrowseLibrary = canView();
   adminView?.classList.toggle("hidden", !adminMode);
   adminPagination?.classList.toggle("hidden", !adminMode);
   memeGridLoader?.classList.toggle("hidden", adminMode || !state.library.loading);
@@ -1002,8 +1081,8 @@ function renderContentMode() {
   memeGridBottomSpacer?.classList.toggle("hidden", adminMode);
   memeGrid?.classList.toggle("hidden", adminMode);
   memeGridSentinel?.classList.toggle("hidden", adminMode);
-  emptyState?.classList.toggle("hidden", adminMode || state.memes.length !== 0);
-  document.querySelector(".library-toolbar")?.classList.toggle("hidden", adminMode);
+  emptyState?.classList.toggle("hidden", adminMode || (canBrowseLibrary && state.memes.length !== 0));
+  document.querySelector(".library-toolbar")?.classList.toggle("hidden", adminMode || !canBrowseLibrary);
 }
 
 function syncAdminPagination() {
@@ -1035,9 +1114,13 @@ async function fetchMemes({ page = 0 } = {}) {
     if (state.filters.tag) params.set("tag", state.filters.tag);
     if (state.filters.view && state.filters.view !== "library") params.set("view", state.filters.view);
     params.set("offset", `${requestedPage * MEME_PAGE_SIZE}`);
-    params.set("limit", `${MEME_PAGE_SIZE}`);
-
-    const response = await fetch(`/api/memes?${params.toString()}`);
+      params.set("limit", `${MEME_PAGE_SIZE}`);
+  
+      const response = await fetch(`/api/memes?${params.toString()}`);
+      if (response.status === 403) {
+        redirectToForbidden();
+        return;
+      }
     if (!(await expectAuthorized(response, "Failed to load memes."))) {
       throw new Error("Failed to load memes");
     }
@@ -1051,6 +1134,7 @@ async function fetchMemes({ page = 0 } = {}) {
     state.library.counts = payload.counts || state.library.counts;
     state.library.hasMore = !!payload.has_more;
     state.memes = payload.memes || [];
+    emptyState.textContent = "No memes match this view yet.";
     renderMemes();
   } finally {
     if (fetchSequence !== memePageFetchSequence) {

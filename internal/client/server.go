@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"html"
 	"log"
 	"net/http"
 	"net/url"
@@ -46,6 +47,7 @@ func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/auth/login", s.handleLogin)
 	mux.HandleFunc("/auth/callback", s.handleOAuthCallback)
+	mux.Handle("/forbidden", s.withPageAuth(http.HandlerFunc(s.handleAccessDeniedPage)))
 	mux.HandleFunc("/auth/logout", s.handleLogout)
 	mux.HandleFunc("/og-image.svg", s.handleOGImage)
 	mux.HandleFunc("/api/auth/session", s.handleAuthSession)
@@ -79,13 +81,26 @@ func (s *Server) withPageAuth(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if !ok || !session.Permissions.CanView {
+		if !ok {
 			http.Redirect(w, r, "/auth/login", http.StatusFound)
+			return
+		}
+		if !session.Permissions.CanView && !allowsAuthenticatedShellOnly(r.URL.Path) {
+			http.Redirect(w, r, "/forbidden", http.StatusFound)
 			return
 		}
 
 		next.ServeHTTP(w, r.WithContext(contextWithSession(r.Context(), session)))
 	})
+}
+
+func allowsAuthenticatedShellOnly(path string) bool {
+	switch {
+	case path == "/forbidden":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) withAPIAuth(next http.Handler, minimum permissionLevel) http.Handler {
@@ -152,6 +167,59 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write([]byte(replaced))
+}
+
+func (s *Server) handleAccessDeniedPage(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/forbidden" {
+		http.NotFound(w, r)
+		return
+	}
+
+	displayName := "Mystery Goblin"
+	username := ""
+	userID := ""
+	if session, ok := sessionFromContext(r.Context()); ok {
+		switch {
+		case strings.TrimSpace(session.DisplayName) != "":
+			displayName = session.DisplayName
+		case strings.TrimSpace(session.Username) != "":
+			displayName = session.Username
+		case strings.TrimSpace(session.UserID) != "":
+			displayName = "Discord User " + session.UserID
+		}
+		username = strings.TrimSpace(session.Username)
+		userID = strings.TrimSpace(session.UserID)
+
+		if s.users != nil && userID != "" {
+			// Always persist denied visitors so admins can see them with zero permissions.
+			if err := s.users.RecordDeniedVisitor(r.Context(), authClaims{
+				Subject:     userID,
+				Username:    username,
+				DisplayName: displayName,
+				AvatarURL:   session.AvatarURL,
+			}); err != nil {
+				log.Printf("persist denied-page user failed for %s: %v", userID, err)
+			}
+		}
+	}
+
+	content, err := os.ReadFile(filepath.Join("static", "access-denied.html"))
+	if err != nil {
+		http.Error(w, "failed to load access denied page", http.StatusInternalServerError)
+		return
+	}
+
+	page := string(content)
+	page = strings.ReplaceAll(page, "{{DISPLAY_NAME}}", html.EscapeString(displayName))
+	page = strings.ReplaceAll(page, "{{USERNAME}}", html.EscapeString(username))
+	page = strings.ReplaceAll(page, "{{USER_ID}}", html.EscapeString(userID))
+	page = strings.ReplaceAll(page, "{{VERSION}}", html.EscapeString(BuildVersion()))
+
+	w.Header().Set("Cache-Control", "no-store, max-age=0")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(page))
 }
 
 func buildAssetURL(path string, refreshToken string) string {
@@ -641,6 +709,10 @@ func (s *Server) handleUserByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method != http.MethodPatch {
+		if r.Method == http.MethodDelete {
+			s.deleteManagedUser(w, r, userID)
+			return
+		}
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -751,6 +823,16 @@ func (s *Server) updateManagedUser(w http.ResponseWriter, r *http.Request, userI
 	writeJSON(w, http.StatusOK, managedUserPayload(record, false))
 }
 
+func (s *Server) deleteManagedUser(w http.ResponseWriter, r *http.Request, userID string) {
+	if err := s.users.DeleteUser(r.Context(), userID); err != nil {
+		log.Printf("delete user failed: %v", err)
+		http.Error(w, "failed to delete user", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) handleRandomMeme(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -849,8 +931,12 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 
 	session, token, err := s.auth.createSession(user)
 	if err != nil {
-		http.Error(w, "your Discord account is not authorized for MemeIndex", http.StatusForbidden)
+		log.Printf("create auth session failed for Discord user %s: %v", strings.TrimSpace(user.ID), err)
+		http.Error(w, "discord login failed", http.StatusInternalServerError)
 		return
+	}
+	if !session.Permissions.CanView {
+		log.Printf("discord login awaiting approval: user_id=%s username=%s", session.UserID, session.Username)
 	}
 
 	s.auth.setSessionCookie(w, r, token, session.ExpiresAt)
