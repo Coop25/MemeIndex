@@ -11,10 +11,13 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-X memeindex/intern
 FROM debian:bookworm-slim
 WORKDIR /app
 ARG APP_VERSION=dev
+ARG YTDLP_DOWNLOAD_URL=https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux
 ENV MEMEINDEX_VERSION=${APP_VERSION}
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates ffmpeg \
+  && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg \
+  && curl -L "${YTDLP_DOWNLOAD_URL}" -o /usr/local/bin/yt-dlp \
+  && chmod +x /usr/local/bin/yt-dlp \
   && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /out/memeindex /usr/local/bin/memeindex

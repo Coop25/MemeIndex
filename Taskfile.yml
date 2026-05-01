@@ -27,6 +27,12 @@ tasks:
     cmds:
       - docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 
+  docker-dev-verify-mediafetch:
+    desc: Build the local Docker image and verify yt-dlp is available inside the app container image
+    cmds:
+      - docker compose -f docker-compose.yml -f docker-compose.dev.yml build app
+      - docker run --rm memeindex:dev yt-dlp --version
+
   docker-tunnel-up:
     desc: Pull and start MemeIndex, PostgreSQL, and the optional Cloudflare Tunnel service
     cmds:

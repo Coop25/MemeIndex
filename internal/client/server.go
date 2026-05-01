@@ -6,22 +6,27 @@ import (
 	"errors"
 	"html"
 	"log"
+	"mime"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
+	mediafetch "github.com/Coop25/mediafetch-go"
 	"memeindex/internal/accessor"
 	"memeindex/internal/manager"
 )
 
 type Server struct {
-	config   Config
-	managers *manager.MemeManager
-	auth     *authService
-	users    authUserStore
+	config      Config
+	managers    *manager.MemeManager
+	auth        *authService
+	users       authUserStore
+	mediaClient *mediafetch.Client
 }
 
 func NewServer(config Config, memeManager *manager.MemeManager) *Server {
@@ -35,11 +40,20 @@ func NewServer(config Config, memeManager *manager.MemeManager) *Server {
 		}
 	}
 
+	mediaClient, err := mediafetch.NewClient(mediafetch.ClientConfig{
+		DownloadDir: filepath.Join(config.DataDir, "downloads"),
+		YTDLPBinary: config.MediaFetchYTDLPBinary,
+	})
+	if err != nil {
+		log.Fatalf("mediafetch client init failed: %v", err)
+	}
+
 	return &Server{
-		config:   config,
-		managers: memeManager,
-		auth:     newAuthService(config.DiscordAuth, userStore),
-		users:    userStore,
+		config:      config,
+		managers:    memeManager,
+		auth:        newAuthService(config.DiscordAuth, userStore),
+		users:       userStore,
+		mediaClient: mediaClient,
 	}
 }
 
@@ -379,9 +393,51 @@ func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	sourceURL := strings.TrimSpace(r.FormValue("source_url"))
 	fileHeaders := r.MultipartForm.File["file"]
-	if len(fileHeaders) == 0 {
-		http.Error(w, "file is required", http.StatusBadRequest)
+	if sourceURL != "" && len(fileHeaders) > 0 {
+		http.Error(w, "choose either files or a link", http.StatusBadRequest)
+		return
+	}
+	if sourceURL == "" && len(fileHeaders) == 0 {
+		http.Error(w, "file or source link is required", http.StatusBadRequest)
+		return
+	}
+
+	if sourceURL != "" {
+		meme, err := s.createMemeFromSourceURL(r, sourceURL, splitTags(r.FormValue("tags")), r.FormValue("notes"))
+		if err != nil {
+			var duplicateErr *accessor.DuplicateMemeError
+			if errors.As(err, &duplicateErr) {
+				writeJSON(w, http.StatusOK, map[string]any{
+					"memes":   []accessor.Meme{},
+					"created": 0,
+					"duplicates": []map[string]any{{
+						"filename": duplicateErr.Existing.OriginalName,
+						"existing": duplicateErr.Existing,
+					}},
+					"skipped": 1,
+				})
+				return
+			}
+
+			status := http.StatusBadGateway
+			switch {
+			case errors.Is(err, errUnsupportedMediaURL):
+				status = http.StatusBadRequest
+			case strings.Contains(strings.ToLower(err.Error()), "not configured"):
+				status = http.StatusServiceUnavailable
+			}
+			http.Error(w, err.Error(), status)
+			return
+		}
+
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"memes":      []accessor.Meme{meme},
+			"created":    1,
+			"duplicates": []map[string]any{},
+			"skipped":    0,
+		})
 		return
 	}
 
@@ -431,6 +487,55 @@ func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
 		"duplicates": duplicates,
 		"skipped":    len(duplicates),
 	})
+}
+
+var errUnsupportedMediaURL = errors.New("only YouTube, Facebook, and Reddit links are supported right now")
+
+func (s *Server) createMemeFromSourceURL(r *http.Request, sourceURL string, tags []string, notes string) (accessor.Meme, error) {
+	if s.mediaClient == nil {
+		return accessor.Meme{}, errors.New("link downloads are not configured")
+	}
+	if !mediafetch.ValidateSupportedURL(sourceURL) {
+		return accessor.Meme{}, errUnsupportedMediaURL
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer cancel()
+
+	downloadID, _, err := s.mediaClient.Extract(ctx, sourceURL)
+	if err != nil {
+		return accessor.Meme{}, err
+	}
+
+	downloadDir := filepath.Join(s.mediaClient.DownloadDir(), downloadID)
+	defer os.RemoveAll(downloadDir)
+
+	downloadedFile, err := s.mediaClient.Download(ctx, sourceURL, downloadID, "best")
+	if err != nil {
+		return accessor.Meme{}, err
+	}
+
+	src, err := os.Open(downloadedFile)
+	if err != nil {
+		return accessor.Meme{}, err
+	}
+	defer src.Close()
+
+	filename := filepath.Base(downloadedFile)
+	header := textproto.MIMEHeader{}
+	if contentType := mime.TypeByExtension(strings.ToLower(filepath.Ext(filename))); contentType != "" {
+		header.Set("Content-Type", contentType)
+	}
+
+	return s.managers.CreateMemeAsWithSource(
+		currentAuditActor(r),
+		src,
+		header,
+		filename,
+		tags,
+		notes,
+		sourceURL,
+	)
 }
 
 func (s *Server) updateMeme(w http.ResponseWriter, r *http.Request, id string) {

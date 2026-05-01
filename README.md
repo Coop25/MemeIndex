@@ -11,9 +11,11 @@ MemeIndex is a self-hosted meme organizer built with Go and a lightweight fronte
 ## Features
 
 - Upload any file type through the browser
+- Download supported YouTube, Facebook, and Reddit links from a dedicated Process Link modal
 - Store metadata in Postgres with a dedicated tags table for suggestions
 - Compute content hashes on upload so duplicate files can be skipped
 - Generate video thumbnails for lighter grid previews when `ffmpeg` is installed
+- Keep the original source link attached to imported link-based memes
 - Preview image and video files inline
 - Search by filename, notes, and tags
 - Mark favorites for quick filtering
@@ -87,6 +89,7 @@ Optional flags:
 - `MEMEINDEX_ADDR`: server bind address, default `:8080`
 - `MEMEINDEX_DATA_DIR`: data directory, default `data`
 - `MEMEINDEX_DATABASE_URL`: Postgres connection string. When empty, MemeIndex falls back to the legacy JSON store
+- `MEMEINDEX_MEDIAFETCH_YTDLP_BINARY`: path to the `yt-dlp` binary used for link downloads, default `yt-dlp`
 - `MEMEINDEX_DISCORD_CLIENT_ID`: Discord OAuth application client ID
 - `MEMEINDEX_DISCORD_CLIENT_SECRET`: Discord OAuth application client secret
 - `MEMEINDEX_DISCORD_REDIRECT_URL`: Discord OAuth callback URL, for example `http://localhost:8080/auth/callback`
@@ -176,6 +179,7 @@ docker compose --profile tunnel up -d
 Notes:
 
 - uploaded files still live on disk under `./data/uploads`
+- link downloads are staged under `./data/downloads` and cleaned up after import
 - Postgres keeps metadata, favorites, and the dedicated tags table
 - Postgres also stores random reel sessions when `MEMEINDEX_DATABASE_URL` is enabled
 - on first Postgres startup, if the database is empty and legacy `data/index.json` or `data/favorites.json` files exist, MemeIndex imports them automatically
@@ -211,6 +215,13 @@ Notes:
 - the app env vars are declared directly in `docker-compose.yml`, and Docker Compose fills them from your shell or local `.env`
 - `MEMEINDEX_IMAGE` controls which published app image Compose pulls, and defaults to `ghcr.io/your-github-user-or-org/memeindex:latest`
 - if `ffmpeg` is available in the container or host environment, MemeIndex generates JPEG thumbnails for videos and backfills thumbnails for older imported videos in the background on startup
+- the app container now includes `ffmpeg` plus the current upstream `yt-dlp` Linux binary, which the upload modal uses for supported link downloads
+
+To verify the downloader inside the local app image:
+
+```powershell
+task docker-dev-verify-mediafetch
+```
 
 ## GitHub Container Publishing
 

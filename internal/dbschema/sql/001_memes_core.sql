@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS memes (
     content_hash TEXT,
     size_bytes BIGINT NOT NULL,
     notes TEXT NOT NULL DEFAULT '',
+    source_url TEXT NOT NULL DEFAULT '',
     hidden_from_app BOOLEAN NOT NULL DEFAULT FALSE,
     pending_delete BOOLEAN NOT NULL DEFAULT FALSE,
     delete_requested_by_user_id TEXT NOT NULL DEFAULT '',

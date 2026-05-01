@@ -77,13 +77,18 @@ func (m *MemeManager) CreateMeme(file io.Reader, header textproto.MIMEHeader, fi
 }
 
 func (m *MemeManager) CreateMemeAs(actor accessor.AuditActor, file io.Reader, header textproto.MIMEHeader, filename string, tags []string, notes string) (accessor.Meme, error) {
+	return m.CreateMemeAsWithSource(actor, file, header, filename, tags, notes, "")
+}
+
+func (m *MemeManager) CreateMemeAsWithSource(actor accessor.AuditActor, file io.Reader, header textproto.MIMEHeader, filename string, tags []string, notes string, sourceURL string) (accessor.Meme, error) {
 	return m.store.Create(accessor.CreateInput{
-		File:     file,
-		Header:   header,
-		Filename: filename,
-		Tags:     normalizeTags(tags),
-		Notes:    strings.TrimSpace(notes),
-		Actor:    actor,
+		File:      file,
+		Header:    header,
+		Filename:  filename,
+		Tags:      normalizeTags(tags),
+		Notes:     strings.TrimSpace(notes),
+		SourceURL: strings.TrimSpace(sourceURL),
+		Actor:     actor,
 	})
 }
 

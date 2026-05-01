@@ -31,6 +31,7 @@ type Meme struct {
 	SizeBytes    int64     `json:"sizeBytes"`
 	Tags         []string  `json:"tags"`
 	Notes        string    `json:"notes"`
+	SourceURL    string    `json:"sourceUrl,omitempty"`
 	Favorite     bool      `json:"favorite"`
 	CreatedAt    time.Time `json:"createdAt"`
 	UpdatedAt    time.Time `json:"updatedAt"`
@@ -100,6 +101,7 @@ type persistedMeme struct {
 	SizeBytes    int64     `json:"sizeBytes"`
 	Tags         []string  `json:"tags"`
 	Notes        string    `json:"notes"`
+	SourceURL    string    `json:"sourceUrl,omitempty"`
 	CreatedAt    time.Time `json:"createdAt"`
 	UpdatedAt    time.Time `json:"updatedAt"`
 }
@@ -117,6 +119,7 @@ type CreateInput struct {
 	Filename    string
 	Tags        []string
 	Notes       string
+	SourceURL   string
 	ContentType string
 	Actor       AuditActor
 }
@@ -307,6 +310,7 @@ func (s *MemeStore) Create(input CreateInput) (Meme, error) {
 		SizeBytes:    size,
 		Tags:         normalizeTags(input.Tags),
 		Notes:        strings.TrimSpace(input.Notes),
+		SourceURL:    strings.TrimSpace(input.SourceURL),
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
@@ -530,6 +534,7 @@ func (s *MemeStore) loadMemes() error {
 			SizeBytes:    item.SizeBytes,
 			Tags:         item.Tags,
 			Notes:        item.Notes,
+			SourceURL:    item.SourceURL,
 			CreatedAt:    item.CreatedAt,
 			UpdatedAt:    item.UpdatedAt,
 		})
@@ -593,6 +598,7 @@ func (s *MemeStore) saveMemesLocked() error {
 			SizeBytes:    meme.SizeBytes,
 			Tags:         meme.Tags,
 			Notes:        meme.Notes,
+			SourceURL:    meme.SourceURL,
 			CreatedAt:    meme.CreatedAt,
 			UpdatedAt:    meme.UpdatedAt,
 		})

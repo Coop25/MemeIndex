@@ -292,8 +292,14 @@ textarea {
   margin: 0;
 }
 
-.sidebar-action-button-bottom {
+.sidebar-bottom-actions {
   margin-top: auto;
+  display: grid;
+  gap: 10px;
+}
+
+.sidebar-action-button-bottom {
+  margin-top: 0;
 }
 
 .nav-short,
@@ -1165,6 +1171,23 @@ body.sidebar-collapsed .sidebar-toggle-row .sidebar-toggle-icon {
   background: #151a20;
 }
 
+.modal-source-link {
+  display: block;
+  width: 100%;
+  padding: 12px 14px;
+  background: #151a20;
+  border: 1px solid var(--line);
+  color: var(--accent);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.modal-source-link:hover,
+.modal-source-link:focus-visible {
+  border-color: rgba(76, 211, 211, 0.45);
+  color: #9ff3f3;
+}
+
 .card-actions {
   display: flex;
   gap: 8px;
@@ -1878,6 +1901,7 @@ body.random-reel-open {
 }
 
 .upload-modal-body {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -1889,6 +1913,60 @@ body.random-reel-open {
     linear-gradient(180deg, #151a21, #12171d);
   overflow-y: auto;
   overflow-x: hidden;
+}
+
+.modal-busy-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(9, 13, 17, 0.68);
+  backdrop-filter: blur(2px);
+}
+
+.modal-busy-overlay.hidden {
+  display: none;
+}
+
+.modal-busy-card {
+  min-width: min(320px, 100%);
+  padding: 22px 20px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02)),
+    #12171d;
+  text-align: center;
+}
+
+.modal-busy-throbber {
+  width: 34px;
+  height: 34px;
+  margin: 0 auto 14px;
+  border: 3px solid rgba(255, 255, 255, 0.16);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: modal-busy-spin 0.8s linear infinite;
+}
+
+.modal-busy-message {
+  margin: 0;
+  color: #eef4f8;
+  font-size: 0.96rem;
+}
+
+.upload-modal.is-busy .upload-preview-wrap,
+.upload-modal.is-busy .upload-modal-body > :not(.modal-busy-overlay) {
+  opacity: 0.42;
+  pointer-events: none;
+  user-select: none;
+}
+
+@keyframes modal-busy-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .upload-modal-header {

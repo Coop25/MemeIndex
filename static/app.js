@@ -49,7 +49,19 @@ const state = {
 const uploadForm = document.querySelector("#upload-form");
 const uploadStatus = document.querySelector("#upload-status");
 const uploadModal = document.querySelector("#upload-modal");
+const uploadBusyOverlay = document.querySelector("#upload-busy-overlay");
+const uploadBusyMessage = document.querySelector("#upload-busy-message");
 const openUploadModalButton = document.querySelector("#open-upload-modal");
+const openLinkUploadModalButton = document.querySelector("#open-link-upload-modal");
+const linkUploadModal = document.querySelector("#link-upload-modal");
+const linkUploadBusyOverlay = document.querySelector("#link-upload-busy-overlay");
+const linkUploadBusyMessage = document.querySelector("#link-upload-busy-message");
+const linkUploadModalClose = document.querySelector("#link-upload-modal-close");
+const linkUploadForm = document.querySelector("#link-upload-form");
+const linkUploadInput = document.querySelector("#link-upload-input");
+const linkUploadTagsInput = document.querySelector("#link-upload-tags-input");
+const linkUploadNotesInput = document.querySelector("#link-upload-notes-input");
+const linkUploadStatus = document.querySelector("#link-upload-status");
 const openRandomReelButton = document.querySelector("#open-random-reel");
 const drawerToggle = document.querySelector("#drawer-toggle");
 const drawerBackdrop = document.querySelector("#drawer-backdrop");
@@ -146,6 +158,8 @@ const modalTagChips = document.querySelector("#modal-tag-chips");
 const modalTagsInput = document.querySelector("#modal-tags-input");
 const modalTagSuggestions = document.querySelector("#modal-tag-suggestions");
 const modalNotesInput = document.querySelector("#modal-notes-input");
+const modalSourceField = document.querySelector("#modal-source-field");
+const modalSourceLink = document.querySelector("#modal-source-link");
 const modalOpenLink = document.querySelector("#modal-open-link");
 const modalSave = document.querySelector("#modal-save");
 const modalDelete = document.querySelector("#modal-delete");
@@ -315,6 +329,9 @@ function renderAuthState() {
   openUploadModalButton.disabled = !canUpload();
   openUploadModalButton.setAttribute("aria-disabled", String(!canUpload()));
   openUploadModalButton.title = canUpload() ? "Add File" : "You do not have permission to upload";
+  openLinkUploadModalButton.disabled = !canUpload();
+  openLinkUploadModalButton.setAttribute("aria-disabled", String(!canUpload()));
+  openLinkUploadModalButton.title = canUpload() ? "Process Link" : "You do not have permission to upload";
 
   if (state.auth.user?.avatar_url) {
     authAvatar.src = state.auth.user.avatar_url;
@@ -2069,6 +2086,20 @@ function setUploadDragActive(active) {
   uploadPreviewWrap?.classList.toggle("is-drag-active", active);
 }
 
+function isModalBusy(modal) {
+  return modal?.classList.contains("is-busy");
+}
+
+function setModalBusyState(modal, overlay, messageNode, busy, message) {
+  if (!modal || !overlay) return;
+  modal.classList.toggle("is-busy", busy);
+  overlay.classList.toggle("hidden", !busy);
+  overlay.setAttribute("aria-hidden", String(!busy));
+  if (messageNode && typeof message === "string" && message.trim()) {
+    messageNode.textContent = message;
+  }
+}
+
 function setUploadFiles(files) {
   if (!uploadFileInput) return;
   if (!files || files.length === 0) {
@@ -2262,6 +2293,12 @@ function openModalWithMeme(meme) {
   renderTagSuggestions();
   modalNotesInput.value = meme.notes || "";
   modalOpenLink.href = meme.filePath;
+  if (modalSourceField && modalSourceLink) {
+    const hasSourceURL = Boolean((meme.sourceUrl || "").trim());
+    modalSourceField.classList.toggle("hidden", !hasSourceURL);
+    modalSourceLink.textContent = meme.sourceUrl || "";
+    modalSourceLink.href = hasSourceURL ? meme.sourceUrl : "#";
+  }
   applyFavoriteStateToButton(modalFavorite, meme.favorite);
   modalTagsInput.disabled = !canAddTags();
   modalNotesInput.readOnly = !canEditMetadata();
@@ -2818,41 +2855,116 @@ uploadForm.addEventListener("submit", async (event) => {
     return;
   }
   const totalFiles = uploadFileInput.files?.length || 0;
-  uploadStatus.textContent = totalFiles > 1 ? `Uploading ${totalFiles} files...` : "Uploading...";
-  syncUploadTagsField();
-
-  const formData = new FormData(uploadForm);
-  const response = await fetch("/api/memes", {
-    method: "POST",
-    body: formData,
-  });
-
-  if (!(await expectAuthorized(response, "Upload failed."))) {
-    uploadStatus.textContent = "Upload failed.";
+  if (totalFiles === 0) {
+    uploadStatus.textContent = "Choose at least one file first.";
     return;
   }
 
-  const payload = await response.json();
-  uploadForm.reset();
-  resetUploadTags();
-  clearUploadPreview();
-  const createdCount = Number(payload.created || 0);
-  const skippedCount = Number(payload.skipped || 0);
-  if (createdCount > 0 && skippedCount > 0) {
-    uploadStatus.textContent = `${createdCount} uploaded, ${skippedCount} duplicate${skippedCount === 1 ? "" : "s"} skipped.`;
-  } else if (createdCount > 0) {
-    uploadStatus.textContent = createdCount > 1 ? `${createdCount} files uploaded.` : "Upload complete.";
-  } else if (skippedCount > 0) {
-    uploadStatus.textContent = `${skippedCount} duplicate${skippedCount === 1 ? "" : "s"} skipped.`;
-  } else {
-    uploadStatus.textContent = "Upload complete.";
+  const progressMessage = totalFiles > 1 ? `Uploading ${totalFiles} files...` : "Uploading...";
+  uploadStatus.textContent = progressMessage;
+  setModalBusyState(uploadModal, uploadBusyOverlay, uploadBusyMessage, true, progressMessage);
+  syncUploadTagsField();
+
+  try {
+    const formData = new FormData(uploadForm);
+    const response = await fetch("/api/memes", {
+      method: "POST",
+      body: formData,
+    });
+
+    if (response.status === 401 || response.status === 403) {
+      if (!(await expectAuthorized(response, "Upload failed."))) {
+        uploadStatus.textContent = "Upload failed.";
+        return;
+      }
+    }
+
+    if (!response.ok) {
+      const message = (await response.text()).trim();
+      uploadStatus.textContent = message || "Upload failed.";
+      return;
+    }
+
+    const payload = await response.json();
+    uploadForm.reset();
+    resetUploadTags();
+    clearUploadPreview();
+    const createdCount = Number(payload.created || 0);
+    const skippedCount = Number(payload.skipped || 0);
+    if (createdCount > 0 && skippedCount > 0) {
+      uploadStatus.textContent = `${createdCount} uploaded, ${skippedCount} duplicate${skippedCount === 1 ? "" : "s"} skipped.`;
+    } else if (createdCount > 0) {
+      uploadStatus.textContent = createdCount > 1 ? `${createdCount} files uploaded.` : "Upload complete.";
+    } else if (skippedCount > 0) {
+      uploadStatus.textContent = `${skippedCount} duplicate${skippedCount === 1 ? "" : "s"} skipped.`;
+    } else {
+      uploadStatus.textContent = "Upload complete.";
+    }
+    await loadInitialMemes();
+    uploadModal.close();
+  } finally {
+    setModalBusyState(uploadModal, uploadBusyOverlay, uploadBusyMessage, false);
   }
-  await loadInitialMemes();
-  uploadModal.close();
+});
+
+linkUploadForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!canAdd()) {
+    linkUploadStatus.textContent = "You do not have permission to upload.";
+    return;
+  }
+
+  const sourceURL = linkUploadInput?.value?.trim() || "";
+  if (!sourceURL) {
+    linkUploadStatus.textContent = "Paste a supported link first.";
+    return;
+  }
+
+  linkUploadStatus.textContent = "Processing link and saving it...";
+  setModalBusyState(linkUploadModal, linkUploadBusyOverlay, linkUploadBusyMessage, true, "Processing link and saving it...");
+  try {
+    const formData = new FormData(linkUploadForm);
+    const response = await fetch("/api/memes", {
+      method: "POST",
+      body: formData,
+    });
+
+    if (response.status === 401 || response.status === 403) {
+      if (!(await expectAuthorized(response, "Link import failed."))) {
+        linkUploadStatus.textContent = "Link import failed.";
+        return;
+      }
+    }
+
+    if (!response.ok) {
+      const message = (await response.text()).trim();
+      linkUploadStatus.textContent = message || "Link import failed.";
+      return;
+    }
+
+    const payload = await response.json();
+    const createdCount = Number(payload.created || 0);
+    const skippedCount = Number(payload.skipped || 0);
+    if (createdCount > 0 && skippedCount > 0) {
+      linkUploadStatus.textContent = `${createdCount} imported, ${skippedCount} duplicate${skippedCount === 1 ? "" : "s"} skipped.`;
+    } else if (createdCount > 0) {
+      linkUploadStatus.textContent = "Link processed.";
+    } else if (skippedCount > 0) {
+      linkUploadStatus.textContent = `${skippedCount} duplicate${skippedCount === 1 ? "" : "s"} skipped.`;
+    } else {
+      linkUploadStatus.textContent = "Link processed.";
+    }
+
+    await loadInitialMemes();
+    linkUploadModal?.close();
+  } finally {
+    setModalBusyState(linkUploadModal, linkUploadBusyOverlay, linkUploadBusyMessage, false);
+  }
 });
 
 openUploadModalButton.addEventListener("click", () => {
   if (!canAdd()) return;
+  setModalBusyState(uploadModal, uploadBusyOverlay, uploadBusyMessage, false);
   uploadStatus.textContent = "";
   uploadForm.reset();
   resetUploadTags();
@@ -2862,6 +2974,14 @@ openUploadModalButton.addEventListener("click", () => {
   uploadModal.showModal();
 });
 
+openLinkUploadModalButton?.addEventListener("click", () => {
+  if (!canAdd()) return;
+  setModalBusyState(linkUploadModal, linkUploadBusyOverlay, linkUploadBusyMessage, false);
+  linkUploadStatus.textContent = "";
+  linkUploadForm?.reset();
+  linkUploadModal?.showModal();
+});
+
 openRandomReelButton?.addEventListener("click", () => {
   openRandomReel().catch((error) => {
     console.error(error);
@@ -2869,26 +2989,58 @@ openRandomReelButton?.addEventListener("click", () => {
 });
 
 uploadModalClose.addEventListener("click", () => {
+  if (isModalBusy(uploadModal)) return;
+  setModalBusyState(uploadModal, uploadBusyOverlay, uploadBusyMessage, false);
   clearUploadPreview();
   setUploadDragActive(false);
   uploadDragDepth = 0;
   uploadModal.close();
+});
+
+linkUploadModalClose?.addEventListener("click", () => {
+  if (isModalBusy(linkUploadModal)) return;
+  setModalBusyState(linkUploadModal, linkUploadBusyOverlay, linkUploadBusyMessage, false);
+  linkUploadModal?.close();
 });
 
 uploadModal.addEventListener("click", (event) => {
+  if (isModalBusy(uploadModal)) return;
   if (event.target !== uploadModal) return;
+  setModalBusyState(uploadModal, uploadBusyOverlay, uploadBusyMessage, false);
   clearUploadPreview();
   setUploadDragActive(false);
   uploadDragDepth = 0;
   uploadModal.close();
 });
 
+linkUploadModal?.addEventListener("click", (event) => {
+  if (isModalBusy(linkUploadModal)) return;
+  if (event.target !== linkUploadModal) return;
+  setModalBusyState(linkUploadModal, linkUploadBusyOverlay, linkUploadBusyMessage, false);
+  linkUploadModal.close();
+});
+
 uploadModal.addEventListener("cancel", (event) => {
+  if (isModalBusy(uploadModal)) {
+    event.preventDefault();
+    return;
+  }
   event.preventDefault();
+  setModalBusyState(uploadModal, uploadBusyOverlay, uploadBusyMessage, false);
   clearUploadPreview();
   setUploadDragActive(false);
   uploadDragDepth = 0;
   uploadModal.close();
+});
+
+linkUploadModal?.addEventListener("cancel", (event) => {
+  if (isModalBusy(linkUploadModal)) {
+    event.preventDefault();
+    return;
+  }
+  event.preventDefault();
+  setModalBusyState(linkUploadModal, linkUploadBusyOverlay, linkUploadBusyMessage, false);
+  linkUploadModal.close();
 });
 
 usersModalClose?.addEventListener("click", () => {

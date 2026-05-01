@@ -162,6 +162,7 @@ func (s *PostgresStore) List(userID, query string, favoritesOnly bool, tag strin
 			m.size_bytes,
 			COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL), '{}') AS tags,
 			m.notes,
+			COALESCE(m.source_url, '') AS source_url,
 			EXISTS (
 				SELECT 1
 				FROM user_favorites uf
@@ -272,6 +273,7 @@ func (s *PostgresStore) GetAnyByID(id string) (Meme, error) {
 			m.size_bytes,
 			COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL), '{}') AS tags,
 			m.notes,
+			COALESCE(m.source_url, '') AS source_url,
 			FALSE AS favorite,
 			m.created_at,
 			m.updated_at
@@ -367,6 +369,7 @@ func (s *PostgresStore) Create(input CreateInput) (Meme, error) {
 		SizeBytes:    size,
 		Tags:         normalizeTags(input.Tags),
 		Notes:        strings.TrimSpace(input.Notes),
+		SourceURL:    strings.TrimSpace(input.SourceURL),
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
@@ -393,9 +396,9 @@ func (s *PostgresStore) Create(input CreateInput) (Meme, error) {
 
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO memes (
-			id, original_name, stored_name, file_path, content_type, content_hash, size_bytes, notes, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-	`, meme.ID, meme.OriginalName, meme.StoredName, meme.FilePath, meme.ContentType, meme.ContentHash, meme.SizeBytes, meme.Notes, meme.CreatedAt, meme.UpdatedAt); err != nil {
+			id, original_name, stored_name, file_path, content_type, content_hash, size_bytes, notes, source_url, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+	`, meme.ID, meme.OriginalName, meme.StoredName, meme.FilePath, meme.ContentType, meme.ContentHash, meme.SizeBytes, meme.Notes, meme.SourceURL, meme.CreatedAt, meme.UpdatedAt); err != nil {
 		_ = os.Remove(targetPath)
 		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23505" {
 			if existing, lookupErr := s.getByHash(ctx, meme.ContentHash); lookupErr == nil {
@@ -602,7 +605,11 @@ func (s *PostgresStore) CleanupStaleReelSessions(before time.Time) error {
 }
 
 func (s *PostgresStore) ensureSchema(ctx context.Context) error {
-	if err := dbschema.Apply(ctx, s.pool, "001_memes_core.sql", "002_memes_compat.sql"); err != nil {
+	if err := dbschema.Apply(ctx, s.pool,
+		"001_memes_core.sql",
+		"002_memes_compat.sql",
+		"006_memes_source_url.sql",
+	); err != nil {
 		return fmt.Errorf("ensure schema: %w", err)
 	}
 	return nil
@@ -638,10 +645,10 @@ func (s *PostgresStore) importLegacyDataIfNeeded(ctx context.Context) error {
 	for _, meme := range memes {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO memes (
-				id, original_name, stored_name, file_path, content_type, content_hash, size_bytes, notes, created_at, updated_at
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+				id, original_name, stored_name, file_path, content_type, content_hash, size_bytes, notes, source_url, created_at, updated_at
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 			ON CONFLICT (id) DO NOTHING
-		`, meme.ID, meme.OriginalName, meme.StoredName, meme.FilePath, meme.ContentType, meme.ContentHash, meme.SizeBytes, strings.TrimSpace(meme.Notes), meme.CreatedAt, meme.UpdatedAt); err != nil {
+		`, meme.ID, meme.OriginalName, meme.StoredName, meme.FilePath, meme.ContentType, meme.ContentHash, meme.SizeBytes, strings.TrimSpace(meme.Notes), strings.TrimSpace(meme.SourceURL), meme.CreatedAt, meme.UpdatedAt); err != nil {
 			return err
 		}
 		if err := s.replaceTags(ctx, tx, meme.ID, normalizeTags(meme.Tags)); err != nil {
@@ -834,6 +841,7 @@ func (s *PostgresStore) getByID(ctx context.Context, db queryable, userID, id st
 			m.size_bytes,
 			COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL), '{}') AS tags,
 			m.notes,
+			COALESCE(m.source_url, '') AS source_url,
 			EXISTS (
 				SELECT 1
 				FROM user_favorites uf
@@ -939,6 +947,7 @@ func (s *PostgresStore) getByHash(ctx context.Context, contentHash string) (Meme
 			m.size_bytes,
 			COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL), '{}') AS tags,
 			m.notes,
+			COALESCE(m.source_url, '') AS source_url,
 			FALSE AS favorite,
 			m.created_at,
 			m.updated_at
@@ -1104,6 +1113,7 @@ func (s *PostgresStore) ListPendingDeletes(offset int, limit int) (PagedPendingD
 			m.size_bytes,
 			COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL), '{}') AS tags,
 			m.notes,
+			COALESCE(m.source_url, '') AS source_url,
 			FALSE AS favorite,
 			m.created_at,
 			m.updated_at,
@@ -1139,6 +1149,7 @@ func (s *PostgresStore) ListPendingDeletes(offset int, limit int) (PagedPendingD
 			&record.Meme.SizeBytes,
 			&record.Meme.Tags,
 			&record.Meme.Notes,
+			&record.Meme.SourceURL,
 			&record.Meme.Favorite,
 			&record.Meme.CreatedAt,
 			&record.Meme.UpdatedAt,
@@ -1263,6 +1274,7 @@ func scanMemeRow(row interface{ Scan(dest ...any) error }) (Meme, error) {
 		&meme.SizeBytes,
 		&tags,
 		&meme.Notes,
+		&meme.SourceURL,
 		&meme.Favorite,
 		&meme.CreatedAt,
 		&meme.UpdatedAt,

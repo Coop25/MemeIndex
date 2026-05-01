@@ -8,10 +8,11 @@ import (
 )
 
 type Config struct {
-	Addr        string
-	DataDir     string
-	DatabaseURL string
-	DiscordAuth DiscordAuthConfig
+	Addr                  string
+	DataDir               string
+	DatabaseURL           string
+	MediaFetchYTDLPBinary string
+	DiscordAuth           DiscordAuthConfig
 }
 
 type DiscordAuthConfig struct {
@@ -35,6 +36,7 @@ type rawConfig struct {
 	Addr                   string   `envconfig:"ADDR" default:":8080"`
 	DataDir                string   `envconfig:"DATA_DIR" default:"data"`
 	DatabaseURL            string   `envconfig:"DATABASE_URL"`
+	MediaFetchYTDLPBinary  string   `envconfig:"MEDIAFETCH_YTDLP_BINARY" default:"yt-dlp"`
 	DiscordClientID        string   `envconfig:"DISCORD_CLIENT_ID"`
 	DiscordClientSecret    string   `envconfig:"DISCORD_CLIENT_SECRET"`
 	DiscordRedirectURL     string   `envconfig:"DISCORD_REDIRECT_URL"`
@@ -55,9 +57,10 @@ func LoadConfig() (Config, error) {
 	}
 
 	return Config{
-		Addr:        strings.TrimSpace(raw.Addr),
-		DataDir:     strings.TrimSpace(raw.DataDir),
-		DatabaseURL: strings.TrimSpace(raw.DatabaseURL),
+		Addr:                  strings.TrimSpace(raw.Addr),
+		DataDir:               strings.TrimSpace(raw.DataDir),
+		DatabaseURL:           strings.TrimSpace(raw.DatabaseURL),
+		MediaFetchYTDLPBinary: strings.TrimSpace(raw.MediaFetchYTDLPBinary),
 		DiscordAuth: DiscordAuthConfig{
 			ClientID:        strings.TrimSpace(raw.DiscordClientID),
 			ClientSecret:    strings.TrimSpace(raw.DiscordClientSecret),

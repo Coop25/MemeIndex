@@ -124,6 +124,15 @@
           </svg>
         </button>
 
+        <div class="sidebar-bottom-actions">
+          <button id="open-link-upload-modal" type="button" class="sidebar-action-button">
+            <span class="sidebar-action-label">Process Link</span>
+            <svg class="sidebar-action-short" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M10 14 14 10" />
+              <path d="M7.5 16.5 5 14a3 3 0 0 1 0-4.2l2.8-2.8a3 3 0 0 1 4.2 0" />
+              <path d="M16.5 7.5 19 10a3 3 0 0 1 0 4.2l-2.8 2.8a3 3 0 0 1-4.2 0" />
+            </svg>
+          </button>
         <button id="open-upload-modal" type="button" class="sidebar-action-button sidebar-action-button-bottom">
           <span class="sidebar-action-label">Add File</span>
           <svg class="sidebar-action-short" viewBox="0 0 24 24" aria-hidden="true">
@@ -131,6 +140,7 @@
             <path d="M5 12h14" />
           </svg>
         </button>
+        </div>
       </aside>
 
       <main class="workspace">
@@ -240,6 +250,12 @@
           </div>
         </div>
         <div class="upload-modal-body">
+          <div id="upload-busy-overlay" class="modal-busy-overlay hidden" aria-hidden="true">
+            <div class="modal-busy-card">
+              <div class="modal-busy-throbber"></div>
+              <p id="upload-busy-message" class="modal-busy-message">Uploading...</p>
+            </div>
+          </div>
           <div class="upload-modal-header">
             <div>
               <p class="section-kicker">Upload</p>
@@ -271,6 +287,43 @@
             <button type="submit" class="primary-button">Upload</button>
           </form>
           <p id="upload-status" class="status-text"></p>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="link-upload-modal" class="upload-modal users-modal">
+      <div class="upload-modal-shell">
+        <div class="upload-modal-body users-modal-body">
+          <div id="link-upload-busy-overlay" class="modal-busy-overlay hidden" aria-hidden="true">
+            <div class="modal-busy-card">
+              <div class="modal-busy-throbber"></div>
+              <p id="link-upload-busy-message" class="modal-busy-message">Processing link...</p>
+            </div>
+          </div>
+          <div class="upload-modal-header">
+            <div>
+              <p class="section-kicker">Import</p>
+              <h2>Process Link</h2>
+            </div>
+            <button id="link-upload-modal-close" class="upload-modal-close" type="button" aria-label="Close link import">X</button>
+          </div>
+          <p class="upload-modal-copy">Paste a supported YouTube, Facebook, or Reddit URL and MemeIndex will download it, store it, and keep the original source link attached to the meme.</p>
+          <form id="link-upload-form" class="upload-form">
+            <label class="field">
+              <span>Media Link</span>
+              <input id="link-upload-input" type="url" name="source_url" placeholder="https://www.youtube.com/watch?v=... or supported Facebook/Reddit URL" inputmode="url" required />
+            </label>
+            <label class="field">
+              <span>Tags</span>
+              <input id="link-upload-tags-input" type="text" name="tags" placeholder="reaction, cats, clip" autocomplete="off" />
+            </label>
+            <label class="field">
+              <span>Notes</span>
+              <textarea id="link-upload-notes-input" name="notes" rows="5" placeholder="Context, origin, or ideal use case"></textarea>
+            </label>
+            <button type="submit" class="primary-button">Process Link</button>
+          </form>
+          <p id="link-upload-status" class="status-text"></p>
         </div>
       </div>
     </dialog>
@@ -406,6 +459,10 @@
             <span>Notes</span>
             <textarea id="modal-notes-input" rows="7" placeholder="Add notes"></textarea>
           </label>
+          <div id="modal-source-field" class="field compact-field hidden">
+            <span>Source Link</span>
+            <a id="modal-source-link" class="modal-source-link" target="_blank" rel="noreferrer"></a>
+          </div>
           <section id="modal-audit-section" class="modal-audit-section hidden">
             <div class="modal-audit-header">
               <span>Activity</span>
