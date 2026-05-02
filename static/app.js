@@ -438,6 +438,27 @@ async function expectAuthorized(response, failureMessage) {
   return true;
 }
 
+async function readAPIErrorMessage(response, fallbackMessage) {
+  const contentType = response.headers.get("content-type") || "";
+  const body = (await response.text()).trim();
+  if (!body) {
+    return fallbackMessage;
+  }
+
+  const bodyLower = body.toLowerCase();
+  if (contentType.includes("text/html") || bodyLower.includes("<html")) {
+    if (bodyLower.includes("cloudflare") && bodyLower.includes("502")) {
+      return "Cloudflare returned a 502 while the link was being processed. The app or tunnel lost the origin request. Check the app and cloudflared logs, then try again.";
+    }
+    if (bodyLower.includes("cloudflare") && bodyLower.includes("524")) {
+      return "Cloudflare timed out waiting for the server to finish processing this request. Try a smaller/faster link or run the request through the direct host instead of the tunnel.";
+    }
+    return fallbackMessage;
+  }
+
+  return body;
+}
+
 async function fetchManagedUsers() {
   const response = await fetch("/api/users");
   if (!(await expectAuthorized(response, "Failed to load users."))) {
@@ -2880,8 +2901,7 @@ uploadForm.addEventListener("submit", async (event) => {
     }
 
     if (!response.ok) {
-      const message = (await response.text()).trim();
-      uploadStatus.textContent = message || "Upload failed.";
+      uploadStatus.textContent = await readAPIErrorMessage(response, "Upload failed.");
       return;
     }
 
@@ -2937,8 +2957,7 @@ linkUploadForm?.addEventListener("submit", async (event) => {
     }
 
     if (!response.ok) {
-      const message = (await response.text()).trim();
-      linkUploadStatus.textContent = message || "Link import failed.";
+      linkUploadStatus.textContent = await readAPIErrorMessage(response, "Link import failed.");
       return;
     }
 

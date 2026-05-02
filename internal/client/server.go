@@ -490,6 +490,7 @@ func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
 }
 
 var errUnsupportedMediaURL = errors.New("only YouTube, Facebook, and Reddit links are supported right now")
+var errUndownloadableSourceURL = errors.New("this link looks valid, but the source video is not directly downloadable from that URL. Try opening the post/video itself and copying the direct Facebook video URL instead of the share link")
 
 func (s *Server) createMemeFromSourceURL(r *http.Request, sourceURL string, tags []string, notes string) (accessor.Meme, error) {
 	if s.mediaClient == nil {
@@ -502,21 +503,30 @@ func (s *Server) createMemeFromSourceURL(r *http.Request, sourceURL string, tags
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 
-	downloadID, _, err := s.mediaClient.Extract(ctx, sourceURL)
+	resolvedSourceURL, err := normalizeSourceURL(ctx, sourceURL)
 	if err != nil {
+		log.Printf("normalize source url failed for %q: %v", sourceURL, err)
 		return accessor.Meme{}, err
+	}
+
+	downloadID, _, err := s.mediaClient.Extract(ctx, resolvedSourceURL)
+	if err != nil {
+		log.Printf("media extract failed for original=%q resolved=%q: %v", sourceURL, resolvedSourceURL, err)
+		return accessor.Meme{}, friendlySourceDownloadError(sourceURL, resolvedSourceURL, err)
 	}
 
 	downloadDir := filepath.Join(s.mediaClient.DownloadDir(), downloadID)
 	defer os.RemoveAll(downloadDir)
 
-	downloadedFile, err := s.mediaClient.Download(ctx, sourceURL, downloadID, "best")
+	downloadedFile, err := s.mediaClient.Download(ctx, resolvedSourceURL, downloadID, "best")
 	if err != nil {
-		return accessor.Meme{}, err
+		log.Printf("media download failed for original=%q resolved=%q download_id=%q: %v", sourceURL, resolvedSourceURL, downloadID, err)
+		return accessor.Meme{}, friendlySourceDownloadError(sourceURL, resolvedSourceURL, err)
 	}
 
 	src, err := os.Open(downloadedFile)
 	if err != nil {
+		log.Printf("open downloaded media failed for original=%q resolved=%q file=%q: %v", sourceURL, resolvedSourceURL, downloadedFile, err)
 		return accessor.Meme{}, err
 	}
 	defer src.Close()
@@ -536,6 +546,70 @@ func (s *Server) createMemeFromSourceURL(r *http.Request, sourceURL string, tags
 		notes,
 		sourceURL,
 	)
+}
+
+func friendlySourceDownloadError(originalURL, resolvedURL string, err error) error {
+	if err == nil {
+		return errUndownloadableSourceURL
+	}
+
+	message := strings.ToLower(strings.TrimSpace(err.Error()))
+	switch {
+	case strings.Contains(message, "unsupported url"):
+		if mediafetch.IsFacebookURL(originalURL) || mediafetch.IsFacebookURL(resolvedURL) {
+			return errUndownloadableSourceURL
+		}
+	case strings.Contains(message, "private video"),
+		strings.Contains(message, "requires login"),
+		strings.Contains(message, "not directly downloadable"):
+		return errors.New("this video is not publicly downloadable from that link")
+	}
+
+	return err
+}
+
+func normalizeSourceURL(ctx context.Context, raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", errUnsupportedMediaURL
+	}
+
+	if !mediafetch.IsFacebookURL(trimmed) {
+		return trimmed, nil
+	}
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, trimmed, nil)
+	if err != nil {
+		return "", err
+	}
+	request.Header.Set("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1")
+
+	client := &http.Client{
+		Timeout: 20 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return http.ErrUseLastResponse
+			}
+			return nil
+		},
+	}
+
+	response, err := client.Do(request)
+	if err != nil {
+		return trimmed, nil
+	}
+	defer response.Body.Close()
+
+	if response.Request == nil || response.Request.URL == nil {
+		return trimmed, nil
+	}
+
+	resolved := strings.TrimSpace(response.Request.URL.String())
+	if resolved == "" {
+		return trimmed, nil
+	}
+
+	return resolved, nil
 }
 
 func (s *Server) updateMeme(w http.ResponseWriter, r *http.Request, id string) {
