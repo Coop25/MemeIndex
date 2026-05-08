@@ -59,7 +59,10 @@ const linkUploadBusyMessage = document.querySelector("#link-upload-busy-message"
 const linkUploadModalClose = document.querySelector("#link-upload-modal-close");
 const linkUploadForm = document.querySelector("#link-upload-form");
 const linkUploadInput = document.querySelector("#link-upload-input");
+const linkUploadTagChips = document.querySelector("#link-upload-tag-chips");
 const linkUploadTagsInput = document.querySelector("#link-upload-tags-input");
+const linkUploadTagSuggestions = document.querySelector("#link-upload-tag-suggestions");
+const linkUploadTagsHidden = document.querySelector("#link-upload-tags-hidden");
 const linkUploadNotesInput = document.querySelector("#link-upload-notes-input");
 const linkUploadStatus = document.querySelector("#link-upload-status");
 const openRandomReelButton = document.querySelector("#open-random-reel");
@@ -198,6 +201,10 @@ let uploadTagState = [];
 let uploadSuggestionState = [];
 let activeUploadSuggestionIndex = -1;
 let uploadTagSuggestionAbortController = null;
+let linkUploadTagState = [];
+let linkUploadSuggestionState = [];
+let activeLinkUploadSuggestionIndex = -1;
+let linkUploadTagSuggestionAbortController = null;
 let uploadPreviewURL = null;
 let uploadDragDepth = 0;
 let topTagSuggestionState = [];
@@ -2802,6 +2809,140 @@ async function fetchUploadTagSuggestions() {
   }
 }
 
+function syncLinkUploadTagsField() {
+  linkUploadTagsHidden.value = linkUploadTagState.map((tag) => tag.value).join(", ");
+}
+
+function resetLinkUploadTags() {
+  linkUploadTagState = [];
+  linkUploadSuggestionState = [];
+  activeLinkUploadSuggestionIndex = -1;
+  if (linkUploadTagSuggestionAbortController) {
+    linkUploadTagSuggestionAbortController.abort();
+    linkUploadTagSuggestionAbortController = null;
+  }
+  linkUploadTagsInput.value = "";
+  syncLinkUploadTagsField();
+  renderLinkUploadTagEditor();
+  renderLinkUploadTagSuggestions();
+}
+
+function addLinkUploadTag(rawTag) {
+  const tag = normalizeTagValue(rawTag);
+  if (!tag || linkUploadTagState.some((entry) => entry.value === tag)) return;
+  linkUploadTagState = [...linkUploadTagState, createModalTag(tag)];
+  linkUploadTagsInput.value = "";
+  linkUploadSuggestionState = [];
+  activeLinkUploadSuggestionIndex = -1;
+  syncLinkUploadTagsField();
+  renderLinkUploadTagEditor();
+  renderLinkUploadTagSuggestions();
+}
+
+function removeLinkUploadTag(tagIdToRemove) {
+  linkUploadTagState = linkUploadTagState.filter((tag) => tag.id !== tagIdToRemove);
+  if (!normalizeTagValue(linkUploadTagsInput.value)) {
+    linkUploadSuggestionState = [];
+  }
+  syncLinkUploadTagsField();
+  renderLinkUploadTagEditor();
+  renderLinkUploadTagSuggestions();
+}
+
+function renderLinkUploadTagEditor() {
+  linkUploadTagChips.innerHTML = "";
+  for (const tag of linkUploadTagState) {
+    const chip = document.createElement("span");
+    chip.className = "tag-token";
+
+    const label = document.createElement("span");
+    label.className = "tag-token-label";
+    label.textContent = tag.value;
+
+    const removeButton = document.createElement("button");
+    removeButton.type = "button";
+    removeButton.className = "tag-token-remove";
+    removeButton.setAttribute("aria-label", `Remove ${tag.value}`);
+    removeButton.textContent = "x";
+    removeButton.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      removeLinkUploadTag(tag.id);
+      linkUploadTagsInput.focus();
+    });
+
+    chip.append(label, removeButton);
+    linkUploadTagChips.appendChild(chip);
+  }
+}
+
+function renderLinkUploadTagSuggestions() {
+  linkUploadTagSuggestions.innerHTML = "";
+
+  if (linkUploadSuggestionState.length === 0) {
+    linkUploadTagSuggestions.classList.add("hidden");
+    activeLinkUploadSuggestionIndex = -1;
+    return;
+  }
+
+  linkUploadSuggestionState.forEach((tag, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "tag-suggestion";
+    if (index === activeLinkUploadSuggestionIndex) {
+      button.classList.add("is-active");
+    }
+    button.innerHTML = `<span>${tag}</span><span class="tag-suggestion-hint">existing</span>`;
+    button.addEventListener("click", () => {
+      addLinkUploadTag(tag);
+      linkUploadTagsInput.focus();
+    });
+    linkUploadTagSuggestions.appendChild(button);
+  });
+
+  linkUploadTagSuggestions.classList.remove("hidden");
+}
+
+async function fetchLinkUploadTagSuggestions() {
+  if (!canAdd()) return;
+  const needle = normalizeTagValue(linkUploadTagsInput.value);
+  if (!needle) {
+    if (linkUploadTagSuggestionAbortController) {
+      linkUploadTagSuggestionAbortController.abort();
+      linkUploadTagSuggestionAbortController = null;
+    }
+    linkUploadSuggestionState = [];
+    renderLinkUploadTagSuggestions();
+    return;
+  }
+
+  if (linkUploadTagSuggestionAbortController) {
+    linkUploadTagSuggestionAbortController.abort();
+  }
+
+  linkUploadTagSuggestionAbortController = new AbortController();
+
+  try {
+    const response = await fetch(`/api/tags?q=${encodeURIComponent(needle)}`, {
+      signal: linkUploadTagSuggestionAbortController.signal,
+    });
+    if (!response.ok) {
+      return;
+    }
+
+    const payload = await response.json();
+    if (normalizeTagValue(linkUploadTagsInput.value) !== needle) {
+      return;
+    }
+    linkUploadSuggestionState = (payload.tags || []).filter((tag) => !linkUploadTagState.some((entry) => entry.value === tag));
+    renderLinkUploadTagSuggestions();
+  } catch (error) {
+    if (error.name !== "AbortError") {
+      console.error(error);
+    }
+  }
+}
+
 async function persistCard(id, payload) {
   if (!canEditMetadata()) {
     window.alert("You do not have permission to edit metadata.");
@@ -2943,6 +3084,7 @@ linkUploadForm?.addEventListener("submit", async (event) => {
   linkUploadStatus.textContent = "Processing link and saving it...";
   setModalBusyState(linkUploadModal, linkUploadBusyOverlay, linkUploadBusyMessage, true, "Processing link and saving it...");
   try {
+    syncLinkUploadTagsField();
     const formData = new FormData(linkUploadForm);
     const response = await fetch("/api/memes", {
       method: "POST",
@@ -2975,6 +3117,8 @@ linkUploadForm?.addEventListener("submit", async (event) => {
     }
 
     await loadInitialMemes();
+    linkUploadForm?.reset();
+    resetLinkUploadTags();
     linkUploadModal?.close();
   } finally {
     setModalBusyState(linkUploadModal, linkUploadBusyOverlay, linkUploadBusyMessage, false);
@@ -2998,6 +3142,7 @@ openLinkUploadModalButton?.addEventListener("click", () => {
   setModalBusyState(linkUploadModal, linkUploadBusyOverlay, linkUploadBusyMessage, false);
   linkUploadStatus.textContent = "";
   linkUploadForm?.reset();
+  resetLinkUploadTags();
   linkUploadModal?.showModal();
 });
 
@@ -3019,6 +3164,7 @@ uploadModalClose.addEventListener("click", () => {
 linkUploadModalClose?.addEventListener("click", () => {
   if (isModalBusy(linkUploadModal)) return;
   setModalBusyState(linkUploadModal, linkUploadBusyOverlay, linkUploadBusyMessage, false);
+  resetLinkUploadTags();
   linkUploadModal?.close();
 });
 
@@ -3036,6 +3182,7 @@ linkUploadModal?.addEventListener("click", (event) => {
   if (isModalBusy(linkUploadModal)) return;
   if (event.target !== linkUploadModal) return;
   setModalBusyState(linkUploadModal, linkUploadBusyOverlay, linkUploadBusyMessage, false);
+  resetLinkUploadTags();
   linkUploadModal.close();
 });
 
@@ -3215,6 +3362,46 @@ uploadTagsInput.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     uploadTagSuggestions.classList.add("hidden");
     activeUploadSuggestionIndex = -1;
+  }
+});
+
+linkUploadTagsInput?.addEventListener("input", () => {
+  activeLinkUploadSuggestionIndex = -1;
+  fetchLinkUploadTagSuggestions();
+});
+
+linkUploadTagsInput?.addEventListener("keydown", (event) => {
+  if (event.key === "ArrowDown" && linkUploadSuggestionState.length > 0) {
+    event.preventDefault();
+    activeLinkUploadSuggestionIndex = (activeLinkUploadSuggestionIndex + 1) % linkUploadSuggestionState.length;
+    renderLinkUploadTagSuggestions();
+    return;
+  }
+
+  if (event.key === "ArrowUp" && linkUploadSuggestionState.length > 0) {
+    event.preventDefault();
+    activeLinkUploadSuggestionIndex = activeLinkUploadSuggestionIndex <= 0 ? linkUploadSuggestionState.length - 1 : activeLinkUploadSuggestionIndex - 1;
+    renderLinkUploadTagSuggestions();
+    return;
+  }
+
+  if ((event.key === "Enter" || event.key === "Tab" || event.key === ",") && linkUploadTagsInput.value.trim()) {
+    event.preventDefault();
+    if (activeLinkUploadSuggestionIndex >= 0 && linkUploadSuggestionState[activeLinkUploadSuggestionIndex]) {
+      addLinkUploadTag(linkUploadSuggestionState[activeLinkUploadSuggestionIndex]);
+    } else {
+      addLinkUploadTag(linkUploadTagsInput.value);
+    }
+    return;
+  }
+
+  if (event.key === "Backspace" && !linkUploadTagsInput.value && linkUploadTagState.length > 0) {
+    removeLinkUploadTag(linkUploadTagState[linkUploadTagState.length - 1].id);
+  }
+
+  if (event.key === "Escape") {
+    linkUploadTagSuggestions.classList.add("hidden");
+    activeLinkUploadSuggestionIndex = -1;
   }
 });
 

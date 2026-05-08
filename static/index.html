@@ -307,15 +307,22 @@
             </div>
             <button id="link-upload-modal-close" class="upload-modal-close" type="button" aria-label="Close link import">X</button>
           </div>
-          <p class="upload-modal-copy">Paste a supported YouTube, Facebook, or Reddit URL and MemeIndex will download it, store it, and keep the original source link attached to the meme.</p>
+          <p class="upload-modal-copy">Paste a supported YouTube, Facebook, Reddit, Instagram, TikTok, or Twitter/X URL and MemeIndex will download it, store it, and keep the original source link attached to the meme.</p>
           <form id="link-upload-form" class="upload-form">
             <label class="field">
               <span>Media Link</span>
-              <input id="link-upload-input" type="url" name="source_url" placeholder="https://www.youtube.com/watch?v=... or supported Facebook/Reddit URL" inputmode="url" required />
+              <input id="link-upload-input" type="url" name="source_url" placeholder="https://www.youtube.com/watch?v=... or a supported Facebook, Reddit, Instagram, TikTok, or X URL" inputmode="url" required />
             </label>
             <label class="field">
               <span>Tags</span>
-              <input id="link-upload-tags-input" type="text" name="tags" placeholder="reaction, cats, clip" autocomplete="off" />
+              <div class="tag-editor upload-tag-editor">
+                <div class="tag-control">
+                  <div id="link-upload-tag-chips" class="tag-token-list"></div>
+                  <input id="link-upload-tags-input" type="text" placeholder="Add a tag..." autocomplete="off" />
+                </div>
+                <div id="link-upload-tag-suggestions" class="tag-suggestions hidden"></div>
+              </div>
+              <input id="link-upload-tags-hidden" type="hidden" name="tags" />
             </label>
             <label class="field">
               <span>Notes</span>

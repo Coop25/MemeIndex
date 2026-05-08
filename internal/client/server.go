@@ -489,7 +489,7 @@ func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-var errUnsupportedMediaURL = errors.New("only YouTube, Facebook, and Reddit links are supported right now")
+var errUnsupportedMediaURL = errors.New("only YouTube, Facebook, Reddit, Instagram, TikTok, and Twitter/X links are supported right now")
 var errUndownloadableSourceURL = errors.New("this link looks valid, but the source video is not directly downloadable from that URL. Try opening the post/video itself and copying the direct Facebook video URL instead of the share link")
 
 func (s *Server) createMemeFromSourceURL(r *http.Request, sourceURL string, tags []string, notes string) (accessor.Meme, error) {
