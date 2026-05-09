@@ -1,5 +1,7 @@
 github.com/Coop25/mediafetch-go v0.1.2 h1:2T3xc6sRQZNntLEr6wDVhbMSL6tmtCeUtgIShuNmv2U=
 github.com/Coop25/mediafetch-go v0.1.2/go.mod h1:ZKAzvAsS3tEsJNvCV4tIgabcK/7Al7EerCY41CDTlQE=
+github.com/Coop25/mediafetch-go v0.1.10 h1:iJOLo/ZXTeMQhK9MpYLAd4JPnsJWb1GJpA4oPivpmoE=
+github.com/Coop25/mediafetch-go v0.1.10/go.mod h1:ZKAzvAsS3tEsJNvCV4tIgabcK/7Al7EerCY41CDTlQE=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=

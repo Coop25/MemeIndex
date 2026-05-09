@@ -518,10 +518,10 @@ func (s *Server) createMemeFromSourceURL(r *http.Request, sourceURL string, tags
 	}
 
 	var (
-		downloadedFile        string
-		successfulDownload    string
+		downloadedFile      string
+		successfulDownload  string
 		successfulDownloadDir string
-		lastDownloadErr       error
+		lastDownloadErr     error
 	)
 	for _, candidate := range supportedCandidates {
 		downloadID, _, extractErr := s.mediaClient.Extract(ctx, candidate)
