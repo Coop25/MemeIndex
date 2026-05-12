@@ -171,20 +171,10 @@
                 <span id="auth-version-value" class="auth-version-value">dev</span>
                 <span class="auth-version-hint">Refresh frontend</span>
               </button>
-              <button id="auth-manage-users" class="auth-version-button hidden" type="button" role="menuitem" aria-label="Manage users and permissions">
-                <span class="auth-version-label">Users</span>
-                <span class="auth-version-value">Admin</span>
-                <span class="auth-version-hint">Manage permissions</span>
-              </button>
-              <button id="auth-delete-queue" class="auth-version-button hidden" type="button" role="menuitem" aria-label="Review pending delete requests">
-                <span class="auth-version-label">Queue</span>
-                <span class="auth-version-value">Review</span>
-                <span class="auth-version-hint">Approve deletes</span>
-              </button>
-              <button id="auth-audit-logs" class="auth-version-button hidden" type="button" role="menuitem" aria-label="Review audit logs">
-                <span class="auth-version-label">Logs</span>
-                <span class="auth-version-value">Audit</span>
-                <span class="auth-version-hint">View activity</span>
+              <button id="auth-admin" class="auth-version-button hidden" type="button" role="menuitem" aria-label="Open admin workspace">
+                <span class="auth-version-label">Admin</span>
+                <span class="auth-version-value">Workspace</span>
+                <span class="auth-version-hint">Users, queue, logs</span>
               </button>
               <a id="auth-logout" class="auth-link auth-link-danger hidden" href="/auth/logout" role="menuitem">Logout</a>
             </div>
@@ -196,11 +186,85 @@
             <div class="admin-view-header">
               <div>
                 <p id="admin-view-kicker" class="section-kicker">Admin</p>
-                <h2 id="admin-view-title">Audit Logs</h2>
+                <h2 id="admin-view-title">Admin Workspace</h2>
               </div>
               <p id="admin-view-copy" class="admin-view-copy"></p>
             </div>
+            <div id="admin-tabs" class="admin-tabs" role="tablist" aria-label="Admin sections">
+              <button class="admin-tab is-active" type="button" role="tab" data-admin-tab="dashboard" aria-selected="true">Dashboard</button>
+              <button class="admin-tab" type="button" role="tab" data-admin-tab="users" aria-selected="false">Users</button>
+              <button class="admin-tab" type="button" role="tab" data-admin-tab="tag-hygiene" aria-selected="false">Tag Hygiene</button>
+              <button class="admin-tab" type="button" role="tab" data-admin-tab="tag-queue" aria-selected="false">Tag Queue</button>
+              <button class="admin-tab" type="button" role="tab" data-admin-tab="delete-queue" aria-selected="false">Delete Queue</button>
+              <button class="admin-tab" type="button" role="tab" data-admin-tab="audit-logs" aria-selected="false">Audit Logs</button>
+            </div>
             <p id="admin-view-status" class="status-text"></p>
+            <section id="admin-tag-queue-panel" class="admin-tag-queue-panel hidden" aria-live="polite">
+              <div class="admin-tag-queue-header">
+                <div>
+                  <p class="section-kicker">Tag Queue</p>
+                  <h3>Suggestion Worker</h3>
+                </div>
+                <div class="admin-tag-queue-header-actions">
+                  <p id="admin-tag-queue-summary" class="admin-tag-queue-summary"></p>
+                  <button id="admin-tag-queue-reset" class="admin-tag-queue-action" type="button">
+                    Reset Suggestions + Requeue Untagged
+                  </button>
+                </div>
+              </div>
+              <div id="admin-tag-queue-grid" class="admin-tag-queue-grid"></div>
+              <div id="admin-tag-queue-list" class="admin-tag-queue-list"></div>
+            </section>
+            <section id="admin-dashboard-panel" class="admin-dashboard-panel hidden" aria-live="polite">
+              <div id="admin-dashboard-grid" class="admin-dashboard-grid"></div>
+              <div class="admin-dashboard-lower">
+                <section class="admin-dashboard-section">
+                  <div class="admin-dashboard-section-head">
+                    <p class="section-kicker">Tags</p>
+                    <h3>Leaderboard</h3>
+                  </div>
+                  <div id="admin-dashboard-tags" class="admin-dashboard-tags"></div>
+                </section>
+                <section class="admin-dashboard-section">
+                  <div class="admin-dashboard-section-head">
+                    <p class="section-kicker">Recent</p>
+                    <h3>Newest Memes</h3>
+                  </div>
+                  <div id="admin-dashboard-recent" class="admin-dashboard-recent"></div>
+                </section>
+              </div>
+            </section>
+            <section id="admin-tag-hygiene-panel" class="admin-tag-hygiene-panel hidden" aria-live="polite">
+              <div class="admin-tag-hygiene-top">
+                <form id="admin-tag-merge-form" class="admin-tag-merge-form">
+                  <label class="field compact-field">
+                    <span>Merge From</span>
+                    <input id="admin-tag-merge-source" type="text" placeholder="buisness" autocomplete="off" />
+                  </label>
+                  <label class="field compact-field">
+                    <span>Into</span>
+                    <input id="admin-tag-merge-target" type="text" placeholder="business" autocomplete="off" />
+                  </label>
+                  <button id="admin-tag-merge-submit" class="primary-button" type="submit">Merge Tags</button>
+                </form>
+              </div>
+              <div class="admin-tag-hygiene-lower">
+                <section class="admin-dashboard-section">
+                  <div class="admin-dashboard-section-head">
+                    <p class="section-kicker">Suggestions</p>
+                    <h3>Likely Variants</h3>
+                  </div>
+                  <div id="admin-tag-hygiene-pairs" class="admin-tag-hygiene-pairs"></div>
+                </section>
+                <section class="admin-dashboard-section">
+                  <div class="admin-dashboard-section-head">
+                    <p class="section-kicker">Catalog</p>
+                    <h3>Tag Counts</h3>
+                  </div>
+                  <div id="admin-tag-hygiene-tags" class="admin-tag-hygiene-tags"></div>
+                </section>
+              </div>
+            </section>
             <div id="admin-view-table" class="admin-view-table"></div>
             <div id="admin-pagination" class="admin-pagination hidden" aria-label="Admin page navigation">
               <button id="admin-page-prev" class="meme-page-button" type="button" aria-label="Previous admin page" disabled>
@@ -462,6 +526,14 @@
               <div id="modal-tag-suggestions" class="tag-suggestions hidden"></div>
             </div>
           </label>
+          <section id="modal-ai-tag-tools" class="modal-ai-tag-tools hidden">
+            <div class="modal-ai-tag-header">
+              <span>Suggested Tags</span>
+              <button id="modal-suggest-tags" class="modal-ai-tag-button" type="button">Suggest Tags</button>
+            </div>
+            <p id="modal-suggest-tags-status" class="status-text hidden"></p>
+            <div id="modal-ai-tag-suggestions" class="modal-ai-tag-suggestions hidden"></div>
+          </section>
           <label class="field compact-field">
             <span>Notes</span>
             <textarea id="modal-notes-input" rows="7" placeholder="Add notes"></textarea>
@@ -558,6 +630,8 @@
         </div>
       </div>
     </dialog>
+
+    <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="false"></div>
 
     <script src="/static/app.js" defer></script>
   </body>

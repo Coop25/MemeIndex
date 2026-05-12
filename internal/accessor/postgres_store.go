@@ -161,6 +161,7 @@ func (s *PostgresStore) List(userID, query string, favoritesOnly bool, tag strin
 			m.content_type,
 			m.size_bytes,
 			COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL), '{}') AS tags,
+			COALESCE(m.suggested_tags, '{}') AS suggested_tags,
 			m.notes,
 			COALESCE(m.source_url, '') AS source_url,
 			EXISTS (
@@ -272,6 +273,7 @@ func (s *PostgresStore) GetAnyByID(id string) (Meme, error) {
 			m.content_type,
 			m.size_bytes,
 			COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL), '{}') AS tags,
+			COALESCE(m.suggested_tags, '{}') AS suggested_tags,
 			m.notes,
 			COALESCE(m.source_url, '') AS source_url,
 			FALSE AS favorite,
@@ -293,6 +295,38 @@ func (s *PostgresStore) GetAnyByID(id string) (Meme, error) {
 	}
 	decoratePreviewPath(&meme, s.previewDir)
 	return meme, nil
+}
+
+func (s *PostgresStore) ListSuggestedTags(id string) ([]string, error) {
+	var tags []string
+	err := s.pool.QueryRow(context.Background(), `
+		SELECT COALESCE(suggested_tags, '{}')
+		FROM memes
+		WHERE id = $1
+	`, strings.TrimSpace(id)).Scan(&tags)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, os.ErrNotExist
+		}
+		return nil, err
+	}
+	return normalizeTags(tags), nil
+}
+
+func (s *PostgresStore) ReplaceSuggestedTags(id string, tags []string) error {
+	commandTag, err := s.pool.Exec(context.Background(), `
+		UPDATE memes
+		SET suggested_tags = $2,
+			updated_at = NOW()
+		WHERE id = $1
+	`, strings.TrimSpace(id), normalizeTags(tags))
+	if err != nil {
+		return err
+	}
+	if commandTag.RowsAffected() == 0 {
+		return os.ErrNotExist
+	}
+	return nil
 }
 
 func (s *PostgresStore) Random(excludedIDs []string) (Meme, error) {
@@ -360,18 +394,19 @@ func (s *PostgresStore) Create(input CreateInput) (Meme, error) {
 
 	now := time.Now().UTC()
 	meme := Meme{
-		ID:           id,
-		OriginalName: input.Filename,
-		StoredName:   storedName,
-		FilePath:     "/uploads/" + storedName,
-		ContentType:  detectContentType(input.Header, input.ContentType, input.Filename),
-		ContentHash:  contentHashString(hasher),
-		SizeBytes:    size,
-		Tags:         normalizeTags(input.Tags),
-		Notes:        strings.TrimSpace(input.Notes),
-		SourceURL:    strings.TrimSpace(input.SourceURL),
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		ID:            id,
+		OriginalName:  input.Filename,
+		StoredName:    storedName,
+		FilePath:      "/uploads/" + storedName,
+		ContentType:   detectContentType(input.Header, input.ContentType, input.Filename),
+		ContentHash:   contentHashString(hasher),
+		SizeBytes:     size,
+		Tags:          normalizeTags(input.Tags),
+		SuggestedTags: []string{},
+		Notes:         strings.TrimSpace(input.Notes),
+		SourceURL:     strings.TrimSpace(input.SourceURL),
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 
 	if err := ensurePreviewAsset(s.uploadDir, s.previewDir, &meme); err != nil {
@@ -396,9 +431,9 @@ func (s *PostgresStore) Create(input CreateInput) (Meme, error) {
 
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO memes (
-			id, original_name, stored_name, file_path, content_type, content_hash, size_bytes, notes, source_url, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-	`, meme.ID, meme.OriginalName, meme.StoredName, meme.FilePath, meme.ContentType, meme.ContentHash, meme.SizeBytes, meme.Notes, meme.SourceURL, meme.CreatedAt, meme.UpdatedAt); err != nil {
+			id, original_name, stored_name, file_path, content_type, content_hash, size_bytes, notes, source_url, suggested_tags, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+	`, meme.ID, meme.OriginalName, meme.StoredName, meme.FilePath, meme.ContentType, meme.ContentHash, meme.SizeBytes, meme.Notes, meme.SourceURL, meme.SuggestedTags, meme.CreatedAt, meme.UpdatedAt); err != nil {
 		_ = os.Remove(targetPath)
 		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23505" {
 			if existing, lookupErr := s.getByHash(ctx, meme.ContentHash); lookupErr == nil {
@@ -609,6 +644,7 @@ func (s *PostgresStore) ensureSchema(ctx context.Context) error {
 		"001_memes_core.sql",
 		"002_memes_compat.sql",
 		"006_memes_source_url.sql",
+		"007_memes_suggested_tags.sql",
 	); err != nil {
 		return fmt.Errorf("ensure schema: %w", err)
 	}
@@ -645,10 +681,10 @@ func (s *PostgresStore) importLegacyDataIfNeeded(ctx context.Context) error {
 	for _, meme := range memes {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO memes (
-				id, original_name, stored_name, file_path, content_type, content_hash, size_bytes, notes, source_url, created_at, updated_at
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+				id, original_name, stored_name, file_path, content_type, content_hash, size_bytes, notes, source_url, suggested_tags, created_at, updated_at
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 			ON CONFLICT (id) DO NOTHING
-		`, meme.ID, meme.OriginalName, meme.StoredName, meme.FilePath, meme.ContentType, meme.ContentHash, meme.SizeBytes, strings.TrimSpace(meme.Notes), strings.TrimSpace(meme.SourceURL), meme.CreatedAt, meme.UpdatedAt); err != nil {
+		`, meme.ID, meme.OriginalName, meme.StoredName, meme.FilePath, meme.ContentType, meme.ContentHash, meme.SizeBytes, strings.TrimSpace(meme.Notes), strings.TrimSpace(meme.SourceURL), normalizeTags(meme.SuggestedTags), meme.CreatedAt, meme.UpdatedAt); err != nil {
 			return err
 		}
 		if err := s.replaceTags(ctx, tx, meme.ID, normalizeTags(meme.Tags)); err != nil {
@@ -786,16 +822,17 @@ func (s *PostgresStore) readLegacyMemes() ([]Meme, error) {
 	memes := make([]Meme, 0, len(persisted))
 	for _, item := range persisted {
 		memes = append(memes, Meme{
-			ID:           item.ID,
-			OriginalName: item.OriginalName,
-			StoredName:   item.StoredName,
-			FilePath:     item.FilePath,
-			ContentType:  item.ContentType,
-			SizeBytes:    item.SizeBytes,
-			Tags:         normalizeTags(item.Tags),
-			Notes:        strings.TrimSpace(item.Notes),
-			CreatedAt:    item.CreatedAt,
-			UpdatedAt:    item.UpdatedAt,
+			ID:            item.ID,
+			OriginalName:  item.OriginalName,
+			StoredName:    item.StoredName,
+			FilePath:      item.FilePath,
+			ContentType:   item.ContentType,
+			SizeBytes:     item.SizeBytes,
+			Tags:          normalizeTags(item.Tags),
+			SuggestedTags: normalizeTags(item.SuggestedTags),
+			Notes:         strings.TrimSpace(item.Notes),
+			CreatedAt:     item.CreatedAt,
+			UpdatedAt:     item.UpdatedAt,
 		})
 	}
 
@@ -840,6 +877,7 @@ func (s *PostgresStore) getByID(ctx context.Context, db queryable, userID, id st
 			m.content_type,
 			m.size_bytes,
 			COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL), '{}') AS tags,
+			COALESCE(m.suggested_tags, '{}') AS suggested_tags,
 			m.notes,
 			COALESCE(m.source_url, '') AS source_url,
 			EXISTS (
@@ -946,6 +984,7 @@ func (s *PostgresStore) getByHash(ctx context.Context, contentHash string) (Meme
 			m.content_type,
 			m.size_bytes,
 			COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL), '{}') AS tags,
+			COALESCE(m.suggested_tags, '{}') AS suggested_tags,
 			m.notes,
 			COALESCE(m.source_url, '') AS source_url,
 			FALSE AS favorite,
@@ -1112,6 +1151,7 @@ func (s *PostgresStore) ListPendingDeletes(offset int, limit int) (PagedPendingD
 			m.content_type,
 			m.size_bytes,
 			COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL), '{}') AS tags,
+			COALESCE(m.suggested_tags, '{}') AS suggested_tags,
 			m.notes,
 			COALESCE(m.source_url, '') AS source_url,
 			FALSE AS favorite,
@@ -1265,6 +1305,7 @@ func diffAuditTags(current []string, next []string) ([]string, []string) {
 func scanMemeRow(row interface{ Scan(dest ...any) error }) (Meme, error) {
 	var meme Meme
 	var tags []string
+	var suggestedTags []string
 	if err := row.Scan(
 		&meme.ID,
 		&meme.OriginalName,
@@ -1273,6 +1314,7 @@ func scanMemeRow(row interface{ Scan(dest ...any) error }) (Meme, error) {
 		&meme.ContentType,
 		&meme.SizeBytes,
 		&tags,
+		&suggestedTags,
 		&meme.Notes,
 		&meme.SourceURL,
 		&meme.Favorite,
@@ -1285,5 +1327,6 @@ func scanMemeRow(row interface{ Scan(dest ...any) error }) (Meme, error) {
 		return Meme{}, err
 	}
 	meme.Tags = normalizeTags(tags)
+	meme.SuggestedTags = normalizeTags(suggestedTags)
 	return meme, nil
 }

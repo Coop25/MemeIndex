@@ -19,6 +19,7 @@ import (
 	mediafetch "github.com/Coop25/mediafetch-go"
 	"memeindex/internal/accessor"
 	"memeindex/internal/manager"
+	"memeindex/internal/tagsuggest"
 )
 
 type Server struct {
@@ -67,7 +68,11 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/auth/session", s.handleAuthSession)
 	mux.Handle("/api/users", s.withAPIAuth(http.HandlerFunc(s.handleUsers), permissionManageUsers))
 	mux.Handle("/api/users/", s.withAPIAuth(http.HandlerFunc(s.handleUserByID), permissionManageUsers))
+	mux.Handle("/api/admin/dashboard", s.withAPIAuth(http.HandlerFunc(s.handleAdminDashboard), permissionManageUsers))
 	mux.Handle("/api/admin/audit-logs", s.withAPIAuth(http.HandlerFunc(s.handleAuditLogs), permissionManageUsers))
+	mux.Handle("/api/admin/tag-hygiene", s.withAPIAuth(http.HandlerFunc(s.handleTagHygiene), permissionManageUsers))
+	mux.Handle("/api/admin/tag-suggestions/status", s.withAPIAuth(http.HandlerFunc(s.handleTagSuggestionStatus), permissionManageUsers))
+	mux.Handle("/api/admin/tag-suggestions/reset", s.withAPIAuth(http.HandlerFunc(s.handleResetTagSuggestions), permissionManageUsers))
 	mux.Handle("/api/admin/memes/pending-delete", s.withAPIAuth(http.HandlerFunc(s.handlePendingDeleteQueue), permissionManageUsers))
 	mux.Handle("/api/admin/memes/", s.withAPIAuth(http.HandlerFunc(s.handleAdminMemeActions), permissionManageUsers))
 	mux.Handle("/uploads/", s.withPageAuth(http.StripPrefix("/uploads/", http.FileServer(http.Dir(s.managers.UploadDir())))))
@@ -341,6 +346,48 @@ func (s *Server) handleMemeByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if strings.HasSuffix(path, "/tag-suggestions") {
+		id := strings.TrimSuffix(path, "/tag-suggestions")
+		id = strings.TrimSuffix(id, "/")
+		if id == "" || strings.Contains(id, "/") {
+			http.NotFound(w, r)
+			return
+		}
+
+		if !s.requirePermission(w, r, permissionMetadata) {
+			return
+		}
+
+		switch r.Method {
+		case http.MethodGet:
+			s.getStoredMemeTagSuggestions(w, r, id)
+		case http.MethodPatch:
+			s.updateStoredMemeTagSuggestions(w, r, id)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+		return
+	}
+
+	if strings.HasSuffix(path, "/tag-suggestions/refresh") {
+		id := strings.TrimSuffix(path, "/tag-suggestions/refresh")
+		id = strings.TrimSuffix(id, "/")
+		if id == "" || strings.Contains(id, "/") {
+			http.NotFound(w, r)
+			return
+		}
+
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if !s.requirePermission(w, r, permissionMetadata) {
+			return
+		}
+		s.refreshMemeTagSuggestions(w, r, id)
+		return
+	}
+
 	id := path
 	if id == "" || strings.Contains(id, "/") {
 		http.NotFound(w, r)
@@ -357,6 +404,102 @@ func (s *Server) handleMemeByID(w http.ResponseWriter, r *http.Request) {
 		s.deleteMeme(w, r, id)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) getStoredMemeTagSuggestions(w http.ResponseWriter, r *http.Request, id string) {
+	result, err := s.managers.GetStoredMemeTagSuggestions(id)
+	if err == nil {
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
+
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		http.NotFound(w, r)
+	case errors.Is(err, tagsuggest.ErrDisabled):
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"error": "tag suggestions are disabled",
+		})
+	case errors.Is(err, tagsuggest.ErrUnsupported):
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"error": "tag suggestions currently work for images and videos with generated thumbnails",
+		})
+	case errors.Is(err, tagsuggest.ErrUnavailable):
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"error": err.Error(),
+		})
+	default:
+		log.Printf("suggest meme tags failed: %v", err)
+		http.Error(w, "failed to suggest tags", http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) refreshMemeTagSuggestions(w http.ResponseWriter, r *http.Request, id string) {
+	result, err := s.managers.RefreshMemeTagSuggestions(r.Context(), currentUserID(r), id)
+	if err == nil {
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
+
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		http.NotFound(w, r)
+	case errors.Is(err, tagsuggest.ErrDisabled):
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"error": "tag suggestions are disabled",
+		})
+	case errors.Is(err, tagsuggest.ErrUnsupported):
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"error": "tag suggestions currently work for images and videos with generated thumbnails",
+		})
+	case errors.Is(err, tagsuggest.ErrUnavailable):
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"error": err.Error(),
+		})
+	default:
+		log.Printf("refresh meme tag suggestions failed: %v", err)
+		http.Error(w, "failed to suggest tags", http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) updateStoredMemeTagSuggestions(w http.ResponseWriter, r *http.Request, id string) {
+	var payload struct {
+		Action string `json:"action"`
+		Tag    string `json:"tag"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	switch strings.ToLower(strings.TrimSpace(payload.Action)) {
+	case "dismiss":
+		meme, err := s.managers.DismissMemeTagSuggestion(currentUserID(r), id, payload.Tag)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				http.NotFound(w, r)
+				return
+			}
+			log.Printf("dismiss meme tag suggestion failed: %v", err)
+			http.Error(w, "failed to dismiss tag suggestion", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, meme)
+	case "add":
+		meme, err := s.managers.ApplyMemeTagSuggestion(currentUserID(r), id, payload.Tag, currentAuditActor(r))
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				http.NotFound(w, r)
+				return
+			}
+			log.Printf("apply meme tag suggestion failed: %v", err)
+			http.Error(w, "failed to apply tag suggestion", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, meme)
+	default:
+		http.Error(w, "invalid action", http.StatusBadRequest)
 	}
 }
 
@@ -438,6 +581,7 @@ func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
 			"duplicates": []map[string]any{},
 			"skipped":    0,
 		})
+		s.managers.QueueMemeTagSuggestions(meme.ID)
 		return
 	}
 
@@ -475,6 +619,7 @@ func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
 		}
 
 		created = append(created, meme)
+		s.managers.QueueMemeTagSuggestions(meme.ID)
 	}
 
 	status := http.StatusCreated
@@ -786,6 +931,15 @@ func (s *Server) handlePendingDeleteQueue(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, records)
 }
 
+func (s *Server) handleAdminDashboard(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, s.managers.AdminDashboard())
+}
+
 func (s *Server) handleAuditLogs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -802,6 +956,63 @@ func (s *Server) handleAuditLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, events)
+}
+
+func (s *Server) handleTagHygiene(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, s.managers.TagHygieneReport())
+	case http.MethodPost:
+		var payload struct {
+			SourceTag string `json:"source_tag"`
+			TargetTag string `json:"target_tag"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			http.Error(w, "invalid JSON body", http.StatusBadRequest)
+			return
+		}
+
+		result, err := s.managers.MergeTags(payload.SourceTag, payload.TargetTag, currentAuditActor(r))
+		if err != nil {
+			http.Error(w, "failed to merge tags", http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleTagSuggestionStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, s.managers.TagSuggestionQueueStatus())
+}
+
+func (s *Server) handleResetTagSuggestions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	result, err := s.managers.ResetTagSuggestionsAndRequeueUntagged()
+	if err != nil {
+		switch {
+		case errors.Is(err, tagsuggest.ErrDisabled):
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+				"error": "tag suggestions are disabled",
+			})
+		default:
+			log.Printf("reset tag suggestions failed: %v", err)
+			http.Error(w, "failed to reset tag suggestions", http.StatusInternalServerError)
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) handleAdminMemeActions(w http.ResponseWriter, r *http.Request) {

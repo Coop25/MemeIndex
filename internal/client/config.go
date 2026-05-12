@@ -12,7 +12,23 @@ type Config struct {
 	DataDir               string
 	DatabaseURL           string
 	MediaFetchYTDLPBinary string
+	TagSuggestions        TagSuggestionsConfig
 	DiscordAuth           DiscordAuthConfig
+}
+
+type TagSuggestionsConfig struct {
+	OllamaURL         string
+	Model             string
+	Timeout           time.Duration
+	MaxTags           int
+	KnownTagBudget    int
+	TranscribeBinary  string
+	TranscribeArgs    []string
+	TranscribeTimeout time.Duration
+}
+
+func (c TagSuggestionsConfig) Enabled() bool {
+	return c.OllamaURL != "" && c.Model != ""
 }
 
 type DiscordAuthConfig struct {
@@ -33,21 +49,29 @@ func (c DiscordAuthConfig) Enabled() bool {
 }
 
 type rawConfig struct {
-	Addr                   string   `envconfig:"ADDR" default:":8080"`
-	DataDir                string   `envconfig:"DATA_DIR" default:"data"`
-	DatabaseURL            string   `envconfig:"DATABASE_URL"`
-	MediaFetchYTDLPBinary  string   `envconfig:"MEDIAFETCH_YTDLP_BINARY" default:"yt-dlp"`
-	DiscordClientID        string   `envconfig:"DISCORD_CLIENT_ID"`
-	DiscordClientSecret    string   `envconfig:"DISCORD_CLIENT_SECRET"`
-	DiscordRedirectURL     string   `envconfig:"DISCORD_REDIRECT_URL"`
-	DiscordDynamicRedirect bool     `envconfig:"DISCORD_DYNAMIC_REDIRECT" default:"false"`
-	SessionSecret          string   `envconfig:"SESSION_SECRET"`
-	SessionDurationDays    int      `envconfig:"SESSION_DURATION_DAYS" default:"30"`
-	CookieSecure           bool     `envconfig:"COOKIE_SECURE" default:"false"`
-	SuperAdminUserIDs      []string `envconfig:"SUPER_ADMIN_USER_IDS"`
-	ViewUserIDs            []string `envconfig:"VIEW_USER_IDS"`
-	AddUserIDs             []string `envconfig:"ADD_USER_IDS"`
-	ManageUserIDs          []string `envconfig:"MANAGE_USER_IDS"`
+	Addr                            string   `envconfig:"ADDR" default:":8080"`
+	DataDir                         string   `envconfig:"DATA_DIR" default:"data"`
+	DatabaseURL                     string   `envconfig:"DATABASE_URL"`
+	MediaFetchYTDLPBinary           string   `envconfig:"MEDIAFETCH_YTDLP_BINARY" default:"yt-dlp"`
+	TagSuggestOllamaURL             string   `envconfig:"TAGSUGGEST_OLLAMA_URL"`
+	TagSuggestOllamaModel           string   `envconfig:"TAGSUGGEST_OLLAMA_MODEL"`
+	TagSuggestTimeoutSecs           int      `envconfig:"TAGSUGGEST_TIMEOUT_SECONDS" default:"300"`
+	TagSuggestMaxTags               int      `envconfig:"TAGSUGGEST_MAX_TAGS" default:"8"`
+	TagSuggestKnownTagHint          int      `envconfig:"TAGSUGGEST_KNOWN_TAG_BUDGET" default:"150"`
+	TagSuggestTranscribeBinary      string   `envconfig:"TAGSUGGEST_TRANSCRIBE_BINARY"`
+	TagSuggestTranscribeArgs        []string `envconfig:"TAGSUGGEST_TRANSCRIBE_ARGS"`
+	TagSuggestTranscribeTimeoutSecs int      `envconfig:"TAGSUGGEST_TRANSCRIBE_TIMEOUT_SECONDS" default:"120"`
+	DiscordClientID                 string   `envconfig:"DISCORD_CLIENT_ID"`
+	DiscordClientSecret             string   `envconfig:"DISCORD_CLIENT_SECRET"`
+	DiscordRedirectURL              string   `envconfig:"DISCORD_REDIRECT_URL"`
+	DiscordDynamicRedirect          bool     `envconfig:"DISCORD_DYNAMIC_REDIRECT" default:"false"`
+	SessionSecret                   string   `envconfig:"SESSION_SECRET"`
+	SessionDurationDays             int      `envconfig:"SESSION_DURATION_DAYS" default:"30"`
+	CookieSecure                    bool     `envconfig:"COOKIE_SECURE" default:"false"`
+	SuperAdminUserIDs               []string `envconfig:"SUPER_ADMIN_USER_IDS"`
+	ViewUserIDs                     []string `envconfig:"VIEW_USER_IDS"`
+	AddUserIDs                      []string `envconfig:"ADD_USER_IDS"`
+	ManageUserIDs                   []string `envconfig:"MANAGE_USER_IDS"`
 }
 
 func LoadConfig() (Config, error) {
@@ -61,6 +85,16 @@ func LoadConfig() (Config, error) {
 		DataDir:               strings.TrimSpace(raw.DataDir),
 		DatabaseURL:           strings.TrimSpace(raw.DatabaseURL),
 		MediaFetchYTDLPBinary: strings.TrimSpace(raw.MediaFetchYTDLPBinary),
+		TagSuggestions: TagSuggestionsConfig{
+			OllamaURL:         strings.TrimSpace(raw.TagSuggestOllamaURL),
+			Model:             strings.TrimSpace(raw.TagSuggestOllamaModel),
+			Timeout:           time.Duration(max(raw.TagSuggestTimeoutSecs, 1)) * time.Second,
+			MaxTags:           max(raw.TagSuggestMaxTags, 1),
+			KnownTagBudget:    max(raw.TagSuggestKnownTagHint, 1),
+			TranscribeBinary:  strings.TrimSpace(raw.TagSuggestTranscribeBinary),
+			TranscribeArgs:    append([]string(nil), raw.TagSuggestTranscribeArgs...),
+			TranscribeTimeout: time.Duration(max(raw.TagSuggestTranscribeTimeoutSecs, 1)) * time.Second,
+		},
 		DiscordAuth: DiscordAuthConfig{
 			ClientID:        strings.TrimSpace(raw.DiscordClientID),
 			ClientSecret:    strings.TrimSpace(raw.DiscordClientSecret),
@@ -106,4 +140,11 @@ func mergeSets(sets ...map[string]struct{}) map[string]struct{} {
 		}
 	}
 	return out
+}
+
+func max(value int, fallback int) int {
+	if value < fallback {
+		return fallback
+	}
+	return value
 }

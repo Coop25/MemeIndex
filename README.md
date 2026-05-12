@@ -15,6 +15,7 @@ MemeIndex is a self-hosted meme organizer built with Go and a lightweight fronte
 - Store metadata in Postgres with a dedicated tags table for suggestions
 - Compute content hashes on upload so duplicate files can be skipped
 - Generate video thumbnails for lighter grid previews when `ffmpeg` is installed
+- Suggest reviewable tags for images and videos through an optional local Ollama model
 - Keep the original source link attached to imported link-based memes
 - Preview image and video files inline
 - Search by filename, notes, and tags
@@ -90,6 +91,14 @@ Optional flags:
 - `MEMEINDEX_DATA_DIR`: data directory, default `data`
 - `MEMEINDEX_DATABASE_URL`: Postgres connection string. When empty, MemeIndex falls back to the legacy JSON store
 - `MEMEINDEX_MEDIAFETCH_YTDLP_BINARY`: path to the `yt-dlp` binary used for link downloads, default `yt-dlp`
+- `MEMEINDEX_TAGSUGGEST_OLLAMA_URL`: optional Ollama base URL, for example `http://ollama:11434`
+- `MEMEINDEX_TAGSUGGEST_OLLAMA_MODEL`: optional Ollama vision model name, default compose value `qwen2.5vl:3b`
+- `MEMEINDEX_TAGSUGGEST_TIMEOUT_SECONDS`: request timeout for tag suggestions, default `300`
+- `MEMEINDEX_TAGSUGGEST_MAX_TAGS`: max number of suggested tags to return, default `8`
+- `MEMEINDEX_TAGSUGGEST_KNOWN_TAG_BUDGET`: how many existing archive tags to send as reuse hints, default `150`
+- `MEMEINDEX_TAGSUGGEST_TRANSCRIBE_BINARY`: optional local speech-to-text command for video audio; when unset, video suggestions stay frame-only
+- `MEMEINDEX_TAGSUGGEST_TRANSCRIBE_ARGS`: optional comma-separated args for that command. Use `{input}` where the extracted WAV path should be inserted; if omitted, MemeIndex appends the WAV path automatically
+- `MEMEINDEX_TAGSUGGEST_TRANSCRIBE_TIMEOUT_SECONDS`: timeout for the optional transcription command, default `120`
 - `MEMEINDEX_DISCORD_CLIENT_ID`: Discord OAuth application client ID
 - `MEMEINDEX_DISCORD_CLIENT_SECRET`: Discord OAuth application client secret
 - `MEMEINDEX_DISCORD_REDIRECT_URL`: Discord OAuth callback URL, for example `http://localhost:8080/auth/callback`
@@ -102,6 +111,8 @@ Optional flags:
 - `MEMEINDEX_ADD_USER_IDS`: comma-separated Discord user IDs allowed to view and upload memes
 
 If the Discord OAuth env vars are not set, MemeIndex keeps auth disabled and behaves like it does today.
+
+If the Ollama env vars are not set or the model is offline, MemeIndex still works normally and only the suggested-tags button becomes unavailable.
 
 - `VIEW`: browse memes, tags, uploads, and random reel
 - `UPLOAD`: everything in `VIEW`, plus upload new memes
@@ -146,6 +157,8 @@ This repo now includes a `docker-compose.yml` that starts:
 
 - `app`: MemeIndex
 - `postgres`: Postgres for meme metadata, favorites, and tag suggestions
+- `ollama`: optional local LLM runtime for tag suggestions
+- `ollama-model`: one-shot helper that pulls the configured local vision model into the shared Ollama volume
 - `cloudflared`: optional Cloudflare Tunnel sidecar for exposing only the app
 
 Bring it up with:
@@ -181,6 +194,11 @@ Notes:
 - uploaded files still live on disk under `./data/uploads`
 - link downloads are staged under `./data/downloads` and cleaned up after import
 - Postgres keeps metadata, favorites, and the dedicated tags table
+- suggested tags come from the original image file for stills, or several sampled video frames for videos
+- if you configure a local transcription command, video audio is extracted to WAV and its transcript is included as extra meme context for tagging
+- the default model is `qwen2.5vl:3b`, which is a smaller vision model and usually a better fit for reading meme text than the earlier default
+- the compose file keeps Ollama models warm with `OLLAMA_KEEP_ALIVE=30m` by default so back-to-back suggestions do not need a fresh cold load every time
+- if Ollama is down, still starting, or missing the configured model, the app stays online and tag suggestions simply return unavailable
 - Postgres also stores random reel sessions when `MEMEINDEX_DATABASE_URL` is enabled
 - on first Postgres startup, if the database is empty and legacy `data/index.json` or `data/favorites.json` files exist, MemeIndex imports them automatically
 - stale reel sessions are cleaned by the app every night at `00:00 UTC`

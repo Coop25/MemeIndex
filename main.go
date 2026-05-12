@@ -9,6 +9,7 @@ import (
 	"memeindex/internal/accessor"
 	"memeindex/internal/client"
 	"memeindex/internal/manager"
+	"memeindex/internal/tagsuggest"
 )
 
 func main() {
@@ -37,8 +38,23 @@ func main() {
 		log.Printf("MemeIndex storage: local files")
 	}
 
-	memeManager := manager.NewMemeManager(store)
+	tagSuggester := tagsuggest.New(tagsuggest.Config{
+		OllamaURL: config.TagSuggestions.OllamaURL,
+		Model:     config.TagSuggestions.Model,
+		Timeout:   config.TagSuggestions.Timeout,
+		MaxTags:   config.TagSuggestions.MaxTags,
+	})
+	tagTranscriber := tagsuggest.NewTranscriber(tagsuggest.TranscriberConfig{
+		Binary:  config.TagSuggestions.TranscribeBinary,
+		Args:    config.TagSuggestions.TranscribeArgs,
+		Timeout: config.TagSuggestions.TranscribeTimeout,
+	})
+	memeManager := manager.NewMemeManagerWithTagSuggester(store, tagSuggester, tagTranscriber, config.TagSuggestions.KnownTagBudget)
 	go runPreviewAssetBackfill(memeManager)
+	memeManager.StartTagSuggestionWorker()
+	if queued := memeManager.SeedTagSuggestionQueue(); queued > 0 {
+		log.Printf("tag suggestion worker: queued %d existing untagged meme(s) with no pending suggestions", queued)
+	}
 	go runNightlyReelSessionCleanup(memeManager)
 	server := client.NewServer(config, memeManager)
 

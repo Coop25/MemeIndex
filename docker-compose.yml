@@ -26,6 +26,14 @@ services:
       MEMEINDEX_DATA_DIR: ${MEMEINDEX_DATA_DIR:-data}
       MEMEINDEX_DATABASE_URL: postgres://${POSTGRES_USER:-memeindex}:${POSTGRES_PASSWORD:-memeindex}@postgres:5432/${POSTGRES_DB:-memeindex}?sslmode=disable
       MEMEINDEX_MEDIAFETCH_YTDLP_BINARY: ${MEMEINDEX_MEDIAFETCH_YTDLP_BINARY:-yt-dlp}
+      MEMEINDEX_TAGSUGGEST_OLLAMA_URL: ${MEMEINDEX_TAGSUGGEST_OLLAMA_URL:-http://ollama:11434}
+      MEMEINDEX_TAGSUGGEST_OLLAMA_MODEL: ${MEMEINDEX_TAGSUGGEST_OLLAMA_MODEL:-qwen2.5vl:3b}
+      MEMEINDEX_TAGSUGGEST_TIMEOUT_SECONDS: ${MEMEINDEX_TAGSUGGEST_TIMEOUT_SECONDS:-300}
+      MEMEINDEX_TAGSUGGEST_MAX_TAGS: ${MEMEINDEX_TAGSUGGEST_MAX_TAGS:-8}
+      MEMEINDEX_TAGSUGGEST_KNOWN_TAG_BUDGET: ${MEMEINDEX_TAGSUGGEST_KNOWN_TAG_BUDGET:-150}
+      MEMEINDEX_TAGSUGGEST_TRANSCRIBE_BINARY: ${MEMEINDEX_TAGSUGGEST_TRANSCRIBE_BINARY:-}
+      MEMEINDEX_TAGSUGGEST_TRANSCRIBE_ARGS: ${MEMEINDEX_TAGSUGGEST_TRANSCRIBE_ARGS:-}
+      MEMEINDEX_TAGSUGGEST_TRANSCRIBE_TIMEOUT_SECONDS: ${MEMEINDEX_TAGSUGGEST_TRANSCRIBE_TIMEOUT_SECONDS:-120}
       MEMEINDEX_DISCORD_CLIENT_ID: ${MEMEINDEX_DISCORD_CLIENT_ID:-}
       MEMEINDEX_DISCORD_CLIENT_SECRET: ${MEMEINDEX_DISCORD_CLIENT_SECRET:-}
       MEMEINDEX_DISCORD_REDIRECT_URL: ${MEMEINDEX_DISCORD_REDIRECT_URL:-}
@@ -41,6 +49,33 @@ services:
     volumes:
       - ./data:/app/data
 
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    environment:
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
+    volumes:
+      - ollama_data:/root/.ollama
+
+  ollama-model:
+    image: ollama/ollama:latest
+    restart: "no"
+    depends_on:
+      ollama:
+        condition: service_started
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        until ollama list >/dev/null 2>&1; do
+          sleep 2
+        done
+        ollama pull ${MEMEINDEX_TAGSUGGEST_OLLAMA_MODEL:-qwen2.5vl:3b}
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    volumes:
+      - ollama_data:/root/.ollama
+
   cloudflared:
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
@@ -55,3 +90,4 @@ services:
 
 volumes:
   postgres_data:
+  ollama_data:

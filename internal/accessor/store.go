@@ -31,6 +31,11 @@ type PreviewAssetStore interface {
 	EnsurePreviewAssets() error
 }
 
+type SuggestedTagStore interface {
+	ListSuggestedTags(id string) ([]string, error)
+	ReplaceSuggestedTags(id string, tags []string) error
+}
+
 type ReelSessionRecord struct {
 	History      []string
 	Position     int

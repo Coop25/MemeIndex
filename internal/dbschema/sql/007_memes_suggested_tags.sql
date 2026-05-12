@@ -1,0 +1,2 @@
+ALTER TABLE memes
+    ADD COLUMN IF NOT EXISTS suggested_tags TEXT[] NOT NULL DEFAULT '{}';

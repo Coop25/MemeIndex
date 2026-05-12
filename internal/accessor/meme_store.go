@@ -21,20 +21,21 @@ import (
 )
 
 type Meme struct {
-	ID           string    `json:"id"`
-	OriginalName string    `json:"originalName"`
-	StoredName   string    `json:"storedName"`
-	FilePath     string    `json:"filePath"`
-	PreviewPath  string    `json:"previewPath,omitempty"`
-	ContentType  string    `json:"contentType"`
-	ContentHash  string    `json:"-"`
-	SizeBytes    int64     `json:"sizeBytes"`
-	Tags         []string  `json:"tags"`
-	Notes        string    `json:"notes"`
-	SourceURL    string    `json:"sourceUrl,omitempty"`
-	Favorite     bool      `json:"favorite"`
-	CreatedAt    time.Time `json:"createdAt"`
-	UpdatedAt    time.Time `json:"updatedAt"`
+	ID            string    `json:"id"`
+	OriginalName  string    `json:"originalName"`
+	StoredName    string    `json:"storedName"`
+	FilePath      string    `json:"filePath"`
+	PreviewPath   string    `json:"previewPath,omitempty"`
+	ContentType   string    `json:"contentType"`
+	ContentHash   string    `json:"-"`
+	SizeBytes     int64     `json:"sizeBytes"`
+	Tags          []string  `json:"tags"`
+	SuggestedTags []string  `json:"suggestedTags,omitempty"`
+	Notes         string    `json:"notes"`
+	SourceURL     string    `json:"sourceUrl,omitempty"`
+	Favorite      bool      `json:"favorite"`
+	CreatedAt     time.Time `json:"createdAt"`
+	UpdatedAt     time.Time `json:"updatedAt"`
 }
 
 type AuditActor struct {
@@ -92,18 +93,19 @@ type DeleteResult struct {
 }
 
 type persistedMeme struct {
-	ID           string    `json:"id"`
-	OriginalName string    `json:"originalName"`
-	StoredName   string    `json:"storedName"`
-	FilePath     string    `json:"filePath"`
-	ContentType  string    `json:"contentType"`
-	ContentHash  string    `json:"contentHash,omitempty"`
-	SizeBytes    int64     `json:"sizeBytes"`
-	Tags         []string  `json:"tags"`
-	Notes        string    `json:"notes"`
-	SourceURL    string    `json:"sourceUrl,omitempty"`
-	CreatedAt    time.Time `json:"createdAt"`
-	UpdatedAt    time.Time `json:"updatedAt"`
+	ID            string    `json:"id"`
+	OriginalName  string    `json:"originalName"`
+	StoredName    string    `json:"storedName"`
+	FilePath      string    `json:"filePath"`
+	ContentType   string    `json:"contentType"`
+	ContentHash   string    `json:"contentHash,omitempty"`
+	SizeBytes     int64     `json:"sizeBytes"`
+	Tags          []string  `json:"tags"`
+	SuggestedTags []string  `json:"suggestedTags,omitempty"`
+	Notes         string    `json:"notes"`
+	SourceURL     string    `json:"sourceUrl,omitempty"`
+	CreatedAt     time.Time `json:"createdAt"`
+	UpdatedAt     time.Time `json:"updatedAt"`
 }
 
 type MemeUpdate struct {
@@ -242,6 +244,35 @@ func (s *MemeStore) GetByID(userID, id string) (Meme, error) {
 	return meme, nil
 }
 
+func (s *MemeStore) ListSuggestedTags(id string) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	meme, ok := s.byID[strings.TrimSpace(id)]
+	if !ok {
+		return nil, os.ErrNotExist
+	}
+	return append([]string(nil), meme.SuggestedTags...), nil
+}
+
+func (s *MemeStore) ReplaceSuggestedTags(id string, tags []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	id = strings.TrimSpace(id)
+	for i := range s.memes {
+		if s.memes[i].ID != id {
+			continue
+		}
+		s.memes[i].SuggestedTags = normalizeTags(tags)
+		s.memes[i].UpdatedAt = time.Now().UTC()
+		s.byID[id] = s.memes[i]
+		return s.saveMemesLocked()
+	}
+
+	return os.ErrNotExist
+}
+
 func (s *MemeStore) Random(excludedIDs []string) (Meme, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -301,18 +332,19 @@ func (s *MemeStore) Create(input CreateInput) (Meme, error) {
 
 	now := time.Now().UTC()
 	meme := Meme{
-		ID:           id,
-		OriginalName: input.Filename,
-		StoredName:   storedName,
-		FilePath:     "/uploads/" + storedName,
-		ContentType:  detectContentType(input.Header, input.ContentType, input.Filename),
-		ContentHash:  contentHashString(hasher),
-		SizeBytes:    size,
-		Tags:         normalizeTags(input.Tags),
-		Notes:        strings.TrimSpace(input.Notes),
-		SourceURL:    strings.TrimSpace(input.SourceURL),
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		ID:            id,
+		OriginalName:  input.Filename,
+		StoredName:    storedName,
+		FilePath:      "/uploads/" + storedName,
+		ContentType:   detectContentType(input.Header, input.ContentType, input.Filename),
+		ContentHash:   contentHashString(hasher),
+		SizeBytes:     size,
+		Tags:          normalizeTags(input.Tags),
+		SuggestedTags: nil,
+		Notes:         strings.TrimSpace(input.Notes),
+		SourceURL:     strings.TrimSpace(input.SourceURL),
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 
 	if err := ensurePreviewAsset(s.uploadDir, s.previewDir, &meme); err != nil {
@@ -525,18 +557,19 @@ func (s *MemeStore) loadMemes() error {
 	s.memes = make([]Meme, 0, len(persisted))
 	for _, item := range persisted {
 		s.memes = append(s.memes, Meme{
-			ID:           item.ID,
-			OriginalName: item.OriginalName,
-			StoredName:   item.StoredName,
-			FilePath:     item.FilePath,
-			ContentType:  item.ContentType,
-			ContentHash:  item.ContentHash,
-			SizeBytes:    item.SizeBytes,
-			Tags:         item.Tags,
-			Notes:        item.Notes,
-			SourceURL:    item.SourceURL,
-			CreatedAt:    item.CreatedAt,
-			UpdatedAt:    item.UpdatedAt,
+			ID:            item.ID,
+			OriginalName:  item.OriginalName,
+			StoredName:    item.StoredName,
+			FilePath:      item.FilePath,
+			ContentType:   item.ContentType,
+			ContentHash:   item.ContentHash,
+			SizeBytes:     item.SizeBytes,
+			Tags:          item.Tags,
+			SuggestedTags: normalizeTags(item.SuggestedTags),
+			Notes:         item.Notes,
+			SourceURL:     item.SourceURL,
+			CreatedAt:     item.CreatedAt,
+			UpdatedAt:     item.UpdatedAt,
 		})
 	}
 
@@ -589,18 +622,19 @@ func (s *MemeStore) saveMemesLocked() error {
 	persisted := make([]persistedMeme, 0, len(s.memes))
 	for _, meme := range s.memes {
 		persisted = append(persisted, persistedMeme{
-			ID:           meme.ID,
-			OriginalName: meme.OriginalName,
-			StoredName:   meme.StoredName,
-			FilePath:     meme.FilePath,
-			ContentType:  meme.ContentType,
-			ContentHash:  meme.ContentHash,
-			SizeBytes:    meme.SizeBytes,
-			Tags:         meme.Tags,
-			Notes:        meme.Notes,
-			SourceURL:    meme.SourceURL,
-			CreatedAt:    meme.CreatedAt,
-			UpdatedAt:    meme.UpdatedAt,
+			ID:            meme.ID,
+			OriginalName:  meme.OriginalName,
+			StoredName:    meme.StoredName,
+			FilePath:      meme.FilePath,
+			ContentType:   meme.ContentType,
+			ContentHash:   meme.ContentHash,
+			SizeBytes:     meme.SizeBytes,
+			Tags:          meme.Tags,
+			SuggestedTags: meme.SuggestedTags,
+			Notes:         meme.Notes,
+			SourceURL:     meme.SourceURL,
+			CreatedAt:     meme.CreatedAt,
+			UpdatedAt:     meme.UpdatedAt,
 		})
 	}
 
