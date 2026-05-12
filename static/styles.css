@@ -3560,6 +3560,12 @@ body.random-reel-open {
   font-size: 0.72rem;
 }
 
+.modal-ai-tag-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .modal-ai-tag-button {
   min-height: 34px;
   padding: 0 12px;
@@ -3577,6 +3583,17 @@ body.random-reel-open {
 .modal-ai-tag-button:disabled {
   cursor: not-allowed;
   opacity: 0.6;
+}
+
+.modal-ai-tag-button-muted {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+}
+
+.modal-ai-tag-button-muted:hover,
+.modal-ai-tag-button-muted:focus-visible {
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .modal-ai-tag-suggestions {

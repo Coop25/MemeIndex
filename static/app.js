@@ -191,6 +191,7 @@ const modalTagsInput = document.querySelector("#modal-tags-input");
 const modalTagSuggestions = document.querySelector("#modal-tag-suggestions");
 const modalAITagTools = document.querySelector("#modal-ai-tag-tools");
 const modalSuggestTagsButton = document.querySelector("#modal-suggest-tags");
+const modalDismissAllSuggestedTagsButton = document.querySelector("#modal-dismiss-all-suggested-tags");
 const modalSuggestTagsStatus = document.querySelector("#modal-suggest-tags-status");
 const modalAITagSuggestions = document.querySelector("#modal-ai-tag-suggestions");
 const modalNotesInput = document.querySelector("#modal-notes-input");
@@ -3213,6 +3214,18 @@ function updateMemeInState(updatedMeme) {
   return state.memes[index];
 }
 
+function upsertMemeInState(meme) {
+  if (!meme?.id) return null;
+
+  const existing = updateMemeInState(meme);
+  if (existing) {
+    return existing;
+  }
+
+  state.memes = [meme, ...state.memes];
+  return meme;
+}
+
 function setModalAuditVisibility(visible) {
   if (!modalAuditSection) return;
   modalAuditSection.classList.toggle("hidden", !visible);
@@ -3235,7 +3248,7 @@ async function openAdminMemeByID(id) {
     return;
   }
   const meme = await response.json();
-  openModalWithMeme(meme);
+  openModalWithMeme(upsertMemeInState(meme) || meme);
 }
 
 function openModalWithMeme(meme) {
@@ -3603,6 +3616,10 @@ function renderModalAITagSuggestions() {
   const activeMeme = getMemeById(activeMemeId);
   const storedSuggestions = Array.isArray(activeMeme?.suggestedTags) ? activeMeme.suggestedTags : [];
   const availableSuggestions = storedSuggestions.filter((tag) => !modalTagState.some((entry) => entry.value === tag));
+  if (modalDismissAllSuggestedTagsButton) {
+    modalDismissAllSuggestedTagsButton.classList.toggle("hidden", availableSuggestions.length === 0);
+    modalDismissAllSuggestedTagsButton.disabled = !canEditMetadata() || availableSuggestions.length === 0;
+  }
   if (availableSuggestions.length === 0) {
     modalAITagSuggestions.classList.add("hidden");
     return;
@@ -3637,6 +3654,32 @@ function renderModalAITagSuggestions() {
   }
 
   modalAITagSuggestions.classList.remove("hidden");
+}
+
+function syncModalSuggestedTagButtonLabel() {
+  if (modalSuggestTagsButton) {
+    modalSuggestTagsButton.textContent = (getMemeById(activeMemeId)?.suggestedTags || []).length > 0 ? "Refresh Suggestions" : "Suggest Tags";
+  }
+}
+
+function updateMemeSuggestedTagsInState(id, suggestedTags) {
+  return updateMemeInState({
+    id,
+    suggestedTags: Array.isArray(suggestedTags) ? suggestedTags.map((tag) => normalizeTagValue(tag)).filter(Boolean) : [],
+  });
+}
+
+function updateModalSnapshotWithSavedTag(tag) {
+  if (!modalSnapshot) {
+    return;
+  }
+  const normalized = normalizeTagValue(tag);
+  if (!normalized) {
+    return;
+  }
+  const savedTags = new Set(String(modalSnapshot.tags || "").split(", ").map((value) => normalizeTagValue(value)).filter(Boolean));
+  savedTags.add(normalized);
+  modalSnapshot.tags = [...savedTags].sort().join(", ");
 }
 
 async function fetchModalAITagSuggestions() {
@@ -3710,12 +3753,12 @@ async function fetchModalAITagSuggestions() {
     modalLLMTagSuggestionLoading = false;
     if (modalSuggestTagsButton) {
       modalSuggestTagsButton.disabled = !canAddTags();
-      modalSuggestTagsButton.textContent = (getMemeById(activeMemeId)?.suggestedTags || []).length > 0 ? "Refresh Suggestions" : "Suggest Tags";
+      syncModalSuggestedTagButtonLabel();
     }
   }
 }
 
-async function dismissStoredTagSuggestion(tag) {
+async function dismissStoredTagSuggestion(tag, options = {}) {
   if (!activeMemeId || !canEditMetadata()) {
     return;
   }
@@ -3729,10 +3772,12 @@ async function dismissStoredTagSuggestion(tag) {
     return;
   }
   const meme = await response.json();
-  updateMemeInState(meme);
+  updateMemeSuggestedTagsInState(meme.id, meme.suggestedTags || []);
   renderModalAITagSuggestions();
-  if (modalSuggestTagsButton) {
-    modalSuggestTagsButton.textContent = (meme.suggestedTags || []).length > 0 ? "Refresh Suggestions" : "Suggest Tags";
+  syncModalSuggestedTagButtonLabel();
+  if (!options.silent && modalSuggestTagsStatus) {
+    modalSuggestTagsStatus.textContent = `Dismissed ${normalizeTagValue(tag)}.`;
+    modalSuggestTagsStatus.classList.remove("hidden");
   }
 }
 
@@ -3750,8 +3795,47 @@ async function applyStoredTagSuggestion(tag) {
     return;
   }
   const meme = await response.json();
-  updateMemeInState(meme);
-  openModalWithMeme(meme);
+  updateMemeSuggestedTagsInState(meme.id, meme.suggestedTags || []);
+  addModalTag(tag);
+  updateModalSnapshotWithSavedTag(tag);
+  renderModalAITagSuggestions();
+  syncModalSuggestedTagButtonLabel();
+  if (modalSuggestTagsStatus) {
+    modalSuggestTagsStatus.textContent = `Added ${normalizeTagValue(tag)}.`;
+    modalSuggestTagsStatus.classList.remove("hidden");
+  }
+}
+
+async function dismissAllStoredTagSuggestions() {
+  if (!activeMemeId || !canEditMetadata()) {
+    return;
+  }
+  const activeMeme = getMemeById(activeMemeId);
+  const storedSuggestions = Array.isArray(activeMeme?.suggestedTags) ? activeMeme.suggestedTags : [];
+  const availableSuggestions = storedSuggestions.filter((tag) => !modalTagState.some((entry) => entry.value === tag));
+  if (availableSuggestions.length === 0) {
+    return;
+  }
+
+  if (modalDismissAllSuggestedTagsButton) {
+    modalDismissAllSuggestedTagsButton.disabled = true;
+  }
+
+  try {
+    for (const tag of availableSuggestions) {
+      // eslint-disable-next-line no-await-in-loop
+      await dismissStoredTagSuggestion(tag, { silent: true });
+    }
+    if (modalSuggestTagsStatus) {
+      modalSuggestTagsStatus.textContent = `Dismissed ${availableSuggestions.length} remaining suggestion${availableSuggestions.length === 1 ? "" : "s"}.`;
+      modalSuggestTagsStatus.classList.remove("hidden");
+    }
+  } finally {
+    if (modalDismissAllSuggestedTagsButton) {
+      modalDismissAllSuggestedTagsButton.disabled = !canEditMetadata();
+    }
+    renderModalAITagSuggestions();
+  }
 }
 
 async function fetchTagSuggestions() {
@@ -5177,6 +5261,12 @@ modalSave.addEventListener("click", async () => {
 
 modalSuggestTagsButton?.addEventListener("click", () => {
   fetchModalAITagSuggestions().catch((error) => {
+    console.error(error);
+  });
+});
+
+modalDismissAllSuggestedTagsButton?.addEventListener("click", () => {
+  dismissAllStoredTagSuggestions().catch((error) => {
     console.error(error);
   });
 });
