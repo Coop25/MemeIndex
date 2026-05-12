@@ -918,6 +918,7 @@ body.sidebar-collapsed .sidebar-toggle-row .sidebar-toggle-icon {
 
 .admin-tag-hygiene-lower {
   grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
+  align-items: start;
 }
 
 .admin-tag-merge-form {
@@ -948,6 +949,7 @@ body.sidebar-collapsed .sidebar-toggle-row .sidebar-toggle-icon {
 .admin-tag-hygiene-tags {
   display: grid;
   gap: 10px;
+  align-content: start;
 }
 
 .admin-tag-hygiene-pair,
@@ -957,11 +959,29 @@ body.sidebar-collapsed .sidebar-toggle-row .sidebar-toggle-icon {
   padding: 12px;
   border: 1px solid rgba(255, 255, 255, 0.07);
   background: rgba(255, 255, 255, 0.025);
+  align-self: start;
 }
 
 .admin-tag-hygiene-pair {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
+}
+
+.admin-tag-hygiene-pair-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.admin-tag-hygiene-dismiss-button {
+  border-color: rgba(255, 255, 255, 0.1);
+  color: rgba(232, 239, 243, 0.86);
+}
+
+.admin-tag-hygiene-dismiss-button:hover,
+.admin-tag-hygiene-dismiss-button:focus-visible {
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .admin-tag-hygiene-pair-copy,
@@ -1042,6 +1062,8 @@ body.sidebar-collapsed .sidebar-toggle-row .sidebar-toggle-icon {
   padding: 16px;
   border: 1px solid rgba(255, 255, 255, 0.07);
   background: rgba(255, 255, 255, 0.02);
+  align-content: start;
+  align-self: start;
 }
 
 .admin-dashboard-section-head h3 {
@@ -1191,6 +1213,11 @@ body.sidebar-collapsed .sidebar-toggle-row .sidebar-toggle-icon {
   gap: 10px;
 }
 
+.admin-tag-queue-section {
+  display: grid;
+  gap: 10px;
+}
+
 .admin-tag-queue-list-head {
   display: flex;
   align-items: center;
@@ -1249,6 +1276,31 @@ body.sidebar-collapsed .sidebar-toggle-row .sidebar-toggle-icon {
 .admin-tag-queue-item-copy code {
   color: var(--muted);
   font-size: 0.78rem;
+}
+
+.admin-tag-review-item {
+  grid-template-columns: 64px minmax(0, 1fr);
+  cursor: pointer;
+}
+
+.admin-tag-review-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.admin-link-queue-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.admin-tag-review-item:hover,
+.admin-tag-review-item:focus-visible {
+  border-color: rgba(76, 211, 211, 0.28);
+  background: rgba(76, 211, 211, 0.06);
+  outline: none;
 }
 
 @media (max-width: 1100px) {

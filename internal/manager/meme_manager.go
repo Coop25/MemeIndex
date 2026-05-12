@@ -3,6 +3,7 @@ package manager
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/textproto"
@@ -17,12 +18,17 @@ import (
 	"memeindex/internal/tagsuggest"
 )
 
+var errAutoSuggestExhausted = errors.New("tag suggestion attempts exhausted")
+
 type MemeManager struct {
-	store        accessor.Store
-	reelSessions *ReelSessionStore
-	tagSuggester *tagsuggest.Service
-	transcriber  *tagsuggest.Transcriber
-	knownTagHint int
+	store             accessor.Store
+	reelSessions      *ReelSessionStore
+	tagSuggester      *tagsuggest.Service
+	transcriber       *tagsuggest.Transcriber
+	knownTagHint      int
+	videoFrameCount   int
+	videoFrameWidth   int
+	disableTranscript bool
 
 	suggestionQueueMu     sync.Mutex
 	suggestionQueueCond   *sync.Cond
@@ -34,6 +40,12 @@ type MemeManager struct {
 	suggestionCurrentID   string
 	suggestionLastError   string
 	suggestionLastSuccess time.Time
+}
+
+type TagSuggestionRuntimeConfig struct {
+	VideoFrameCount   int
+	VideoFrameWidth   int
+	DisableTranscript bool
 }
 
 type MemeCounts struct {
@@ -54,13 +66,19 @@ type MemeListResult struct {
 }
 
 func NewMemeManager(store accessor.Store) *MemeManager {
-	return NewMemeManagerWithTagSuggester(store, nil, nil, 150)
+	return NewMemeManagerWithTagSuggester(store, nil, nil, TagSuggestionRuntimeConfig{}, 150)
 }
 
-func NewMemeManagerWithTagSuggester(store accessor.Store, tagSuggester *tagsuggest.Service, transcriber *tagsuggest.Transcriber, knownTagHint int) *MemeManager {
+func NewMemeManagerWithTagSuggester(store accessor.Store, tagSuggester *tagsuggest.Service, transcriber *tagsuggest.Transcriber, runtimeConfig TagSuggestionRuntimeConfig, knownTagHint int) *MemeManager {
 	sessionFile := filepath.Join(filepath.Dir(store.UploadDir()), "reel_sessions.json")
 	if knownTagHint <= 0 {
 		knownTagHint = 150
+	}
+	if runtimeConfig.VideoFrameCount <= 0 {
+		runtimeConfig.VideoFrameCount = 3
+	}
+	if runtimeConfig.VideoFrameWidth <= 0 {
+		runtimeConfig.VideoFrameWidth = 480
 	}
 	manager := &MemeManager{
 		store:               store,
@@ -68,6 +86,9 @@ func NewMemeManagerWithTagSuggester(store accessor.Store, tagSuggester *tagsugge
 		tagSuggester:        tagSuggester,
 		transcriber:         transcriber,
 		knownTagHint:        knownTagHint,
+		videoFrameCount:     runtimeConfig.VideoFrameCount,
+		videoFrameWidth:     runtimeConfig.VideoFrameWidth,
+		disableTranscript:   runtimeConfig.DisableTranscript,
 		queuedSuggestionIDs: map[string]struct{}{},
 		suggestionWorkerState: func() string {
 			if tagSuggester == nil || !tagSuggester.Enabled() {
@@ -186,6 +207,7 @@ type TagSuggestionQueueStatus struct {
 	LastError                  string                    `json:"last_error,omitempty"`
 	LastSuccessAt              time.Time                 `json:"last_success_at,omitempty"`
 	QueuedMemes                []QueuedTagSuggestionItem `json:"queued_memes,omitempty"`
+	PendingReviewMemes         []PendingReviewMemeItem   `json:"pending_review_memes,omitempty"`
 }
 
 type QueuedTagSuggestionItem struct {
@@ -193,9 +215,24 @@ type QueuedTagSuggestionItem struct {
 	Name string `json:"name"`
 }
 
+type PendingReviewMemeItem struct {
+	ID            string   `json:"id"`
+	Name          string   `json:"name"`
+	SuggestedTags []string `json:"suggested_tags,omitempty"`
+}
+
 type ResetTagSuggestionQueueResult struct {
 	ClearedSuggestions int `json:"cleared_suggestions"`
+	ClearedExhausted   int `json:"cleared_exhausted"`
 	QueuedUntagged     int `json:"queued_untagged"`
+}
+
+type tagSuggestionAttemptOptions struct {
+	imageWidth        int
+	videoFrameCount   int
+	videoFrameWidth   int
+	includeTranscript bool
+	sourceSuffix      string
 }
 
 type AdminDashboardStats struct {
@@ -276,17 +313,7 @@ func (m *MemeManager) RefreshMemeTagSuggestions(ctx context.Context, userID stri
 		return MemeTagSuggestionResult{}, err
 	}
 
-	request, err := m.suggestionRequestForMeme(ctx, meme)
-	if err != nil {
-		return MemeTagSuggestionResult{}, err
-	}
-
-	request.Filename = meme.OriginalName
-	request.ContentType = meme.ContentType
-	request.ExistingTags = meme.Tags
-	request.KnownTags = m.store.SuggestTags("", m.knownTagHint)
-
-	result, err := m.tagSuggester.Suggest(ctx, request)
+	result, err := m.suggestTagsForMeme(ctx, meme)
 	if err != nil {
 		return MemeTagSuggestionResult{}, err
 	}
@@ -300,6 +327,9 @@ func (m *MemeManager) RefreshMemeTagSuggestions(ctx context.Context, userID stri
 	suggestionStore, ok := m.store.(accessor.SuggestedTagStore)
 	if ok {
 		if err := suggestionStore.ReplaceSuggestedTags(meme.ID, output.Tags); err != nil {
+			return MemeTagSuggestionResult{}, err
+		}
+		if err := suggestionStore.SetAutoSuggestDisabled(meme.ID, false); err != nil {
 			return MemeTagSuggestionResult{}, err
 		}
 	}
@@ -341,6 +371,12 @@ func (m *MemeManager) ResetTagSuggestionsAndRequeueUntagged() (ResetTagSuggestio
 				return ResetTagSuggestionQueueResult{}, err
 			}
 			result.ClearedSuggestions += 1
+		}
+		if meme.AutoSuggestDisabled {
+			if err := suggestionStore.SetAutoSuggestDisabled(meme.ID, false); err != nil {
+				return ResetTagSuggestionQueueResult{}, err
+			}
+			result.ClearedExhausted += 1
 		}
 
 		if len(meme.Tags) == 0 && m.enqueueTagSuggestion(meme.ID) {
@@ -584,6 +620,11 @@ func (m *MemeManager) TagSuggestionQueueStatus() TagSuggestionQueueStatus {
 		}
 		if len(meme.SuggestedTags) > 0 {
 			status.PendingSuggestionMemes += 1
+			status.PendingReviewMemes = append(status.PendingReviewMemes, PendingReviewMemeItem{
+				ID:            meme.ID,
+				Name:          meme.OriginalName,
+				SuggestedTags: append([]string(nil), meme.SuggestedTags...),
+			})
 		}
 	}
 
@@ -652,6 +693,10 @@ func (m *MemeManager) runTagSuggestionWorker() {
 		}
 
 		switch {
+		case errors.Is(err, errAutoSuggestExhausted):
+			log.Printf("tag suggestion worker: exhausted retries for meme %s; marking auto-suggest disabled", memeID)
+			m.finishTagSuggestion(memeID)
+			m.setTagSuggestionWorkerState("idle", true, "", err.Error())
 		case errors.Is(err, os.ErrNotExist), errors.Is(err, tagsuggest.ErrUnsupported):
 			log.Printf("tag suggestion worker: dropping meme %s from queue: %v", memeID, err)
 			m.finishTagSuggestion(memeID)
@@ -957,16 +1002,25 @@ func min(a, b int) int {
 	return b
 }
 
-func (m *MemeManager) suggestionRequestForMeme(ctx context.Context, meme accessor.Meme) (tagsuggest.Request, error) {
+func (m *MemeManager) suggestionRequestForMeme(ctx context.Context, meme accessor.Meme, options tagSuggestionAttemptOptions) (tagsuggest.Request, error) {
 	switch {
 	case strings.HasPrefix(meme.ContentType, "image/"):
 		imagePath := filepath.Join(m.store.UploadDir(), meme.StoredName)
+		if previewStore, ok := m.store.(accessor.PreviewAssetStore); ok {
+			thumbnailDir := strings.TrimSpace(previewStore.ThumbnailDir())
+			if thumbnailDir != "" {
+				resizedPath, err := accessor.EnsureImageTagPreview(m.store.UploadDir(), thumbnailDir, meme.StoredName, options.imageWidth)
+				if err == nil {
+					imagePath = resizedPath
+				}
+			}
+		}
 		if _, err := os.Stat(imagePath); err != nil {
 			return tagsuggest.Request{}, tagsuggest.ErrUnavailable
 		}
 		return tagsuggest.Request{
 			AssetPaths: []string{imagePath},
-			Source:     "original-image",
+			Source:     "image-preview" + options.sourceSuffix,
 		}, nil
 	case strings.HasPrefix(meme.ContentType, "video/"):
 		previewStore, ok := m.store.(accessor.PreviewAssetStore)
@@ -977,17 +1031,19 @@ func (m *MemeManager) suggestionRequestForMeme(ctx context.Context, meme accesso
 		if thumbnailDir == "" {
 			return tagsuggest.Request{}, tagsuggest.ErrUnsupported
 		}
-		framePaths, err := accessor.EnsureVideoTagFrames(m.store.UploadDir(), thumbnailDir, meme.StoredName)
+		framePaths, err := accessor.EnsureVideoTagFrames(m.store.UploadDir(), thumbnailDir, meme.StoredName, options.videoFrameCount, options.videoFrameWidth)
 		if err != nil {
 			return tagsuggest.Request{}, tagsuggest.ErrUnavailable
 		}
 		request := tagsuggest.Request{
 			AssetPaths: framePaths,
-			Source:     "video-frames",
+			Source:     "video-frames" + options.sourceSuffix,
 		}
-		if transcript := m.transcriptForVideo(ctx, meme, thumbnailDir); transcript != "" {
-			request.Transcript = transcript
-			request.Source = "video-frames+audio-transcript"
+		if options.includeTranscript {
+			if transcript := m.transcriptForVideo(ctx, meme, thumbnailDir); transcript != "" {
+				request.Transcript = transcript
+				request.Source = "video-frames+audio-transcript" + options.sourceSuffix
+			}
 		}
 		return request, nil
 	default:
@@ -996,6 +1052,9 @@ func (m *MemeManager) suggestionRequestForMeme(ctx context.Context, meme accesso
 }
 
 func (m *MemeManager) transcriptForVideo(ctx context.Context, meme accessor.Meme, thumbnailDir string) string {
+	if m.disableTranscript {
+		return ""
+	}
 	if m.transcriber == nil || !m.transcriber.Enabled() {
 		return ""
 	}
@@ -1012,6 +1071,73 @@ func (m *MemeManager) transcriptForVideo(ctx context.Context, meme accessor.Meme
 		return ""
 	}
 	return transcript
+}
+
+func (m *MemeManager) suggestTagsForMeme(ctx context.Context, meme accessor.Meme) (tagsuggest.Result, error) {
+	attempts := m.tagSuggestionAttemptsForMeme(meme)
+	var lastUnavailable error
+
+	for _, attempt := range attempts {
+		request, err := m.suggestionRequestForMeme(ctx, meme, attempt)
+		if err != nil {
+			if errors.Is(err, tagsuggest.ErrUnavailable) {
+				lastUnavailable = err
+				continue
+			}
+			return tagsuggest.Result{}, err
+		}
+
+		request.Filename = meme.OriginalName
+		request.ContentType = meme.ContentType
+		request.ExistingTags = meme.Tags
+		request.KnownTags = m.store.SuggestTags("", m.knownTagHint)
+
+		result, err := m.tagSuggester.Suggest(ctx, request)
+		if err == nil {
+			return result, nil
+		}
+		if errors.Is(err, tagsuggest.ErrUnavailable) {
+			lastUnavailable = err
+			continue
+		}
+		return tagsuggest.Result{}, err
+	}
+
+	if lastUnavailable != nil {
+		if suggestionStore, ok := m.store.(accessor.SuggestedTagStore); ok {
+			if err := suggestionStore.SetAutoSuggestDisabled(meme.ID, true); err != nil {
+				return tagsuggest.Result{}, err
+			}
+		}
+		return tagsuggest.Result{}, fmt.Errorf("%w: %v", errAutoSuggestExhausted, lastUnavailable)
+	}
+
+	return tagsuggest.Result{}, tagsuggest.ErrUnavailable
+}
+
+func (m *MemeManager) tagSuggestionAttemptsForMeme(meme accessor.Meme) []tagSuggestionAttemptOptions {
+	attempts := []tagSuggestionAttemptOptions{}
+	seen := map[string]struct{}{}
+	addAttempt := func(imageWidth, frameCount, frameWidth int, includeTranscript bool, suffix string) {
+		key := fmt.Sprintf("%d|%d|%d|%t", imageWidth, frameCount, frameWidth, includeTranscript)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		attempts = append(attempts, tagSuggestionAttemptOptions{
+			imageWidth:        imageWidth,
+			videoFrameCount:   frameCount,
+			videoFrameWidth:   frameWidth,
+			includeTranscript: includeTranscript,
+			sourceSuffix:      suffix,
+		})
+	}
+
+	includeTranscript := !m.disableTranscript
+	addAttempt(max(m.videoFrameWidth, 320), max(m.videoFrameCount, 1), max(m.videoFrameWidth, 320), includeTranscript, "")
+	addAttempt(320, 1, 320, false, "+fast")
+	addAttempt(240, 1, 240, false, "+minimal")
+	return attempts
 }
 
 func containsTag(tags []string, needle string) bool {
@@ -1045,7 +1171,7 @@ func removeTagValue(tags []string, remove string) []string {
 }
 
 func shouldQueueTagSuggestionsForMeme(meme accessor.Meme) bool {
-	return len(meme.Tags) == 0 && len(meme.SuggestedTags) == 0
+	return len(meme.Tags) == 0 && len(meme.SuggestedTags) == 0 && !meme.AutoSuggestDisabled
 }
 
 func looksLikeTagVariant(left string, right string) bool {

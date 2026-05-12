@@ -23,10 +23,11 @@ var (
 )
 
 type Config struct {
-	OllamaURL string
-	Model     string
-	Timeout   time.Duration
-	MaxTags   int
+	OllamaURL    string
+	Model        string
+	Timeout      time.Duration
+	MaxTags      int
+	GenerateOnly bool
 }
 
 func (c Config) Enabled() bool {
@@ -34,11 +35,12 @@ func (c Config) Enabled() bool {
 }
 
 type Service struct {
-	baseURL    string
-	model      string
-	maxTags    int
-	timeout    time.Duration
-	httpClient *http.Client
+	baseURL      string
+	model        string
+	maxTags      int
+	timeout      time.Duration
+	generateOnly bool
+	httpClient   *http.Client
 }
 
 type Request struct {
@@ -73,10 +75,11 @@ func New(config Config) *Service {
 	}
 
 	return &Service{
-		baseURL: strings.TrimRight(strings.TrimSpace(config.OllamaURL), "/"),
-		model:   strings.TrimSpace(config.Model),
-		maxTags: maxTags,
-		timeout: timeout,
+		baseURL:      strings.TrimRight(strings.TrimSpace(config.OllamaURL), "/"),
+		model:        strings.TrimSpace(config.Model),
+		maxTags:      maxTags,
+		timeout:      timeout,
+		generateOnly: config.GenerateOnly,
 		httpClient: &http.Client{
 			Timeout: timeout,
 		},
@@ -178,6 +181,10 @@ func (s *Service) Suggest(ctx context.Context, input Request) (Result, error) {
 	}
 	if len(imagePayloads) == 0 {
 		return Result{}, ErrUnsupported
+	}
+
+	if s.generateOnly {
+		return s.suggestWithGenerateFallback(ctx, input, imagePayloads, nil)
 	}
 
 	result, err := s.suggestWithStructuredChat(ctx, input, imagePayloads)
@@ -309,12 +316,18 @@ func (s *Service) suggestWithGenerateFallback(ctx context.Context, input Request
 
 	response, err := s.httpClient.Do(request)
 	if err != nil {
+		if originalErr == nil {
+			return Result{}, fmt.Errorf("%w: generate-only request failed: %v", ErrUnavailable, err)
+		}
 		return Result{}, fmt.Errorf("%w: structured path failed (%v); fallback generate also failed: %v", ErrUnavailable, originalErr, err)
 	}
 	defer response.Body.Close()
 
 	responseBody, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err != nil {
+		if originalErr == nil {
+			return Result{}, fmt.Errorf("%w: generate-only read failed: %v", ErrUnavailable, err)
+		}
 		return Result{}, fmt.Errorf("%w: fallback generate read failed: %v", ErrUnavailable, err)
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
@@ -325,6 +338,9 @@ func (s *Service) suggestWithGenerateFallback(ctx context.Context, input Request
 		if len(message) > 500 {
 			message = message[:500]
 		}
+		if originalErr == nil {
+			return Result{}, fmt.Errorf("%w: generate-only request failed: %s", ErrUnavailable, message)
+		}
 		return Result{}, fmt.Errorf("%w: structured path failed (%v); fallback generate failed: %s", ErrUnavailable, originalErr, message)
 	}
 
@@ -332,11 +348,17 @@ func (s *Service) suggestWithGenerateFallback(ctx context.Context, input Request
 		Response string `json:"response"`
 	}
 	if err := json.Unmarshal(responseBody, &generateResponse); err != nil {
+		if originalErr == nil {
+			return Result{}, fmt.Errorf("%w: generate-only returned invalid payload", ErrUnavailable)
+		}
 		return Result{}, fmt.Errorf("%w: fallback generate returned invalid payload", ErrUnavailable)
 	}
 
 	tags, err := extractTagsFromModelText(generateResponse.Response)
 	if err != nil {
+		if originalErr == nil {
+			return Result{}, fmt.Errorf("%w: generate-only parse failed: %v", ErrUnavailable, err)
+		}
 		return Result{}, fmt.Errorf("%w: structured path failed (%v); fallback parse failed: %v", ErrUnavailable, originalErr, err)
 	}
 

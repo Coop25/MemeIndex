@@ -29,6 +29,7 @@ const state = {
       hasMore: false,
     },
     tagQueueStatus: null,
+    linkRetryStatus: null,
     dashboard: null,
     tagHygiene: null,
   },
@@ -112,10 +113,18 @@ const adminViewCopy = document.querySelector("#admin-view-copy");
 const adminTabs = document.querySelectorAll(".admin-tab");
 const adminViewStatus = document.querySelector("#admin-view-status");
 const adminTagQueuePanel = document.querySelector("#admin-tag-queue-panel");
+const adminTagQueueKicker = document.querySelector("#admin-tag-queue-kicker");
+const adminTagQueueTitle = document.querySelector("#admin-tag-queue-title");
 const adminTagQueueSummary = document.querySelector("#admin-tag-queue-summary");
 const adminTagQueueReset = document.querySelector("#admin-tag-queue-reset");
 const adminTagQueueGrid = document.querySelector("#admin-tag-queue-grid");
 const adminTagQueueList = document.querySelector("#admin-tag-queue-list");
+const adminLinkQueuePanel = document.querySelector("#admin-link-queue-panel");
+const adminLinkQueueKicker = document.querySelector("#admin-link-queue-kicker");
+const adminLinkQueueTitle = document.querySelector("#admin-link-queue-title");
+const adminLinkQueueSummary = document.querySelector("#admin-link-queue-summary");
+const adminLinkQueueGrid = document.querySelector("#admin-link-queue-grid");
+const adminLinkQueueList = document.querySelector("#admin-link-queue-list");
 const adminDashboardPanel = document.querySelector("#admin-dashboard-panel");
 const adminDashboardGrid = document.querySelector("#admin-dashboard-grid");
 const adminDashboardTags = document.querySelector("#admin-dashboard-tags");
@@ -256,14 +265,24 @@ let managedUsersState = [];
 let deleteQueueState = [];
 let auditLogState = [];
 let adminTagQueuePollInterval = null;
+let adminLinkQueuePollInterval = null;
 let toastSequence = 0;
 const activeToastTimeouts = new Map();
+const ADMIN_TAG_HYGIENE_DISMISSED_KEY = "memeindex.adminTagHygieneDismissed";
 
 function getActiveAdminPageState() {
   if (state.filters.view !== "admin") return null;
   if (state.admin.tab === "audit-logs") return state.admin.audit;
   if (state.admin.tab === "delete-queue") return state.admin.queue;
   return null;
+}
+
+function setAdminViewStatus(message = "") {
+  if (!adminViewStatus) {
+    return;
+  }
+  adminViewStatus.textContent = message;
+  adminViewStatus.classList.toggle("hidden", !String(message || "").trim());
 }
 
 function showToast(message, type = "info", options = {}) {
@@ -316,6 +335,28 @@ function dismissToast(toastID) {
   window.setTimeout(() => {
     toast.remove();
   }, 180);
+}
+
+function getDismissedTagHygienePairs() {
+  try {
+    const raw = window.localStorage.getItem(ADMIN_TAG_HYGIENE_DISMISSED_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+  } catch (error) {
+    return [];
+  }
+}
+
+function setDismissedTagHygienePairs(values) {
+  try {
+    window.localStorage.setItem(ADMIN_TAG_HYGIENE_DISMISSED_KEY, JSON.stringify([...new Set(values.filter(Boolean))]));
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+function tagHygienePairKey(primary, candidate) {
+  return `${normalizeTagValue(primary)}::${normalizeTagValue(candidate)}`;
 }
 const drawerMediaQuery = window.matchMedia("(max-width: 1100px)");
 const modalDetailsDrawerMediaQuery = window.matchMedia("(max-width: 1100px)");
@@ -719,6 +760,22 @@ function formatQueueError(value) {
     .trim();
 }
 
+function formatDurationWords(totalSeconds) {
+  const seconds = Number(totalSeconds || 0);
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return "Unknown";
+  }
+  if (seconds % 3600 === 0) {
+    const hours = seconds / 3600;
+    return `${hours} hour${hours === 1 ? "" : "s"}`;
+  }
+  if (seconds % 60 === 0) {
+    const minutes = seconds / 60;
+    return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+  }
+  return `${seconds} second${seconds === 1 ? "" : "s"}`;
+}
+
 function escapeHTML(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -856,27 +913,41 @@ function renderAdminTagQueueStatus() {
     return;
   }
 
-  const visible = isAdminView() && canManageUsers() && activeAdminTab() === "tag-queue";
+  const tab = activeAdminTab();
+  const isQueueTab = tab === "tag-queue";
+  const isReviewTab = tab === "tag-review";
+  const visible = isAdminView() && canManageUsers() && (isQueueTab || isReviewTab);
   adminTagQueuePanel.classList.toggle("hidden", !visible);
-  adminTagQueueReset?.classList.toggle("hidden", !visible);
+  adminTagQueueReset?.classList.toggle("hidden", !isQueueTab);
   if (adminTagQueueReset) {
-    adminTagQueueReset.disabled = !visible;
+    adminTagQueueReset.disabled = !isQueueTab;
   }
   if (!visible) {
     return;
   }
 
+  if (adminTagQueueKicker) {
+    adminTagQueueKicker.textContent = isReviewTab ? "Suggested Tags" : "Tag Queue";
+  }
+  if (adminTagQueueTitle) {
+    adminTagQueueTitle.textContent = isReviewTab ? "Pending Review" : "Suggestion Worker";
+  }
+
   const status = state.admin.tagQueueStatus;
   if (!status) {
-    adminTagQueueSummary.textContent = "Loading queue status...";
-    adminTagQueueGrid.innerHTML = `<p class="users-empty">Loading tag suggestion worker status...</p>`;
+    adminTagQueueSummary.textContent = isReviewTab ? "Loading pending suggestions..." : "Loading queue status...";
+    adminTagQueueGrid.innerHTML = `<p class="users-empty">${isReviewTab ? "Loading suggested-tag review backlog..." : "Loading tag suggestion worker status..."}</p>`;
     adminTagQueueList.innerHTML = "";
     return;
   }
 
   const summaryParts = [];
-  summaryParts.push(status.enabled ? "Suggestions enabled" : "Suggestions disabled");
-  if (status.model) {
+  if (isReviewTab) {
+    summaryParts.push(`${String(status.pending_suggestion_memes || 0)} pending`);
+  } else {
+    summaryParts.push(status.enabled ? "Suggestions enabled" : "Suggestions disabled");
+  }
+  if (!isReviewTab && status.model) {
     summaryParts.push(status.model);
   }
   adminTagQueueSummary.textContent = summaryParts.join(" * ");
@@ -919,35 +990,92 @@ function renderAdminTagQueueStatus() {
       <strong class="admin-tag-queue-value">${escapeHTML(lastError)}</strong>
     </article>
   `;
+  adminTagQueueGrid.classList.toggle("hidden", isReviewTab);
 
   const queuedMemes = Array.isArray(status.queued_memes) ? status.queued_memes : [];
-  if (queuedMemes.length === 0) {
-    adminTagQueueList.innerHTML = `
-      <div class="admin-tag-queue-list-head">
-        <strong>Queue Contents</strong>
-        <span>No items are waiting right now.</span>
-      </div>
+  const pendingReviewMemes = Array.isArray(status.pending_review_memes) ? status.pending_review_memes : [];
+  const queueSection = queuedMemes.length === 0
+    ? `
+      <section class="admin-tag-queue-section">
+        <div class="admin-tag-queue-list-head">
+          <strong>Queue Contents</strong>
+          <span>No items are waiting right now.</span>
+        </div>
+      </section>
+    `
+    : `
+      <section class="admin-tag-queue-section">
+        <div class="admin-tag-queue-list-head">
+          <strong>Queue Contents</strong>
+          <span>${escapeHTML(String(queuedMemes.length))} item${queuedMemes.length === 1 ? "" : "s"} waiting</span>
+        </div>
+        <div class="admin-tag-queue-items">
+          ${queuedMemes.map((item, index) => `
+            <article class="admin-tag-queue-item">
+              <span class="admin-tag-queue-rank">#${index + 1}</span>
+              <div class="admin-tag-queue-item-copy">
+                <strong>${escapeHTML(item.name || item.id || "Unknown meme")}</strong>
+                <code>${escapeHTML(item.id || "")}</code>
+              </div>
+            </article>
+          `).join("")}
+        </div>
+      </section>
     `;
-    return;
-  }
 
-  adminTagQueueList.innerHTML = `
-    <div class="admin-tag-queue-list-head">
-      <strong>Queue Contents</strong>
-      <span>${escapeHTML(String(queuedMemes.length))} item${queuedMemes.length === 1 ? "" : "s"} waiting</span>
-    </div>
-    <div class="admin-tag-queue-items">
-      ${queuedMemes.map((item, index) => `
-        <article class="admin-tag-queue-item">
-          <span class="admin-tag-queue-rank">#${index + 1}</span>
-          <div class="admin-tag-queue-item-copy">
-            <strong>${escapeHTML(item.name || item.id || "Unknown meme")}</strong>
-            <code>${escapeHTML(item.id || "")}</code>
-          </div>
-        </article>
-      `).join("")}
-    </div>
-  `;
+  const pendingSection = pendingReviewMemes.length === 0
+    ? `
+      <section class="admin-tag-queue-section">
+        <div class="admin-tag-queue-list-head">
+          <strong>Pending Review</strong>
+          <span>No memes are waiting on suggestion review.</span>
+        </div>
+      </section>
+    `
+    : `
+      <section class="admin-tag-queue-section">
+        <div class="admin-tag-queue-list-head">
+          <strong>Pending Review</strong>
+          <span>${escapeHTML(String(pendingReviewMemes.length))} meme${pendingReviewMemes.length === 1 ? "" : "s"} with suggestions</span>
+        </div>
+        <div class="admin-tag-queue-items">
+          ${pendingReviewMemes.map((item) => `
+            <article class="admin-tag-queue-item admin-tag-review-item" data-admin-review-id="${escapeHTML(item.id || "")}" role="button" tabindex="0">
+              <span class="admin-tag-queue-rank">Review</span>
+              <div class="admin-tag-queue-item-copy">
+                <strong>${escapeHTML(item.name || item.id || "Unknown meme")}</strong>
+                <code>${escapeHTML(item.id || "")}</code>
+                <div class="admin-tag-review-tags">
+                  ${(Array.isArray(item.suggested_tags) ? item.suggested_tags : []).map((tag) => `
+                    <span class="tag-chip">${escapeHTML(tag)}</span>
+                  `).join("")}
+                </div>
+              </div>
+            </article>
+          `).join("")}
+        </div>
+      </section>
+    `;
+
+  adminTagQueueList.innerHTML = isReviewTab ? pendingSection : queueSection;
+  adminTagQueueList.querySelectorAll("[data-admin-review-id]").forEach((element) => {
+    const openReviewMeme = () => {
+      const memeID = element.getAttribute("data-admin-review-id") || "";
+      if (!memeID) {
+        return;
+      }
+      openAdminMemeByID(memeID).catch((error) => {
+        console.error(error);
+      });
+    };
+    element.addEventListener("click", openReviewMeme);
+    element.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openReviewMeme();
+      }
+    });
+  });
 }
 
 function renderAdminDashboard() {
@@ -1069,7 +1197,10 @@ function renderAdminTagHygiene() {
     return;
   }
 
-  const pairs = Array.isArray(report.pairs) ? report.pairs : [];
+  const dismissedPairs = new Set(getDismissedTagHygienePairs());
+  const pairs = (Array.isArray(report.pairs) ? report.pairs : []).filter((pair) => {
+    return !dismissedPairs.has(tagHygienePairKey(pair.primary || "", pair.candidate || ""));
+  });
   if (pairs.length === 0) {
     adminTagHygienePairs.innerHTML = `<p class="users-empty">No likely spelling or separator variants found right now.</p>`;
   } else {
@@ -1080,14 +1211,24 @@ function renderAdminTagHygiene() {
           <span>suggested merge into</span>
           <strong>${escapeHTML(pair.primary || "")}</strong>
         </div>
-        <button
-          class="ghost-button admin-tag-hygiene-merge-button"
-          type="button"
-          data-source-tag="${escapeHTML(pair.candidate || "")}"
-          data-target-tag="${escapeHTML(pair.primary || "")}"
-        >
-          Merge
-        </button>
+        <div class="admin-tag-hygiene-pair-actions">
+          <button
+            class="ghost-button admin-tag-hygiene-dismiss-button"
+            type="button"
+            data-dismiss-primary="${escapeHTML(pair.primary || "")}"
+            data-dismiss-candidate="${escapeHTML(pair.candidate || "")}"
+          >
+            Dismiss
+          </button>
+          <button
+            class="ghost-button admin-tag-hygiene-merge-button"
+            type="button"
+            data-source-tag="${escapeHTML(pair.candidate || "")}"
+            data-target-tag="${escapeHTML(pair.primary || "")}"
+          >
+            Merge
+          </button>
+        </div>
       </article>
     `).join("");
   }
@@ -1130,13 +1271,33 @@ function renderAdminTagHygiene() {
       }
     });
   });
+
+  adminTagHygienePanel.querySelectorAll("[data-dismiss-primary][data-dismiss-candidate]").forEach((element) => {
+    element.addEventListener("click", () => {
+      const primary = element.getAttribute("data-dismiss-primary") || "";
+      const candidate = element.getAttribute("data-dismiss-candidate") || "";
+      dismissTagHygienePair(primary, candidate);
+    });
+  });
+}
+
+function dismissTagHygienePair(primary, candidate) {
+  const pairKey = tagHygienePairKey(primary, candidate);
+  if (!pairKey || pairKey === "::") {
+    return;
+  }
+  const dismissed = getDismissedTagHygienePairs();
+  dismissed.push(pairKey);
+  setDismissedTagHygienePairs(dismissed);
+  renderAdminTagHygiene();
+  showToast(`Dismissed ${candidate} -> ${primary}.`, "info", { title: "Tag Hygiene", duration: 2600 });
 }
 
 async function mergeAdminTags(sourceTag, targetTag) {
   const normalizedSource = normalizeTagValue(sourceTag);
   const normalizedTarget = normalizeTagValue(targetTag);
   if (!normalizedSource || !normalizedTarget) {
-    adminViewStatus.textContent = "Both source and target tags are required.";
+    setAdminViewStatus("Both source and target tags are required.");
     showToast("Both source and target tags are required.", "error");
     return;
   }
@@ -1144,7 +1305,7 @@ async function mergeAdminTags(sourceTag, targetTag) {
   if (adminTagMergeSubmit) {
     adminTagMergeSubmit.disabled = true;
   }
-  adminViewStatus.textContent = "";
+  setAdminViewStatus("");
   showToast(`Merging ${normalizedSource} into ${normalizedTarget}...`, "info", { title: "Tag Hygiene", duration: 1800 });
 
   const response = await fetch("/api/admin/tag-hygiene", {
@@ -1156,7 +1317,7 @@ async function mergeAdminTags(sourceTag, targetTag) {
     }),
   });
   if (!(await expectAuthorized(response, "Failed to merge tags."))) {
-    adminViewStatus.textContent = "";
+    setAdminViewStatus("");
     showToast("Could not merge tags.", "error", { title: "Tag Hygiene" });
     if (adminTagMergeSubmit) {
       adminTagMergeSubmit.disabled = false;
@@ -1165,7 +1326,7 @@ async function mergeAdminTags(sourceTag, targetTag) {
   }
 
   const payload = await response.json();
-  adminViewStatus.textContent = "";
+  setAdminViewStatus("");
   showToast(`Merged ${payload.source_tag || normalizedSource} into ${payload.target_tag || normalizedTarget} across ${Number(payload.affected_memes || 0)} meme${Number(payload.affected_memes || 0) === 1 ? "" : "s"}.`, "success", { title: "Tag Hygiene", duration: 3400 });
   if (adminTagMergeSource) {
     adminTagMergeSource.value = "";
@@ -1196,6 +1357,22 @@ async function fetchAdminTagQueueStatus() {
   return state.admin.tagQueueStatus;
 }
 
+async function fetchAdminLinkRetryStatus() {
+  if (!canManageUsers()) {
+    return null;
+  }
+
+  const response = await fetch("/api/admin/link-downloads/status");
+  if (!(await expectAuthorized(response, "Failed to load link retry queue status."))) {
+    return null;
+  }
+
+  const payload = await response.json();
+  state.admin.linkRetryStatus = payload || null;
+  renderAdminLinkRetryStatus();
+  return state.admin.linkRetryStatus;
+}
+
 async function resetAdminTagSuggestions() {
   if (!canManageUsers()) {
     return;
@@ -1209,14 +1386,14 @@ async function resetAdminTagSuggestions() {
   if (adminTagQueueReset) {
     adminTagQueueReset.disabled = true;
   }
-  adminViewStatus.textContent = "";
+  setAdminViewStatus("");
   showToast("Resetting tag suggestions and reseeding the queue...", "info", { title: "Tag Queue", duration: 1800 });
 
   const response = await fetch("/api/admin/tag-suggestions/reset", {
     method: "POST",
   });
   if (!(await expectAuthorized(response, "Failed to reset tag suggestions."))) {
-    adminViewStatus.textContent = "";
+    setAdminViewStatus("");
     showToast("Could not reset tag suggestions.", "error", { title: "Tag Queue" });
     if (adminTagQueueReset) {
       adminTagQueueReset.disabled = false;
@@ -1227,7 +1404,7 @@ async function resetAdminTagSuggestions() {
   const payload = await response.json();
   const cleared = Number(payload?.cleared_suggestions || 0);
   const queued = Number(payload?.queued_untagged || 0);
-  adminViewStatus.textContent = "";
+  setAdminViewStatus("");
   showToast(`Cleared ${cleared} suggestion set${cleared === 1 ? "" : "s"} and queued ${queued} untagged meme${queued === 1 ? "" : "s"}.`, "success", { title: "Tag Queue", duration: 3400 });
   await fetchAdminTagQueueStatus();
   if (adminTagQueueReset) {
@@ -1251,6 +1428,142 @@ function syncAdminTagQueuePolling() {
       console.error(error);
     });
   }, 8000);
+}
+
+function renderAdminLinkRetryStatus() {
+  if (!adminLinkQueuePanel || !adminLinkQueueGrid || !adminLinkQueueSummary || !adminLinkQueueList) {
+    return;
+  }
+
+  const tab = activeAdminTab();
+  const isRetryTab = tab === "link-retries";
+  const isRejectedTab = tab === "rejected-links";
+  const visible = isAdminView() && canManageUsers() && (isRetryTab || isRejectedTab);
+  adminLinkQueuePanel.classList.toggle("hidden", !visible);
+  if (!visible) {
+    return;
+  }
+
+  if (adminLinkQueueKicker) {
+    adminLinkQueueKicker.textContent = isRejectedTab ? "Rejected Links" : "Link Retries";
+  }
+  if (adminLinkQueueTitle) {
+    adminLinkQueueTitle.textContent = isRejectedTab ? "Rejected Import Queue" : "Retry Queue";
+  }
+
+  const status = state.admin.linkRetryStatus;
+  if (!status) {
+    adminLinkQueueSummary.textContent = isRejectedTab ? "Loading rejected links..." : "Loading retry queue...";
+    adminLinkQueueGrid.innerHTML = `<p class="users-empty">${isRejectedTab ? "Loading rejected link downloads..." : "Loading failed link retries..."}</p>`;
+    adminLinkQueueList.innerHTML = "";
+    return;
+  }
+
+  const queued = Array.isArray(status.queued) ? status.queued : [];
+  const rejected = Array.isArray(status.rejected) ? status.rejected : [];
+  adminLinkQueueSummary.textContent = isRejectedTab
+    ? `${rejected.length} rejected * ${status.max_attempts || 0} max attempts`
+    : `${queued.length} queued * retry every ${status.retry_interval_seconds || 0}s`;
+
+  adminLinkQueueGrid.innerHTML = `
+    <article class="admin-tag-queue-stat">
+      <span class="admin-tag-queue-label">Queued</span>
+      <strong class="admin-tag-queue-value">${escapeHTML(String(queued.length))}</strong>
+    </article>
+    <article class="admin-tag-queue-stat">
+      <span class="admin-tag-queue-label">Rejected</span>
+      <strong class="admin-tag-queue-value">${escapeHTML(String(rejected.length))}</strong>
+    </article>
+    <article class="admin-tag-queue-stat">
+      <span class="admin-tag-queue-label">Retry Interval</span>
+      <strong class="admin-tag-queue-value">${escapeHTML(formatDurationWords(Number(status.retry_interval_seconds || 0)))}</strong>
+    </article>
+    <article class="admin-tag-queue-stat">
+      <span class="admin-tag-queue-label">Max Attempts</span>
+      <strong class="admin-tag-queue-value">${escapeHTML(String(status.max_attempts || 0))}</strong>
+    </article>
+    <article class="admin-tag-queue-stat">
+      <span class="admin-tag-queue-label">Processing</span>
+      <strong class="admin-tag-queue-value">${escapeHTML(status.processing_id ? "Active" : "Idle")}</strong>
+    </article>
+  `;
+
+  const items = isRejectedTab ? rejected : queued;
+  if (items.length === 0) {
+    adminLinkQueueList.innerHTML = `
+      <section class="admin-tag-queue-section">
+        <div class="admin-tag-queue-list-head">
+          <strong>${isRejectedTab ? "Rejected Links" : "Retry Queue"}</strong>
+          <span>${isRejectedTab ? "Nothing is rejected right now." : "No failed links are waiting right now."}</span>
+        </div>
+      </section>
+    `;
+    return;
+  }
+
+  adminLinkQueueList.innerHTML = `
+    <section class="admin-tag-queue-section">
+      <div class="admin-tag-queue-list-head">
+        <strong>${isRejectedTab ? "Rejected Links" : "Retry Queue"}</strong>
+        <span>${escapeHTML(String(items.length))} item${items.length === 1 ? "" : "s"}</span>
+      </div>
+      <div class="admin-tag-queue-items">
+        ${items.map((item, index) => `
+          <article class="admin-tag-queue-item admin-link-queue-item">
+            <span class="admin-tag-queue-rank">${isRejectedTab ? "Rejected" : `#${index + 1}`}</span>
+            <div class="admin-tag-queue-item-copy">
+              <strong>${escapeHTML(item.source_url || "Unknown link")}</strong>
+              <span>${escapeHTML(String(item.attempts || 0))}/${escapeHTML(String(item.max_attempts || 0))} attempts * ${escapeHTML(isRejectedTab ? formatDateTime(item.requested_at) : formatDateTime(item.next_attempt_at))}</span>
+              ${item.tags?.length ? `<div class="admin-tag-review-tags">${item.tags.map((tag) => `<span class="tag-chip">${escapeHTML(tag)}</span>`).join("")}</div>` : ""}
+              ${item.last_error ? `<code>${escapeHTML(item.last_error)}</code>` : ""}
+              ${isRejectedTab ? `<div class="admin-link-queue-actions"><button type="button" class="ghost-button" data-link-retry-id="${escapeHTML(item.id || "")}">Retry Again</button></div>` : ""}
+            </div>
+          </article>
+        `).join("")}
+      </div>
+    </section>
+  `;
+
+  adminLinkQueueList.querySelectorAll("[data-link-retry-id]").forEach((element) => {
+    element.addEventListener("click", () => {
+      const id = element.getAttribute("data-link-retry-id") || "";
+      retryRejectedLinkDownload(id).catch((error) => {
+        console.error(error);
+      });
+    });
+  });
+}
+
+function syncAdminLinkQueuePolling() {
+  if (adminLinkQueuePollInterval) {
+    window.clearInterval(adminLinkQueuePollInterval);
+    adminLinkQueuePollInterval = null;
+  }
+
+  if (!canManageUsers() || !isAdminView()) {
+    renderAdminLinkRetryStatus();
+    return;
+  }
+
+  adminLinkQueuePollInterval = window.setInterval(() => {
+    fetchAdminLinkRetryStatus().catch((error) => {
+      console.error(error);
+    });
+  }, 8000);
+}
+
+async function retryRejectedLinkDownload(id) {
+  if (!id) {
+    return;
+  }
+  const response = await fetch(`/api/admin/link-downloads/${encodeURIComponent(id)}/retry`, {
+    method: "POST",
+  });
+  if (!(await expectAuthorized(response, "Failed to requeue rejected link."))) {
+    return;
+  }
+  showToast("Rejected link moved back into the retry queue.", "success", { title: "Link Retries", duration: 2600 });
+  await fetchAdminLinkRetryStatus();
 }
 
 function renderDeleteQueue() {
@@ -1677,7 +1990,9 @@ function renderContentMode() {
   renderAdminDashboard();
   renderAdminTagHygiene();
   renderAdminTagQueueStatus();
+  renderAdminLinkRetryStatus();
   syncAdminTagQueuePolling();
+  syncAdminLinkQueuePolling();
 }
 
 function syncAdminPagination() {
@@ -1749,15 +2064,18 @@ async function loadInitialMemes() {
     fetchAdminTagQueueStatus().catch((error) => {
       console.error(error);
     });
+    fetchAdminLinkRetryStatus().catch((error) => {
+      console.error(error);
+    });
   }
   if (isAdminView() && canManageUsers() && activeAdminTab() === "dashboard") {
     adminViewKicker.textContent = "Admin";
     adminViewTitle.textContent = "Archive Dashboard";
     adminViewCopy.textContent = "A quick pulse-check on backlog size, tag coverage, recent uploads, and the tags that define your archive.";
-    adminViewStatus.textContent = "Loading dashboard...";
+    setAdminViewStatus("Loading dashboard...");
     adminViewTable.innerHTML = "";
     const dashboard = await fetchAdminDashboard();
-    adminViewStatus.textContent = dashboard ? "" : "Could not load dashboard.";
+    setAdminViewStatus(dashboard ? "" : "Could not load dashboard.");
     renderContentMode();
     return;
   }
@@ -1765,10 +2083,10 @@ async function loadInitialMemes() {
     adminViewKicker.textContent = "Admin";
     adminViewTitle.textContent = "Tag Hygiene";
     adminViewCopy.textContent = "Review likely misspellings, separator variants, and close tag duplicates, then merge them into cleaner canonical tags.";
-    adminViewStatus.textContent = "Loading tag hygiene tools...";
+    setAdminViewStatus("Loading tag hygiene tools...");
     adminViewTable.innerHTML = "";
     const report = await fetchAdminTagHygiene();
-    adminViewStatus.textContent = report ? "" : "Could not load tag hygiene tools.";
+    setAdminViewStatus(report ? "" : "Could not load tag hygiene tools.");
     renderContentMode();
     return;
   }
@@ -1776,11 +2094,11 @@ async function loadInitialMemes() {
     adminViewKicker.textContent = "Admin";
     adminViewTitle.textContent = "Admin Workspace";
     adminViewCopy.textContent = "A full activity log with actor, action, target meme, and quick-open access for review.";
-    adminViewStatus.textContent = "Loading audit logs...";
+    setAdminViewStatus("Loading audit logs...");
     adminViewTable.innerHTML = "";
     syncAdminPagination();
     const events = await fetchAuditLogs();
-    adminViewStatus.textContent = events ? "" : "Could not load audit logs.";
+    setAdminViewStatus(events ? "" : "Could not load audit logs.");
     renderContentMode();
     return;
   }
@@ -1788,11 +2106,11 @@ async function loadInitialMemes() {
     adminViewKicker.textContent = "Admin";
     adminViewTitle.textContent = "Admin Workspace";
     adminViewCopy.textContent = "Review pending meme deletions, inspect the media, and either keep the meme or approve the delete.";
-    adminViewStatus.textContent = "Loading delete queue...";
+    setAdminViewStatus("Loading delete queue...");
     adminViewTable.innerHTML = "";
     syncAdminPagination();
     const entries = await fetchDeleteQueue();
-    adminViewStatus.textContent = entries ? "" : "Could not load delete queue.";
+    setAdminViewStatus(entries ? "" : "Could not load delete queue.");
     renderContentMode();
     return;
   }
@@ -1800,18 +2118,45 @@ async function loadInitialMemes() {
     adminViewKicker.textContent = "Admin";
     adminViewTitle.textContent = "User Access";
     adminViewCopy.textContent = "Manage users and permissions from one place.";
-    adminViewStatus.textContent = "Loading users...";
+    setAdminViewStatus("Loading users...");
     adminViewTable.innerHTML = "";
     const users = await fetchManagedUsers();
-    adminViewStatus.textContent = users ? "" : "Could not load users.";
+    setAdminViewStatus(users ? "" : "Could not load users.");
     renderContentMode();
     return;
   }
   if (isAdminView() && activeAdminTab() === "tag-queue") {
     adminViewKicker.textContent = "Admin";
     adminViewTitle.textContent = "Tag Queue";
-    adminViewCopy.textContent = "Monitor the background tag suggestion worker, queue, and pending review backlog.";
-    adminViewStatus.textContent = "";
+    adminViewCopy.textContent = "Monitor the background tag suggestion worker and the memes waiting to be processed.";
+    setAdminViewStatus("");
+    adminViewTable.innerHTML = "";
+    renderContentMode();
+    return;
+  }
+  if (isAdminView() && activeAdminTab() === "tag-review") {
+    adminViewKicker.textContent = "Admin";
+    adminViewTitle.textContent = "Suggested Tags";
+    adminViewCopy.textContent = "Review memes with pending AI tag suggestions and open them directly in the edit modal.";
+    setAdminViewStatus("");
+    adminViewTable.innerHTML = "";
+    renderContentMode();
+    return;
+  }
+  if (isAdminView() && activeAdminTab() === "link-retries") {
+    adminViewKicker.textContent = "Admin";
+    adminViewTitle.textContent = "Link Retries";
+    adminViewCopy.textContent = "Failed link imports waiting for another download attempt.";
+    setAdminViewStatus("");
+    adminViewTable.innerHTML = "";
+    renderContentMode();
+    return;
+  }
+  if (isAdminView() && activeAdminTab() === "rejected-links") {
+    adminViewKicker.textContent = "Admin";
+    adminViewTitle.textContent = "Rejected Links";
+    adminViewCopy.textContent = "Links that exhausted their retry budget and need a manual requeue if you want to try again later.";
+    setAdminViewStatus("");
     adminViewTable.innerHTML = "";
     renderContentMode();
     return;
@@ -3903,6 +4248,18 @@ linkUploadForm?.addEventListener("submit", async (event) => {
     }
 
     const payload = await response.json();
+    if (response.status === 202 || payload.queued) {
+      const nextAttempt = payload?.job?.next_attempt_at ? formatDateTime(payload.job.next_attempt_at) : "a few minutes";
+      linkUploadStatus.textContent = `Link download failed for now. It was added to the retry queue and will try again around ${nextAttempt}.`;
+      showToast("Link queued for retry.", "info", { title: "Import", duration: 3600 });
+      await fetchAdminLinkRetryStatus().catch((error) => {
+        console.error(error);
+      });
+      linkUploadForm?.reset();
+      resetLinkUploadTags();
+      linkUploadModal?.close();
+      return;
+    }
     const createdCount = Number(payload.created || 0);
     const skippedCount = Number(payload.skipped || 0);
     if (createdCount > 0 && skippedCount > 0) {
@@ -4321,7 +4678,7 @@ authVersion?.addEventListener("click", (event) => {
   forceFreshHTMLReload();
 });
 
-authAdmin?.addEventListener("click", (event) => {
+  authAdmin?.addEventListener("click", (event) => {
   event.stopPropagation();
   closeAuthMenu();
   state.filters.view = "admin";
@@ -4329,7 +4686,7 @@ authAdmin?.addEventListener("click", (event) => {
   showToast("Loading admin dashboard...", "info", { title: "Admin", duration: 1600 });
   loadInitialMemes().catch((error) => {
     console.error(error);
-    adminViewStatus.textContent = "Could not load admin workspace.";
+    setAdminViewStatus("Could not load admin workspace.");
     showToast("Could not load admin workspace.", "error", { title: "Admin" });
   });
 });
@@ -4344,7 +4701,7 @@ adminTabs.forEach((tab) => {
     showToast(`Loading ${state.admin.tab.replaceAll("-", " ")}...`, "info", { title: "Admin", duration: 1600 });
     loadInitialMemes().catch((error) => {
       console.error(error);
-      adminViewStatus.textContent = "Could not load admin workspace.";
+      setAdminViewStatus("Could not load admin workspace.");
       showToast("Could not load admin workspace.", "error", { title: "Admin" });
     });
   });
@@ -4357,7 +4714,7 @@ adminPagePrev?.addEventListener("click", () => {
   showToast("Loading previous admin page...", "info", { title: "Admin", duration: 1500 });
   loadInitialMemes().catch((error) => {
     console.error(error);
-    adminViewStatus.textContent = "Could not load admin page.";
+    setAdminViewStatus("Could not load admin page.");
     showToast("Could not load admin page.", "error", { title: "Admin" });
   });
 });
@@ -4369,7 +4726,7 @@ adminPageNext?.addEventListener("click", () => {
   showToast("Loading next admin page...", "info", { title: "Admin", duration: 1500 });
   loadInitialMemes().catch((error) => {
     console.error(error);
-    adminViewStatus.textContent = "Could not load admin page.";
+    setAdminViewStatus("Could not load admin page.");
     showToast("Could not load admin page.", "error", { title: "Admin" });
   });
 });
@@ -4377,7 +4734,7 @@ adminPageNext?.addEventListener("click", () => {
 adminTagQueueReset?.addEventListener("click", () => {
   resetAdminTagSuggestions().catch((error) => {
     console.error(error);
-    adminViewStatus.textContent = "Could not reset tag suggestions.";
+    setAdminViewStatus("Could not reset tag suggestions.");
     showToast("Could not reset tag suggestions.", "error", { title: "Tag Queue" });
     if (adminTagQueueReset) {
       adminTagQueueReset.disabled = false;
@@ -4389,7 +4746,7 @@ adminTagMergeForm?.addEventListener("submit", (event) => {
   event.preventDefault();
   mergeAdminTags(adminTagMergeSource?.value || "", adminTagMergeTarget?.value || "").catch((error) => {
     console.error(error);
-    adminViewStatus.textContent = "Could not merge tags.";
+    setAdminViewStatus("Could not merge tags.");
     showToast("Could not merge tags.", "error", { title: "Tag Hygiene" });
     if (adminTagMergeSubmit) {
       adminTagMergeSubmit.disabled = false;

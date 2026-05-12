@@ -97,9 +97,15 @@ func thumbnailWebPath(storedName string) string {
 	return "/thumbnails/" + thumbnailFileName(storedName)
 }
 
-func EnsureVideoTagFrames(uploadDir, previewDir, storedName string) ([]string, error) {
+func EnsureVideoTagFrames(uploadDir, previewDir, storedName string, frameCount int, frameWidth int) ([]string, error) {
 	if strings.TrimSpace(uploadDir) == "" || strings.TrimSpace(previewDir) == "" || strings.TrimSpace(storedName) == "" {
 		return nil, errors.New("video tag frames unavailable")
+	}
+	if frameCount <= 0 {
+		frameCount = 3
+	}
+	if frameWidth <= 0 {
+		frameWidth = 480
 	}
 
 	tagFrameDir := filepath.Join(previewDir, "tagframes")
@@ -108,13 +114,16 @@ func EnsureVideoTagFrames(uploadDir, previewDir, storedName string) ([]string, e
 	}
 
 	inputPath := filepath.Join(uploadDir, storedName)
-	offsets := []string{"00:00:01", "00:00:03", "00:00:06"}
+	offsets := []string{"00:00:01", "00:00:03", "00:00:06", "00:00:10", "00:00:15"}
+	if frameCount < len(offsets) {
+		offsets = offsets[:frameCount]
+	}
 	framePaths := make([]string, 0, len(offsets))
 	var lastErr error
 	for index, offset := range offsets {
 		outputPath := filepath.Join(tagFrameDir, tagFrameFileName(storedName, index+1))
 		if _, err := os.Stat(outputPath); errors.Is(err, os.ErrNotExist) {
-			if err := generateVideoFrameAtOffset(inputPath, outputPath, offset, 480); err != nil {
+			if err := generateVideoFrameAtOffset(inputPath, outputPath, offset, frameWidth); err != nil {
 				lastErr = err
 				continue
 			}
@@ -154,6 +163,33 @@ func EnsureVideoTagAudio(uploadDir, previewDir, storedName string) (string, erro
 	}
 
 	if err := extractVideoAudio(inputPath, outputPath); err != nil {
+		return "", err
+	}
+	return outputPath, nil
+}
+
+func EnsureImageTagPreview(uploadDir, previewDir, storedName string, width int) (string, error) {
+	if strings.TrimSpace(uploadDir) == "" || strings.TrimSpace(previewDir) == "" || strings.TrimSpace(storedName) == "" {
+		return "", errors.New("image tag preview unavailable")
+	}
+	if width <= 0 {
+		width = 480
+	}
+
+	tagImageDir := filepath.Join(previewDir, "tagimages")
+	if err := os.MkdirAll(tagImageDir, 0o755); err != nil {
+		return "", err
+	}
+
+	inputPath := filepath.Join(uploadDir, storedName)
+	outputPath := filepath.Join(tagImageDir, thumbnailFileName(storedName))
+	if _, err := os.Stat(outputPath); err == nil {
+		return outputPath, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+
+	if err := generateVideoFrameAtOffset(inputPath, outputPath, "00:00:00", width); err != nil {
 		return "", err
 	}
 	return outputPath, nil

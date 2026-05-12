@@ -28,6 +28,7 @@ type Server struct {
 	auth        *authService
 	users       authUserStore
 	mediaClient *mediafetch.Client
+	linkRetries *linkRetryQueue
 }
 
 func NewServer(config Config, memeManager *manager.MemeManager) *Server {
@@ -49,13 +50,15 @@ func NewServer(config Config, memeManager *manager.MemeManager) *Server {
 		log.Fatalf("mediafetch client init failed: %v", err)
 	}
 
-	return &Server{
+	server := &Server{
 		config:      config,
 		managers:    memeManager,
 		auth:        newAuthService(config.DiscordAuth, userStore),
 		users:       userStore,
 		mediaClient: mediaClient,
 	}
+	server.linkRetries = newLinkRetryQueue(config.MediaFetchRetry.Interval, config.MediaFetchRetry.MaxAttempts, server.processRetriedLinkJob)
+	return server
 }
 
 func (s *Server) Routes() http.Handler {
@@ -73,6 +76,8 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/api/admin/tag-hygiene", s.withAPIAuth(http.HandlerFunc(s.handleTagHygiene), permissionManageUsers))
 	mux.Handle("/api/admin/tag-suggestions/status", s.withAPIAuth(http.HandlerFunc(s.handleTagSuggestionStatus), permissionManageUsers))
 	mux.Handle("/api/admin/tag-suggestions/reset", s.withAPIAuth(http.HandlerFunc(s.handleResetTagSuggestions), permissionManageUsers))
+	mux.Handle("/api/admin/link-downloads/status", s.withAPIAuth(http.HandlerFunc(s.handleLinkDownloadStatus), permissionManageUsers))
+	mux.Handle("/api/admin/link-downloads/", s.withAPIAuth(http.HandlerFunc(s.handleLinkDownloadActions), permissionManageUsers))
 	mux.Handle("/api/admin/memes/pending-delete", s.withAPIAuth(http.HandlerFunc(s.handlePendingDeleteQueue), permissionManageUsers))
 	mux.Handle("/api/admin/memes/", s.withAPIAuth(http.HandlerFunc(s.handleAdminMemeActions), permissionManageUsers))
 	mux.Handle("/uploads/", s.withPageAuth(http.StripPrefix("/uploads/", http.FileServer(http.Dir(s.managers.UploadDir())))))
@@ -548,7 +553,7 @@ func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if sourceURL != "" {
-		meme, err := s.createMemeFromSourceURL(r, sourceURL, splitTags(r.FormValue("tags")), r.FormValue("notes"))
+		meme, err := s.createMemeFromSourceURL(r.Context(), currentAuditActor(r), sourceURL, splitTags(r.FormValue("tags")), r.FormValue("notes"))
 		if err != nil {
 			var duplicateErr *accessor.DuplicateMemeError
 			if errors.As(err, &duplicateErr) {
@@ -570,6 +575,14 @@ func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
 				status = http.StatusBadRequest
 			case strings.Contains(strings.ToLower(err.Error()), "not configured"):
 				status = http.StatusServiceUnavailable
+			case s.shouldQueueLinkRetry(sourceURL, err):
+				job := s.linkRetries.Enqueue(sourceURL, splitTags(r.FormValue("tags")), r.FormValue("notes"), currentAuditActor(r))
+				writeJSON(w, http.StatusAccepted, map[string]any{
+					"queued": true,
+					"job":    job,
+					"error":  err.Error(),
+				})
+				return
 			}
 			http.Error(w, err.Error(), status)
 			return
@@ -637,12 +650,12 @@ func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
 var errUnsupportedMediaURL = errors.New("only YouTube, Facebook, Reddit, Instagram, TikTok, and Twitter/X links are supported right now")
 var errUndownloadableSourceURL = errors.New("this link looks valid, but the source video is not directly downloadable from that URL. Try opening the post/video itself and copying the direct Facebook video URL instead of the share link")
 
-func (s *Server) createMemeFromSourceURL(r *http.Request, sourceURL string, tags []string, notes string) (accessor.Meme, error) {
+func (s *Server) createMemeFromSourceURL(ctx context.Context, actor accessor.AuditActor, sourceURL string, tags []string, notes string) (accessor.Meme, error) {
 	if s.mediaClient == nil {
 		return accessor.Meme{}, errors.New("link downloads are not configured")
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
 	resolvedSourceURL, err := normalizeSourceURL(ctx, sourceURL)
@@ -709,7 +722,7 @@ func (s *Server) createMemeFromSourceURL(r *http.Request, sourceURL string, tags
 	}
 
 	return s.managers.CreateMemeAsWithSource(
-		currentAuditActor(r),
+		actor,
 		src,
 		header,
 		filename,
@@ -717,6 +730,33 @@ func (s *Server) createMemeFromSourceURL(r *http.Request, sourceURL string, tags
 		notes,
 		sourceURL,
 	)
+}
+
+func (s *Server) shouldQueueLinkRetry(sourceURL string, err error) bool {
+	if s.linkRetries == nil || strings.TrimSpace(sourceURL) == "" || err == nil {
+		return false
+	}
+	var duplicateErr *accessor.DuplicateMemeError
+	if errors.As(err, &duplicateErr) || errors.Is(err, errUnsupportedMediaURL) {
+		return false
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "not configured") {
+		return false
+	}
+	return mediafetch.ValidateSupportedURL(sourceURL)
+}
+
+func (s *Server) processRetriedLinkJob(ctx context.Context, job LinkRetryJob) error {
+	meme, err := s.createMemeFromSourceURL(ctx, job.Actor, job.SourceURL, job.Tags, job.Notes)
+	if err != nil {
+		var duplicateErr *accessor.DuplicateMemeError
+		if errors.As(err, &duplicateErr) {
+			return nil
+		}
+		return err
+	}
+	s.managers.QueueMemeTagSuggestions(meme.ID)
+	return nil
 }
 
 func friendlySourceDownloadError(originalURL, resolvedURL string, err error) error {
@@ -1013,6 +1053,40 @@ func (s *Server) handleResetTagSuggestions(w http.ResponseWriter, r *http.Reques
 	}
 
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleLinkDownloadStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.linkRetries == nil {
+		http.Error(w, "link retry queue unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.linkRetries.Snapshot())
+}
+
+func (s *Server) handleLinkDownloadActions(w http.ResponseWriter, r *http.Request) {
+	if s.linkRetries == nil {
+		http.Error(w, "link retry queue unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	path := strings.TrimPrefix(r.URL.Path, "/api/admin/link-downloads/")
+	if !strings.HasSuffix(path, "/retry") || r.Method != http.MethodPost {
+		http.NotFound(w, r)
+		return
+	}
+	id := strings.TrimSuffix(strings.TrimSuffix(path, "/retry"), "/")
+	if strings.TrimSpace(id) == "" {
+		http.NotFound(w, r)
+		return
+	}
+	if !s.linkRetries.RequeueRejected(id) {
+		http.NotFound(w, r)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"retried": true})
 }
 
 func (s *Server) handleAdminMemeActions(w http.ResponseWriter, r *http.Request) {

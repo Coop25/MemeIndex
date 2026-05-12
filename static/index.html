@@ -195,6 +195,9 @@
               <button class="admin-tab" type="button" role="tab" data-admin-tab="users" aria-selected="false">Users</button>
               <button class="admin-tab" type="button" role="tab" data-admin-tab="tag-hygiene" aria-selected="false">Tag Hygiene</button>
               <button class="admin-tab" type="button" role="tab" data-admin-tab="tag-queue" aria-selected="false">Tag Queue</button>
+              <button class="admin-tab" type="button" role="tab" data-admin-tab="tag-review" aria-selected="false">Suggested Tags</button>
+              <button class="admin-tab" type="button" role="tab" data-admin-tab="link-retries" aria-selected="false">Link Retries</button>
+              <button class="admin-tab" type="button" role="tab" data-admin-tab="rejected-links" aria-selected="false">Rejected Links</button>
               <button class="admin-tab" type="button" role="tab" data-admin-tab="delete-queue" aria-selected="false">Delete Queue</button>
               <button class="admin-tab" type="button" role="tab" data-admin-tab="audit-logs" aria-selected="false">Audit Logs</button>
             </div>
@@ -202,8 +205,8 @@
             <section id="admin-tag-queue-panel" class="admin-tag-queue-panel hidden" aria-live="polite">
               <div class="admin-tag-queue-header">
                 <div>
-                  <p class="section-kicker">Tag Queue</p>
-                  <h3>Suggestion Worker</h3>
+                  <p id="admin-tag-queue-kicker" class="section-kicker">Tag Queue</p>
+                  <h3 id="admin-tag-queue-title">Suggestion Worker</h3>
                 </div>
                 <div class="admin-tag-queue-header-actions">
                   <p id="admin-tag-queue-summary" class="admin-tag-queue-summary"></p>
@@ -214,6 +217,19 @@
               </div>
               <div id="admin-tag-queue-grid" class="admin-tag-queue-grid"></div>
               <div id="admin-tag-queue-list" class="admin-tag-queue-list"></div>
+            </section>
+            <section id="admin-link-queue-panel" class="admin-tag-queue-panel hidden" aria-live="polite">
+              <div class="admin-tag-queue-header">
+                <div>
+                  <p id="admin-link-queue-kicker" class="section-kicker">Link Retries</p>
+                  <h3 id="admin-link-queue-title">Failed Link Imports</h3>
+                </div>
+                <div class="admin-tag-queue-header-actions">
+                  <p id="admin-link-queue-summary" class="admin-tag-queue-summary"></p>
+                </div>
+              </div>
+              <div id="admin-link-queue-grid" class="admin-tag-queue-grid"></div>
+              <div id="admin-link-queue-list" class="admin-tag-queue-list"></div>
             </section>
             <section id="admin-dashboard-panel" class="admin-dashboard-panel hidden" aria-live="polite">
               <div id="admin-dashboard-grid" class="admin-dashboard-grid"></div>

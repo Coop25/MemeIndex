@@ -162,6 +162,7 @@ func (s *PostgresStore) List(userID, query string, favoritesOnly bool, tag strin
 			m.size_bytes,
 			COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL), '{}') AS tags,
 			COALESCE(m.suggested_tags, '{}') AS suggested_tags,
+			COALESCE(m.auto_suggest_disabled, FALSE) AS auto_suggest_disabled,
 			m.notes,
 			COALESCE(m.source_url, '') AS source_url,
 			EXISTS (
@@ -274,6 +275,7 @@ func (s *PostgresStore) GetAnyByID(id string) (Meme, error) {
 			m.size_bytes,
 			COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL), '{}') AS tags,
 			COALESCE(m.suggested_tags, '{}') AS suggested_tags,
+			COALESCE(m.auto_suggest_disabled, FALSE) AS auto_suggest_disabled,
 			m.notes,
 			COALESCE(m.source_url, '') AS source_url,
 			FALSE AS favorite,
@@ -317,9 +319,26 @@ func (s *PostgresStore) ReplaceSuggestedTags(id string, tags []string) error {
 	commandTag, err := s.pool.Exec(context.Background(), `
 		UPDATE memes
 		SET suggested_tags = $2,
+			auto_suggest_disabled = CASE WHEN cardinality($2::text[]) > 0 THEN FALSE ELSE auto_suggest_disabled END,
 			updated_at = NOW()
 		WHERE id = $1
 	`, strings.TrimSpace(id), normalizeTags(tags))
+	if err != nil {
+		return err
+	}
+	if commandTag.RowsAffected() == 0 {
+		return os.ErrNotExist
+	}
+	return nil
+}
+
+func (s *PostgresStore) SetAutoSuggestDisabled(id string, disabled bool) error {
+	commandTag, err := s.pool.Exec(context.Background(), `
+		UPDATE memes
+		SET auto_suggest_disabled = $2,
+			updated_at = NOW()
+		WHERE id = $1
+	`, strings.TrimSpace(id), disabled)
 	if err != nil {
 		return err
 	}
@@ -394,19 +413,20 @@ func (s *PostgresStore) Create(input CreateInput) (Meme, error) {
 
 	now := time.Now().UTC()
 	meme := Meme{
-		ID:            id,
-		OriginalName:  input.Filename,
-		StoredName:    storedName,
-		FilePath:      "/uploads/" + storedName,
-		ContentType:   detectContentType(input.Header, input.ContentType, input.Filename),
-		ContentHash:   contentHashString(hasher),
-		SizeBytes:     size,
-		Tags:          normalizeTags(input.Tags),
-		SuggestedTags: []string{},
-		Notes:         strings.TrimSpace(input.Notes),
-		SourceURL:     strings.TrimSpace(input.SourceURL),
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		ID:                  id,
+		OriginalName:        input.Filename,
+		StoredName:          storedName,
+		FilePath:            "/uploads/" + storedName,
+		ContentType:         detectContentType(input.Header, input.ContentType, input.Filename),
+		ContentHash:         contentHashString(hasher),
+		SizeBytes:           size,
+		Tags:                normalizeTags(input.Tags),
+		SuggestedTags:       []string{},
+		AutoSuggestDisabled: false,
+		Notes:               strings.TrimSpace(input.Notes),
+		SourceURL:           strings.TrimSpace(input.SourceURL),
+		CreatedAt:           now,
+		UpdatedAt:           now,
 	}
 
 	if err := ensurePreviewAsset(s.uploadDir, s.previewDir, &meme); err != nil {
@@ -431,9 +451,9 @@ func (s *PostgresStore) Create(input CreateInput) (Meme, error) {
 
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO memes (
-			id, original_name, stored_name, file_path, content_type, content_hash, size_bytes, notes, source_url, suggested_tags, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-	`, meme.ID, meme.OriginalName, meme.StoredName, meme.FilePath, meme.ContentType, meme.ContentHash, meme.SizeBytes, meme.Notes, meme.SourceURL, meme.SuggestedTags, meme.CreatedAt, meme.UpdatedAt); err != nil {
+			id, original_name, stored_name, file_path, content_type, content_hash, size_bytes, notes, source_url, suggested_tags, auto_suggest_disabled, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+	`, meme.ID, meme.OriginalName, meme.StoredName, meme.FilePath, meme.ContentType, meme.ContentHash, meme.SizeBytes, meme.Notes, meme.SourceURL, meme.SuggestedTags, meme.AutoSuggestDisabled, meme.CreatedAt, meme.UpdatedAt); err != nil {
 		_ = os.Remove(targetPath)
 		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23505" {
 			if existing, lookupErr := s.getByHash(ctx, meme.ContentHash); lookupErr == nil {
@@ -645,6 +665,7 @@ func (s *PostgresStore) ensureSchema(ctx context.Context) error {
 		"002_memes_compat.sql",
 		"006_memes_source_url.sql",
 		"007_memes_suggested_tags.sql",
+		"008_memes_auto_suggest_disabled.sql",
 	); err != nil {
 		return fmt.Errorf("ensure schema: %w", err)
 	}
@@ -681,10 +702,10 @@ func (s *PostgresStore) importLegacyDataIfNeeded(ctx context.Context) error {
 	for _, meme := range memes {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO memes (
-				id, original_name, stored_name, file_path, content_type, content_hash, size_bytes, notes, source_url, suggested_tags, created_at, updated_at
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+				id, original_name, stored_name, file_path, content_type, content_hash, size_bytes, notes, source_url, suggested_tags, auto_suggest_disabled, created_at, updated_at
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 			ON CONFLICT (id) DO NOTHING
-		`, meme.ID, meme.OriginalName, meme.StoredName, meme.FilePath, meme.ContentType, meme.ContentHash, meme.SizeBytes, strings.TrimSpace(meme.Notes), strings.TrimSpace(meme.SourceURL), normalizeTags(meme.SuggestedTags), meme.CreatedAt, meme.UpdatedAt); err != nil {
+		`, meme.ID, meme.OriginalName, meme.StoredName, meme.FilePath, meme.ContentType, meme.ContentHash, meme.SizeBytes, strings.TrimSpace(meme.Notes), strings.TrimSpace(meme.SourceURL), normalizeTags(meme.SuggestedTags), meme.AutoSuggestDisabled, meme.CreatedAt, meme.UpdatedAt); err != nil {
 			return err
 		}
 		if err := s.replaceTags(ctx, tx, meme.ID, normalizeTags(meme.Tags)); err != nil {
@@ -878,6 +899,7 @@ func (s *PostgresStore) getByID(ctx context.Context, db queryable, userID, id st
 			m.size_bytes,
 			COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL), '{}') AS tags,
 			COALESCE(m.suggested_tags, '{}') AS suggested_tags,
+			COALESCE(m.auto_suggest_disabled, FALSE) AS auto_suggest_disabled,
 			m.notes,
 			COALESCE(m.source_url, '') AS source_url,
 			EXISTS (
@@ -985,6 +1007,7 @@ func (s *PostgresStore) getByHash(ctx context.Context, contentHash string) (Meme
 			m.size_bytes,
 			COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL), '{}') AS tags,
 			COALESCE(m.suggested_tags, '{}') AS suggested_tags,
+			COALESCE(m.auto_suggest_disabled, FALSE) AS auto_suggest_disabled,
 			m.notes,
 			COALESCE(m.source_url, '') AS source_url,
 			FALSE AS favorite,
@@ -1152,6 +1175,7 @@ func (s *PostgresStore) ListPendingDeletes(offset int, limit int) (PagedPendingD
 			m.size_bytes,
 			COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL), '{}') AS tags,
 			COALESCE(m.suggested_tags, '{}') AS suggested_tags,
+			COALESCE(m.auto_suggest_disabled, FALSE) AS auto_suggest_disabled,
 			m.notes,
 			COALESCE(m.source_url, '') AS source_url,
 			FALSE AS favorite,
@@ -1306,6 +1330,7 @@ func scanMemeRow(row interface{ Scan(dest ...any) error }) (Meme, error) {
 	var meme Meme
 	var tags []string
 	var suggestedTags []string
+	var autoSuggestDisabled bool
 	if err := row.Scan(
 		&meme.ID,
 		&meme.OriginalName,
@@ -1315,6 +1340,7 @@ func scanMemeRow(row interface{ Scan(dest ...any) error }) (Meme, error) {
 		&meme.SizeBytes,
 		&tags,
 		&suggestedTags,
+		&autoSuggestDisabled,
 		&meme.Notes,
 		&meme.SourceURL,
 		&meme.Favorite,
@@ -1328,5 +1354,6 @@ func scanMemeRow(row interface{ Scan(dest ...any) error }) (Meme, error) {
 	}
 	meme.Tags = normalizeTags(tags)
 	meme.SuggestedTags = normalizeTags(suggestedTags)
+	meme.AutoSuggestDisabled = autoSuggestDisabled
 	return meme, nil
 }

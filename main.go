@@ -39,17 +39,28 @@ func main() {
 	}
 
 	tagSuggester := tagsuggest.New(tagsuggest.Config{
-		OllamaURL: config.TagSuggestions.OllamaURL,
-		Model:     config.TagSuggestions.Model,
-		Timeout:   config.TagSuggestions.Timeout,
-		MaxTags:   config.TagSuggestions.MaxTags,
+		OllamaURL:    config.TagSuggestions.OllamaURL,
+		Model:        config.TagSuggestions.Model,
+		Timeout:      config.TagSuggestions.Timeout,
+		MaxTags:      config.TagSuggestions.MaxTags,
+		GenerateOnly: config.TagSuggestions.GenerateOnly,
 	})
 	tagTranscriber := tagsuggest.NewTranscriber(tagsuggest.TranscriberConfig{
 		Binary:  config.TagSuggestions.TranscribeBinary,
 		Args:    config.TagSuggestions.TranscribeArgs,
 		Timeout: config.TagSuggestions.TranscribeTimeout,
 	})
-	memeManager := manager.NewMemeManagerWithTagSuggester(store, tagSuggester, tagTranscriber, config.TagSuggestions.KnownTagBudget)
+	memeManager := manager.NewMemeManagerWithTagSuggester(
+		store,
+		tagSuggester,
+		tagTranscriber,
+		manager.TagSuggestionRuntimeConfig{
+			VideoFrameCount:   config.TagSuggestions.VideoFrameCount,
+			VideoFrameWidth:   config.TagSuggestions.VideoFrameWidth,
+			DisableTranscript: config.TagSuggestions.DisableTranscript,
+		},
+		config.TagSuggestions.KnownTagBudget,
+	)
 	go runPreviewAssetBackfill(memeManager)
 	memeManager.StartTagSuggestionWorker()
 	if queued := memeManager.SeedTagSuggestionQueue(); queued > 0 {

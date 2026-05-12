@@ -34,6 +34,7 @@ type PreviewAssetStore interface {
 type SuggestedTagStore interface {
 	ListSuggestedTags(id string) ([]string, error)
 	ReplaceSuggestedTags(id string, tags []string) error
+	SetAutoSuggestDisabled(id string, disabled bool) error
 }
 
 type ReelSessionRecord struct {

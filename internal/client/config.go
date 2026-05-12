@@ -1,6 +1,8 @@
 package client
 
 import (
+	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,8 +14,14 @@ type Config struct {
 	DataDir               string
 	DatabaseURL           string
 	MediaFetchYTDLPBinary string
+	MediaFetchRetry       MediaFetchRetryConfig
 	TagSuggestions        TagSuggestionsConfig
 	DiscordAuth           DiscordAuthConfig
+}
+
+type MediaFetchRetryConfig struct {
+	Interval    time.Duration
+	MaxAttempts int
 }
 
 type TagSuggestionsConfig struct {
@@ -22,6 +30,11 @@ type TagSuggestionsConfig struct {
 	Timeout           time.Duration
 	MaxTags           int
 	KnownTagBudget    int
+	FastMode          bool
+	GenerateOnly      bool
+	VideoFrameCount   int
+	VideoFrameWidth   int
+	DisableTranscript bool
 	TranscribeBinary  string
 	TranscribeArgs    []string
 	TranscribeTimeout time.Duration
@@ -53,11 +66,18 @@ type rawConfig struct {
 	DataDir                         string   `envconfig:"DATA_DIR" default:"data"`
 	DatabaseURL                     string   `envconfig:"DATABASE_URL"`
 	MediaFetchYTDLPBinary           string   `envconfig:"MEDIAFETCH_YTDLP_BINARY" default:"yt-dlp"`
+	MediaFetchRetryIntervalSecs     int      `envconfig:"MEDIAFETCH_RETRY_INTERVAL_SECONDS" default:"300"`
+	MediaFetchRetryMaxAttempts      int      `envconfig:"MEDIAFETCH_RETRY_MAX_ATTEMPTS" default:"3"`
 	TagSuggestOllamaURL             string   `envconfig:"TAGSUGGEST_OLLAMA_URL"`
 	TagSuggestOllamaModel           string   `envconfig:"TAGSUGGEST_OLLAMA_MODEL"`
 	TagSuggestTimeoutSecs           int      `envconfig:"TAGSUGGEST_TIMEOUT_SECONDS" default:"300"`
 	TagSuggestMaxTags               int      `envconfig:"TAGSUGGEST_MAX_TAGS" default:"8"`
 	TagSuggestKnownTagHint          int      `envconfig:"TAGSUGGEST_KNOWN_TAG_BUDGET" default:"150"`
+	TagSuggestFastMode              bool     `envconfig:"TAGSUGGEST_FAST_MODE" default:"false"`
+	TagSuggestGenerateOnly          bool     `envconfig:"TAGSUGGEST_GENERATE_ONLY" default:"false"`
+	TagSuggestVideoFrameCount       string   `envconfig:"TAGSUGGEST_VIDEO_FRAME_COUNT"`
+	TagSuggestVideoFrameWidth       string   `envconfig:"TAGSUGGEST_VIDEO_FRAME_WIDTH"`
+	TagSuggestDisableTranscript     bool     `envconfig:"TAGSUGGEST_DISABLE_TRANSCRIPTION" default:"false"`
 	TagSuggestTranscribeBinary      string   `envconfig:"TAGSUGGEST_TRANSCRIBE_BINARY"`
 	TagSuggestTranscribeArgs        []string `envconfig:"TAGSUGGEST_TRANSCRIBE_ARGS"`
 	TagSuggestTranscribeTimeoutSecs int      `envconfig:"TAGSUGGEST_TRANSCRIBE_TIMEOUT_SECONDS" default:"120"`
@@ -80,17 +100,52 @@ func LoadConfig() (Config, error) {
 		return Config{}, err
 	}
 
+	frameCount, err := parseOptionalPositiveInt(raw.TagSuggestVideoFrameCount)
+	if err != nil {
+		return Config{}, fmt.Errorf("invalid MEMEINDEX_TAGSUGGEST_VIDEO_FRAME_COUNT: %w", err)
+	}
+	if frameCount <= 0 {
+		if raw.TagSuggestFastMode {
+			frameCount = 1
+		} else {
+			frameCount = 3
+		}
+	}
+	frameWidth, err := parseOptionalPositiveInt(raw.TagSuggestVideoFrameWidth)
+	if err != nil {
+		return Config{}, fmt.Errorf("invalid MEMEINDEX_TAGSUGGEST_VIDEO_FRAME_WIDTH: %w", err)
+	}
+	if frameWidth <= 0 {
+		if raw.TagSuggestFastMode {
+			frameWidth = 320
+		} else {
+			frameWidth = 480
+		}
+	}
+	disableTranscript := raw.TagSuggestDisableTranscript || raw.TagSuggestFastMode
+	modelName := strings.TrimSpace(raw.TagSuggestOllamaModel)
+	generateOnly := raw.TagSuggestGenerateOnly || shouldPreferGenerateOnlyModel(modelName)
+
 	return Config{
 		Addr:                  strings.TrimSpace(raw.Addr),
 		DataDir:               strings.TrimSpace(raw.DataDir),
 		DatabaseURL:           strings.TrimSpace(raw.DatabaseURL),
 		MediaFetchYTDLPBinary: strings.TrimSpace(raw.MediaFetchYTDLPBinary),
+		MediaFetchRetry: MediaFetchRetryConfig{
+			Interval:    time.Duration(max(raw.MediaFetchRetryIntervalSecs, 1)) * time.Second,
+			MaxAttempts: max(raw.MediaFetchRetryMaxAttempts, 1),
+		},
 		TagSuggestions: TagSuggestionsConfig{
 			OllamaURL:         strings.TrimSpace(raw.TagSuggestOllamaURL),
-			Model:             strings.TrimSpace(raw.TagSuggestOllamaModel),
+			Model:             modelName,
 			Timeout:           time.Duration(max(raw.TagSuggestTimeoutSecs, 1)) * time.Second,
 			MaxTags:           max(raw.TagSuggestMaxTags, 1),
 			KnownTagBudget:    max(raw.TagSuggestKnownTagHint, 1),
+			FastMode:          raw.TagSuggestFastMode,
+			GenerateOnly:      generateOnly,
+			VideoFrameCount:   max(frameCount, 1),
+			VideoFrameWidth:   max(frameWidth, 160),
+			DisableTranscript: disableTranscript,
 			TranscribeBinary:  strings.TrimSpace(raw.TagSuggestTranscribeBinary),
 			TranscribeArgs:    append([]string(nil), raw.TagSuggestTranscribeArgs...),
 			TranscribeTimeout: time.Duration(max(raw.TagSuggestTranscribeTimeoutSecs, 1)) * time.Second,
@@ -147,4 +202,21 @@ func max(value int, fallback int) int {
 		return fallback
 	}
 	return value
+}
+
+func parseOptionalPositiveInt(rawValue string) (int, error) {
+	value := strings.TrimSpace(rawValue)
+	if value == "" {
+		return 0, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, err
+	}
+	return parsed, nil
+}
+
+func shouldPreferGenerateOnlyModel(model string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(normalized, "qwen2.5vl")
 }
