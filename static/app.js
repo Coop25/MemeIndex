@@ -3237,12 +3237,6 @@ function setModalAuditVisibility(visible) {
 
 async function openAdminMemeByID(id) {
   if (!id) return;
-  const existing = getMemeById(id);
-  if (existing) {
-    openModalWithMeme(existing);
-    return;
-  }
-
   const response = await fetch(`/api/admin/memes/${encodeURIComponent(id)}`);
   if (!(await expectAuthorized(response, "Failed to load meme."))) {
     return;
