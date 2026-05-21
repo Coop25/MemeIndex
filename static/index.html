@@ -281,6 +281,17 @@
                 </section>
               </div>
             </section>
+            <section id="admin-users-panel" class="admin-users-panel hidden" aria-live="polite">
+              <form id="admin-users-add-form" class="users-add-form">
+                <label class="field compact-field">
+                  <span>Discord User ID</span>
+                  <input id="admin-users-add-id" type="text" placeholder="123456789012345678" autocomplete="off" />
+                </label>
+                <button id="admin-users-add-submit" type="submit" class="primary-button">Add User</button>
+              </form>
+              <p id="admin-users-status" class="status-text"></p>
+              <div id="admin-users-list" class="users-list"></div>
+            </section>
             <div id="admin-view-table" class="admin-view-table"></div>
             <div id="admin-pagination" class="admin-pagination hidden" aria-label="Admin page navigation">
               <button id="admin-page-prev" class="meme-page-button" type="button" aria-label="Previous admin page" disabled>

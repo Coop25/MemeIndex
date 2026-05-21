@@ -136,6 +136,11 @@ const adminTagMergeForm = document.querySelector("#admin-tag-merge-form");
 const adminTagMergeSource = document.querySelector("#admin-tag-merge-source");
 const adminTagMergeTarget = document.querySelector("#admin-tag-merge-target");
 const adminTagMergeSubmit = document.querySelector("#admin-tag-merge-submit");
+const adminUsersPanel = document.querySelector("#admin-users-panel");
+const adminUsersAddForm = document.querySelector("#admin-users-add-form");
+const adminUsersAddID = document.querySelector("#admin-users-add-id");
+const adminUsersStatus = document.querySelector("#admin-users-status");
+const adminUsersList = document.querySelector("#admin-users-list");
 const adminViewTable = document.querySelector("#admin-view-table");
 const adminPagination = document.querySelector("#admin-pagination");
 const adminPagePrev = document.querySelector("#admin-page-prev");
@@ -787,7 +792,7 @@ function escapeHTML(value) {
 }
 
 function renderManagedUsers() {
-  const target = isAdminView() && activeAdminTab() === "users" && adminViewTable ? adminViewTable : usersList;
+  const target = isAdminView() && activeAdminTab() === "users" && adminUsersList ? adminUsersList : usersList;
   if (!target) return;
 
   target.innerHTML = "";
@@ -869,7 +874,7 @@ function renderManagedUsers() {
           return;
         }
 
-          usersModalStatus.textContent = `Saved permissions for ${user.display_name || user.username || user.user_id}.`;
+          setUsersStatus(`Saved permissions for ${user.display_name || user.username || user.user_id}.`);
           showToast(`Saved permissions for ${user.display_name || user.username || user.user_id}.`, "success", { title: "Users" });
           await fetchManagedUsers();
         });
@@ -889,7 +894,7 @@ function renderManagedUsers() {
             return;
           }
 
-          usersModalStatus.textContent = `Removed ${label}. They will need to be manually added again before permissions can be restored.`;
+          setUsersStatus(`Removed ${label}. They will need to be manually added again before permissions can be restored.`);
           showToast(`Removed ${label}.`, "success", { title: "Users" });
           await fetchManagedUsers();
         });
@@ -901,12 +906,38 @@ function renderManagedUsers() {
 
 async function openUsersModal() {
   if (!canManageUsers() || !usersModal) return;
-  usersModalStatus.textContent = "Loading users...";
+  setUsersStatus("Loading users...");
   if (!usersModal.open) {
     usersModal.showModal();
   }
   const users = await fetchManagedUsers();
-  usersModalStatus.textContent = users ? "" : "Could not load users.";
+  setUsersStatus(users ? "" : "Could not load users.");
+}
+
+function setUsersStatus(message) {
+  if (usersModalStatus) {
+    usersModalStatus.textContent = message;
+  }
+  if (adminUsersStatus) {
+    adminUsersStatus.textContent = message;
+  }
+}
+
+async function submitManagedUserAdd(userID) {
+  const response = await fetch("/api/users", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: userID }),
+  });
+  if (!(await expectAuthorized(response, "Failed to add user."))) {
+    setUsersStatus("Could not add user.");
+    return false;
+  }
+
+  setUsersStatus(`Added ${userID}.`);
+  showToast(`Added ${userID}.`, "success", { title: "Users" });
+  await fetchManagedUsers();
+  return true;
 }
 
 function renderAdminTagQueueStatus() {
@@ -1970,13 +2001,15 @@ function syncMemeGridObserver() {
 function renderContentMode() {
   const adminMode = isAdminView();
   const canBrowseLibrary = canView();
-  const usesSharedAdminTable = adminMode && ["users", "delete-queue", "audit-logs"].includes(activeAdminTab());
+  const usesSharedAdminTable = adminMode && ["delete-queue", "audit-logs"].includes(activeAdminTab());
+  const showAdminUsersPanel = adminMode && activeAdminTab() === "users";
   adminView?.classList.toggle("hidden", !adminMode);
   adminTabs.forEach((tab) => {
     const active = tab.dataset.adminTab === activeAdminTab();
     tab.classList.toggle("is-active", active);
     tab.setAttribute("aria-selected", String(active));
   });
+  adminUsersPanel?.classList.toggle("hidden", !showAdminUsersPanel);
   adminViewTable?.classList.toggle("hidden", !usesSharedAdminTable);
   const pageState = getActiveAdminPageState();
   adminPagination?.classList.toggle("hidden", !adminMode || !pageState);
@@ -4492,27 +4525,34 @@ usersAddForm?.addEventListener("submit", async (event) => {
 
   const userID = usersAddID?.value?.trim();
   if (!userID) {
-    usersModalStatus.textContent = "Enter a Discord user ID first.";
+    setUsersStatus("Enter a Discord user ID first.");
     return;
   }
 
-  usersModalStatus.textContent = "Adding user...";
-  const response = await fetch("/api/users", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ user_id: userID }),
-  });
-  if (!(await expectAuthorized(response, "Failed to add user."))) {
-    usersModalStatus.textContent = "Could not add user.";
+  setUsersStatus("Adding user...");
+  if (await submitManagedUserAdd(userID)) {
+    if (usersAddID) {
+      usersAddID.value = "";
+    }
+  }
+});
+
+adminUsersAddForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!canManageUsers()) return;
+
+  const userID = adminUsersAddID?.value?.trim();
+  if (!userID) {
+    setUsersStatus("Enter a Discord user ID first.");
     return;
   }
 
-  usersModalStatus.textContent = `Added ${userID}.`;
-  showToast(`Added ${userID}.`, "success", { title: "Users" });
-  if (usersAddID) {
-    usersAddID.value = "";
+  setUsersStatus("Adding user...");
+  if (await submitManagedUserAdd(userID)) {
+    if (adminUsersAddID) {
+      adminUsersAddID.value = "";
+    }
   }
-  await fetchManagedUsers();
 });
 
 uploadFileInput.addEventListener("change", () => {

@@ -910,6 +910,19 @@ body.sidebar-collapsed .sidebar-toggle-row .sidebar-toggle-icon {
     rgba(14, 19, 26, 0.92);
 }
 
+.admin-users-panel {
+  display: grid;
+  gap: 14px;
+  padding: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-top: 0;
+  border-radius: 0 0 18px 18px;
+  background:
+    radial-gradient(circle at top right, rgba(58, 143, 240, 0.07), transparent 34%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.022), rgba(255, 255, 255, 0.01)),
+    rgba(14, 19, 26, 0.92);
+}
+
 .admin-tag-hygiene-top,
 .admin-tag-hygiene-lower {
   display: grid;

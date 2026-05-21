@@ -101,7 +101,7 @@ func (s *Server) withPageAuth(next http.Handler) http.Handler {
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		session, ok := s.auth.sessionFromRequest(r)
-		if !ok && isLinkPreviewRequest(r) && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+		if !ok && allowsAnonymousLinkPreview(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -116,6 +116,24 @@ func (s *Server) withPageAuth(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r.WithContext(contextWithSession(r.Context(), session)))
 	})
+}
+
+func allowsAnonymousLinkPreview(r *http.Request) bool {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	if !isLinkPreviewRequest(r) {
+		return false
+	}
+
+	switch {
+	case r.URL.Path == "/":
+		return true
+	case r.URL.Path == "/og-image.svg":
+		return true
+	default:
+		return false
+	}
 }
 
 func allowsAuthenticatedShellOnly(path string) bool {
