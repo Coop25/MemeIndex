@@ -18,6 +18,8 @@ import (
 const (
 	reelSessionTTL         = 48 * time.Hour
 	reelRecentExclusionCap = 200
+	reelPrefetchBehind     = 2
+	reelPrefetchAhead      = 2
 )
 
 type ReelStepResult struct {
@@ -26,6 +28,8 @@ type ReelStepResult struct {
 	Reason          string
 	CanGoPrev       bool
 	Meme            accessor.Meme
+	PrevMemes       []accessor.Meme
+	NextMemes       []accessor.Meme
 }
 
 type reelSession struct {
@@ -117,6 +121,9 @@ func (s *ReelSessionStore) Step(sessionID string, direction string) (ReelStepRes
 	}
 
 	session.LastActivity = now
+	if err := s.ensureAheadLocked(session, reelPrefetchAhead); err != nil {
+		return ReelStepResult{}, err
+	}
 	if err := s.saveLocked(); err != nil {
 		return ReelStepResult{}, err
 	}
@@ -131,6 +138,14 @@ func (s *ReelSessionStore) Step(sessionID string, direction string) (ReelStepRes
 		}
 		return ReelStepResult{}, err
 	}
+	prevMemes, err := s.windowMemesLocked(session, -reelPrefetchBehind, -1)
+	if err != nil {
+		return ReelStepResult{}, err
+	}
+	nextMemes, err := s.windowMemesLocked(session, 1, reelPrefetchAhead)
+	if err != nil {
+		return ReelStepResult{}, err
+	}
 
 	return ReelStepResult{
 		SessionID:       sessionID,
@@ -138,6 +153,8 @@ func (s *ReelSessionStore) Step(sessionID string, direction string) (ReelStepRes
 		Reason:          reason,
 		CanGoPrev:       session.Position > 0,
 		Meme:            meme,
+		PrevMemes:       prevMemes,
+		NextMemes:       nextMemes,
 	}, nil
 }
 
@@ -225,6 +242,58 @@ func (s *ReelSessionStore) recentHistoryLocked(session *reelSession) []string {
 		start = len(session.History) - reelRecentExclusionCap
 	}
 	return append([]string(nil), session.History[start:]...)
+}
+
+func (s *ReelSessionStore) ensureAheadLocked(session *reelSession, count int) error {
+	if count <= 0 {
+		return nil
+	}
+
+	targetLength := session.Position + 1 + count
+	for len(session.History) < targetLength {
+		excluded := s.recentHistoryLocked(session)
+		meme, err := s.store.Random(excluded)
+		if err != nil {
+			return err
+		}
+		session.History = append(session.History, meme.ID)
+	}
+	return nil
+}
+
+func (s *ReelSessionStore) windowMemesLocked(session *reelSession, startOffset int, endOffset int) ([]accessor.Meme, error) {
+	if startOffset == 0 || endOffset == 0 {
+		return nil, nil
+	}
+
+	out := []accessor.Meme{}
+	if startOffset > 0 {
+		for offset := startOffset; offset <= endOffset; offset++ {
+			index := session.Position + offset
+			if index < 0 || index >= len(session.History) {
+				continue
+			}
+			meme, err := s.store.GetByID("", session.History[index])
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, meme)
+		}
+		return out, nil
+	}
+
+	for offset := startOffset; offset <= endOffset; offset++ {
+		index := session.Position + offset
+		if index < 0 || index >= len(session.History) {
+			continue
+		}
+		meme, err := s.store.GetByID("", session.History[index])
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, meme)
+	}
+	return out, nil
 }
 
 func randomSessionID() (string, error) {

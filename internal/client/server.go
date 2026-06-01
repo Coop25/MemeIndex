@@ -124,9 +124,7 @@ func (s *Server) withProtectedAssetAuth(next http.Handler) http.Handler {
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "private, no-store, max-age=0")
-		w.Header().Set("Pragma", "no-cache")
-		w.Header().Set("Vary", "Cookie")
+		setProtectedAssetHeaders(w)
 
 		session, ok := s.auth.sessionFromRequest(r)
 		if !ok || !s.auth.authorizeAssetRequest(session, r) {
@@ -136,6 +134,15 @@ func (s *Server) withProtectedAssetAuth(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r.WithContext(contextWithSession(r.Context(), session)))
 	})
+}
+
+func setProtectedAssetHeaders(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "private, no-store, max-age=0")
+	w.Header().Set("CDN-Cache-Control", "private, no-store, max-age=0")
+	w.Header().Set("Cloudflare-CDN-Cache-Control", "private, no-store, max-age=0")
+	w.Header().Set("Surrogate-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Vary", "Cookie")
 }
 
 func allowsAnonymousLinkPreview(r *http.Request) bool {
@@ -157,16 +164,7 @@ func allowsAnonymousLinkPreview(r *http.Request) bool {
 }
 
 func (s *Server) protectAssetPathForResponse(r *http.Request, assetPath string) string {
-	if !s.auth.enabled() {
-		return assetPath
-	}
-
-	session, ok := sessionFromContext(r.Context())
-	if !ok {
-		return assetPath
-	}
-
-	return s.auth.signedAssetURL(session, assetPath)
+	return assetPath
 }
 
 func (s *Server) protectMemeForResponse(r *http.Request, meme accessor.Meme) accessor.Meme {
@@ -1468,7 +1466,9 @@ func (s *Server) handleRandomMeme(w http.ResponseWriter, r *http.Request) {
 		"session_replaced": result.SessionReplaced,
 		"reason":           result.Reason,
 		"can_go_prev":      result.CanGoPrev,
-		"meme":             result.Meme,
+		"meme":             s.protectMemeForResponse(r, result.Meme),
+		"prev_memes":       s.protectMemesForResponse(r, result.PrevMemes),
+		"next_memes":       s.protectMemesForResponse(r, result.NextMemes),
 	})
 }
 

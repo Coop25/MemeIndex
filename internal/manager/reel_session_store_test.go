@@ -10,9 +10,11 @@ import (
 )
 
 type reelTestStore struct {
-	memes        map[string]accessor.Meme
-	lastExcluded []string
-	randomPickID string
+	memes         map[string]accessor.Meme
+	lastExcluded  []string
+	allExcluded   [][]string
+	randomPickID  string
+	randomPickIDs []string
 }
 
 func (s *reelTestStore) List(userID, query string, favoritesOnly bool, tag string) []accessor.Meme {
@@ -33,7 +35,13 @@ func (s *reelTestStore) GetByID(userID, id string) (accessor.Meme, error) {
 
 func (s *reelTestStore) Random(excludedIDs []string) (accessor.Meme, error) {
 	s.lastExcluded = append([]string(nil), excludedIDs...)
-	meme, ok := s.memes[s.randomPickID]
+	s.allExcluded = append(s.allExcluded, append([]string(nil), excludedIDs...))
+	pickID := s.randomPickID
+	if len(s.randomPickIDs) > 0 {
+		pickID = s.randomPickIDs[0]
+		s.randomPickIDs = s.randomPickIDs[1:]
+	}
+	meme, ok := s.memes[pickID]
 	if !ok {
 		return accessor.Meme{}, os.ErrNotExist
 	}
@@ -82,7 +90,9 @@ func TestRecentHistoryLockedCapsAtTwoHundred(t *testing.T) {
 
 func TestStepNextExcludesLastTwoHundredBeforePicking(t *testing.T) {
 	memes := map[string]accessor.Meme{
-		"fresh": {ID: "fresh", OriginalName: "fresh"},
+		"fresh":   {ID: "fresh", OriginalName: "fresh"},
+		"ahead-1": {ID: "ahead-1", OriginalName: "ahead-1"},
+		"ahead-2": {ID: "ahead-2", OriginalName: "ahead-2"},
 	}
 	for i := 0; i < 250; i++ {
 		id := testMemeID(i)
@@ -90,8 +100,9 @@ func TestStepNextExcludesLastTwoHundredBeforePicking(t *testing.T) {
 	}
 
 	mockStore := &reelTestStore{
-		memes:        memes,
-		randomPickID: "fresh",
+		memes:         memes,
+		randomPickID:  "fresh",
+		randomPickIDs: []string{"fresh", "ahead-1", "ahead-2"},
 	}
 	store := &ReelSessionStore{
 		sessions:    map[string]*reelSession{},
@@ -116,14 +127,67 @@ func TestStepNextExcludesLastTwoHundredBeforePicking(t *testing.T) {
 	if result.Meme.ID != "fresh" {
 		t.Fatalf("Step returned meme %q, want %q", result.Meme.ID, "fresh")
 	}
-	if len(mockStore.lastExcluded) != 200 {
-		t.Fatalf("excluded len = %d, want 200", len(mockStore.lastExcluded))
+	if len(result.NextMemes) != 2 {
+		t.Fatalf("next memes len = %d, want 2", len(result.NextMemes))
 	}
-	if mockStore.lastExcluded[0] != testMemeID(50) {
-		t.Fatalf("excluded starts at %q, want %q", mockStore.lastExcluded[0], testMemeID(50))
+	if result.NextMemes[0].ID != "ahead-1" || result.NextMemes[1].ID != "ahead-2" {
+		t.Fatalf("next meme ids = %q, %q", result.NextMemes[0].ID, result.NextMemes[1].ID)
 	}
-	if mockStore.lastExcluded[len(mockStore.lastExcluded)-1] != testMemeID(249) {
-		t.Fatalf("excluded ends at %q, want %q", mockStore.lastExcluded[len(mockStore.lastExcluded)-1], testMemeID(249))
+	if len(mockStore.allExcluded) == 0 {
+		t.Fatal("expected Random to be called at least once")
+	}
+	firstExcluded := mockStore.allExcluded[0]
+	if len(firstExcluded) != 200 {
+		t.Fatalf("excluded len = %d, want 200", len(firstExcluded))
+	}
+	if firstExcluded[0] != testMemeID(50) {
+		t.Fatalf("excluded starts at %q, want %q", firstExcluded[0], testMemeID(50))
+	}
+	if firstExcluded[len(firstExcluded)-1] != testMemeID(249) {
+		t.Fatalf("excluded ends at %q, want %q", firstExcluded[len(firstExcluded)-1], testMemeID(249))
+	}
+}
+
+func TestStepPrevIncludesRecentHistoryForPreload(t *testing.T) {
+	memes := map[string]accessor.Meme{}
+	history := make([]string, 6)
+	for i := range history {
+		id := testMemeID(i)
+		history[i] = id
+		memes[id] = accessor.Meme{ID: id, OriginalName: id}
+	}
+
+	store := &ReelSessionStore{
+		sessions: map[string]*reelSession{
+			"session-1": {
+				History:      history,
+				Position:     4,
+				LastActivity: time.Now().UTC(),
+			},
+		},
+		store:       &reelTestStore{memes: memes},
+		sessionFile: "",
+	}
+
+	result, err := store.Step("session-1", "prev")
+	if err != nil {
+		t.Fatalf("Step returned error: %v", err)
+	}
+
+	if result.Meme.ID != testMemeID(3) {
+		t.Fatalf("Step returned meme %q, want %q", result.Meme.ID, testMemeID(3))
+	}
+	if len(result.PrevMemes) != 2 {
+		t.Fatalf("prev memes len = %d, want 2", len(result.PrevMemes))
+	}
+	if result.PrevMemes[0].ID != testMemeID(1) || result.PrevMemes[1].ID != testMemeID(2) {
+		t.Fatalf("prev meme ids = %q, %q", result.PrevMemes[0].ID, result.PrevMemes[1].ID)
+	}
+	if len(result.NextMemes) != 2 {
+		t.Fatalf("next memes len = %d, want 2", len(result.NextMemes))
+	}
+	if result.NextMemes[0].ID != testMemeID(4) || result.NextMemes[1].ID != testMemeID(5) {
+		t.Fatalf("next meme ids = %q, %q", result.NextMemes[0].ID, result.NextMemes[1].ID)
 	}
 }
 

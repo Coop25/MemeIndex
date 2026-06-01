@@ -263,6 +263,7 @@ let randomReelTouchDeltaY = 0;
 let randomReelTouchActive = false;
 let randomReelTouchBlocked = false;
 let randomReelStepLock = false;
+let randomReelPreloadCache = new Map();
 let memeGridObserver = null;
 let memeGridRenderFrame = null;
 let memePageFetchSequence = 0;
@@ -2708,7 +2709,7 @@ function buildRandomReelPreview(meme) {
     video.loop = true;
     video.playsInline = true;
     video.controls = false;
-    video.preload = "metadata";
+    video.preload = "auto";
     applyDefaultMediaVolume(video);
     video.addEventListener("loadedmetadata", () => {
       applyDefaultMediaVolume(video);
@@ -2724,7 +2725,7 @@ function buildRandomReelPreview(meme) {
     audio.src = meme.filePath;
     audio.controls = false;
     audio.autoplay = true;
-    audio.preload = "metadata";
+    audio.preload = "auto";
     applyDefaultMediaVolume(audio);
     audio.addEventListener("loadedmetadata", () => {
       applyDefaultMediaVolume(audio);
@@ -2739,6 +2740,62 @@ function buildRandomReelPreview(meme) {
   icon.className = "file-icon";
   icon.innerHTML = `<strong>${pickIcon(meme.contentType)}</strong><span>${meme.originalName}</span><span>Open original to view this file type.</span>`;
   return icon;
+}
+
+function trimRandomReelPreloadCache(limit = 8) {
+  while (randomReelPreloadCache.size > limit) {
+    const oldestKey = randomReelPreloadCache.keys().next().value;
+    const cached = randomReelPreloadCache.get(oldestKey);
+    if (cached instanceof HTMLMediaElement) {
+      cached.pause();
+      cached.removeAttribute("src");
+      cached.load();
+    }
+    randomReelPreloadCache.delete(oldestKey);
+  }
+}
+
+function resetRandomReelPreloadCache() {
+  randomReelPreloadCache.forEach((cached) => {
+    if (cached instanceof HTMLMediaElement) {
+      cached.pause();
+      cached.removeAttribute("src");
+      cached.load();
+    }
+  });
+  randomReelPreloadCache.clear();
+}
+
+function warmRandomReelMedia(meme) {
+  if (!meme?.id || !meme.filePath || randomReelPreloadCache.has(meme.id)) {
+    return;
+  }
+
+  if (meme.contentType.startsWith("image/")) {
+    const img = new Image();
+    img.decoding = "async";
+    img.src = meme.filePath;
+    randomReelPreloadCache.set(meme.id, img);
+    trimRandomReelPreloadCache();
+    return;
+  }
+
+  if (meme.contentType.startsWith("video/") || meme.contentType.startsWith("audio/")) {
+    const media = document.createElement(meme.contentType.startsWith("video/") ? "video" : "audio");
+    media.preload = "auto";
+    media.muted = true;
+    media.src = meme.filePath;
+    media.load();
+    randomReelPreloadCache.set(meme.id, media);
+    trimRandomReelPreloadCache();
+  }
+}
+
+function primeRandomReelWindow(payload) {
+  const prevMemes = Array.isArray(payload?.prev_memes) ? payload.prev_memes : [];
+  const nextMemes = Array.isArray(payload?.next_memes) ? payload.next_memes : [];
+  prevMemes.forEach(warmRandomReelMedia);
+  nextMemes.forEach(warmRandomReelMedia);
 }
 
 function loadRandomReelSessionID() {
@@ -2816,6 +2873,7 @@ async function fetchRandomReelStep(direction = "next") {
   if (payload.session_replaced && (payload.reason === "stale" || payload.reason === "missing")) {
     persistRandomReelSessionID(payload.session_id || null);
   }
+  primeRandomReelWindow(payload);
   return payload;
 }
 
@@ -3072,6 +3130,7 @@ function closeRandomReel() {
   randomReelTouchActive = false;
   randomReelTouchBlocked = false;
   randomReelStepLock = false;
+  resetRandomReelPreloadCache();
   resetRandomReelDrag();
   randomReelHint.classList.remove("is-edge", "is-bump");
   randomReelEdgeBanner.classList.remove("is-bump");
