@@ -17,7 +17,7 @@ import (
 
 const (
 	reelSessionTTL         = 48 * time.Hour
-	reelRecentExclusionCap = 100
+	reelRecentExclusionCap = 200
 )
 
 type ReelStepResult struct {

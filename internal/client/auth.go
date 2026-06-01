@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +22,8 @@ import (
 const (
 	authSessionCookieName = "memeindex_session"
 	authStateCookieName   = "memeindex_oauth_state"
+	assetTokenQueryName   = "asset_token"
+	assetExpiryQueryName  = "asset_expires"
 )
 
 type permissionLevel string
@@ -419,6 +422,79 @@ func (a *authService) parseSessionToken(token string) (authClaims, bool) {
 	}
 
 	return claims, true
+}
+
+func (a *authService) signedAssetURL(session authSession, assetPath string) string {
+	if !a.enabled() {
+		return assetPath
+	}
+
+	normalizedPath := normalizeProtectedAssetPath(assetPath)
+	if normalizedPath == "" {
+		return assetPath
+	}
+
+	expiresAt := session.ExpiresAt
+	maxLifetime := time.Now().Add(12 * time.Hour)
+	if expiresAt.After(maxLifetime) {
+		expiresAt = maxLifetime
+	}
+
+	parsed, err := url.Parse(assetPath)
+	if err != nil {
+		return assetPath
+	}
+
+	query := parsed.Query()
+	query.Set(assetExpiryQueryName, strconv.FormatInt(expiresAt.Unix(), 10))
+	query.Set(assetTokenQueryName, a.assetTokenFor(session.UserID, normalizedPath, expiresAt.Unix()))
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
+}
+
+func (a *authService) authorizeAssetRequest(session authSession, r *http.Request) bool {
+	if !session.Permissions.CanView {
+		return false
+	}
+
+	normalizedPath := normalizeProtectedAssetPath(r.URL.Path)
+	if normalizedPath == "" {
+		return false
+	}
+
+	token := strings.TrimSpace(r.URL.Query().Get(assetTokenQueryName))
+	expiresRaw := strings.TrimSpace(r.URL.Query().Get(assetExpiryQueryName))
+	if token == "" || expiresRaw == "" {
+		return false
+	}
+
+	expiresAtUnix, err := strconv.ParseInt(expiresRaw, 10, 64)
+	if err != nil || expiresAtUnix <= 0 {
+		return false
+	}
+	if time.Now().Unix() >= expiresAtUnix || expiresAtUnix > session.ExpiresAt.Unix() {
+		return false
+	}
+
+	expected := a.assetTokenFor(session.UserID, normalizedPath, expiresAtUnix)
+	return hmac.Equal([]byte(token), []byte(expected))
+}
+
+func (a *authService) assetTokenFor(userID, assetPath string, expiresAtUnix int64) string {
+	signingInput := strings.TrimSpace(userID) + "\n" + assetPath + "\n" + strconv.FormatInt(expiresAtUnix, 10)
+	return a.signJWT(signingInput)
+}
+
+func normalizeProtectedAssetPath(assetPath string) string {
+	trimmed := strings.TrimSpace(assetPath)
+	switch {
+	case strings.HasPrefix(trimmed, "/uploads/"):
+		return trimmed
+	case strings.HasPrefix(trimmed, "/thumbnails/"):
+		return trimmed
+	default:
+		return ""
+	}
 }
 
 func discordAvatarURL(user discordUser) string {

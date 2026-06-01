@@ -80,9 +80,9 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/api/admin/link-downloads/", s.withAPIAuth(http.HandlerFunc(s.handleLinkDownloadActions), permissionManageUsers))
 	mux.Handle("/api/admin/memes/pending-delete", s.withAPIAuth(http.HandlerFunc(s.handlePendingDeleteQueue), permissionManageUsers))
 	mux.Handle("/api/admin/memes/", s.withAPIAuth(http.HandlerFunc(s.handleAdminMemeActions), permissionManageUsers))
-	mux.Handle("/uploads/", s.withPageAuth(http.StripPrefix("/uploads/", http.FileServer(http.Dir(s.managers.UploadDir())))))
+	mux.Handle("/uploads/", s.withProtectedAssetAuth(http.StripPrefix("/uploads/", http.FileServer(http.Dir(s.managers.UploadDir())))))
 	if thumbnailDir := s.managers.ThumbnailDir(); strings.TrimSpace(thumbnailDir) != "" {
-		mux.Handle("/thumbnails/", s.withPageAuth(http.StripPrefix("/thumbnails/", http.FileServer(http.Dir(thumbnailDir)))))
+		mux.Handle("/thumbnails/", s.withProtectedAssetAuth(http.StripPrefix("/thumbnails/", http.FileServer(http.Dir(thumbnailDir)))))
 	}
 	mux.Handle("/static/", s.withPageAuth(http.StripPrefix("/static/", http.FileServer(http.Dir("static")))))
 	mux.Handle("/", s.withPageAuth(http.HandlerFunc(s.handleIndex)))
@@ -118,6 +118,26 @@ func (s *Server) withPageAuth(next http.Handler) http.Handler {
 	})
 }
 
+func (s *Server) withProtectedAssetAuth(next http.Handler) http.Handler {
+	if !s.auth.enabled() {
+		return next
+	}
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "private, no-store, max-age=0")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Vary", "Cookie")
+
+		session, ok := s.auth.sessionFromRequest(r)
+		if !ok || !s.auth.authorizeAssetRequest(session, r) {
+			http.NotFound(w, r)
+			return
+		}
+
+		next.ServeHTTP(w, r.WithContext(contextWithSession(r.Context(), session)))
+	})
+}
+
 func allowsAnonymousLinkPreview(r *http.Request) bool {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		return false
@@ -134,6 +154,65 @@ func allowsAnonymousLinkPreview(r *http.Request) bool {
 	default:
 		return false
 	}
+}
+
+func (s *Server) protectAssetPathForResponse(r *http.Request, assetPath string) string {
+	if !s.auth.enabled() {
+		return assetPath
+	}
+
+	session, ok := sessionFromContext(r.Context())
+	if !ok {
+		return assetPath
+	}
+
+	return s.auth.signedAssetURL(session, assetPath)
+}
+
+func (s *Server) protectMemeForResponse(r *http.Request, meme accessor.Meme) accessor.Meme {
+	meme.FilePath = s.protectAssetPathForResponse(r, meme.FilePath)
+	meme.PreviewPath = s.protectAssetPathForResponse(r, meme.PreviewPath)
+	return meme
+}
+
+func (s *Server) protectMemesForResponse(r *http.Request, memes []accessor.Meme) []accessor.Meme {
+	if len(memes) == 0 {
+		return memes
+	}
+
+	protected := make([]accessor.Meme, len(memes))
+	for i := range memes {
+		protected[i] = s.protectMemeForResponse(r, memes[i])
+	}
+	return protected
+}
+
+func (s *Server) protectPendingDeletesForResponse(r *http.Request, records accessor.PagedPendingDeletes) accessor.PagedPendingDeletes {
+	if len(records.Memes) == 0 {
+		return records
+	}
+
+	protected := records
+	protected.Memes = make([]accessor.PendingDeleteRecord, len(records.Memes))
+	for i := range records.Memes {
+		protected.Memes[i] = records.Memes[i]
+		protected.Memes[i].Meme = s.protectMemeForResponse(r, records.Memes[i].Meme)
+	}
+	return protected
+}
+
+func (s *Server) protectAuditFeedForResponse(r *http.Request, feed accessor.PagedAuditFeed) accessor.PagedAuditFeed {
+	if len(feed.Events) == 0 {
+		return feed
+	}
+
+	protected := feed
+	protected.Events = make([]accessor.GlobalMemeAuditEntry, len(feed.Events))
+	for i := range feed.Events {
+		protected.Events[i] = feed.Events[i]
+		protected.Events[i].MemeFilePath = s.protectAssetPathForResponse(r, feed.Events[i].MemeFilePath)
+	}
+	return protected
 }
 
 func allowsAuthenticatedShellOnly(path string) bool {
@@ -508,7 +587,7 @@ func (s *Server) updateStoredMemeTagSuggestions(w http.ResponseWriter, r *http.R
 			http.Error(w, "failed to dismiss tag suggestion", http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, http.StatusOK, meme)
+		writeJSON(w, http.StatusOK, s.protectMemeForResponse(r, meme))
 	case "add":
 		meme, err := s.managers.ApplyMemeTagSuggestion(currentUserID(r), id, payload.Tag, currentAuditActor(r))
 		if err != nil {
@@ -520,7 +599,7 @@ func (s *Server) updateStoredMemeTagSuggestions(w http.ResponseWriter, r *http.R
 			http.Error(w, "failed to apply tag suggestion", http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, http.StatusOK, meme)
+		writeJSON(w, http.StatusOK, s.protectMemeForResponse(r, meme))
 	default:
 		http.Error(w, "invalid action", http.StatusBadRequest)
 	}
@@ -550,7 +629,7 @@ func (s *Server) listMemes(w http.ResponseWriter, r *http.Request) {
 	offset := parseQueryInt(r, "offset", 0)
 	limit := parseQueryInt(r, "limit", 72)
 
-	writeJSON(w, http.StatusOK, s.managers.ListMemes(userID, query, favoritesOnly, tag, view, offset, limit))
+	writeJSON(w, http.StatusOK, s.protectMemesForResponse(r, s.managers.ListMemes(userID, query, favoritesOnly, tag, view, offset, limit)))
 }
 
 func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
@@ -580,7 +659,7 @@ func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
 					"created": 0,
 					"duplicates": []map[string]any{{
 						"filename": duplicateErr.Existing.OriginalName,
-						"existing": duplicateErr.Existing,
+						"existing": s.protectMemeForResponse(r, duplicateErr.Existing),
 					}},
 					"skipped": 1,
 				})
@@ -607,7 +686,7 @@ func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
 		}
 
 		writeJSON(w, http.StatusCreated, map[string]any{
-			"memes":      []accessor.Meme{meme},
+			"memes":      s.protectMemesForResponse(r, []accessor.Meme{meme}),
 			"created":    1,
 			"duplicates": []map[string]any{},
 			"skipped":    0,
@@ -640,7 +719,7 @@ func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
 			if errors.As(err, &duplicateErr) {
 				duplicates = append(duplicates, map[string]any{
 					"filename": fileHeader.Filename,
-					"existing": duplicateErr.Existing,
+					"existing": s.protectMemeForResponse(r, duplicateErr.Existing),
 				})
 				continue
 			}
@@ -658,7 +737,7 @@ func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusOK
 	}
 	writeJSON(w, status, map[string]any{
-		"memes":      created,
+		"memes":      s.protectMemesForResponse(r, created),
 		"created":    len(created),
 		"duplicates": duplicates,
 		"skipped":    len(duplicates),
@@ -911,7 +990,7 @@ func (s *Server) updateMeme(w http.ResponseWriter, r *http.Request, id string) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, meme)
+	writeJSON(w, http.StatusOK, s.protectMemeForResponse(r, meme))
 }
 
 func (s *Server) updateFavorite(w http.ResponseWriter, r *http.Request, id string) {
@@ -934,7 +1013,7 @@ func (s *Server) updateFavorite(w http.ResponseWriter, r *http.Request, id strin
 		return
 	}
 
-	writeJSON(w, http.StatusOK, meme)
+	writeJSON(w, http.StatusOK, s.protectMemeForResponse(r, meme))
 }
 
 func (s *Server) deleteMeme(w http.ResponseWriter, r *http.Request, id string) {
@@ -986,7 +1065,7 @@ func (s *Server) handlePendingDeleteQueue(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	writeJSON(w, http.StatusOK, records)
+	writeJSON(w, http.StatusOK, s.protectPendingDeletesForResponse(r, records))
 }
 
 func (s *Server) handleAdminDashboard(w http.ResponseWriter, r *http.Request) {
@@ -1013,7 +1092,7 @@ func (s *Server) handleAuditLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, events)
+	writeJSON(w, http.StatusOK, s.protectAuditFeedForResponse(r, events))
 }
 
 func (s *Server) handleTagHygiene(w http.ResponseWriter, r *http.Request) {
@@ -1178,7 +1257,7 @@ func (s *Server) handleAdminMemeByID(w http.ResponseWriter, r *http.Request, id 
 		return
 	}
 
-	writeJSON(w, http.StatusOK, meme)
+	writeJSON(w, http.StatusOK, s.protectMemeForResponse(r, meme))
 }
 
 func (s *Server) handleMemeAudit(w http.ResponseWriter, r *http.Request, id string) {
