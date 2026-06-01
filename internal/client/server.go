@@ -187,6 +187,16 @@ func (s *Server) protectMemesForResponse(r *http.Request, memes []accessor.Meme)
 	return protected
 }
 
+func (s *Server) protectMemeListForResponse(r *http.Request, result manager.MemeListResult) manager.MemeListResult {
+	if len(result.Memes) == 0 {
+		return result
+	}
+
+	protected := result
+	protected.Memes = s.protectMemesForResponse(r, result.Memes)
+	return protected
+}
+
 func (s *Server) protectPendingDeletesForResponse(r *http.Request, records accessor.PagedPendingDeletes) accessor.PagedPendingDeletes {
 	if len(records.Memes) == 0 {
 		return records
@@ -629,7 +639,7 @@ func (s *Server) listMemes(w http.ResponseWriter, r *http.Request) {
 	offset := parseQueryInt(r, "offset", 0)
 	limit := parseQueryInt(r, "limit", 72)
 
-	writeJSON(w, http.StatusOK, s.protectMemesForResponse(r, s.managers.ListMemes(userID, query, favoritesOnly, tag, view, offset, limit)))
+	writeJSON(w, http.StatusOK, s.protectMemeListForResponse(r, s.managers.ListMemes(userID, query, favoritesOnly, tag, view, offset, limit)))
 }
 
 func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
