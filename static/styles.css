@@ -923,6 +923,53 @@ body.sidebar-collapsed .sidebar-toggle-row .sidebar-toggle-icon {
     rgba(14, 19, 26, 0.92);
 }
 
+.admin-backup-panel {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.admin-backup-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1.25rem;
+  min-height: 15rem;
+  padding: 1.4rem;
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+  background: var(--panel-2);
+}
+
+.admin-backup-card h3 {
+  margin: 0.3rem 0 0.65rem;
+}
+
+.admin-backup-card p:not(.section-kicker) {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.admin-backup-card .primary-button {
+  text-decoration: none;
+}
+
+.admin-backup-danger {
+  border-color: color-mix(in srgb, var(--danger) 38%, var(--line));
+}
+
+.admin-backup-panel > .status-text {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 760px) {
+  .admin-backup-panel {
+    grid-template-columns: 1fr;
+  }
+}
+
 .admin-tag-hygiene-top,
 .admin-tag-hygiene-lower {
   display: grid;

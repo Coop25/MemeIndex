@@ -175,6 +175,19 @@ docker compose pull
 docker compose up -d
 ```
 
+### Move or back up a MemeIndex server
+
+Sign in as a super admin, open **Admin > Backup & Restore**, and select **Export Backup**. MemeIndex creates one `.tar.gz` archive containing:
+
+- all original meme files and generated thumbnails
+- all meme metadata and tags
+- per-user favorites and permissions
+- reel sessions, moderation state, and audit history
+
+On the destination Docker instance, open the same admin page and import that archive. Import replaces the destination library and application database, so export the destination first if it contains anything you may need. The destination should run the same or a newer MemeIndex version so its database schema supports every field in the backup.
+
+The browser workflow requires PostgreSQL storage (the default Docker Compose configuration). Environment secrets, Discord OAuth credentials, session signing keys, the Ollama model volume, and other `.env` settings are intentionally not included; copy those deployment settings separately.
+
 Or with Task:
 
 ```powershell

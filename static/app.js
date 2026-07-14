@@ -141,6 +141,11 @@ const adminUsersAddForm = document.querySelector("#admin-users-add-form");
 const adminUsersAddID = document.querySelector("#admin-users-add-id");
 const adminUsersStatus = document.querySelector("#admin-users-status");
 const adminUsersList = document.querySelector("#admin-users-list");
+const adminBackupPanel = document.querySelector("#admin-backup-panel");
+const adminBackupExport = document.querySelector("#admin-backup-export");
+const adminBackupImport = document.querySelector("#admin-backup-import");
+const adminBackupFile = document.querySelector("#admin-backup-file");
+const adminBackupStatus = document.querySelector("#admin-backup-status");
 const adminViewTable = document.querySelector("#admin-view-table");
 const adminPagination = document.querySelector("#admin-pagination");
 const adminPagePrev = document.querySelector("#admin-page-prev");
@@ -651,6 +656,39 @@ async function fetchAdminDashboard() {
   state.admin.dashboard = payload || null;
   renderAdminDashboard();
   return state.admin.dashboard;
+}
+
+async function importPortableBackup(file) {
+  if (!file || !adminBackupImport) return;
+  const confirmed = window.confirm(
+    `Import ${file.name}?\n\nThis replaces every meme and all database data on this server. This cannot be undone unless you export the current server first.`
+  );
+  if (!confirmed) {
+    adminBackupFile.value = "";
+    return;
+  }
+
+  adminBackupImport.disabled = true;
+  adminBackupExport?.setAttribute("aria-disabled", "true");
+  adminBackupStatus.textContent = "Importing backup. Keep this page open; large libraries can take several minutes...";
+  try {
+    const response = await fetch("/api/admin/backup/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/gzip" },
+      body: file,
+    });
+    if (!(await expectAuthorized(response, "Failed to import backup."))) {
+      adminBackupStatus.textContent = await readAPIErrorMessage(response, "Failed to import backup.");
+      return;
+    }
+    adminBackupStatus.textContent = "Backup imported successfully. Reloading the restored library...";
+    showToast("Backup imported successfully.", "success", { title: "Backup & Restore" });
+    window.setTimeout(forceFreshHTMLReload, 900);
+  } finally {
+    adminBackupImport.disabled = false;
+    adminBackupExport?.removeAttribute("aria-disabled");
+    adminBackupFile.value = "";
+  }
 }
 
 async function fetchAdminTagHygiene() {
@@ -2004,6 +2042,7 @@ function renderContentMode() {
   const canBrowseLibrary = canView();
   const usesSharedAdminTable = adminMode && ["delete-queue", "audit-logs"].includes(activeAdminTab());
   const showAdminUsersPanel = adminMode && activeAdminTab() === "users";
+  const showAdminBackupPanel = adminMode && activeAdminTab() === "backup";
   adminView?.classList.toggle("hidden", !adminMode);
   adminTabs.forEach((tab) => {
     const active = tab.dataset.adminTab === activeAdminTab();
@@ -2011,6 +2050,7 @@ function renderContentMode() {
     tab.setAttribute("aria-selected", String(active));
   });
   adminUsersPanel?.classList.toggle("hidden", !showAdminUsersPanel);
+  adminBackupPanel?.classList.toggle("hidden", !showAdminBackupPanel);
   adminViewTable?.classList.toggle("hidden", !usesSharedAdminTable);
   const pageState = getActiveAdminPageState();
   adminPagination?.classList.toggle("hidden", !adminMode || !pageState);
@@ -2191,6 +2231,15 @@ async function loadInitialMemes() {
     adminViewKicker.textContent = "Admin";
     adminViewTitle.textContent = "Rejected Links";
     adminViewCopy.textContent = "Links that exhausted their retry budget and need a manual requeue if you want to try again later.";
+    setAdminViewStatus("");
+    adminViewTable.innerHTML = "";
+    renderContentMode();
+    return;
+  }
+  if (isAdminView() && canManageUsers() && activeAdminTab() === "backup") {
+    adminViewKicker.textContent = "Admin";
+    adminViewTitle.textContent = "Backup & Restore";
+    adminViewCopy.textContent = "Move the complete meme library and its database to another MemeIndex Docker instance.";
     setAdminViewStatus("");
     adminViewTable.innerHTML = "";
     renderContentMode();
@@ -4916,6 +4965,28 @@ adminTagQueueReset?.addEventListener("click", () => {
     if (adminTagQueueReset) {
       adminTagQueueReset.disabled = false;
     }
+  });
+});
+
+adminBackupExport?.addEventListener("click", () => {
+  if (adminBackupStatus) {
+    adminBackupStatus.textContent = "Building the backup. The download will start when the archive is ready...";
+  }
+});
+
+adminBackupImport?.addEventListener("click", () => {
+  adminBackupFile?.click();
+});
+
+adminBackupFile?.addEventListener("change", () => {
+  const file = adminBackupFile.files?.[0];
+  if (!file) return;
+  importPortableBackup(file).catch((error) => {
+    console.error(error);
+    adminBackupStatus.textContent = "Could not import the backup.";
+    showToast("Could not import the backup.", "error", { title: "Backup & Restore" });
+    adminBackupImport.disabled = false;
+    adminBackupFile.value = "";
   });
 });
 

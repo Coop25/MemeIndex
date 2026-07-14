@@ -29,6 +29,7 @@ type Server struct {
 	users       authUserStore
 	mediaClient *mediafetch.Client
 	linkRetries *linkRetryQueue
+	backup      *portableBackup
 }
 
 func NewServer(config Config, memeManager *manager.MemeManager) *Server {
@@ -56,6 +57,7 @@ func NewServer(config Config, memeManager *manager.MemeManager) *Server {
 		auth:        newAuthService(config.DiscordAuth, userStore),
 		users:       userStore,
 		mediaClient: mediaClient,
+		backup:      newPortableBackup(config.DatabaseURL, config.DataDir),
 	}
 	server.linkRetries = newLinkRetryQueue(config.MediaFetchRetry.Interval, config.MediaFetchRetry.MaxAttempts, server.processRetriedLinkJob)
 	return server
@@ -72,6 +74,8 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/api/users", s.withAPIAuth(http.HandlerFunc(s.handleUsers), permissionManageUsers))
 	mux.Handle("/api/users/", s.withAPIAuth(http.HandlerFunc(s.handleUserByID), permissionManageUsers))
 	mux.Handle("/api/admin/dashboard", s.withAPIAuth(http.HandlerFunc(s.handleAdminDashboard), permissionManageUsers))
+	mux.Handle("/api/admin/backup/export", s.withAPIAuth(http.HandlerFunc(s.handleBackupExport), permissionManageUsers))
+	mux.Handle("/api/admin/backup/import", s.withAPIAuth(http.HandlerFunc(s.handleBackupImport), permissionManageUsers))
 	mux.Handle("/api/admin/audit-logs", s.withAPIAuth(http.HandlerFunc(s.handleAuditLogs), permissionManageUsers))
 	mux.Handle("/api/admin/tag-hygiene", s.withAPIAuth(http.HandlerFunc(s.handleTagHygiene), permissionManageUsers))
 	mux.Handle("/api/admin/tag-suggestions/status", s.withAPIAuth(http.HandlerFunc(s.handleTagSuggestionStatus), permissionManageUsers))
@@ -1083,6 +1087,53 @@ func (s *Server) handleAdminDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, s.managers.AdminDashboard())
+}
+
+func (s *Server) handleBackupExport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.backup == nil {
+		http.Error(w, "portable backups require PostgreSQL storage", http.StatusConflict)
+		return
+	}
+
+	archivePath, err := s.backup.export(r.Context())
+	if err != nil {
+		log.Printf("backup export failed: %v", err)
+		http.Error(w, "failed to create backup", http.StatusInternalServerError)
+		return
+	}
+	defer os.Remove(archivePath)
+	filename := "memeindex-backup-" + time.Now().UTC().Format("20060102-150405") + ".tar.gz"
+	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+	w.Header().Set("Content-Type", "application/gzip")
+	w.Header().Set("Cache-Control", "no-store")
+	http.ServeFile(w, r, archivePath)
+}
+
+func (s *Server) handleBackupImport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.backup == nil {
+		http.Error(w, "portable backups require PostgreSQL storage", http.StatusConflict)
+		return
+	}
+	if err := s.backup.importArchive(r.Context(), r.Body); err != nil {
+		log.Printf("backup import failed: %v", err)
+		http.Error(w, "backup import failed: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.managers.ReloadAfterRestore(); err != nil {
+		log.Printf("reload in-memory state after backup import failed: %v", err)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"message": "Backup imported successfully.",
+	})
 }
 
 func (s *Server) handleAuditLogs(w http.ResponseWriter, r *http.Request) {

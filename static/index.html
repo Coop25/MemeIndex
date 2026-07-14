@@ -200,6 +200,7 @@
               <button class="admin-tab" type="button" role="tab" data-admin-tab="rejected-links" aria-selected="false">Rejected Links</button>
               <button class="admin-tab" type="button" role="tab" data-admin-tab="delete-queue" aria-selected="false">Delete Queue</button>
               <button class="admin-tab" type="button" role="tab" data-admin-tab="audit-logs" aria-selected="false">Audit Logs</button>
+              <button class="admin-tab" type="button" role="tab" data-admin-tab="backup" aria-selected="false">Backup & Restore</button>
             </div>
             <p id="admin-view-status" class="status-text"></p>
             <section id="admin-tag-queue-panel" class="admin-tag-queue-panel hidden" aria-live="polite">
@@ -291,6 +292,26 @@
               </form>
               <p id="admin-users-status" class="status-text"></p>
               <div id="admin-users-list" class="users-list"></div>
+            </section>
+            <section id="admin-backup-panel" class="admin-backup-panel hidden" aria-live="polite">
+              <article class="admin-backup-card">
+                <div>
+                  <p class="section-kicker">Export</p>
+                  <h3>Download the complete archive</h3>
+                  <p>Creates one portable file containing every meme, thumbnail, tag, favorite, user, audit entry, and other database record.</p>
+                </div>
+                <a id="admin-backup-export" class="primary-button" href="/api/admin/backup/export">Export Backup</a>
+              </article>
+              <article class="admin-backup-card admin-backup-danger">
+                <div>
+                  <p class="section-kicker">Restore</p>
+                  <h3>Replace this server from a backup</h3>
+                  <p>Importing replaces the current library and application database. Export this server first if you may need to undo the restore.</p>
+                </div>
+                <input id="admin-backup-file" class="hidden" type="file" accept=".gz,.tgz,application/gzip" />
+                <button id="admin-backup-import" class="danger-button" type="button">Choose Backup to Import</button>
+              </article>
+              <p id="admin-backup-status" class="status-text"></p>
             </section>
             <div id="admin-view-table" class="admin-view-table"></div>
             <div id="admin-pagination" class="admin-pagination hidden" aria-label="Admin page navigation">

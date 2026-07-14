@@ -659,6 +659,24 @@ func (m *MemeManager) SeedTagSuggestionQueue() int {
 	return queued
 }
 
+// ReloadAfterRestore refreshes the small pieces of state cached in memory after
+// an administrator replaces the persistent database with a portable backup.
+func (m *MemeManager) ReloadAfterRestore() error {
+	if err := m.reelSessions.load(); err != nil {
+		return err
+	}
+
+	m.suggestionQueueMu.Lock()
+	m.suggestionQueue = nil
+	m.queuedSuggestionIDs = map[string]struct{}{}
+	if m.suggestionCurrentID != "" {
+		m.queuedSuggestionIDs[m.suggestionCurrentID] = struct{}{}
+	}
+	m.suggestionQueueMu.Unlock()
+	m.SeedTagSuggestionQueue()
+	return nil
+}
+
 func (m *MemeManager) runTagSuggestionWorker() {
 	log.Printf("tag suggestion worker: waiting for Ollama model %q", m.tagSuggester.Model())
 	m.setTagSuggestionWorkerState("waiting_for_ollama", false, "", "")
