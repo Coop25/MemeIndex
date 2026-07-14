@@ -236,10 +236,12 @@ func (s *PostgresStore) SuggestTags(prefix string, limit int) []string {
 	}
 
 	rows, err := s.pool.Query(ctx, `
-		SELECT name
-		FROM tags
-		WHERE $1 = '' OR name LIKE '%' || $1 || '%'
-		ORDER BY name
+		SELECT t.name
+		FROM tags t
+		LEFT JOIN meme_tags mt ON mt.tag_id = t.id
+		WHERE $1 = '' OR t.name LIKE '%' || $1 || '%'
+		GROUP BY t.id, t.name
+		ORDER BY COUNT(mt.meme_id) DESC, t.name
 		LIMIT $2
 	`, prefix, limit)
 	if err != nil {

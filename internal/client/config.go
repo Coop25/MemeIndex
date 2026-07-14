@@ -72,7 +72,7 @@ type rawConfig struct {
 	TagSuggestOllamaModel           string   `envconfig:"TAGSUGGEST_OLLAMA_MODEL"`
 	TagSuggestTimeoutSecs           int      `envconfig:"TAGSUGGEST_TIMEOUT_SECONDS" default:"300"`
 	TagSuggestMaxTags               int      `envconfig:"TAGSUGGEST_MAX_TAGS" default:"8"`
-	TagSuggestKnownTagHint          int      `envconfig:"TAGSUGGEST_KNOWN_TAG_BUDGET" default:"150"`
+	TagSuggestKnownTagHint          int      `envconfig:"TAGSUGGEST_KNOWN_TAG_BUDGET" default:"60"`
 	TagSuggestFastMode              bool     `envconfig:"TAGSUGGEST_FAST_MODE" default:"false"`
 	TagSuggestGenerateOnly          bool     `envconfig:"TAGSUGGEST_GENERATE_ONLY" default:"false"`
 	TagSuggestVideoFrameCount       string   `envconfig:"TAGSUGGEST_VIDEO_FRAME_COUNT"`

@@ -218,15 +218,27 @@ func (s *MemeStore) SuggestTags(prefix string, limit int) []string {
 		limit = 8
 	}
 
-	out := make([]string, 0, limit)
-	for tag := range s.tagIndex {
+	type rankedTag struct {
+		name  string
+		count int
+	}
+	ranked := make([]rankedTag, 0, len(s.tagIndex))
+	for tag, memeIDs := range s.tagIndex {
 		if prefix != "" && !strings.Contains(tag, prefix) {
 			continue
 		}
-		out = append(out, tag)
+		ranked = append(ranked, rankedTag{name: tag, count: len(memeIDs)})
 	}
-
-	sort.Strings(out)
+	sort.Slice(ranked, func(i, j int) bool {
+		if ranked[i].count != ranked[j].count {
+			return ranked[i].count > ranked[j].count
+		}
+		return ranked[i].name < ranked[j].name
+	})
+	out := make([]string, 0, min(limit, len(ranked)))
+	for _, item := range ranked {
+		out = append(out, item.name)
+	}
 	if len(out) > limit {
 		out = out[:limit]
 	}

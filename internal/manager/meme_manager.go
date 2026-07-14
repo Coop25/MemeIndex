@@ -66,13 +66,13 @@ type MemeListResult struct {
 }
 
 func NewMemeManager(store accessor.Store) *MemeManager {
-	return NewMemeManagerWithTagSuggester(store, nil, nil, TagSuggestionRuntimeConfig{}, 150)
+	return NewMemeManagerWithTagSuggester(store, nil, nil, TagSuggestionRuntimeConfig{}, 60)
 }
 
 func NewMemeManagerWithTagSuggester(store accessor.Store, tagSuggester *tagsuggest.Service, transcriber *tagsuggest.Transcriber, runtimeConfig TagSuggestionRuntimeConfig, knownTagHint int) *MemeManager {
 	sessionFile := filepath.Join(filepath.Dir(store.UploadDir()), "reel_sessions.json")
 	if knownTagHint <= 0 {
-		knownTagHint = 150
+		knownTagHint = 60
 	}
 	if runtimeConfig.VideoFrameCount <= 0 {
 		runtimeConfig.VideoFrameCount = 3
@@ -1094,6 +1094,7 @@ func (m *MemeManager) transcriptForVideo(ctx context.Context, meme accessor.Meme
 func (m *MemeManager) suggestTagsForMeme(ctx context.Context, meme accessor.Meme) (tagsuggest.Result, error) {
 	attempts := m.tagSuggestionAttemptsForMeme(meme)
 	var lastUnavailable error
+	var lastInvalidResponse error
 
 	for _, attempt := range attempts {
 		request, err := m.suggestionRequestForMeme(ctx, meme, attempt)
@@ -1118,16 +1119,23 @@ func (m *MemeManager) suggestTagsForMeme(ctx context.Context, meme accessor.Meme
 			lastUnavailable = err
 			continue
 		}
+		if errors.Is(err, tagsuggest.ErrInvalidResponse) {
+			lastInvalidResponse = err
+			continue
+		}
 		return tagsuggest.Result{}, err
 	}
 
-	if lastUnavailable != nil {
+	if lastInvalidResponse != nil {
 		if suggestionStore, ok := m.store.(accessor.SuggestedTagStore); ok {
 			if err := suggestionStore.SetAutoSuggestDisabled(meme.ID, true); err != nil {
 				return tagsuggest.Result{}, err
 			}
 		}
-		return tagsuggest.Result{}, fmt.Errorf("%w: %v", errAutoSuggestExhausted, lastUnavailable)
+		return tagsuggest.Result{}, fmt.Errorf("%w: %v", errAutoSuggestExhausted, lastInvalidResponse)
+	}
+	if lastUnavailable != nil {
+		return tagsuggest.Result{}, lastUnavailable
 	}
 
 	return tagsuggest.Result{}, tagsuggest.ErrUnavailable
@@ -1152,6 +1160,10 @@ func (m *MemeManager) tagSuggestionAttemptsForMeme(meme accessor.Meme) []tagSugg
 	}
 
 	includeTranscript := !m.disableTranscript
+	if strings.HasPrefix(meme.ContentType, "image/") {
+		addAttempt(max(m.videoFrameWidth, 320), 1, max(m.videoFrameWidth, 320), false, "")
+		return attempts
+	}
 	addAttempt(max(m.videoFrameWidth, 320), max(m.videoFrameCount, 1), max(m.videoFrameWidth, 320), includeTranscript, "")
 	addAttempt(320, 1, 320, false, "+fast")
 	addAttempt(240, 1, 240, false, "+minimal")

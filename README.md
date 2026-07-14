@@ -97,9 +97,9 @@ Optional flags:
 - `MEMEINDEX_TAGSUGGEST_OLLAMA_MODEL`: optional Ollama vision model name, default compose value `qwen2.5vl:3b`
 - `MEMEINDEX_TAGSUGGEST_TIMEOUT_SECONDS`: request timeout for tag suggestions, default `300`
 - `MEMEINDEX_TAGSUGGEST_MAX_TAGS`: max number of suggested tags to return, default `8`
-- `MEMEINDEX_TAGSUGGEST_KNOWN_TAG_BUDGET`: how many existing archive tags to send as reuse hints, default `150`
+- `MEMEINDEX_TAGSUGGEST_KNOWN_TAG_BUDGET`: how many frequently used archive tags to send as optional reuse hints, default `60` and capped at `60` in the model prompt
 - `MEMEINDEX_TAGSUGGEST_FAST_MODE`: when `true`, uses a cheaper video path tuned for slower hardware by defaulting to 1 smaller frame and disabling transcription
-- `MEMEINDEX_TAGSUGGEST_GENERATE_ONLY`: when `true`, skip the structured `/api/chat` path and use plain `/api/generate` only. This is useful for models that are unstable with structured vision requests
+- `MEMEINDEX_TAGSUGGEST_GENERATE_ONLY`: when `true`, use Ollama's `/api/generate` endpoint with the same JSON schema instead of `/api/chat`. This is useful for models that are more stable on the generate endpoint
 - `MEMEINDEX_TAGSUGGEST_VIDEO_FRAME_COUNT`: override how many video frames are sampled for tag suggestions. Defaults to `3`, or `1` in fast mode
 - `MEMEINDEX_TAGSUGGEST_VIDEO_FRAME_WIDTH`: override the per-frame resize width for video tag suggestions. Defaults to `480`, or `320` in fast mode
 - `MEMEINDEX_TAGSUGGEST_DISABLE_TRANSCRIPTION`: when `true`, skip optional audio transcription even if a transcription command is configured

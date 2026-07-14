@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -114,10 +115,7 @@ func EnsureVideoTagFrames(uploadDir, previewDir, storedName string, frameCount i
 	}
 
 	inputPath := filepath.Join(uploadDir, storedName)
-	offsets := []string{"00:00:01", "00:00:03", "00:00:06", "00:00:10", "00:00:15"}
-	if frameCount < len(offsets) {
-		offsets = offsets[:frameCount]
-	}
+	offsets := videoTagFrameOffsets(inputPath, frameCount)
 	framePaths := make([]string, 0, len(offsets))
 	var lastErr error
 	for index, offset := range offsets {
@@ -142,6 +140,44 @@ func EnsureVideoTagFrames(uploadDir, previewDir, storedName string, frameCount i
 		return nil, os.ErrNotExist
 	}
 	return framePaths, nil
+}
+
+func videoTagFrameOffsets(inputPath string, frameCount int) []string {
+	if frameCount <= 0 {
+		frameCount = 3
+	}
+	frameCount = min(frameCount, 5)
+	cmd := exec.Command(
+		"ffprobe",
+		"-v", "error",
+		"-show_entries", "format=duration",
+		"-of", "default=noprint_wrappers=1:nokey=1",
+		inputPath,
+	)
+	output, err := cmd.Output()
+	if err == nil {
+		if duration, parseErr := strconv.ParseFloat(strings.TrimSpace(string(output)), 64); parseErr == nil && duration > 0 {
+			return evenlySpacedVideoOffsets(duration, frameCount)
+		}
+	}
+
+	fallback := []string{"0", "1", "3", "6", "10"}
+	return fallback[:frameCount]
+}
+
+func evenlySpacedVideoOffsets(duration float64, frameCount int) []string {
+	if frameCount <= 1 {
+		return []string{"0"}
+	}
+	// Keep the last sample safely before EOF; seeking exactly to duration often
+	// produces no frame on short or variable-frame-rate clips.
+	end := duration * 0.88
+	offsets := make([]string, 0, frameCount)
+	for index := 0; index < frameCount; index++ {
+		seconds := end * float64(index) / float64(frameCount-1)
+		offsets = append(offsets, strconv.FormatFloat(seconds, 'f', 3, 64))
+	}
+	return offsets
 }
 
 func EnsureVideoTagAudio(uploadDir, previewDir, storedName string) (string, error) {
@@ -251,7 +287,7 @@ func extractVideoAudio(inputPath, outputPath string) error {
 
 func tagFrameFileName(storedName string, index int) string {
 	base := strings.TrimSuffix(storedName, filepath.Ext(storedName))
-	return fmt.Sprintf("%s-tag-%d.jpg", base, index)
+	return fmt.Sprintf("%s-tag-v2-%d.jpg", base, index)
 }
 
 func tagAudioFileName(storedName string) string {
