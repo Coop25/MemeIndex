@@ -310,7 +310,10 @@
                   <h3>Download the complete archive</h3>
                   <p>Creates one portable file containing every meme, thumbnail, tag, favorite, user, audit entry, and other database record.</p>
                 </div>
-                <a id="admin-backup-export" class="primary-button" href="/api/admin/backup/export">Export Backup</a>
+                <div class="admin-backup-actions">
+                  <button id="admin-backup-export" class="primary-button" type="button">Create Backup</button>
+                  <a id="admin-backup-download" class="secondary-button hidden" href="/api/admin/backup/download">Download Latest</a>
+                </div>
               </article>
               <article class="admin-backup-card admin-backup-danger">
                 <div>

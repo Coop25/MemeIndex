@@ -4,10 +4,128 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
+
+func TestPortableBackupJobPersistsCompletedArchive(t *testing.T) {
+	dataDir := t.TempDir()
+	b := &portableBackup{dataDir: dataDir, job: backupJobStatus{State: "idle"}}
+	b.exportFunc = func(context.Context) (string, error) {
+		file, err := os.CreateTemp(dataDir, ".test-export-*.tar.gz")
+		if err != nil {
+			return "", err
+		}
+		if _, err := file.Write([]byte("portable backup")); err != nil {
+			_ = file.Close()
+			return "", err
+		}
+		if err := file.Close(); err != nil {
+			return "", err
+		}
+		return file.Name(), nil
+	}
+
+	if status, started := b.startExport(); !started || status.State != "running" {
+		t.Fatalf("expected running backup job, got started=%v status=%+v", started, status)
+	}
+	status := waitForBackupStatus(t, b, "ready")
+	if !status.DownloadAvailable || status.Filename == "" || status.SizeBytes == 0 {
+		t.Fatalf("expected downloadable completed backup, got %+v", status)
+	}
+
+	file, openedStatus, err := b.openLatestExport()
+	if err != nil {
+		t.Fatalf("open latest export: %v", err)
+	}
+	payload, err := io.ReadAll(file)
+	_ = file.Close()
+	if err != nil {
+		t.Fatalf("read latest export: %v", err)
+	}
+	if string(payload) != "portable backup" || openedStatus.Filename != status.Filename {
+		t.Fatalf("unexpected persisted export %q with status %+v", payload, openedStatus)
+	}
+
+	restarted := newPortableBackup("postgres://unused", dataDir)
+	restoredStatus := restarted.exportStatus()
+	if restoredStatus.State != "ready" || restoredStatus.Filename != status.Filename || !restoredStatus.DownloadAvailable {
+		t.Fatalf("expected completed backup to survive restart, got %+v", restoredStatus)
+	}
+}
+
+func TestPortableBackupJobRejectsConcurrentStart(t *testing.T) {
+	dataDir := t.TempDir()
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	b := &portableBackup{dataDir: dataDir, job: backupJobStatus{State: "idle"}}
+	b.exportFunc = func(context.Context) (string, error) {
+		close(entered)
+		<-release
+		return "", errors.New("stopped for test")
+	}
+
+	if _, started := b.startExport(); !started {
+		t.Fatal("expected first backup job to start")
+	}
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("backup job did not start")
+	}
+	if status, started := b.startExport(); started || status.State != "running" {
+		t.Fatalf("expected concurrent start to return running job, got started=%v status=%+v", started, status)
+	}
+	close(release)
+	waitForBackupStatus(t, b, "failed")
+}
+
+func TestPortableBackupFailureKeepsPreviousDownload(t *testing.T) {
+	dataDir := t.TempDir()
+	b := &portableBackup{dataDir: dataDir, job: backupJobStatus{State: "idle"}}
+	b.exportFunc = func(context.Context) (string, error) {
+		file, err := os.CreateTemp(dataDir, ".test-export-*.tar.gz")
+		if err != nil {
+			return "", err
+		}
+		if err := file.Close(); err != nil {
+			return "", err
+		}
+		return file.Name(), nil
+	}
+	b.startExport()
+	ready := waitForBackupStatus(t, b, "ready")
+
+	b.exportFunc = func(context.Context) (string, error) {
+		return "", errors.New("database snapshot failed")
+	}
+	if _, started := b.startExport(); !started {
+		t.Fatal("expected replacement backup to start")
+	}
+	failed := waitForBackupStatus(t, b, "failed")
+	if !failed.DownloadAvailable || failed.Filename != ready.Filename {
+		t.Fatalf("expected previous backup to remain downloadable, got %+v", failed)
+	}
+}
+
+func waitForBackupStatus(t *testing.T, b *portableBackup, expected string) backupJobStatus {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		status := b.exportStatus()
+		if status.State == expected {
+			return status
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("backup did not reach %q; last status: %+v", expected, b.exportStatus())
+	return backupJobStatus{}
+}
 
 func TestExtractPortableArchiveRejectsPathTraversal(t *testing.T) {
 	archive := makeTestArchive(t, map[string]string{

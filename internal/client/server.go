@@ -77,7 +77,9 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/api/users", s.withAPIAuth(http.HandlerFunc(s.handleUsers), permissionManageUsers))
 	mux.Handle("/api/users/", s.withAPIAuth(http.HandlerFunc(s.handleUserByID), permissionManageUsers))
 	mux.Handle("/api/admin/dashboard", s.withAPIAuth(http.HandlerFunc(s.handleAdminDashboard), permissionManageUsers))
+	mux.Handle("/api/admin/backup/status", s.withAPIAuth(http.HandlerFunc(s.handleBackupStatus), permissionManageUsers))
 	mux.Handle("/api/admin/backup/export", s.withAPIAuth(http.HandlerFunc(s.handleBackupExport), permissionManageUsers))
+	mux.Handle("/api/admin/backup/download", s.withAPIAuth(http.HandlerFunc(s.handleBackupDownload), permissionManageUsers))
 	mux.Handle("/api/admin/backup/import", s.withAPIAuth(http.HandlerFunc(s.handleBackupImport), permissionManageUsers))
 	mux.Handle("/api/admin/audit-logs", s.withAPIAuth(http.HandlerFunc(s.handleAuditLogs), permissionManageUsers))
 	mux.Handle("/api/admin/tag-hygiene", s.withAPIAuth(http.HandlerFunc(s.handleTagHygiene), permissionManageUsers))
@@ -1114,7 +1116,7 @@ func (s *Server) handleAdminDashboard(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleBackupExport(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -1123,18 +1125,63 @@ func (s *Server) handleBackupExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	archivePath, err := s.backup.export(r.Context())
-	if err != nil {
-		log.Printf("backup export failed: %v", err)
-		http.Error(w, "failed to create backup", http.StatusInternalServerError)
+	status, started := s.backup.startExport()
+	if !started {
+		writeJSON(w, http.StatusConflict, status)
 		return
 	}
-	defer os.Remove(archivePath)
-	filename := "memeindex-backup-" + time.Now().UTC().Format("20060102-150405") + ".tar.gz"
+	writeJSON(w, http.StatusAccepted, status)
+}
+
+func (s *Server) handleBackupStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.backup == nil {
+		http.Error(w, "portable backups require PostgreSQL storage", http.StatusConflict)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, s.backup.exportStatus())
+}
+
+func (s *Server) handleBackupDownload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.backup == nil {
+		http.Error(w, "portable backups require PostgreSQL storage", http.StatusConflict)
+		return
+	}
+
+	file, status, err := s.backup.openLatestExport()
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			http.Error(w, "no completed backup is available", http.StatusNotFound)
+			return
+		}
+		log.Printf("open completed backup failed: %v", err)
+		http.Error(w, "failed to open completed backup", http.StatusInternalServerError)
+		return
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		log.Printf("stat completed backup failed: %v", err)
+		http.Error(w, "failed to inspect completed backup", http.StatusInternalServerError)
+		return
+	}
+
+	filename := status.Filename
+	if filename == "" {
+		filename = "memeindex-backup.tar.gz"
+	}
 	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
 	w.Header().Set("Content-Type", "application/gzip")
 	w.Header().Set("Cache-Control", "no-store")
-	http.ServeFile(w, r, archivePath)
+	http.ServeContent(w, r, filename, info.ModTime(), file)
 }
 
 func (s *Server) handleBackupImport(w http.ResponseWriter, r *http.Request) {
@@ -1144,6 +1191,10 @@ func (s *Server) handleBackupImport(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.backup == nil {
 		http.Error(w, "portable backups require PostgreSQL storage", http.StatusConflict)
+		return
+	}
+	if s.backup.exportStatus().State == "running" {
+		http.Error(w, "wait for the running backup to finish before importing", http.StatusConflict)
 		return
 	}
 	if err := s.backup.importArchive(r.Context(), r.Body); err != nil {

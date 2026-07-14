@@ -30,6 +30,7 @@ const state = {
     },
     tagQueueStatus: null,
     linkRetryStatus: null,
+    backupStatus: null,
     dashboard: null,
     tagHygiene: null,
   },
@@ -144,6 +145,7 @@ const adminUsersStatus = document.querySelector("#admin-users-status");
 const adminUsersList = document.querySelector("#admin-users-list");
 const adminBackupPanel = document.querySelector("#admin-backup-panel");
 const adminBackupExport = document.querySelector("#admin-backup-export");
+const adminBackupDownload = document.querySelector("#admin-backup-download");
 const adminBackupImport = document.querySelector("#admin-backup-import");
 const adminBackupFile = document.querySelector("#admin-backup-file");
 const adminBackupStatus = document.querySelector("#admin-backup-status");
@@ -279,6 +281,8 @@ let deleteQueueState = [];
 let auditLogState = [];
 let adminTagQueuePollInterval = null;
 let adminLinkQueuePollInterval = null;
+let adminBackupPollInterval = null;
+let adminBackupImportBusy = false;
 let toastSequence = 0;
 let deferredInstallPrompt = null;
 const activeToastTimeouts = new Map();
@@ -701,6 +705,118 @@ async function fetchAdminDashboard() {
   return state.admin.dashboard;
 }
 
+function renderAdminBackupStatus() {
+  if (!adminBackupStatus || !adminBackupExport || !adminBackupImport) return;
+
+  const status = state.admin.backupStatus;
+  const running = status?.state === "running";
+  adminBackupExport.disabled = running || adminBackupImportBusy;
+  adminBackupExport.textContent = running ? "Backup Running..." : "Create Backup";
+  adminBackupImport.disabled = running || adminBackupImportBusy;
+  adminBackupDownload?.classList.toggle("hidden", !status?.download_available);
+  if (adminBackupDownload && status?.filename) {
+    adminBackupDownload.setAttribute("download", status.filename);
+  }
+
+  adminBackupStatus.classList.toggle("admin-backup-status-running", running);
+  adminBackupStatus.classList.toggle("admin-backup-status-failed", status?.state === "failed");
+  if (!status) {
+    adminBackupStatus.textContent = "Loading backup status...";
+    return;
+  }
+
+  const availableSuffix = status.download_available
+    ? " The previous completed backup remains available to download."
+    : "";
+  if (running) {
+    const started = status.started_at ? ` Started ${formatDateTime(status.started_at)}.` : "";
+    adminBackupStatus.textContent = `The server is building a backup.${started} You can leave this page and return later.${availableSuffix}`;
+    return;
+  }
+  if (status.state === "ready" && status.download_available) {
+    const details = [status.filename || "Backup ready"];
+    if (status.size_bytes) details.push(formatSize(Number(status.size_bytes)));
+    if (status.completed_at) details.push(`completed ${formatDateTime(status.completed_at)}`);
+    adminBackupStatus.textContent = `${details.join(" · ")}. This file remains available until a newer backup completes.`;
+    return;
+  }
+  if (status.state === "failed") {
+    adminBackupStatus.textContent = `Backup failed: ${status.error || "the server could not create the archive"}.${availableSuffix}`;
+    return;
+  }
+  if (status.state === "unavailable") {
+    adminBackupStatus.textContent = status.error || "Portable backups are unavailable on this server.";
+    return;
+  }
+  adminBackupStatus.textContent = "No server backup has been created yet.";
+}
+
+async function fetchAdminBackupStatus() {
+  const response = await fetch("/api/admin/backup/status", { cache: "no-store" });
+  if (response.status === 401 || response.status === 403) {
+    await expectAuthorized(response, "Failed to load backup status.");
+    return null;
+  }
+  if (!response.ok) {
+    state.admin.backupStatus = {
+      state: "unavailable",
+      download_available: false,
+      error: await readAPIErrorMessage(response, "Failed to load backup status."),
+    };
+    renderAdminBackupStatus();
+    return null;
+  }
+
+  state.admin.backupStatus = await response.json();
+  renderAdminBackupStatus();
+  return state.admin.backupStatus;
+}
+
+async function startAdminBackup() {
+  if (!adminBackupExport || state.admin.backupStatus?.state === "running") return;
+  adminBackupExport.disabled = true;
+  adminBackupStatus.textContent = "Starting the server backup task...";
+
+  const response = await fetch("/api/admin/backup/export", { method: "POST" });
+  if (response.status === 409) {
+    const contentType = response.headers.get("content-type") || "";
+    if (contentType.includes("application/json")) {
+      state.admin.backupStatus = await response.json();
+    } else {
+      state.admin.backupStatus = {
+        state: "unavailable",
+        download_available: false,
+        error: await readAPIErrorMessage(response, "Backup creation is unavailable."),
+      };
+    }
+    renderAdminBackupStatus();
+    return;
+  }
+  if (!(await expectAuthorized(response, "Failed to start backup."))) {
+    await fetchAdminBackupStatus();
+    return;
+  }
+
+  state.admin.backupStatus = await response.json();
+  renderAdminBackupStatus();
+  showToast("Backup task started on the server.", "success", { title: "Backup & Restore" });
+}
+
+function syncAdminBackupPolling() {
+  if (adminBackupPollInterval) {
+    window.clearInterval(adminBackupPollInterval);
+    adminBackupPollInterval = null;
+  }
+  const visible = isAdminView() && canManageUsers() && activeAdminTab() === "backup";
+  if (!visible) return;
+
+  adminBackupPollInterval = window.setInterval(() => {
+    fetchAdminBackupStatus().catch((error) => {
+      console.error(error);
+    });
+  }, 3000);
+}
+
 async function importPortableBackup(file) {
   if (!file || !adminBackupImport) return;
   const confirmed = window.confirm(
@@ -711,8 +827,8 @@ async function importPortableBackup(file) {
     return;
   }
 
-  adminBackupImport.disabled = true;
-  adminBackupExport?.setAttribute("aria-disabled", "true");
+  adminBackupImportBusy = true;
+  renderAdminBackupStatus();
   adminBackupStatus.textContent = "Importing backup. Keep this page open; large libraries can take several minutes...";
   try {
     const response = await fetch("/api/admin/backup/import", {
@@ -728,9 +844,9 @@ async function importPortableBackup(file) {
     showToast("Backup imported successfully.", "success", { title: "Backup & Restore" });
     window.setTimeout(forceFreshHTMLReload, 900);
   } finally {
-    adminBackupImport.disabled = false;
-    adminBackupExport?.removeAttribute("aria-disabled");
+    adminBackupImportBusy = false;
     adminBackupFile.value = "";
+    await fetchAdminBackupStatus();
   }
 }
 
@@ -2111,6 +2227,7 @@ function renderContentMode() {
   renderAdminLinkRetryStatus();
   syncAdminTagQueuePolling();
   syncAdminLinkQueuePolling();
+  syncAdminBackupPolling();
 }
 
 function syncAdminPagination() {
@@ -2285,6 +2402,8 @@ async function loadInitialMemes() {
     adminViewCopy.textContent = "Move the complete meme library and its database to another MemeIndex Docker instance.";
     setAdminViewStatus("");
     adminViewTable.innerHTML = "";
+    renderAdminBackupStatus();
+    await fetchAdminBackupStatus();
     renderContentMode();
     return;
   }
@@ -5019,9 +5138,12 @@ adminTagQueueReset?.addEventListener("click", () => {
 });
 
 adminBackupExport?.addEventListener("click", () => {
-  if (adminBackupStatus) {
-    adminBackupStatus.textContent = "Building the backup. The download will start when the archive is ready...";
-  }
+  startAdminBackup().catch((error) => {
+    console.error(error);
+    adminBackupStatus.textContent = "Could not start the backup task.";
+    showToast("Could not start the backup task.", "error", { title: "Backup & Restore" });
+    fetchAdminBackupStatus().catch((statusError) => console.error(statusError));
+  });
 });
 
 adminBackupImport?.addEventListener("click", () => {
@@ -5035,7 +5157,8 @@ adminBackupFile?.addEventListener("change", () => {
     console.error(error);
     adminBackupStatus.textContent = "Could not import the backup.";
     showToast("Could not import the backup.", "error", { title: "Backup & Restore" });
-    adminBackupImport.disabled = false;
+    adminBackupImportBusy = false;
+    renderAdminBackupStatus();
     adminBackupFile.value = "";
   });
 });

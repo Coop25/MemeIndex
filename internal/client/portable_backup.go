@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +25,20 @@ type portableBackup struct {
 	databaseURL string
 	dataDir     string
 	mu          sync.Mutex
+	jobMu       sync.RWMutex
+	job         backupJobStatus
+	latestPath  string
+	exportFunc  func(context.Context) (string, error)
+}
+
+type backupJobStatus struct {
+	State             string     `json:"state"`
+	StartedAt         *time.Time `json:"started_at,omitempty"`
+	CompletedAt       *time.Time `json:"completed_at,omitempty"`
+	Filename          string     `json:"filename,omitempty"`
+	SizeBytes         int64      `json:"size_bytes,omitempty"`
+	DownloadAvailable bool       `json:"download_available"`
+	Error             string     `json:"error,omitempty"`
 }
 
 type portableBackupManifest struct {
@@ -52,7 +67,167 @@ func newPortableBackup(databaseURL, dataDir string) *portableBackup {
 	if strings.TrimSpace(databaseURL) == "" {
 		return nil
 	}
-	return &portableBackup{databaseURL: databaseURL, dataDir: dataDir}
+	b := &portableBackup{
+		databaseURL: databaseURL,
+		dataDir:     dataDir,
+		job:         backupJobStatus{State: "idle"},
+	}
+	b.exportFunc = b.export
+	b.restoreLatestExport()
+	return b
+}
+
+func (b *portableBackup) backupDir() string {
+	return filepath.Join(b.dataDir, "backups")
+}
+
+func (b *portableBackup) restoreLatestExport() {
+	entries, err := os.ReadDir(b.backupDir())
+	if err != nil {
+		return
+	}
+
+	var latestPath string
+	var latestInfo os.FileInfo
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "memeindex-backup-") || !strings.HasSuffix(entry.Name(), ".tar.gz") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		if latestInfo == nil || info.ModTime().After(latestInfo.ModTime()) {
+			latestPath = filepath.Join(b.backupDir(), entry.Name())
+			latestInfo = info
+		}
+	}
+	if latestInfo == nil {
+		return
+	}
+
+	completedAt := latestInfo.ModTime().UTC()
+	b.latestPath = latestPath
+	b.job = backupJobStatus{
+		State:             "ready",
+		CompletedAt:       &completedAt,
+		Filename:          filepath.Base(latestPath),
+		SizeBytes:         latestInfo.Size(),
+		DownloadAvailable: true,
+	}
+}
+
+func (b *portableBackup) exportStatus() backupJobStatus {
+	b.jobMu.RLock()
+	defer b.jobMu.RUnlock()
+	return b.job
+}
+
+func (b *portableBackup) startExport() (backupJobStatus, bool) {
+	b.jobMu.Lock()
+	if b.job.State == "running" {
+		status := b.job
+		b.jobMu.Unlock()
+		return status, false
+	}
+
+	startedAt := time.Now().UTC()
+	b.job.State = "running"
+	b.job.StartedAt = &startedAt
+	b.job.Error = ""
+	status := b.job
+	b.jobMu.Unlock()
+
+	go b.runExportJob()
+	return status, true
+}
+
+func (b *portableBackup) runExportJob() {
+	exportFunc := b.exportFunc
+	if exportFunc == nil {
+		exportFunc = b.export
+	}
+	archivePath, err := exportFunc(context.Background())
+	if err != nil {
+		log.Printf("backup export task failed: %v", err)
+		b.failExportJob(err)
+		return
+	}
+	if err := b.installExport(archivePath); err != nil {
+		_ = os.Remove(archivePath)
+		log.Printf("backup export task failed while storing archive: %v", err)
+		b.failExportJob(err)
+		return
+	}
+	log.Printf("backup export task completed: %s", b.exportStatus().Filename)
+}
+
+func (b *portableBackup) failExportJob(err error) {
+	logMessage := strings.TrimSpace(err.Error())
+	if logMessage == "" {
+		logMessage = "backup creation failed"
+	}
+	b.jobMu.Lock()
+	b.job.State = "failed"
+	b.job.Error = logMessage
+	b.jobMu.Unlock()
+}
+
+func (b *portableBackup) installExport(archivePath string) error {
+	if err := os.MkdirAll(b.backupDir(), 0o755); err != nil {
+		return fmt.Errorf("create backup directory: %w", err)
+	}
+
+	completedAt := time.Now().UTC()
+	filename := "memeindex-backup-" + completedAt.Format("20060102-150405") + ".tar.gz"
+	destination := filepath.Join(b.backupDir(), filename)
+	if _, err := os.Stat(destination); err == nil {
+		filename = "memeindex-backup-" + completedAt.Format("20060102-150405") + fmt.Sprintf("-%d.tar.gz", completedAt.UnixNano())
+		destination = filepath.Join(b.backupDir(), filename)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("check backup destination: %w", err)
+	}
+	if err := os.Rename(archivePath, destination); err != nil {
+		return fmt.Errorf("store completed backup: %w", err)
+	}
+	info, err := os.Stat(destination)
+	if err != nil {
+		return fmt.Errorf("inspect completed backup: %w", err)
+	}
+
+	b.jobMu.Lock()
+	previousPath := b.latestPath
+	b.latestPath = destination
+	b.job = backupJobStatus{
+		State:             "ready",
+		StartedAt:         b.job.StartedAt,
+		CompletedAt:       &completedAt,
+		Filename:          filename,
+		SizeBytes:         info.Size(),
+		DownloadAvailable: true,
+	}
+	b.jobMu.Unlock()
+
+	if previousPath != "" && previousPath != destination {
+		_ = os.Remove(previousPath)
+	}
+	return nil
+}
+
+func (b *portableBackup) openLatestExport() (*os.File, backupJobStatus, error) {
+	b.jobMu.RLock()
+	status := b.job
+	path := b.latestPath
+	if path == "" || !status.DownloadAvailable {
+		b.jobMu.RUnlock()
+		return nil, status, os.ErrNotExist
+	}
+	file, err := os.Open(path)
+	b.jobMu.RUnlock()
+	if err != nil {
+		return nil, status, err
+	}
+	return file, status, nil
 }
 
 func (b *portableBackup) export(ctx context.Context) (string, error) {

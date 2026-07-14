@@ -177,7 +177,7 @@ docker compose up -d
 
 ### Move or back up a MemeIndex server
 
-Sign in as a super admin, open **Admin > Backup & Restore**, and select **Export Backup**. MemeIndex creates one `.tar.gz` archive containing:
+Sign in as a super admin, open **Admin > Backup & Restore**, and select **Create Backup**. The export runs as a shared server-side task, so you can leave the page while it works and any super admin can monitor its status. When complete, MemeIndex keeps the `.tar.gz` archive available under **Download Latest** until a newer backup completes. The archive contains:
 
 - all original meme files and generated thumbnails
 - all meme metadata and tags
