@@ -188,6 +188,15 @@ On the destination Docker instance, open the same admin page and import that arc
 
 The browser workflow requires PostgreSQL storage (the default Docker Compose configuration). Environment secrets, Discord OAuth credentials, session signing keys, the Ollama model volume, and other `.env` settings are intentionally not included; copy those deployment settings separately.
 
+### Install on a phone
+
+MemeIndex is an installable Progressive Web App when served over HTTPS. Open the account menu and select **Install > Add to Home Screen**.
+
+- On Android and supported desktop browsers, MemeIndex opens the browser's native installation prompt.
+- On iPhone or iPad, open MemeIndex in Safari, tap **Share**, select **Add to Home Screen**, and enable **Open as Web App** when that option is shown.
+
+The installed app gets its own home-screen icon and standalone window. Its service worker caches only the public manifest and app icons; API responses, account details, thumbnails, and meme files remain network-only and are never placed in the offline cache.
+
 Or with Task:
 
 ```powershell

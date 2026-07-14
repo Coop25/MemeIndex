@@ -1,0 +1,27 @@
+{
+  "id": "/",
+  "name": "MemeIndex",
+  "short_name": "MemeIndex",
+  "description": "A self-hosted meme archive for browsing, tagging, favoriting, and organizing your backlog.",
+  "start_url": "/?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#15181d",
+  "theme_color": "#111821",
+  "categories": ["entertainment", "utilities"],
+  "icons": [
+    {
+      "src": "/pwa-icons/android-chrome-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/pwa-icons/android-chrome-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

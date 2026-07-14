@@ -82,6 +82,7 @@ const authRole = document.querySelector("#auth-role");
 const authVersion = document.querySelector("#auth-version");
 const authVersionValue = document.querySelector("#auth-version-value");
 const authAdmin = document.querySelector("#auth-admin");
+const authInstall = document.querySelector("#auth-install");
 const authLogout = document.querySelector("#auth-logout");
 const uploadModalClose = document.querySelector("#upload-modal-close");
 const usersModal = document.querySelector("#users-modal");
@@ -279,6 +280,7 @@ let auditLogState = [];
 let adminTagQueuePollInterval = null;
 let adminLinkQueuePollInterval = null;
 let toastSequence = 0;
+let deferredInstallPrompt = null;
 const activeToastTimeouts = new Map();
 const ADMIN_TAG_HYGIENE_DISMISSED_KEY = "memeindex.adminTagHygieneDismissed";
 
@@ -393,6 +395,47 @@ function toggleAuthMenu() {
   const nextHiddenState = !authMenu.classList.contains("hidden");
   authMenu.classList.toggle("hidden", nextHiddenState);
   authTrigger.setAttribute("aria-expanded", String(!nextHiddenState));
+}
+
+function isStandaloneApp() {
+  return window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
+}
+
+function isIOSDevice() {
+  const userAgent = window.navigator.userAgent || "";
+  return /iphone|ipad|ipod/i.test(userAgent) || (window.navigator.platform === "MacIntel" && window.navigator.maxTouchPoints > 1);
+}
+
+function syncInstallAction() {
+  if (!authInstall) return;
+  const canOfferInstall = !isStandaloneApp() && (!!deferredInstallPrompt || isIOSDevice());
+  authInstall.classList.toggle("hidden", !canOfferInstall);
+}
+
+async function installMemeIndex() {
+  closeAuthMenu();
+  if (isStandaloneApp()) {
+    syncInstallAction();
+    return;
+  }
+
+  if (deferredInstallPrompt) {
+    deferredInstallPrompt.prompt();
+    const choice = await deferredInstallPrompt.userChoice;
+    deferredInstallPrompt = null;
+    syncInstallAction();
+    if (choice.outcome === "accepted") {
+      showToast("MemeIndex was added to your home screen.", "success", { title: "App Installed", duration: 4200 });
+    }
+    return;
+  }
+
+  if (isIOSDevice()) {
+    showToast("In Safari, tap the Share button, choose Add to Home Screen, then turn on Open as Web App.", "info", { title: "Install MemeIndex", duration: 9000 });
+    return;
+  }
+
+  showToast("Open your browser menu and choose Install app or Add to Home screen.", "info", { title: "Install MemeIndex", duration: 7000 });
 }
 
 function canView() {
@@ -4904,7 +4947,7 @@ authVersion?.addEventListener("click", (event) => {
   forceFreshHTMLReload();
 });
 
-  authAdmin?.addEventListener("click", (event) => {
+authAdmin?.addEventListener("click", (event) => {
   event.stopPropagation();
   closeAuthMenu();
   state.filters.view = "admin";
@@ -4914,6 +4957,13 @@ authVersion?.addEventListener("click", (event) => {
     console.error(error);
     setAdminViewStatus("Could not load admin workspace.");
     showToast("Could not load admin workspace.", "error", { title: "Admin" });
+  });
+});
+
+authInstall?.addEventListener("click", () => {
+  installMemeIndex().catch((error) => {
+    console.error(error);
+    showToast("The browser could not start installation. Use Add to Home Screen from its menu.", "error", { title: "Install MemeIndex" });
   });
 });
 
@@ -5505,6 +5555,27 @@ function formatSize(bytes) {
 }
 
 syncResponsiveSidebar();
+syncInstallAction();
+
+window.addEventListener("beforeinstallprompt", (event) => {
+  event.preventDefault();
+  deferredInstallPrompt = event;
+  syncInstallAction();
+});
+
+window.addEventListener("appinstalled", () => {
+  deferredInstallPrompt = null;
+  syncInstallAction();
+  showToast("MemeIndex was added to your home screen.", "success", { title: "App Installed", duration: 4200 });
+});
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/service-worker.js", { scope: "/" }).catch((error) => {
+      console.error("Service worker registration failed", error);
+    });
+  });
+}
 
 fetchAuthSession()
   .then(() => loadInitialMemes())

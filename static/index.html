@@ -18,7 +18,12 @@
     <meta name="twitter:description" content="A self-hosted archive for browsing, tagging, favoriting, and organizing your meme backlog." />
     <meta name="twitter:image" content="/static/favicon/icon.png" />
     <meta name="theme-color" content="#111821" />
-    <link rel="apple-touch-icon" sizes="180x180" href="/static/favicon/apple-touch-icon.png" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="MemeIndex" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/pwa-icons/apple-touch-icon.png" />
     <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon/favicon-32x32.png" />
     <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon/favicon-16x16.png" />
     <link rel="icon" type="image/png" sizes="192x192" href="/static/favicon/android-chrome-192x192.png" />
@@ -175,6 +180,11 @@
                 <span class="auth-version-label">Admin</span>
                 <span class="auth-version-value">Workspace</span>
                 <span class="auth-version-hint">Users, queue, logs</span>
+              </button>
+              <button id="auth-install" class="auth-version-button hidden" type="button" role="menuitem" aria-label="Install MemeIndex on this device">
+                <span class="auth-version-label">Install</span>
+                <span class="auth-version-value">Add to Home Screen</span>
+                <span class="auth-version-hint">Open like a phone app</span>
               </button>
               <a id="auth-logout" class="auth-link auth-link-danger hidden" href="/auth/logout" role="menuitem">Logout</a>
             </div>

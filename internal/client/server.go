@@ -70,6 +70,9 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/forbidden", s.withPageAuth(http.HandlerFunc(s.handleAccessDeniedPage)))
 	mux.HandleFunc("/auth/logout", s.handleLogout)
 	mux.HandleFunc("/og-image.svg", s.handleOGImage)
+	mux.HandleFunc("/manifest.webmanifest", s.handleWebManifest)
+	mux.HandleFunc("/service-worker.js", s.handleServiceWorker)
+	mux.Handle("/pwa-icons/", http.StripPrefix("/pwa-icons/", http.FileServer(http.Dir(filepath.Join("static", "favicon")))))
 	mux.HandleFunc("/api/auth/session", s.handleAuthSession)
 	mux.Handle("/api/users", s.withAPIAuth(http.HandlerFunc(s.handleUsers), permissionManageUsers))
 	mux.Handle("/api/users/", s.withAPIAuth(http.HandlerFunc(s.handleUserByID), permissionManageUsers))
@@ -96,6 +99,27 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/api/reel-session", s.withAPIAuth(http.HandlerFunc(s.handleReelSession), permissionView))
 	mux.Handle("/api/tags", s.withAPIAuth(http.HandlerFunc(s.handleTags), permissionView))
 	return mux
+}
+
+func (s *Server) handleWebManifest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/manifest+json")
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	http.ServeFile(w, r, filepath.Join("static", "manifest.webmanifest"))
+}
+
+func (s *Server) handleServiceWorker(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Service-Worker-Allowed", "/")
+	http.ServeFile(w, r, filepath.Join("static", "service-worker.js"))
 }
 
 func (s *Server) withPageAuth(next http.Handler) http.Handler {
