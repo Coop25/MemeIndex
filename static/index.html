@@ -29,7 +29,7 @@
     <link rel="icon" type="image/png" sizes="192x192" href="/static/favicon/android-chrome-192x192.png" />
     <link rel="icon" type="image/png" sizes="512x512" href="/static/favicon/android-chrome-512x512.png" />
     <link rel="shortcut icon" href="/static/favicon/favicon.ico" />
-    <link rel="stylesheet" href="/static/styles.css?v=vault-20260722-2" />
+    <link rel="stylesheet" href="/static/styles.css?v=vault-rebuild-20260722" />
   </head>
   <body>
     <button id="drawer-toggle" class="drawer-toggle hidden" type="button" aria-label="Open menu" aria-expanded="false">
@@ -43,10 +43,10 @@
         <div class="sidebar-header">
           <div class="sidebar-header-row">
             <div class="brand-block">
-              <img class="brand-mark" src="/static/favicon/icon.png" alt="MemeIndex icon" />
+              <span class="brand-mark" aria-hidden="true"></span>
               <div class="brand-copy">
-                <p class="brand-kicker">Personal archive</p>
-                <h1>Meme Vault</h1>
+                <h1><span>meme</span><em>vault</em></h1>
+                <p class="brand-kicker">save it. find it. laugh later.</p>
               </div>
             </div>
           </div>
@@ -166,8 +166,8 @@
           </div>
           <div class="search-wrap">
             <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg>
-            <input id="tag-search-input" type="search" placeholder="Search files, tags, notes, type, or source…" aria-label="Search the vault" />
-            <kbd class="search-shortcut">/</kbd>
+            <input id="tag-search-input" type="search" placeholder="Search memes, tags, or notes…" aria-label="Search the vault" />
+            <kbd class="search-shortcut">⌘ K</kbd>
             <div id="tag-search-suggestions" class="tag-suggestions hidden"></div>
           </div>
           <div class="topbar-actions">
@@ -421,7 +421,7 @@
 
     <nav class="mobile-bottom-nav" aria-label="Primary navigation">
       <button type="button" data-mobile-view="home"><span>⌂</span>Home</button>
-      <button type="button" data-mobile-view="library"><span>▦</span>Library</button>
+      <button type="button" data-mobile-view="library"><span>▦</span>Memes</button>
       <button id="mobile-add-vault" class="mobile-add-button" type="button" aria-label="Add to Vault"><span>+</span>Add</button>
       <button type="button" data-mobile-view="favorites"><span>♡</span>Favorites</button>
       <button type="button" data-mobile-drawer><span>☰</span>More</button>
@@ -789,6 +789,6 @@
 
     <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="false"></div>
 
-    <script src="/static/app.js?v=vault-20260722-2" defer></script>
+    <script src="/static/app.js?v=vault-rebuild-20260722" defer></script>
   </body>
 </html>

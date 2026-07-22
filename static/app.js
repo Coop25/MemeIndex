@@ -2467,14 +2467,16 @@ async function fetchVaultDashboard() {
 	if (!(await expectAuthorized(response, "Failed to load dashboard."))) return;
 	const dashboard = await response.json();
 	const cards = [
-		["▧", "Total items", Number(dashboard.total_items || 0).toLocaleString(), "Files and links"],
-		["♥", "Favorites", Number(dashboard.favorites || 0).toLocaleString(), "Quick access"],
-		["▱", "Storage used", formatSize(Number(dashboard.storage_bytes || 0)), "Original files"],
+		["items", "Total memes", Number(dashboard.total_items || 0).toLocaleString(), "Files and links"],
+		["tags", "Tags", Number(dashboard.tag_count || 0).toLocaleString(), "Across your archive"],
+		["storage", "Storage used", formatSize(Number(dashboard.storage_bytes || 0)), "Original files"],
+		["favorites", "Favorites", Number(dashboard.favorites || 0).toLocaleString(), "Quick access"],
 	];
 	dashboardStats.replaceChildren(...cards.map(([icon, label, value, note]) => {
 		const article = document.createElement("article");
 		article.className = "dashboard-stat-card";
-		article.innerHTML = `<i aria-hidden="true">${icon}</i><span>${label}</span><strong>${value}</strong><small>${note}</small>`;
+		article.dataset.icon = icon;
+		article.innerHTML = `<i aria-hidden="true"></i><span>${label}</span><strong>${value}</strong><small>${note}</small>`;
 		return article;
 	}));
 	dashboardRecent.replaceChildren();

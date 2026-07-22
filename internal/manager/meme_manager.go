@@ -72,6 +72,7 @@ type VaultDashboard struct {
 	TotalItems   int             `json:"total_items"`
 	Favorites    int             `json:"favorites"`
 	StorageBytes int64           `json:"storage_bytes"`
+	TagCount     int             `json:"tag_count"`
 	RecentItems  []accessor.Meme `json:"recent_items"`
 	TopTags      []VaultTagStat  `json:"top_tags"`
 }
@@ -171,6 +172,7 @@ func (m *MemeManager) Dashboard(userID string) VaultDashboard {
 	for name, count := range tagCounts {
 		dashboard.TopTags = append(dashboard.TopTags, VaultTagStat{Name: name, Count: count})
 	}
+	dashboard.TagCount = len(tagCounts)
 	slices.SortFunc(dashboard.TopTags, func(a, b VaultTagStat) int {
 		if a.Count != b.Count {
 			return b.Count - a.Count
