@@ -73,6 +73,12 @@ type VaultDashboard struct {
 	Favorites    int             `json:"favorites"`
 	StorageBytes int64           `json:"storage_bytes"`
 	RecentItems  []accessor.Meme `json:"recent_items"`
+	TopTags      []VaultTagStat  `json:"top_tags"`
+}
+
+type VaultTagStat struct {
+	Name  string `json:"name"`
+	Count int    `json:"count"`
 }
 
 func NewMemeManager(store accessor.Store) *MemeManager {
@@ -145,16 +151,35 @@ func (m *MemeManager) ListMemesSorted(userID, query string, favoritesOnly bool, 
 
 func (m *MemeManager) Dashboard(userID string) VaultDashboard {
 	items := m.store.List(strings.TrimSpace(userID), "", false, "")
-	dashboard := VaultDashboard{RecentItems: []accessor.Meme{}}
+	dashboard := VaultDashboard{RecentItems: []accessor.Meme{}, TopTags: []VaultTagStat{}}
+	tagCounts := map[string]int{}
 	for _, item := range items {
 		dashboard.TotalItems++
 		dashboard.StorageBytes += item.SizeBytes
 		if item.Favorite {
 			dashboard.Favorites++
 		}
+		for _, tag := range item.Tags {
+			normalized := strings.TrimSpace(tag)
+			if normalized != "" {
+				tagCounts[normalized]++
+			}
+		}
 	}
 	limit := min(6, len(items))
 	dashboard.RecentItems = append(dashboard.RecentItems, items[:limit]...)
+	for name, count := range tagCounts {
+		dashboard.TopTags = append(dashboard.TopTags, VaultTagStat{Name: name, Count: count})
+	}
+	slices.SortFunc(dashboard.TopTags, func(a, b VaultTagStat) int {
+		if a.Count != b.Count {
+			return b.Count - a.Count
+		}
+		return strings.Compare(a.Name, b.Name)
+	})
+	if len(dashboard.TopTags) > 5 {
+		dashboard.TopTags = dashboard.TopTags[:5]
+	}
 	return dashboard
 }
 

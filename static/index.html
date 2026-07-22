@@ -29,7 +29,7 @@
     <link rel="icon" type="image/png" sizes="192x192" href="/static/favicon/android-chrome-192x192.png" />
     <link rel="icon" type="image/png" sizes="512x512" href="/static/favicon/android-chrome-512x512.png" />
     <link rel="shortcut icon" href="/static/favicon/favicon.ico" />
-    <link rel="stylesheet" href="/static/styles.css?v=vault-20260722" />
+    <link rel="stylesheet" href="/static/styles.css?v=vault-20260722-2" />
   </head>
   <body>
     <button id="drawer-toggle" class="drawer-toggle hidden" type="button" aria-label="Open menu" aria-expanded="false">
@@ -136,6 +136,10 @@
         </button>
 
         <div class="sidebar-bottom-actions">
+          <div class="sidebar-storage" aria-label="Vault storage used">
+            <div><span>Storage used</span><strong id="sidebar-storage-label">0 B</strong></div>
+            <div class="sidebar-storage-track"><span id="sidebar-storage-bar"></span></div>
+          </div>
           <button id="open-link-upload-modal" type="button" class="sidebar-action-button">
             <span class="sidebar-action-label">Import Video Link</span>
             <svg class="sidebar-action-short" viewBox="0 0 24 24" aria-hidden="true">
@@ -156,6 +160,10 @@
 
       <main class="workspace">
         <header class="topbar">
+          <div class="mobile-header-brand">
+            <button class="mobile-menu-button" type="button" data-mobile-drawer aria-label="Open menu"><span></span><span></span><span></span></button>
+            <div class="mobile-brand-lockup"><span class="mobile-folder-mark" aria-hidden="true"></span><strong>meme <em>vault</em></strong></div>
+          </div>
           <div class="search-wrap">
             <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg>
             <input id="tag-search-input" type="search" placeholder="Search files, tags, notes, type, or source…" aria-label="Search the vault" />
@@ -209,16 +217,18 @@
 
         <section class="content-panel">
           <section id="home-dashboard" class="vault-dashboard" aria-live="polite">
-            <article class="vault-hero">
-              <div>
+            <div class="hero-stage">
+              <article class="vault-hero">
+                <img class="vault-hero-image" src="/static/assets/vault-cabinet-hero.png" alt="" aria-hidden="true" fetchpriority="high" />
+                <div class="vault-hero-copy">
                 <p class="section-kicker">Your private archive</p>
-                <h2>Your meme archive, organized chaos.</h2>
-                <p>Store it. Tag it. Find it again.</p>
+                <h2>Your meme archive,<br /><span>organized chaos.</span></h2>
+                <p>Store. Tag. Find. Repeat.</p>
                 <button id="hero-add-vault" class="primary-button" type="button">Add to Vault</button>
               </div>
-              <div class="archive-illustration" aria-hidden="true"><span></span><span></span><span></span></div>
-            </article>
-            <div id="dashboard-stats" class="dashboard-stats"></div>
+              </article>
+              <div id="dashboard-stats" class="dashboard-stats"></div>
+            </div>
             <section class="dashboard-section">
               <div class="section-heading"><div><p class="section-kicker">Recently filed</p><h3>Recently added</h3></div><button class="text-button" type="button" data-go-library>View all items</button></div>
               <div id="dashboard-recent" class="dashboard-recent"></div>
@@ -226,6 +236,10 @@
             <section class="storage-card">
               <div><p class="section-kicker">Storage</p><h3>Vault usage</h3></div>
               <div><strong id="dashboard-storage-label">—</strong><div class="storage-track"><span id="dashboard-storage-bar"></span></div><small>Original stored files</small></div>
+            </section>
+            <section id="dashboard-tags-section" class="dashboard-section hidden">
+              <div class="section-heading"><div><p class="section-kicker">Filed by theme</p><h3>Popular tags</h3></div><button class="text-button" type="button" data-go-library>Browse archive</button></div>
+              <div id="dashboard-tags" class="dashboard-tag-grid"></div>
             </section>
           </section>
           <section id="library-heading" class="library-heading hidden">
@@ -775,6 +789,6 @@
 
     <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="false"></div>
 
-    <script src="/static/app.js?v=vault-20260722" defer></script>
+    <script src="/static/app.js?v=vault-20260722-2" defer></script>
   </body>
 </html>

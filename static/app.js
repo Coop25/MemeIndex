@@ -73,6 +73,10 @@ const dashboardStats = document.querySelector("#dashboard-stats");
 const dashboardRecent = document.querySelector("#dashboard-recent");
 const dashboardStorageLabel = document.querySelector("#dashboard-storage-label");
 const dashboardStorageBar = document.querySelector("#dashboard-storage-bar");
+const dashboardTagsSection = document.querySelector("#dashboard-tags-section");
+const dashboardTags = document.querySelector("#dashboard-tags");
+const sidebarStorageLabel = document.querySelector("#sidebar-storage-label");
+const sidebarStorageBar = document.querySelector("#sidebar-storage-bar");
 const libraryHeading = document.querySelector("#library-heading");
 const libraryTitle = document.querySelector("#library-title");
 const filterPanel = document.querySelector("#filter-panel");
@@ -2221,6 +2225,9 @@ function renderContentMode() {
   const adminMode = isAdminView();
 	const homeMode = state.filters.view === "home";
 	const libraryMode = !adminMode && !homeMode;
+	document.body.classList.toggle("home-mode", homeMode);
+	document.body.classList.toggle("admin-mode", adminMode);
+	document.body.classList.toggle("library-mode", libraryMode);
   const canBrowseLibrary = canView();
   const usesSharedAdminTable = adminMode && ["delete-queue", "audit-logs"].includes(activeAdminTab());
   const showAdminUsersPanel = adminMode && activeAdminTab() === "users";
@@ -2460,14 +2467,14 @@ async function fetchVaultDashboard() {
 	if (!(await expectAuthorized(response, "Failed to load dashboard."))) return;
 	const dashboard = await response.json();
 	const cards = [
-		["Items", Number(dashboard.total_items || 0).toLocaleString(), "Files and saved links"],
-		["Favorites", Number(dashboard.favorites || 0).toLocaleString(), "Pinned for quick access"],
-		["Storage used", formatSize(Number(dashboard.storage_bytes || 0)), "Original stored files"],
+		["▧", "Total items", Number(dashboard.total_items || 0).toLocaleString(), "Files and links"],
+		["♥", "Favorites", Number(dashboard.favorites || 0).toLocaleString(), "Quick access"],
+		["▱", "Storage used", formatSize(Number(dashboard.storage_bytes || 0)), "Original files"],
 	];
-	dashboardStats.replaceChildren(...cards.map(([label, value, note]) => {
+	dashboardStats.replaceChildren(...cards.map(([icon, label, value, note]) => {
 		const article = document.createElement("article");
 		article.className = "dashboard-stat-card";
-		article.innerHTML = `<span>${label}</span><strong>${value}</strong><small>${note}</small>`;
+		article.innerHTML = `<i aria-hidden="true">${icon}</i><span>${label}</span><strong>${value}</strong><small>${note}</small>`;
 		return article;
 	}));
 	dashboardRecent.replaceChildren();
@@ -2479,6 +2486,23 @@ async function fetchVaultDashboard() {
 	}
 	dashboardStorageLabel.textContent = formatSize(Number(dashboard.storage_bytes || 0));
 	dashboardStorageBar.style.width = dashboard.storage_bytes > 0 ? "100%" : "0%";
+	if (sidebarStorageLabel) sidebarStorageLabel.textContent = formatSize(Number(dashboard.storage_bytes || 0));
+	if (sidebarStorageBar) sidebarStorageBar.style.width = dashboard.storage_bytes > 0 ? "100%" : "0%";
+	const topTags = Array.isArray(dashboard.top_tags) ? dashboard.top_tags : [];
+	dashboardTags?.replaceChildren(...topTags.map((tag, index) => {
+		const button = document.createElement("button");
+		button.type = "button";
+		button.className = "dashboard-tag-card";
+		button.innerHTML = `<i aria-hidden="true">${["☺", "▤", "◈", "✦", "◉"][index % 5]}</i><span></span><small></small>`;
+		button.querySelector("span").textContent = tag.name;
+		button.querySelector("small").textContent = `${tag.count} item${tag.count === 1 ? "" : "s"}`;
+		button.addEventListener("click", () => {
+			tagSearchInput.value = tag.name;
+			applyTagSearch(tag.name).catch((error) => console.error(error));
+		});
+		return button;
+	}));
+	dashboardTagsSection?.classList.toggle("hidden", topTags.length === 0);
 }
 
 function queueTagSearch(rawValue) {
