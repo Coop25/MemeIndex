@@ -65,6 +65,16 @@ type MemeListResult struct {
 	NextOffset int             `json:"next_offset"`
 }
 
+// VaultDashboard is intentionally derived from the current store on every request.
+// It keeps the user home screen honest without introducing a second statistics
+// cache that could drift from the archive.
+type VaultDashboard struct {
+	TotalItems   int             `json:"total_items"`
+	Favorites    int             `json:"favorites"`
+	StorageBytes int64           `json:"storage_bytes"`
+	RecentItems  []accessor.Meme `json:"recent_items"`
+}
+
 func NewMemeManager(store accessor.Store) *MemeManager {
 	return NewMemeManagerWithTagSuggester(store, nil, nil, TagSuggestionRuntimeConfig{}, 60)
 }
@@ -102,12 +112,17 @@ func NewMemeManagerWithTagSuggester(store accessor.Store, tagSuggester *tagsugge
 }
 
 func (m *MemeManager) ListMemes(userID, query string, favoritesOnly bool, tag string, view string, offset int, limit int) MemeListResult {
+	return m.ListMemesSorted(userID, query, favoritesOnly, tag, view, "newest", offset, limit)
+}
+
+func (m *MemeManager) ListMemesSorted(userID, query string, favoritesOnly bool, tag string, view string, sortBy string, offset int, limit int) MemeListResult {
 	source := m.store.List(strings.TrimSpace(userID), strings.TrimSpace(query), false, strings.TrimSpace(tag))
 	counts := buildMemeCounts(source)
 	visible := filterMemesByView(source, strings.TrimSpace(view))
 	if favoritesOnly {
 		visible = filterMemesByView(visible, "favorites")
 	}
+	sortMemes(visible, sortBy)
 
 	if offset < 0 {
 		offset = 0
@@ -125,6 +140,46 @@ func (m *MemeManager) ListMemes(userID, query string, favoritesOnly bool, tag st
 		Counts:     counts,
 		HasMore:    end < len(visible),
 		NextOffset: end,
+	}
+}
+
+func (m *MemeManager) Dashboard(userID string) VaultDashboard {
+	items := m.store.List(strings.TrimSpace(userID), "", false, "")
+	dashboard := VaultDashboard{RecentItems: []accessor.Meme{}}
+	for _, item := range items {
+		dashboard.TotalItems++
+		dashboard.StorageBytes += item.SizeBytes
+		if item.Favorite {
+			dashboard.Favorites++
+		}
+	}
+	limit := min(6, len(items))
+	dashboard.RecentItems = append(dashboard.RecentItems, items[:limit]...)
+	return dashboard
+}
+
+func sortMemes(memes []accessor.Meme, sortBy string) {
+	switch strings.ToLower(strings.TrimSpace(sortBy)) {
+	case "oldest":
+		slices.SortStableFunc(memes, func(a, b accessor.Meme) int { return a.CreatedAt.Compare(b.CreatedAt) })
+	case "name":
+		slices.SortStableFunc(memes, func(a, b accessor.Meme) int {
+			return strings.Compare(strings.ToLower(a.OriginalName), strings.ToLower(b.OriginalName))
+		})
+	case "size":
+		slices.SortStableFunc(memes, func(a, b accessor.Meme) int {
+			if a.SizeBytes == b.SizeBytes {
+				return 0
+			}
+			if a.SizeBytes > b.SizeBytes {
+				return -1
+			}
+			return 1
+		})
+	case "updated":
+		slices.SortStableFunc(memes, func(a, b accessor.Meme) int { return b.UpdatedAt.Compare(a.UpdatedAt) })
+	default:
+		slices.SortStableFunc(memes, func(a, b accessor.Meme) int { return b.CreatedAt.Compare(a.CreatedAt) })
 	}
 }
 
@@ -423,7 +478,7 @@ func (m *MemeManager) AdminDashboard() AdminDashboardStats {
 			stats.ImageSizeBytes += meme.SizeBytes
 		case strings.HasPrefix(meme.ContentType, "video/"):
 			stats.VideoSizeBytes += meme.SizeBytes
-		case meme.ContentType == "audio/mpeg" || strings.HasSuffix(strings.ToLower(meme.OriginalName), ".mp3"):
+		case strings.HasPrefix(meme.ContentType, "audio/") || strings.HasSuffix(strings.ToLower(meme.OriginalName), ".mp3"):
 			stats.AudioSizeBytes += meme.SizeBytes
 		default:
 			stats.OtherSizeBytes += meme.SizeBytes
@@ -987,7 +1042,7 @@ func filterMemesByView(memes []accessor.Meme, view string) []accessor.Meme {
 		return filterMemes(memes, func(meme accessor.Meme) bool { return strings.HasPrefix(meme.ContentType, "image/") })
 	case "mp3s":
 		return filterMemes(memes, func(meme accessor.Meme) bool {
-			return meme.ContentType == "audio/mpeg" || strings.HasSuffix(strings.ToLower(meme.OriginalName), ".mp3")
+			return strings.HasPrefix(meme.ContentType, "audio/") || strings.HasSuffix(strings.ToLower(meme.OriginalName), ".mp3")
 		})
 	case "untagged":
 		return filterMemes(memes, func(meme accessor.Meme) bool { return len(meme.Tags) == 0 })
@@ -995,7 +1050,7 @@ func filterMemesByView(memes []accessor.Meme, view string) []accessor.Meme {
 		return filterMemes(memes, func(meme accessor.Meme) bool {
 			return !strings.HasPrefix(meme.ContentType, "image/") &&
 				!strings.HasPrefix(meme.ContentType, "video/") &&
-				meme.ContentType != "audio/mpeg" &&
+				!strings.HasPrefix(meme.ContentType, "audio/") &&
 				!strings.HasSuffix(strings.ToLower(meme.OriginalName), ".mp3")
 		})
 	default:

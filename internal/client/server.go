@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"html"
 	"log"
 	"mime"
+	"net"
 	"net/http"
 	"net/textproto"
 	"net/url"
@@ -74,6 +76,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/service-worker.js", s.handleServiceWorker)
 	mux.Handle("/pwa-icons/", http.StripPrefix("/pwa-icons/", http.FileServer(http.Dir(filepath.Join("static", "favicon")))))
 	mux.HandleFunc("/api/auth/session", s.handleAuthSession)
+	mux.Handle("/api/dashboard", s.withAPIAuth(http.HandlerFunc(s.handleDashboard), permissionView))
 	mux.Handle("/api/users", s.withAPIAuth(http.HandlerFunc(s.handleUsers), permissionManageUsers))
 	mux.Handle("/api/users/", s.withAPIAuth(http.HandlerFunc(s.handleUserByID), permissionManageUsers))
 	mux.Handle("/api/admin/dashboard", s.withAPIAuth(http.HandlerFunc(s.handleAdminDashboard), permissionManageUsers))
@@ -96,6 +99,7 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/static/", s.withPageAuth(http.StripPrefix("/static/", http.FileServer(http.Dir("static")))))
 	mux.Handle("/", s.withPageAuth(http.HandlerFunc(s.handleIndex)))
 	mux.Handle("/api/memes", s.withAPIAuth(http.HandlerFunc(s.handleMemes), permissionView))
+	mux.Handle("/api/memes/save-link", s.withAPIAuth(http.HandlerFunc(s.handleSaveLink), permissionUpload))
 	mux.Handle("/api/memes/", s.withAPIAuth(http.HandlerFunc(s.handleMemeByID), permissionView))
 	mux.Handle("/api/memes/random", s.withAPIAuth(http.HandlerFunc(s.handleRandomMeme), permissionView))
 	mux.Handle("/api/reel-session", s.withAPIAuth(http.HandlerFunc(s.handleReelSession), permissionView))
@@ -149,12 +153,13 @@ func (s *Server) withPageAuth(next http.Handler) http.Handler {
 }
 
 func (s *Server) withProtectedAssetAuth(next http.Handler) http.Handler {
-	if !s.auth.enabled() {
-		return next
-	}
-
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		setProtectedAssetHeaders(w)
+		setUntrustedAssetHeaders(w, r.URL.Path)
+		if !s.auth.enabled() {
+			next.ServeHTTP(w, r)
+			return
+		}
 
 		session, ok := s.auth.sessionFromRequest(r)
 		if !ok || !s.auth.authorizeAssetRequest(session, r) {
@@ -164,6 +169,18 @@ func (s *Server) withProtectedAssetAuth(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r.WithContext(contextWithSession(r.Context(), session)))
 	})
+}
+
+func setUntrustedAssetHeaders(w http.ResponseWriter, requestPath string) {
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if !strings.HasPrefix(requestPath, "/uploads/") {
+		return
+	}
+	w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'; style-src 'unsafe-inline'")
+	switch strings.ToLower(filepath.Ext(requestPath)) {
+	case ".html", ".htm", ".xhtml", ".svg", ".xml", ".js", ".mjs", ".css", ".url", ".exe", ".dll", ".msi", ".bat", ".cmd", ".ps1", ".sh":
+		w.Header().Set("Content-Disposition", "attachment")
+	}
 }
 
 func setProtectedAssetHeaders(w http.ResponseWriter) {
@@ -663,11 +680,91 @@ func (s *Server) listMemes(w http.ResponseWriter, r *http.Request) {
 	tag := r.URL.Query().Get("tag")
 	query := r.URL.Query().Get("q")
 	view := r.URL.Query().Get("view")
+	sortBy := r.URL.Query().Get("sort")
 	userID := currentUserID(r)
 	offset := parseQueryInt(r, "offset", 0)
 	limit := parseQueryInt(r, "limit", 72)
 
-	writeJSON(w, http.StatusOK, s.protectMemeListForResponse(r, s.managers.ListMemes(userID, query, favoritesOnly, tag, view, offset, limit)))
+	writeJSON(w, http.StatusOK, s.protectMemeListForResponse(r, s.managers.ListMemesSorted(userID, query, favoritesOnly, tag, view, sortBy, offset, limit)))
+}
+
+func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	dashboard := s.managers.Dashboard(currentUserID(r))
+	dashboard.RecentItems = s.protectMemesForResponse(r, dashboard.RecentItems)
+	writeJSON(w, http.StatusOK, dashboard)
+}
+
+func (s *Server) handleSaveLink(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var payload struct {
+		URL      string   `json:"url"`
+		Title    string   `json:"title"`
+		Notes    string   `json:"notes"`
+		Tags     []string `json:"tags"`
+		Favorite bool     `json:"favorite"`
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+	if err := decoder.Decode(&payload); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	parsed, err := url.Parse(strings.TrimSpace(payload.URL))
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" || parsed.User != nil {
+		http.Error(w, "a public HTTP or HTTPS URL is required", http.StatusBadRequest)
+		return
+	}
+	title := strings.TrimSpace(payload.Title)
+	if title == "" {
+		title = parsed.Hostname()
+	}
+	filename := safeLinkFilename(title) + ".url"
+	body := "[InternetShortcut]\r\nURL=" + parsed.String() + "\r\n"
+	header := textproto.MIMEHeader{}
+	header.Set("Content-Type", "application/internet-shortcut")
+	meme, err := s.managers.CreateMemeAsWithSource(currentAuditActor(r), strings.NewReader(body), header, filename, payload.Tags, payload.Notes, parsed.String())
+	if err != nil {
+		var duplicateErr *accessor.DuplicateMemeError
+		if errors.As(err, &duplicateErr) {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": "this link is already saved", "existing": s.protectMemeForResponse(r, duplicateErr.Existing)})
+			return
+		}
+		log.Printf("save external link failed: %v", err)
+		http.Error(w, "failed to save link", http.StatusInternalServerError)
+		return
+	}
+	if payload.Favorite {
+		if updated, favoriteErr := s.managers.SetFavorite(currentUserID(r), meme.ID, true); favoriteErr == nil {
+			meme = updated
+		}
+	}
+	writeJSON(w, http.StatusCreated, s.protectMemeForResponse(r, meme))
+}
+
+func safeLinkFilename(value string) string {
+	value = strings.TrimSpace(value)
+	var output strings.Builder
+	for _, char := range value {
+		if char == '/' || char == '\\' || char == ':' || char == '*' || char == '?' || char == '"' || char == '<' || char == '>' || char == '|' || char < 32 {
+			output.WriteRune('-')
+			continue
+		}
+		output.WriteRune(char)
+		if output.Len() >= 120 {
+			break
+		}
+	}
+	clean := strings.Trim(strings.TrimSpace(output.String()), ".")
+	if clean == "" {
+		return "saved-link"
+	}
+	return clean
 }
 
 func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
@@ -919,6 +1016,9 @@ func normalizeSourceURL(ctx context.Context, raw string) (string, error) {
 	if trimmed == "" {
 		return "", errUnsupportedMediaURL
 	}
+	if err := validateRemoteURL(ctx, trimmed); err != nil {
+		return "", err
+	}
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, trimmed, nil)
 	if err != nil {
@@ -929,10 +1029,10 @@ func normalizeSourceURL(ctx context.Context, raw string) (string, error) {
 	client := &http.Client{
 		Timeout: 20 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 10 {
-				return http.ErrUseLastResponse
+			if len(via) >= 5 {
+				return errors.New("too many redirects")
 			}
-			return nil
+			return validateRemoteURL(req.Context(), req.URL.String())
 		},
 	}
 
@@ -951,7 +1051,43 @@ func normalizeSourceURL(ctx context.Context, raw string) (string, error) {
 		return trimmed, nil
 	}
 
+	if err := validateRemoteURL(ctx, resolved); err != nil {
+		return "", err
+	}
 	return resolved, nil
+}
+
+func validateRemoteURL(ctx context.Context, raw string) error {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Hostname() == "" || parsed.User != nil {
+		return errors.New("invalid remote URL")
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return errors.New("only HTTP and HTTPS remote URLs are allowed")
+	}
+	host := parsed.Hostname()
+	addresses := []net.IP{}
+	if literal := net.ParseIP(host); literal != nil {
+		addresses = append(addresses, literal)
+	} else {
+		resolved, lookupErr := net.DefaultResolver.LookupIPAddr(ctx, host)
+		if lookupErr != nil {
+			return fmt.Errorf("resolve remote host: %w", lookupErr)
+		}
+		for _, address := range resolved {
+			addresses = append(addresses, address.IP)
+		}
+	}
+	if len(addresses) == 0 {
+		return errors.New("remote host did not resolve")
+	}
+	for _, address := range addresses {
+		if address.IsLoopback() || address.IsPrivate() || address.IsLinkLocalUnicast() ||
+			address.IsLinkLocalMulticast() || address.IsUnspecified() || address.IsMulticast() {
+			return errors.New("private and local network addresses are not allowed")
+		}
+	}
+	return nil
 }
 
 func sourceURLCandidates(original string, resolved string) []string {

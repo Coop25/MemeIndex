@@ -13,6 +13,8 @@ const state = {
     pageIndex: 0,
     hasMore: false,
     loading: false,
+		sort: "newest",
+		viewMode: "grid",
   },
   admin: {
     tab: "dashboard",
@@ -48,7 +50,8 @@ const state = {
   },
   filters: {
     tag: "",
-    view: "library",
+		query: "",
+    view: "home",
   },
 };
 
@@ -59,6 +62,24 @@ const uploadBusyOverlay = document.querySelector("#upload-busy-overlay");
 const uploadBusyMessage = document.querySelector("#upload-busy-message");
 const openUploadModalButton = document.querySelector("#open-upload-modal");
 const openLinkUploadModalButton = document.querySelector("#open-link-upload-modal");
+const addVaultModal = document.querySelector("#add-vault-modal");
+const addVaultClose = document.querySelector("#add-vault-close");
+const saveLinkModal = document.querySelector("#save-link-modal");
+const saveLinkForm = document.querySelector("#save-link-form");
+const saveLinkClose = document.querySelector("#save-link-close");
+const clipboardStatus = document.querySelector("#clipboard-status");
+const homeDashboard = document.querySelector("#home-dashboard");
+const dashboardStats = document.querySelector("#dashboard-stats");
+const dashboardRecent = document.querySelector("#dashboard-recent");
+const dashboardStorageLabel = document.querySelector("#dashboard-storage-label");
+const dashboardStorageBar = document.querySelector("#dashboard-storage-bar");
+const libraryHeading = document.querySelector("#library-heading");
+const libraryTitle = document.querySelector("#library-title");
+const filterPanel = document.querySelector("#filter-panel");
+const filterToggle = document.querySelector("#filter-toggle");
+const librarySort = document.querySelector("#library-sort");
+const gridViewButton = document.querySelector("#grid-view-button");
+const listViewButton = document.querySelector("#list-view-button");
 const linkUploadModal = document.querySelector("#link-upload-modal");
 const linkUploadBusyOverlay = document.querySelector("#link-upload-busy-overlay");
 const linkUploadBusyMessage = document.querySelector("#link-upload-busy-message");
@@ -2198,11 +2219,16 @@ function syncMemeGridObserver() {
 
 function renderContentMode() {
   const adminMode = isAdminView();
+	const homeMode = state.filters.view === "home";
+	const libraryMode = !adminMode && !homeMode;
   const canBrowseLibrary = canView();
   const usesSharedAdminTable = adminMode && ["delete-queue", "audit-logs"].includes(activeAdminTab());
   const showAdminUsersPanel = adminMode && activeAdminTab() === "users";
   const showAdminBackupPanel = adminMode && activeAdminTab() === "backup";
   adminView?.classList.toggle("hidden", !adminMode);
+	homeDashboard?.classList.toggle("hidden", !homeMode);
+	libraryHeading?.classList.toggle("hidden", !libraryMode);
+	filterPanel?.classList.toggle("is-unavailable", !libraryMode);
   adminTabs.forEach((tab) => {
     const active = tab.dataset.adminTab === activeAdminTab();
     tab.classList.toggle("is-active", active);
@@ -2213,14 +2239,19 @@ function renderContentMode() {
   adminViewTable?.classList.toggle("hidden", !usesSharedAdminTable);
   const pageState = getActiveAdminPageState();
   adminPagination?.classList.toggle("hidden", !adminMode || !pageState);
-  memeGridLoader?.classList.toggle("hidden", adminMode || !state.library.loading);
-  memeGridStatus?.classList.toggle("hidden", adminMode || memeGridStatus.textContent === "");
-  memeGridTopSpacer?.classList.toggle("hidden", adminMode);
-  memeGridBottomSpacer?.classList.toggle("hidden", adminMode);
-  memeGrid?.classList.toggle("hidden", adminMode);
-  memeGridSentinel?.classList.toggle("hidden", adminMode);
-  emptyState?.classList.toggle("hidden", adminMode || (canBrowseLibrary && state.memes.length !== 0));
-  document.querySelector(".library-toolbar")?.classList.toggle("hidden", adminMode || !canBrowseLibrary);
+  memeGridLoader?.classList.toggle("hidden", !libraryMode || !state.library.loading);
+  memeGridStatus?.classList.toggle("hidden", !libraryMode || memeGridStatus.textContent === "");
+  memeGridTopSpacer?.classList.toggle("hidden", !libraryMode);
+  memeGridBottomSpacer?.classList.toggle("hidden", !libraryMode);
+  memeGrid?.classList.toggle("hidden", !libraryMode);
+  memeGridSentinel?.classList.toggle("hidden", !libraryMode);
+  emptyState?.classList.toggle("hidden", !libraryMode || (canBrowseLibrary && state.memes.length !== 0));
+  document.querySelector(".library-toolbar")?.classList.toggle("hidden", !libraryMode || !canBrowseLibrary);
+	document.body.classList.toggle("library-list-view", state.library.viewMode === "list");
+	gridViewButton?.classList.toggle("is-active", state.library.viewMode === "grid");
+	listViewButton?.classList.toggle("is-active", state.library.viewMode === "list");
+	gridViewButton?.setAttribute("aria-pressed", String(state.library.viewMode === "grid"));
+	listViewButton?.setAttribute("aria-pressed", String(state.library.viewMode === "list"));
   renderAdminDashboard();
   renderAdminTagHygiene();
   renderAdminTagQueueStatus();
@@ -2257,7 +2288,9 @@ async function fetchMemes({ page = 0 } = {}) {
   try {
     const params = new URLSearchParams();
     if (state.filters.tag) params.set("tag", state.filters.tag);
+		if (state.filters.query) params.set("q", state.filters.query);
     if (state.filters.view && state.filters.view !== "library") params.set("view", state.filters.view);
+		params.set("sort", state.library.sort);
     params.set("offset", `${requestedPage * MEME_PAGE_SIZE}`);
       params.set("limit", `${MEME_PAGE_SIZE}`);
   
@@ -2303,6 +2336,11 @@ async function loadInitialMemes() {
       console.error(error);
     });
   }
+	if (state.filters.view === "home") {
+		await fetchVaultDashboard();
+		renderContentMode();
+		return;
+	}
   if (isAdminView() && canManageUsers() && activeAdminTab() === "dashboard") {
     adminViewKicker.textContent = "Admin";
     adminViewTitle.textContent = "Archive Dashboard";
@@ -2412,8 +2450,35 @@ async function loadInitialMemes() {
 }
 
 async function applyTagSearch(rawValue) {
-  state.filters.tag = normalizeTagValue(rawValue);
+	state.filters.query = String(rawValue || "").trim();
+	if (state.filters.view === "home") state.filters.view = "library";
   await loadInitialMemes();
+}
+
+async function fetchVaultDashboard() {
+	const response = await fetch("/api/dashboard");
+	if (!(await expectAuthorized(response, "Failed to load dashboard."))) return;
+	const dashboard = await response.json();
+	const cards = [
+		["Items", Number(dashboard.total_items || 0).toLocaleString(), "Files and saved links"],
+		["Favorites", Number(dashboard.favorites || 0).toLocaleString(), "Pinned for quick access"],
+		["Storage used", formatSize(Number(dashboard.storage_bytes || 0)), "Original stored files"],
+	];
+	dashboardStats.replaceChildren(...cards.map(([label, value, note]) => {
+		const article = document.createElement("article");
+		article.className = "dashboard-stat-card";
+		article.innerHTML = `<span>${label}</span><strong>${value}</strong><small>${note}</small>`;
+		return article;
+	}));
+	dashboardRecent.replaceChildren();
+	const recent = Array.isArray(dashboard.recent_items) ? dashboard.recent_items : [];
+	if (!recent.length) {
+		dashboardRecent.innerHTML = '<p class="dashboard-empty">Your newest items will appear here.</p>';
+	} else {
+		recent.forEach((meme) => dashboardRecent.appendChild(buildMemeCardElement(meme)));
+	}
+	dashboardStorageLabel.textContent = formatSize(Number(dashboard.storage_bytes || 0));
+	dashboardStorageBar.style.width = dashboard.storage_bytes > 0 ? "100%" : "0%";
 }
 
 function queueTagSearch(rawValue) {
@@ -2618,6 +2683,14 @@ function updateMemeCardElement(card, meme) {
   }
 
   card._tags = meme.tags || [];
+	const title = card.querySelector(".card-title");
+	const meta = card.querySelector(".card-meta");
+	if (title) title.textContent = meme.originalName || "Untitled item";
+	if (meta) {
+		const extension = String(meme.originalName || "").split(".").pop();
+		meta.textContent = `${meme.sourceUrl ? "External source" : (extension || meme.contentType || "File").toUpperCase()} · ${formatSize(meme.sizeBytes || 0)}`;
+	}
+	card.querySelector(".card-hitarea")?.setAttribute("aria-label", `Open ${meme.originalName || "item"} details`);
   return card;
 }
 
@@ -4663,7 +4736,7 @@ linkUploadForm?.addEventListener("submit", async (event) => {
   }
 });
 
-openUploadModalButton.addEventListener("click", () => {
+function openUploadDialog() {
   if (!canAdd()) return;
   setModalBusyState(uploadModal, uploadBusyOverlay, uploadBusyMessage, false);
   uploadStatus.textContent = "";
@@ -4673,15 +4746,117 @@ openUploadModalButton.addEventListener("click", () => {
   setUploadDragActive(false);
   uploadDragDepth = 0;
   uploadModal.showModal();
-});
+}
+
+function openVideoImportDialog() {
+	if (!canAdd()) return;
+	setModalBusyState(linkUploadModal, linkUploadBusyOverlay, linkUploadBusyMessage, false);
+	linkUploadStatus.textContent = "";
+	linkUploadForm?.reset();
+	resetLinkUploadTags();
+	linkUploadModal?.showModal();
+}
+
+function openAddVaultDialog() {
+	if (!canAdd()) return;
+	clipboardStatus.textContent = "";
+	addVaultModal?.showModal();
+}
+
+openUploadModalButton.addEventListener("click", openAddVaultDialog);
 
 openLinkUploadModalButton?.addEventListener("click", () => {
-  if (!canAdd()) return;
-  setModalBusyState(linkUploadModal, linkUploadBusyOverlay, linkUploadBusyMessage, false);
-  linkUploadStatus.textContent = "";
-  linkUploadForm?.reset();
-  resetLinkUploadTags();
-  linkUploadModal?.showModal();
+	openVideoImportDialog();
+});
+
+document.querySelectorAll("#top-add-vault, #hero-add-vault, #mobile-add-vault, [data-open-vault]").forEach((button) => button.addEventListener("click", openAddVaultDialog));
+addVaultClose?.addEventListener("click", () => addVaultModal.close());
+saveLinkClose?.addEventListener("click", () => saveLinkModal.close());
+
+document.querySelectorAll("[data-ingest]").forEach((button) => {
+	button.addEventListener("click", async () => {
+		const mode = button.dataset.ingest;
+		if (mode === "upload") {
+			addVaultModal.close();
+			openUploadDialog();
+		} else if (mode === "video") {
+			addVaultModal.close();
+			openVideoImportDialog();
+		} else if (mode === "link") {
+			addVaultModal.close();
+			saveLinkForm?.reset();
+			saveLinkModal?.showModal();
+		} else if (mode === "clipboard") {
+			await importFromClipboard();
+		}
+	});
+});
+
+async function importFromClipboard() {
+	clipboardStatus.textContent = "Reading clipboard…";
+	try {
+		if (navigator.clipboard?.read) {
+			const clipboardItems = await navigator.clipboard.read();
+			for (const item of clipboardItems) {
+				const binaryType = item.types.find((type) => type.startsWith("image/") || type === "application/pdf");
+				if (binaryType) {
+					const blob = await item.getType(binaryType);
+					const extension = binaryType.split("/")[1].replace("jpeg", "jpg");
+					const transfer = new DataTransfer();
+					transfer.items.add(new File([blob], `clipboard-${Date.now()}.${extension}`, { type: binaryType }));
+					addVaultModal.close();
+					openUploadDialog();
+					uploadFileInput.files = transfer.files;
+					renderUploadPreview(uploadFileInput.files[0], 1);
+					return;
+				}
+			}
+		}
+		const text = await navigator.clipboard.readText();
+		if (!text.trim()) throw new Error("Clipboard is empty or unavailable.");
+		try {
+			const parsed = new URL(text.trim());
+			if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+				addVaultModal.close();
+				document.querySelector("#save-link-url").value = parsed.href;
+				saveLinkModal.showModal();
+				return;
+			}
+		} catch (error) { /* Treat non-URL clipboard content as text. */ }
+		const transfer = new DataTransfer();
+		transfer.items.add(new File([text], `clipboard-${Date.now()}.txt`, { type: "text/plain" }));
+		addVaultModal.close();
+		openUploadDialog();
+		uploadFileInput.files = transfer.files;
+		renderUploadPreview(uploadFileInput.files[0], 1);
+	} catch (error) {
+		clipboardStatus.textContent = error?.message || "Clipboard access was not available. Use Upload Files instead.";
+	}
+}
+
+saveLinkForm?.addEventListener("submit", async (event) => {
+	event.preventDefault();
+	const status = document.querySelector("#save-link-status");
+	status.textContent = "Saving link…";
+	const response = await fetch("/api/memes/save-link", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({
+			url: document.querySelector("#save-link-url").value,
+			title: document.querySelector("#save-link-title").value,
+			tags: document.querySelector("#save-link-tags").value.split(",").map((tag) => tag.trim()).filter(Boolean),
+			notes: document.querySelector("#save-link-notes").value,
+			favorite: document.querySelector("#save-link-favorite").checked,
+		}),
+	});
+	if (!response.ok) {
+		status.textContent = await readAPIErrorMessage(response, "Could not save this link.");
+		return;
+	}
+	showToast("External link saved to the vault.", "success", { title: "Saved link" });
+	saveLinkModal.close();
+	state.filters.view = "library";
+	await loadInitialMemes();
 });
 
 openRandomReelButton?.addEventListener("click", () => {
@@ -5029,6 +5204,57 @@ sidebarNavItems.forEach((item) => {
       closeSidebarDrawer();
     }
   });
+});
+
+function navigateToView(view) {
+	state.filters.view = view || "library";
+	loadInitialMemes().catch((error) => console.error(error));
+	if (drawerMediaQuery.matches) closeSidebarDrawer();
+}
+
+document.querySelectorAll("[data-go-library]").forEach((button) => button.addEventListener("click", () => navigateToView("library")));
+document.querySelectorAll("[data-mobile-view]").forEach((button) => button.addEventListener("click", () => navigateToView(button.dataset.mobileView)));
+document.querySelectorAll("[data-mobile-drawer]").forEach((button) => button.addEventListener("click", openSidebarDrawer));
+
+filterToggle?.addEventListener("click", () => {
+	if (state.filters.view === "home" || state.filters.view === "admin") navigateToView("library");
+	const willOpen = filterPanel.classList.contains("hidden");
+	filterPanel.classList.toggle("hidden", !willOpen);
+	filterToggle.setAttribute("aria-expanded", String(willOpen));
+});
+
+document.querySelectorAll("[data-filter-view]").forEach((button) => button.addEventListener("click", () => {
+	state.filters.view = button.dataset.filterView || "library";
+	loadInitialMemes().catch((error) => console.error(error));
+}));
+
+document.querySelector("#clear-search")?.addEventListener("click", () => {
+	tagSearchInput.value = "";
+	state.filters.query = "";
+	state.filters.tag = "";
+	loadInitialMemes().catch((error) => console.error(error));
+});
+
+librarySort?.addEventListener("change", () => {
+	state.library.sort = librarySort.value;
+	try { window.localStorage.setItem("memevault.sort", state.library.sort); } catch (error) { /* Optional preference. */ }
+	fetchMemes({ page: 0 }).catch((error) => console.error(error));
+});
+
+function setLibraryViewMode(mode) {
+	state.library.viewMode = mode === "list" ? "list" : "grid";
+	try { window.localStorage.setItem("memevault.viewMode", state.library.viewMode); } catch (error) { /* Optional preference. */ }
+	renderContentMode();
+	queueRenderLoadedMemes({ force: true });
+}
+gridViewButton?.addEventListener("click", () => setLibraryViewMode("grid"));
+listViewButton?.addEventListener("click", () => setLibraryViewMode("list"));
+
+document.addEventListener("keydown", (event) => {
+	if (event.key === "/" && !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) {
+		event.preventDefault();
+		tagSearchInput.focus();
+	}
 });
 
 sidebarToggle?.addEventListener("click", () => {
@@ -5675,6 +5901,15 @@ function formatSize(bytes) {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+try {
+	state.library.viewMode = window.localStorage.getItem("memevault.viewMode") === "list" ? "list" : "grid";
+	state.library.sort = window.localStorage.getItem("memevault.sort") || "newest";
+	if (librarySort) librarySort.value = state.library.sort;
+} catch (error) {
+	state.library.viewMode = "grid";
+	state.library.sort = "newest";
 }
 
 syncResponsiveSidebar();

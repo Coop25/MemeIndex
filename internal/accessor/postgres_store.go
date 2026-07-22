@@ -182,6 +182,8 @@ func (s *PostgresStore) List(userID, query string, favoritesOnly bool, tag strin
 				$2 = '' OR
 				LOWER(m.original_name) LIKE '%' || $2 || '%' OR
 				LOWER(m.notes) LIKE '%' || $2 || '%' OR
+				LOWER(COALESCE(m.source_url, '')) LIKE '%' || $2 || '%' OR
+				LOWER(m.content_type) LIKE '%' || $2 || '%' OR
 				EXISTS (
 					SELECT 1
 					FROM meme_tags mtq

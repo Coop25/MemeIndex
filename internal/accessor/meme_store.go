@@ -726,6 +726,11 @@ func matchesQuery(meme Meme, needle string) bool {
 	if strings.Contains(strings.ToLower(meme.Notes), needle) {
 		return true
 	}
+	if strings.Contains(strings.ToLower(meme.SourceURL), needle) ||
+		strings.Contains(strings.ToLower(meme.ContentType), needle) ||
+		strings.Contains(strings.ToLower(filepath.Ext(meme.OriginalName)), needle) {
+		return true
+	}
 	for _, tag := range meme.Tags {
 		if strings.Contains(strings.ToLower(tag), needle) {
 			return true

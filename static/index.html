@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>MemeIndex</title>
+    <title>Meme Vault · MemeIndex</title>
     <meta name="description" content="MemeIndex is a self-hosted meme archive for browsing, tagging, favoriting, and organizing your backlog." />
     <meta property="og:type" content="website" />
     <meta property="og:title" content="MemeIndex" />
@@ -17,7 +17,7 @@
     <meta name="twitter:title" content="MemeIndex" />
     <meta name="twitter:description" content="A self-hosted archive for browsing, tagging, favoriting, and organizing your meme backlog." />
     <meta name="twitter:image" content="/static/favicon/icon.png" />
-    <meta name="theme-color" content="#111821" />
+    <meta name="theme-color" content="#08110e" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="MemeIndex" />
@@ -29,7 +29,7 @@
     <link rel="icon" type="image/png" sizes="192x192" href="/static/favicon/android-chrome-192x192.png" />
     <link rel="icon" type="image/png" sizes="512x512" href="/static/favicon/android-chrome-512x512.png" />
     <link rel="shortcut icon" href="/static/favicon/favicon.ico" />
-    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/styles.css?v=vault-20260722" />
   </head>
   <body>
     <button id="drawer-toggle" class="drawer-toggle hidden" type="button" aria-label="Open menu" aria-expanded="false">
@@ -45,8 +45,8 @@
             <div class="brand-block">
               <img class="brand-mark" src="/static/favicon/icon.png" alt="MemeIndex icon" />
               <div class="brand-copy">
-                <p class="brand-kicker">Self-hosted archive</p>
-                <h1>MemeIndex</h1>
+                <p class="brand-kicker">Personal archive</p>
+                <h1>Meme Vault</h1>
               </div>
             </div>
           </div>
@@ -60,8 +60,13 @@
               <path d="m14.5 6-6 6 6 6" />
             </svg>
           </button>
-          <button class="nav-item is-active" type="button" data-view="library">
-            <span class="nav-label">Library</span>
+          <p class="nav-section-label">Main</p>
+          <button class="nav-item is-active" type="button" data-view="home">
+            <span class="nav-label">Home</span>
+            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11.5 12 5l8 6.5"/><path d="M6.5 10.5V19h11v-8.5"/></svg>
+          </button>
+          <button class="nav-item" type="button" data-view="library">
+            <span class="nav-label">All Items</span>
             <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true">
               <path d="M4 11.5 12 5l8 6.5" />
               <path d="M6.5 10.5V19h11v-8.5" />
@@ -76,6 +81,7 @@
             </svg>
             <span id="favorite-count" class="nav-count">0</span>
           </button>
+          <p class="nav-section-label">Categories</p>
           <button class="nav-item" type="button" data-view="videos">
             <span class="nav-label">Videos</span>
             <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -94,7 +100,7 @@
             <span id="image-count" class="nav-count">0</span>
           </button>
           <button class="nav-item" type="button" data-view="mp3s">
-            <span class="nav-label">MP3s</span>
+            <span class="nav-label">Audio</span>
             <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true">
               <path d="M5 13a7 7 0 0 1 14 0" />
               <path d="M6 13h2a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1Z" />
@@ -131,7 +137,7 @@
 
         <div class="sidebar-bottom-actions">
           <button id="open-link-upload-modal" type="button" class="sidebar-action-button">
-            <span class="sidebar-action-label">Process Link</span>
+            <span class="sidebar-action-label">Import Video Link</span>
             <svg class="sidebar-action-short" viewBox="0 0 24 24" aria-hidden="true">
               <path d="M10 14 14 10" />
               <path d="M7.5 16.5 5 14a3 3 0 0 1 0-4.2l2.8-2.8a3 3 0 0 1 4.2 0" />
@@ -139,7 +145,7 @@
             </svg>
           </button>
         <button id="open-upload-modal" type="button" class="sidebar-action-button sidebar-action-button-bottom">
-          <span class="sidebar-action-label">Add File</span>
+          <span class="sidebar-action-label">Add to Vault</span>
           <svg class="sidebar-action-short" viewBox="0 0 24 24" aria-hidden="true">
             <path d="M12 5v14" />
             <path d="M5 12h14" />
@@ -151,8 +157,18 @@
       <main class="workspace">
         <header class="topbar">
           <div class="search-wrap">
-            <input id="tag-search-input" type="search" placeholder="Search tags" />
+            <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg>
+            <input id="tag-search-input" type="search" placeholder="Search files, tags, notes, type, or source…" aria-label="Search the vault" />
+            <kbd class="search-shortcut">/</kbd>
             <div id="tag-search-suggestions" class="tag-suggestions hidden"></div>
+          </div>
+          <div class="topbar-actions">
+            <button id="filter-toggle" class="toolbar-button" type="button" aria-expanded="false">Filters</button>
+            <div class="view-toggle" role="group" aria-label="Library layout">
+              <button id="grid-view-button" class="toolbar-button is-active" type="button" aria-pressed="true">Grid</button>
+              <button id="list-view-button" class="toolbar-button" type="button" aria-pressed="false">List</button>
+            </div>
+            <button id="top-add-vault" class="primary-button top-add-button" type="button">Add to Vault</button>
           </div>
           <div id="auth-panel" class="auth-panel">
             <button id="auth-trigger" class="auth-trigger" type="button" aria-label="Open account menu" aria-expanded="false" aria-haspopup="menu">
@@ -192,6 +208,33 @@
         </header>
 
         <section class="content-panel">
+          <section id="home-dashboard" class="vault-dashboard" aria-live="polite">
+            <article class="vault-hero">
+              <div>
+                <p class="section-kicker">Your private archive</p>
+                <h2>Your meme archive, organized chaos.</h2>
+                <p>Store it. Tag it. Find it again.</p>
+                <button id="hero-add-vault" class="primary-button" type="button">Add to Vault</button>
+              </div>
+              <div class="archive-illustration" aria-hidden="true"><span></span><span></span><span></span></div>
+            </article>
+            <div id="dashboard-stats" class="dashboard-stats"></div>
+            <section class="dashboard-section">
+              <div class="section-heading"><div><p class="section-kicker">Recently filed</p><h3>Recently added</h3></div><button class="text-button" type="button" data-go-library>View all items</button></div>
+              <div id="dashboard-recent" class="dashboard-recent"></div>
+            </section>
+            <section class="storage-card">
+              <div><p class="section-kicker">Storage</p><h3>Vault usage</h3></div>
+              <div><strong id="dashboard-storage-label">—</strong><div class="storage-track"><span id="dashboard-storage-bar"></span></div><small>Original stored files</small></div>
+            </section>
+          </section>
+          <section id="library-heading" class="library-heading hidden">
+            <div><p class="section-kicker">Archive</p><h2 id="library-title">All Items</h2><p id="library-subtitle">Every file and saved source in your vault.</p></div>
+            <label class="sort-control"><span>Sort by</span><select id="library-sort"><option value="newest">Newest</option><option value="oldest">Oldest</option><option value="name">Name</option><option value="size">Size</option><option value="updated">Recently updated</option></select></label>
+          </section>
+          <section id="filter-panel" class="filter-panel hidden" aria-label="Library filters">
+            <button type="button" data-filter-view="library">All types</button><button type="button" data-filter-view="images">Images</button><button type="button" data-filter-view="videos">Videos</button><button type="button" data-filter-view="mp3s">Audio</button><button type="button" data-filter-view="files">Documents & other</button><button type="button" data-filter-view="untagged">Unsorted</button><button id="clear-search" type="button">Clear search</button>
+          </section>
           <section id="admin-view" class="admin-view hidden" aria-live="polite">
             <div class="admin-view-header">
               <div>
@@ -346,7 +389,7 @@
           <div id="meme-grid" class="meme-grid"></div>
           <div id="meme-grid-bottom-spacer" class="meme-grid-spacer hidden" aria-hidden="true"></div>
           <div id="meme-grid-sentinel" class="meme-grid-sentinel hidden" aria-hidden="true"></div>
-          <p id="empty-state" class="empty-state hidden">No memes match this view yet.</p>
+          <div id="empty-state" class="empty-state hidden"><div class="empty-cabinet" aria-hidden="true"><span></span><span></span></div><h3>No items found</h3><p>Try another filter, or add something new to the vault.</p><button class="primary-button" type="button" data-open-vault>Add to Vault</button></div>
           <div class="library-toolbar" aria-label="Meme pages">
             <div class="meme-pagination">
               <button id="meme-page-prev" class="meme-page-button" type="button" aria-label="Previous page" disabled>
@@ -361,6 +404,40 @@
         </section>
       </main>
     </div>
+
+    <nav class="mobile-bottom-nav" aria-label="Primary navigation">
+      <button type="button" data-mobile-view="home"><span>⌂</span>Home</button>
+      <button type="button" data-mobile-view="library"><span>▦</span>Library</button>
+      <button id="mobile-add-vault" class="mobile-add-button" type="button" aria-label="Add to Vault"><span>+</span>Add</button>
+      <button type="button" data-mobile-view="favorites"><span>♡</span>Favorites</button>
+      <button type="button" data-mobile-drawer><span>☰</span>More</button>
+    </nav>
+
+    <dialog id="add-vault-modal" class="choice-modal">
+      <div class="choice-modal-card">
+        <div class="upload-modal-header"><div><p class="section-kicker">Ingest</p><h2>Add to Vault</h2></div><button id="add-vault-close" class="upload-modal-close" type="button" aria-label="Close">×</button></div>
+        <p class="upload-modal-copy">Files stay in their original format. Choose how you want to add this item.</p>
+        <div class="ingest-choice-grid">
+          <button type="button" data-ingest="upload"><strong>Upload Files</strong><span>Choose or drop any file type</span></button>
+          <button type="button" data-ingest="video"><strong>Import Video Link</strong><span>Download with the existing importer</span></button>
+          <button type="button" data-ingest="link"><strong>Save External Link</strong><span>Bookmark without downloading</span></button>
+          <button type="button" data-ingest="clipboard"><strong>Paste from Clipboard</strong><span>Images, files, text, or URLs</span></button>
+        </div>
+        <p id="clipboard-status" class="status-text"></p>
+      </div>
+    </dialog>
+
+    <dialog id="save-link-modal" class="choice-modal">
+      <form id="save-link-form" class="choice-modal-card">
+        <div class="upload-modal-header"><div><p class="section-kicker">Bookmark</p><h2>Save External Link</h2></div><button id="save-link-close" class="upload-modal-close" type="button" aria-label="Close">×</button></div>
+        <label class="field"><span>URL</span><input id="save-link-url" type="url" required placeholder="https://example.com/post" /></label>
+        <label class="field"><span>Display title</span><input id="save-link-title" type="text" placeholder="Optional title" /></label>
+        <label class="field"><span>Tags</span><input id="save-link-tags" type="text" placeholder="reference, reaction" /></label>
+        <label class="field"><span>Description or notes</span><textarea id="save-link-notes" rows="4"></textarea></label>
+        <label class="check-field"><input id="save-link-favorite" type="checkbox" /> Add to favorites</label>
+        <button class="primary-button" type="submit">Save Link</button><p id="save-link-status" class="status-text"></p>
+      </form>
+    </dialog>
 
     <button id="overlay-close" class="overlay-close hidden" type="button" aria-label="Close details">X</button>
 
@@ -384,7 +461,7 @@
           <div class="upload-modal-header">
             <div>
               <p class="section-kicker">Upload</p>
-              <h2>Add To Library</h2>
+              <h2>Upload Files</h2>
             </div>
             <button id="upload-modal-close" class="upload-modal-close" type="button" aria-label="Close upload">X</button>
           </div>
@@ -392,7 +469,7 @@
           <form id="upload-form" class="upload-form">
             <label class="field">
               <span>File</span>
-              <input id="upload-file-input" type="file" name="file" accept="image/*,video/*,audio/*,.mp3,.zip,.pdf,.psd,.gif,.webp" multiple required />
+              <input id="upload-file-input" type="file" name="file" multiple required />
             </label>
             <label class="field">
               <span>Tags</span>
@@ -409,7 +486,7 @@
               <span>Notes</span>
               <textarea name="notes" rows="4" placeholder="Context, origin, or ideal use case"></textarea>
             </label>
-            <button type="submit" class="primary-button">Upload</button>
+            <button type="submit" class="primary-button">Upload to Vault</button>
           </form>
           <p id="upload-status" class="status-text"></p>
         </div>
@@ -428,7 +505,7 @@
           <div class="upload-modal-header">
             <div>
               <p class="section-kicker">Import</p>
-              <h2>Process Link</h2>
+              <h2>Import Video Link</h2>
             </div>
             <button id="link-upload-modal-close" class="upload-modal-close" type="button" aria-label="Close link import">X</button>
           </div>
@@ -453,7 +530,7 @@
               <span>Notes</span>
               <textarea id="link-upload-notes-input" name="notes" rows="5" placeholder="Context, origin, or ideal use case"></textarea>
             </label>
-            <button type="submit" class="primary-button">Process Link</button>
+            <button type="submit" class="primary-button">Import Video</button>
           </form>
           <p id="link-upload-status" class="status-text"></p>
         </div>
@@ -532,6 +609,7 @@
           <div class="card-tags">
             <div class="tag-list"></div>
           </div>
+          <div class="card-summary"><strong class="card-title"></strong><span class="card-meta"></span></div>
         </div>
       </article>
     </template>
@@ -697,6 +775,6 @@
 
     <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="false"></div>
 
-    <script src="/static/app.js" defer></script>
+    <script src="/static/app.js?v=vault-20260722" defer></script>
   </body>
 </html>
