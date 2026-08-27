@@ -458,6 +458,17 @@ func (s *MemeStore) SetFavorite(userID, id string, favorite bool) (Meme, error) 
 	return Meme{}, os.ErrNotExist
 }
 
+func (s *MemeStore) TotalFavoriteAssignments() (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	total := 0
+	for _, favorites := range s.favoritesByUser {
+		total += len(favorites)
+	}
+	return total, nil
+}
+
 func (s *MemeStore) Delete(input DeleteInput) (DeleteResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

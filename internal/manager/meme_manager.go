@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand/v2"
 	"net/textproto"
 	"os"
 	"path/filepath"
@@ -69,12 +70,15 @@ type MemeListResult struct {
 // It keeps the user home screen honest without introducing a second statistics
 // cache that could drift from the archive.
 type VaultDashboard struct {
-	TotalItems   int             `json:"total_items"`
-	Favorites    int             `json:"favorites"`
-	StorageBytes int64           `json:"storage_bytes"`
-	TagCount     int             `json:"tag_count"`
-	RecentItems  []accessor.Meme `json:"recent_items"`
-	TopTags      []VaultTagStat  `json:"top_tags"`
+	TotalItems    int             `json:"total_items"`
+	Favorites     int             `json:"favorites"`
+	StorageBytes  int64           `json:"storage_bytes"`
+	TagCount      int             `json:"tag_count"`
+	Counts        MemeCounts      `json:"counts"`
+	RecentItems   []accessor.Meme `json:"recent_items"`
+	FavoriteItems []accessor.Meme `json:"favorite_items"`
+	RandomItems   []accessor.Meme `json:"random_items"`
+	TopTags       []VaultTagStat  `json:"top_tags"`
 }
 
 type VaultTagStat struct {
@@ -152,13 +156,22 @@ func (m *MemeManager) ListMemesSorted(userID, query string, favoritesOnly bool, 
 
 func (m *MemeManager) Dashboard(userID string) VaultDashboard {
 	items := m.store.List(strings.TrimSpace(userID), "", false, "")
-	dashboard := VaultDashboard{RecentItems: []accessor.Meme{}, TopTags: []VaultTagStat{}}
+	dashboard := VaultDashboard{
+		Counts:        buildMemeCounts(items),
+		RecentItems:   []accessor.Meme{},
+		FavoriteItems: []accessor.Meme{},
+		RandomItems:   []accessor.Meme{},
+		TopTags:       []VaultTagStat{},
+	}
 	tagCounts := map[string]int{}
 	for _, item := range items {
 		dashboard.TotalItems++
 		dashboard.StorageBytes += item.SizeBytes
 		if item.Favorite {
 			dashboard.Favorites++
+			if len(dashboard.FavoriteItems) < 6 {
+				dashboard.FavoriteItems = append(dashboard.FavoriteItems, item)
+			}
 		}
 		for _, tag := range item.Tags {
 			normalized := strings.TrimSpace(tag)
@@ -169,20 +182,47 @@ func (m *MemeManager) Dashboard(userID string) VaultDashboard {
 	}
 	limit := min(6, len(items))
 	dashboard.RecentItems = append(dashboard.RecentItems, items[:limit]...)
-	for name, count := range tagCounts {
-		dashboard.TopTags = append(dashboard.TopTags, VaultTagStat{Name: name, Count: count})
+	for _, index := range rand.Perm(len(items))[:limit] {
+		dashboard.RandomItems = append(dashboard.RandomItems, items[index])
 	}
 	dashboard.TagCount = len(tagCounts)
-	slices.SortFunc(dashboard.TopTags, func(a, b VaultTagStat) int {
+	dashboard.TopTags = topTagStats(tagCounts, 5)
+	return dashboard
+}
+
+func (m *MemeManager) PopularTags(userID string, limit int) []VaultTagStat {
+	if limit <= 0 {
+		limit = 10
+	}
+	limit = min(limit, 50)
+
+	tagCounts := map[string]int{}
+	for _, item := range m.store.List(strings.TrimSpace(userID), "", false, "") {
+		for _, tag := range item.Tags {
+			normalized := strings.TrimSpace(tag)
+			if normalized != "" {
+				tagCounts[normalized]++
+			}
+		}
+	}
+	return topTagStats(tagCounts, limit)
+}
+
+func topTagStats(tagCounts map[string]int, limit int) []VaultTagStat {
+	stats := make([]VaultTagStat, 0, len(tagCounts))
+	for name, count := range tagCounts {
+		stats = append(stats, VaultTagStat{Name: name, Count: count})
+	}
+	slices.SortFunc(stats, func(a, b VaultTagStat) int {
 		if a.Count != b.Count {
 			return b.Count - a.Count
 		}
 		return strings.Compare(a.Name, b.Name)
 	})
-	if len(dashboard.TopTags) > 5 {
-		dashboard.TopTags = dashboard.TopTags[:5]
+	if limit >= 0 && len(stats) > limit {
+		stats = stats[:limit]
 	}
-	return dashboard
+	return stats
 }
 
 func sortMemes(memes []accessor.Meme, sortBy string) {
@@ -246,6 +286,13 @@ func (m *MemeManager) SetFavorite(userID, id string, favorite bool) (accessor.Me
 	return m.store.SetFavorite(strings.TrimSpace(userID), strings.TrimSpace(id), favorite)
 }
 
+func (m *MemeManager) SetFavoriteAs(userID, id string, favorite bool, actor accessor.AuditActor) (accessor.Meme, error) {
+	if store, ok := m.store.(accessor.FavoriteAuditStore); ok {
+		return store.SetFavoriteWithActor(strings.TrimSpace(userID), strings.TrimSpace(id), favorite, actor)
+	}
+	return m.SetFavorite(userID, id, favorite)
+}
+
 func (m *MemeManager) GetMeme(userID, id string) (accessor.Meme, error) {
 	return m.store.GetByID(strings.TrimSpace(userID), strings.TrimSpace(id))
 }
@@ -290,6 +337,10 @@ type TagSuggestionQueueStatus struct {
 	LastSuccessAt              time.Time                 `json:"last_success_at,omitempty"`
 	QueuedMemes                []QueuedTagSuggestionItem `json:"queued_memes,omitempty"`
 	PendingReviewMemes         []PendingReviewMemeItem   `json:"pending_review_memes,omitempty"`
+	PendingReviewOffset        int                       `json:"pending_review_offset"`
+	PendingReviewLimit         int                       `json:"pending_review_limit"`
+	PendingReviewHasMore       bool                      `json:"pending_review_has_more"`
+	PendingReviewNextOffset    int                       `json:"pending_review_next_offset"`
 }
 
 type QueuedTagSuggestionItem struct {
@@ -331,14 +382,29 @@ type AdminDashboardStats struct {
 	OtherSizeBytes         int64                      `json:"other_size_bytes"`
 	UploadedLast24Hours    int                        `json:"uploaded_last_24_hours"`
 	UploadedLast7Days      int                        `json:"uploaded_last_7_days"`
+	UploadedLast30Days     int                        `json:"uploaded_last_30_days"`
+	UploadedPrevious30Days int                        `json:"uploaded_previous_30_days"`
+	BytesLast30Days        int64                      `json:"bytes_last_30_days"`
+	BytesPrevious30Days    int64                      `json:"bytes_previous_30_days"`
+	UploadSeries           []AdminDashboardDayStat    `json:"upload_series"`
 	RecentMemes            []AdminDashboardRecentMeme `json:"recent_memes"`
 	TopTags                []AdminDashboardTagStat    `json:"top_tags"`
+}
+
+type AdminDashboardDayStat struct {
+	Date    string `json:"date"`
+	Uploads int    `json:"uploads"`
+	Bytes   int64  `json:"bytes"`
 }
 
 type AdminDashboardRecentMeme struct {
 	ID           string    `json:"id"`
 	OriginalName string    `json:"original_name"`
 	ContentType  string    `json:"content_type"`
+	FilePath     string    `json:"file_path"`
+	PreviewPath  string    `json:"preview_path"`
+	SizeBytes    int64     `json:"size_bytes"`
+	Tags         []string  `json:"tags"`
 	CreatedAt    time.Time `json:"created_at"`
 	TagCount     int       `json:"tag_count"`
 }
@@ -472,12 +538,20 @@ func (m *MemeManager) ResetTagSuggestionsAndRequeueUntagged() (ResetTagSuggestio
 func (m *MemeManager) AdminDashboard() AdminDashboardStats {
 	memes := m.store.List("", "", false, "")
 	stats := AdminDashboardStats{
-		Counts:      buildMemeCounts(memes),
-		RecentMemes: make([]AdminDashboardRecentMeme, 0, min(6, len(memes))),
-		TopTags:     []AdminDashboardTagStat{},
+		Counts:       buildMemeCounts(memes),
+		UploadSeries: make([]AdminDashboardDayStat, 30),
+		RecentMemes:  make([]AdminDashboardRecentMeme, 0, min(6, len(memes))),
+		TopTags:      []AdminDashboardTagStat{},
 	}
 
 	now := time.Now().UTC()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	seriesIndex := map[string]int{}
+	for index := range stats.UploadSeries {
+		date := today.AddDate(0, 0, index-29).Format("2006-01-02")
+		seriesIndex[date] = index
+		stats.UploadSeries[index] = AdminDashboardDayStat{Date: date}
+	}
 	tagCounts := map[string]int{}
 	for _, meme := range memes {
 		stats.TotalSizeBytes += meme.SizeBytes
@@ -499,6 +573,17 @@ func (m *MemeManager) AdminDashboard() AdminDashboardStats {
 		if age <= 7*24*time.Hour {
 			stats.UploadedLast7Days += 1
 		}
+		if age <= 30*24*time.Hour {
+			stats.UploadedLast30Days += 1
+			stats.BytesLast30Days += meme.SizeBytes
+		} else if age <= 60*24*time.Hour {
+			stats.UploadedPrevious30Days += 1
+			stats.BytesPrevious30Days += meme.SizeBytes
+		}
+		if index, ok := seriesIndex[meme.CreatedAt.UTC().Format("2006-01-02")]; ok {
+			stats.UploadSeries[index].Uploads += 1
+			stats.UploadSeries[index].Bytes += meme.SizeBytes
+		}
 
 		switch {
 		case strings.HasPrefix(meme.ContentType, "image/"):
@@ -516,6 +601,11 @@ func (m *MemeManager) AdminDashboard() AdminDashboardStats {
 		stats.AverageTagsPerMeme = float64(stats.TotalTagAssignments) / float64(len(memes))
 	}
 	stats.UniqueTags = len(tagCounts)
+	if analytics, ok := m.store.(accessor.AdminAnalyticsStore); ok {
+		if totalFavorites, err := analytics.TotalFavoriteAssignments(); err == nil {
+			stats.Counts.Favorites = totalFavorites
+		}
+	}
 
 	recentLimit := min(6, len(memes))
 	for _, meme := range memes[:recentLimit] {
@@ -523,6 +613,10 @@ func (m *MemeManager) AdminDashboard() AdminDashboardStats {
 			ID:           meme.ID,
 			OriginalName: meme.OriginalName,
 			ContentType:  meme.ContentType,
+			FilePath:     meme.FilePath,
+			PreviewPath:  meme.PreviewPath,
+			SizeBytes:    meme.SizeBytes,
+			Tags:         append([]string(nil), meme.Tags...),
 			CreatedAt:    meme.CreatedAt,
 			TagCount:     len(meme.Tags),
 		})
@@ -659,9 +753,21 @@ func (m *MemeManager) MergeTags(sourceTag string, targetTag string, actor access
 	return result, nil
 }
 
-func (m *MemeManager) TagSuggestionQueueStatus() TagSuggestionQueueStatus {
+func (m *MemeManager) TagSuggestionQueueStatus(reviewOffset int, reviewLimit int) TagSuggestionQueueStatus {
+	if reviewOffset < 0 {
+		reviewOffset = 0
+	}
+	if reviewLimit <= 0 {
+		reviewLimit = 50
+	}
+	if reviewLimit > 100 {
+		reviewLimit = 100
+	}
+
 	status := TagSuggestionQueueStatus{
-		Enabled: m.tagSuggester != nil && m.tagSuggester.Enabled(),
+		Enabled:             m.tagSuggester != nil && m.tagSuggester.Enabled(),
+		PendingReviewOffset: reviewOffset,
+		PendingReviewLimit:  reviewLimit,
 	}
 	if m.tagSuggester != nil {
 		status.Model = m.tagSuggester.Model()
@@ -702,13 +808,18 @@ func (m *MemeManager) TagSuggestionQueueStatus() TagSuggestionQueueStatus {
 		}
 		if len(meme.SuggestedTags) > 0 {
 			status.PendingSuggestionMemes += 1
-			status.PendingReviewMemes = append(status.PendingReviewMemes, PendingReviewMemeItem{
-				ID:            meme.ID,
-				Name:          meme.OriginalName,
-				SuggestedTags: append([]string(nil), meme.SuggestedTags...),
-			})
+			pendingIndex := status.PendingSuggestionMemes - 1
+			if pendingIndex >= reviewOffset && len(status.PendingReviewMemes) < reviewLimit {
+				status.PendingReviewMemes = append(status.PendingReviewMemes, PendingReviewMemeItem{
+					ID:            meme.ID,
+					Name:          meme.OriginalName,
+					SuggestedTags: append([]string(nil), meme.SuggestedTags...),
+				})
+			}
 		}
 	}
+	status.PendingReviewNextOffset = min(status.PendingSuggestionMemes, reviewOffset+len(status.PendingReviewMemes))
+	status.PendingReviewHasMore = status.PendingReviewNextOffset < status.PendingSuggestionMemes
 
 	return status
 }
@@ -898,6 +1009,23 @@ func (m *MemeManager) DismissMemeTagSuggestion(userID string, id string, tag str
 	}
 
 	if err := suggestionStore.ReplaceSuggestedTags(meme.ID, removeTagValue(meme.SuggestedTags, tag)); err != nil {
+		return accessor.Meme{}, err
+	}
+
+	return m.store.GetByID(strings.TrimSpace(userID), meme.ID)
+}
+
+func (m *MemeManager) DismissAllMemeTagSuggestions(userID string, id string) (accessor.Meme, error) {
+	suggestionStore, ok := m.store.(accessor.SuggestedTagStore)
+	if !ok {
+		return accessor.Meme{}, tagsuggest.ErrDisabled
+	}
+
+	meme, err := m.store.GetByID(strings.TrimSpace(userID), strings.TrimSpace(id))
+	if err != nil {
+		return accessor.Meme{}, err
+	}
+	if err := suggestionStore.ReplaceSuggestedTags(meme.ID, nil); err != nil {
 		return accessor.Meme{}, err
 	}
 

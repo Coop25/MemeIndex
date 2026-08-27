@@ -29,7 +29,7 @@
     <link rel="icon" type="image/png" sizes="192x192" href="/static/favicon/android-chrome-192x192.png" />
     <link rel="icon" type="image/png" sizes="512x512" href="/static/favicon/android-chrome-512x512.png" />
     <link rel="shortcut icon" href="/static/favicon/favicon.ico" />
-    <link rel="stylesheet" href="/static/styles.css?v=vault-rebuild-20260722" />
+    <link rel="stylesheet" href="/static/styles.css?v=mobile-sticky-search-20260826" />
   </head>
   <body>
     <button id="drawer-toggle" class="drawer-toggle hidden" type="button" aria-label="Open menu" aria-expanded="false">
@@ -43,7 +43,7 @@
         <div class="sidebar-header">
           <div class="sidebar-header-row">
             <div class="brand-block">
-              <span class="brand-mark" aria-hidden="true"></span>
+              <img class="brand-mark" src="/static/favicon/icon.png" alt="" aria-hidden="true" />
               <div class="brand-copy">
                 <h1><span>meme</span><em>vault</em></h1>
                 <p class="brand-kicker">save it. find it. laugh later.</p>
@@ -124,37 +124,30 @@
             </svg>
             <span id="other-count" class="nav-count">0</span>
           </button>
+          <section id="sidebar-popular-tags-section" class="sidebar-popular-tags-section hidden" aria-label="Popular tags">
+            <p class="nav-section-label">Popular Tags</p>
+            <div id="sidebar-popular-tags" class="sidebar-popular-tags"></div>
+          </section>
         </nav>
 
-        <button id="open-random-reel" type="button" class="sidebar-action-button">
-          <span class="sidebar-action-label">Random Reel</span>
-          <svg class="sidebar-action-short" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M7 6h10" />
-            <path d="M7 12h10" />
-            <path d="M7 18h10" />
-          </svg>
-        </button>
-
         <div class="sidebar-bottom-actions">
-          <div class="sidebar-storage" aria-label="Vault storage used">
-            <div><span>Storage used</span><strong id="sidebar-storage-label">0 B</strong></div>
-            <div class="sidebar-storage-track"><span id="sidebar-storage-bar"></span></div>
-          </div>
-          <button id="open-link-upload-modal" type="button" class="sidebar-action-button">
-            <span class="sidebar-action-label">Import Video Link</span>
+          <button id="open-random-reel" type="button" class="sidebar-action-button sidebar-action-button-random" aria-label="Open Random Reel">
             <svg class="sidebar-action-short" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M10 14 14 10" />
-              <path d="M7.5 16.5 5 14a3 3 0 0 1 0-4.2l2.8-2.8a3 3 0 0 1 4.2 0" />
-              <path d="M16.5 7.5 19 10a3 3 0 0 1 0 4.2l-2.8 2.8a3 3 0 0 1-4.2 0" />
+              <path d="M4 7h3c4.5 0 5.5 10 10 10h3" />
+              <path d="m17 14 3 3-3 3" />
+              <path d="M4 17h3c1.5 0 2.6-1.1 3.6-2.6" />
+              <path d="M13.4 9.6C14.4 8.1 15.5 7 17 7h3" />
+              <path d="m17 4 3 3-3 3" />
             </svg>
+            <span class="sidebar-action-label">Random</span>
           </button>
-        <button id="open-upload-modal" type="button" class="sidebar-action-button sidebar-action-button-bottom">
-          <span class="sidebar-action-label">Add to Vault</span>
-          <svg class="sidebar-action-short" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M12 5v14" />
-            <path d="M5 12h14" />
-          </svg>
-        </button>
+          <button id="open-upload-modal" type="button" class="sidebar-action-button sidebar-action-button-bottom" aria-label="Add to Vault">
+            <svg class="sidebar-action-short" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 5v14" />
+              <path d="M5 12h14" />
+            </svg>
+            <span class="sidebar-action-label">Add</span>
+          </button>
         </div>
       </aside>
 
@@ -162,22 +155,14 @@
         <header class="topbar">
           <div class="mobile-header-brand">
             <button class="mobile-menu-button" type="button" data-mobile-drawer aria-label="Open menu"><span></span><span></span><span></span></button>
-            <div class="mobile-brand-lockup"><span class="mobile-folder-mark" aria-hidden="true"></span><strong>meme <em>vault</em></strong></div>
+            <div class="mobile-brand-lockup"><img class="mobile-brand-mark" src="/static/favicon/icon.png" alt="" aria-hidden="true" /><strong>meme <em>vault</em></strong></div>
           </div>
           <div class="search-wrap">
             <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg>
             <input id="tag-search-input" type="search" placeholder="Search memes, tags, or notes…" aria-label="Search the vault" />
-            <kbd class="search-shortcut">⌘ K</kbd>
             <div id="tag-search-suggestions" class="tag-suggestions hidden"></div>
           </div>
-          <div class="topbar-actions">
-            <button id="filter-toggle" class="toolbar-button" type="button" aria-expanded="false">Filters</button>
-            <div class="view-toggle" role="group" aria-label="Library layout">
-              <button id="grid-view-button" class="toolbar-button is-active" type="button" aria-pressed="true">Grid</button>
-              <button id="list-view-button" class="toolbar-button" type="button" aria-pressed="false">List</button>
-            </div>
-            <button id="top-add-vault" class="primary-button top-add-button" type="button">Add to Vault</button>
-          </div>
+          <div class="topbar-end">
           <div id="auth-panel" class="auth-panel">
             <button id="auth-trigger" class="auth-trigger" type="button" aria-label="Open account menu" aria-expanded="false" aria-haspopup="menu">
               <img id="auth-avatar" class="auth-avatar hidden" alt="" />
@@ -213,32 +198,37 @@
               <a id="auth-logout" class="auth-link auth-link-danger hidden" href="/auth/logout" role="menuitem">Logout</a>
             </div>
           </div>
+          </div>
         </header>
 
         <section class="content-panel">
           <section id="home-dashboard" class="vault-dashboard" aria-live="polite">
-            <div class="hero-stage">
-              <article class="vault-hero">
-                <img class="vault-hero-image" src="/static/assets/vault-cabinet-hero.png" alt="" aria-hidden="true" fetchpriority="high" />
-                <div class="vault-hero-copy">
-                <p class="section-kicker">Your private archive</p>
-                <h2>Your meme archive,<br /><span>organized chaos.</span></h2>
-                <p>Store. Tag. Find. Repeat.</p>
-                <button id="hero-add-vault" class="primary-button" type="button">Add to Vault</button>
+            <section class="dashboard-overview">
+              <div class="dashboard-overview-heading">
+                <h2>Vault overview</h2>
               </div>
-              </article>
               <div id="dashboard-stats" class="dashboard-stats"></div>
-            </div>
+            </section>
             <section class="dashboard-section">
-              <div class="section-heading"><div><p class="section-kicker">Recently filed</p><h3>Recently added</h3></div><button class="text-button" type="button" data-go-library>View all items</button></div>
+              <div class="section-heading"><h3>Recently added</h3><button class="text-button" type="button" data-go-library>View all items</button></div>
               <div id="dashboard-recent" class="dashboard-recent"></div>
             </section>
-            <section class="storage-card">
+            <section class="storage-card hidden" aria-hidden="true">
               <div><p class="section-kicker">Storage</p><h3>Vault usage</h3></div>
               <div><strong id="dashboard-storage-label">—</strong><div class="storage-track"><span id="dashboard-storage-bar"></span></div><small>Original stored files</small></div>
             </section>
+            <div class="dashboard-feature-grid">
+              <section class="dashboard-section dashboard-feature-section">
+                <div class="section-heading"><h3>Favorites</h3><button class="text-button" type="button" data-go-view="favorites">View favorites</button></div>
+                <div id="dashboard-favorites" class="dashboard-feature-items"></div>
+              </section>
+              <section class="dashboard-section dashboard-feature-section dashboard-random-section">
+                <div class="section-heading"><h3>Random picks</h3><button id="dashboard-random-refresh" class="text-button dashboard-shuffle-button" type="button">Shuffle</button></div>
+                <div id="dashboard-random" class="dashboard-feature-items"></div>
+              </section>
+            </div>
             <section id="dashboard-tags-section" class="dashboard-section hidden">
-              <div class="section-heading"><div><p class="section-kicker">Filed by theme</p><h3>Popular tags</h3></div><button class="text-button" type="button" data-go-library>Browse archive</button></div>
+              <div class="section-heading"><h3>Popular tags</h3><button class="text-button" type="button" data-go-library>Browse archive</button></div>
               <div id="dashboard-tags" class="dashboard-tag-grid"></div>
             </section>
           </section>
@@ -258,6 +248,13 @@
               <p id="admin-view-copy" class="admin-view-copy"></p>
             </div>
             <div id="admin-tabs" class="admin-tabs" role="tablist" aria-label="Admin sections">
+              <div class="admin-nav-brand" role="presentation">
+                <span class="admin-nav-brand-mark" aria-hidden="true">M</span>
+                <span><strong>meme vault</strong><small>Admin workspace</small></span>
+              </div>
+              <button class="admin-back-to-vault" type="button" data-admin-back-to-vault>
+                <span aria-hidden="true">←</span> Back to Vault
+              </button>
               <button class="admin-tab is-active" type="button" role="tab" data-admin-tab="dashboard" aria-selected="true">Dashboard</button>
               <button class="admin-tab" type="button" role="tab" data-admin-tab="users" aria-selected="false">Users</button>
               <button class="admin-tab" type="button" role="tab" data-admin-tab="tag-hygiene" aria-selected="false">Tag Hygiene</button>
@@ -269,6 +266,7 @@
               <button class="admin-tab" type="button" role="tab" data-admin-tab="audit-logs" aria-selected="false">Audit Logs</button>
               <button class="admin-tab" type="button" role="tab" data-admin-tab="backup" aria-selected="false">Backup & Restore</button>
             </div>
+            <div class="admin-page-content">
             <p id="admin-view-status" class="status-text"></p>
             <section id="admin-tag-queue-panel" class="admin-tag-queue-panel hidden" aria-live="polite">
               <div class="admin-tag-queue-header">
@@ -301,20 +299,41 @@
             </section>
             <section id="admin-dashboard-panel" class="admin-dashboard-panel hidden" aria-live="polite">
               <div id="admin-dashboard-grid" class="admin-dashboard-grid"></div>
-              <div class="admin-dashboard-lower">
-                <section class="admin-dashboard-section">
+              <div class="admin-dashboard-analytics">
+                <section class="admin-dashboard-section admin-dashboard-chart-card">
                   <div class="admin-dashboard-section-head">
-                    <p class="section-kicker">Tags</p>
-                    <h3>Leaderboard</h3>
+                    <div><p class="section-kicker">Growth</p><h3>Uploads over time</h3></div>
+                    <span class="admin-dashboard-range">Last 30 days</span>
+                  </div>
+                  <div id="admin-dashboard-upload-chart" class="admin-dashboard-upload-chart"></div>
+                </section>
+                <section class="admin-dashboard-section admin-dashboard-categories-card">
+                  <div class="admin-dashboard-section-head">
+                    <div><p class="section-kicker">Tags</p><h3>Top categories</h3></div>
                   </div>
                   <div id="admin-dashboard-tags" class="admin-dashboard-tags"></div>
                 </section>
-                <section class="admin-dashboard-section">
+                <section class="admin-dashboard-section admin-dashboard-health-card">
                   <div class="admin-dashboard-section-head">
-                    <p class="section-kicker">Recent</p>
-                    <h3>Newest Memes</h3>
+                    <div><p class="section-kicker">Runtime</p><h3>System health</h3></div>
+                  </div>
+                  <div id="admin-dashboard-health" class="admin-dashboard-health"></div>
+                </section>
+              </div>
+              <div class="admin-dashboard-bottom">
+                <section class="admin-dashboard-section admin-dashboard-uploads-card">
+                  <div class="admin-dashboard-section-head">
+                    <div><p class="section-kicker">Recent</p><h3>Recent uploads</h3></div>
+                    <button class="text-button" type="button" data-go-library>View all uploads</button>
                   </div>
                   <div id="admin-dashboard-recent" class="admin-dashboard-recent"></div>
+                </section>
+                <section class="admin-dashboard-section admin-dashboard-activity-card">
+                  <div class="admin-dashboard-section-head">
+                    <div><p class="section-kicker">Audit</p><h3>Recent activity</h3></div>
+                    <button class="text-button" type="button" data-admin-activity>View all</button>
+                  </div>
+                  <div id="admin-dashboard-activity" class="admin-dashboard-activity"></div>
                 </section>
               </div>
             </section>
@@ -393,6 +412,7 @@
                 <span aria-hidden="true">></span>
               </button>
             </div>
+            </div>
           </section>
           <div id="meme-grid-loader" class="loading-indicator loading-indicator-grid hidden" aria-live="polite" aria-hidden="true">
             <span class="loading-spinner" aria-hidden="true"></span>
@@ -429,41 +449,45 @@
 
     <dialog id="add-vault-modal" class="choice-modal">
       <div class="choice-modal-card">
-        <div class="upload-modal-header"><div><p class="section-kicker">Ingest</p><h2>Add to Vault</h2></div><button id="add-vault-close" class="upload-modal-close" type="button" aria-label="Close">×</button></div>
-        <p class="upload-modal-copy">Files stay in their original format. Choose how you want to add this item.</p>
-        <div class="ingest-choice-grid">
-          <button type="button" data-ingest="upload"><strong>Upload Files</strong><span>Choose or drop any file type</span></button>
-          <button type="button" data-ingest="video"><strong>Import Video Link</strong><span>Download with the existing importer</span></button>
-          <button type="button" data-ingest="link"><strong>Save External Link</strong><span>Bookmark without downloading</span></button>
-          <button type="button" data-ingest="clipboard"><strong>Paste from Clipboard</strong><span>Images, files, text, or URLs</span></button>
+        <div class="upload-modal-header">
+          <div><p class="section-kicker">Add content</p><h2>Add to Vault</h2></div>
+          <button id="add-vault-close" class="upload-modal-close" type="button" aria-label="Close">×</button>
         </div>
-        <p id="clipboard-status" class="status-text"></p>
+        <p class="upload-modal-copy">Upload something from your device or import a video directly from a supported link.</p>
+        <div class="ingest-choice-grid">
+          <button class="ingest-choice ingest-choice-upload" type="button" data-ingest="upload">
+            <span class="ingest-choice-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/></svg>
+            </span>
+            <span class="ingest-choice-copy"><strong>Upload Files</strong><small>Images, videos, audio, archives, and more</small></span>
+            <span class="ingest-choice-arrow" aria-hidden="true">→</span>
+          </button>
+          <button class="ingest-choice ingest-choice-video" type="button" data-ingest="video">
+            <span class="ingest-choice-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M10 8.5v7l6-3.5-6-3.5Z"/><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v11a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 17.5v-11Z"/></svg>
+            </span>
+            <span class="ingest-choice-copy"><strong>Import Video Link</strong><small>YouTube, TikTok, Reddit, Instagram, X, and more</small></span>
+            <span class="ingest-choice-arrow" aria-hidden="true">→</span>
+          </button>
+        </div>
       </div>
-    </dialog>
-
-    <dialog id="save-link-modal" class="choice-modal">
-      <form id="save-link-form" class="choice-modal-card">
-        <div class="upload-modal-header"><div><p class="section-kicker">Bookmark</p><h2>Save External Link</h2></div><button id="save-link-close" class="upload-modal-close" type="button" aria-label="Close">×</button></div>
-        <label class="field"><span>URL</span><input id="save-link-url" type="url" required placeholder="https://example.com/post" /></label>
-        <label class="field"><span>Display title</span><input id="save-link-title" type="text" placeholder="Optional title" /></label>
-        <label class="field"><span>Tags</span><input id="save-link-tags" type="text" placeholder="reference, reaction" /></label>
-        <label class="field"><span>Description or notes</span><textarea id="save-link-notes" rows="4"></textarea></label>
-        <label class="check-field"><input id="save-link-favorite" type="checkbox" /> Add to favorites</label>
-        <button class="primary-button" type="submit">Save Link</button><p id="save-link-status" class="status-text"></p>
-      </form>
     </dialog>
 
     <button id="overlay-close" class="overlay-close hidden" type="button" aria-label="Close details">X</button>
 
-    <dialog id="upload-modal" class="upload-modal">
+    <dialog id="upload-modal" class="upload-modal vault-upload-modal">
       <div class="upload-modal-shell">
         <div class="upload-preview-wrap">
           <div id="upload-preview" class="upload-preview">
             <div class="file-icon upload-empty-preview">
-              <strong>DROP</strong>
-              <span>Choose a file to preview it before uploading.</span>
+              <span class="upload-empty-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M12 15V4m0 0L8 8m4-4 4 4M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/></svg>
+              </span>
+              <strong>Drop files to preview</strong>
+              <span>Review your selection before it enters the vault.</span>
             </div>
           </div>
+          <div class="upload-preview-hint"><span>Original quality</span><span>Multiple files supported</span></div>
         </div>
         <div class="upload-modal-body">
           <div id="upload-busy-overlay" class="modal-busy-overlay hidden" aria-hidden="true">
@@ -481,16 +505,17 @@
           </div>
           <p class="upload-modal-copy">Add images, videos, MP3s, archives, and other files, then tag them on the way in.</p>
           <form id="upload-form" class="upload-form">
-            <label class="field">
-              <span>File</span>
+            <label class="field upload-file-field">
+              <span>Choose files</span>
               <input id="upload-file-input" type="file" name="file" multiple required />
+              <small>Images, videos, audio, documents, or archives</small>
             </label>
             <label class="field">
               <span>Tags</span>
-              <div class="tag-editor upload-tag-editor">
+              <div class="tag-editor upload-tag-editor shared-tag-box">
                 <div class="tag-control">
-                  <div id="upload-tag-chips" class="tag-token-list"></div>
                   <input id="upload-tags-input" type="text" placeholder="Add a tag..." autocomplete="off" />
+                  <div id="upload-tag-chips" class="tag-token-list"></div>
                 </div>
                 <div id="upload-tag-suggestions" class="tag-suggestions hidden"></div>
               </div>
@@ -500,14 +525,14 @@
               <span>Notes</span>
               <textarea name="notes" rows="4" placeholder="Context, origin, or ideal use case"></textarea>
             </label>
-            <button type="submit" class="primary-button">Upload to Vault</button>
+            <button type="submit" class="primary-button modal-submit-button">Upload to Vault</button>
           </form>
           <p id="upload-status" class="status-text"></p>
         </div>
       </div>
     </dialog>
 
-    <dialog id="link-upload-modal" class="upload-modal users-modal">
+    <dialog id="link-upload-modal" class="upload-modal users-modal link-import-modal">
       <div class="upload-modal-shell">
         <div class="upload-modal-body users-modal-body">
           <div id="link-upload-busy-overlay" class="modal-busy-overlay hidden" aria-hidden="true">
@@ -524,17 +549,21 @@
             <button id="link-upload-modal-close" class="upload-modal-close" type="button" aria-label="Close link import">X</button>
           </div>
           <p class="upload-modal-copy">Paste a supported YouTube, Facebook, Reddit, Instagram, TikTok, or Twitter/X URL and MemeIndex will download it, store it, and keep the original source link attached to the meme.</p>
+          <div class="import-platform-list" aria-label="Supported platforms">
+            <span>YouTube</span><span>TikTok</span><span>Instagram</span><span>Reddit</span><span>Facebook</span><span>X</span>
+          </div>
           <form id="link-upload-form" class="upload-form">
-            <label class="field">
+            <label class="field import-url-field">
               <span>Media Link</span>
               <input id="link-upload-input" type="url" name="source_url" placeholder="https://www.youtube.com/watch?v=... or a supported Facebook, Reddit, Instagram, TikTok, or X URL" inputmode="url" required />
+              <small>The original source URL stays attached to the imported file.</small>
             </label>
             <label class="field">
               <span>Tags</span>
-              <div class="tag-editor upload-tag-editor">
+              <div class="tag-editor upload-tag-editor shared-tag-box">
                 <div class="tag-control">
-                  <div id="link-upload-tag-chips" class="tag-token-list"></div>
                   <input id="link-upload-tags-input" type="text" placeholder="Add a tag..." autocomplete="off" />
+                  <div id="link-upload-tag-chips" class="tag-token-list"></div>
                 </div>
                 <div id="link-upload-tag-suggestions" class="tag-suggestions hidden"></div>
               </div>
@@ -544,7 +573,7 @@
               <span>Notes</span>
               <textarea id="link-upload-notes-input" name="notes" rows="5" placeholder="Context, origin, or ideal use case"></textarea>
             </label>
-            <button type="submit" class="primary-button">Import Video</button>
+            <button type="submit" class="primary-button modal-submit-button">Import Video</button>
           </form>
           <p id="link-upload-status" class="status-text"></p>
         </div>
@@ -654,6 +683,7 @@
           </div>
         </div>
         <div class="meme-body modal-body">
+          <div class="modal-body-scroll">
           <div class="modal-heading">
             <div class="modal-heading-bar">
               <p class="section-kicker">Details</p>
@@ -671,10 +701,10 @@
           <p id="modal-meta" class="meta-line"></p>
           <label class="field compact-field">
             <span>Tags</span>
-            <div class="tag-editor">
+            <div class="tag-editor shared-tag-box">
               <div class="tag-control">
-                <div id="modal-tag-chips" class="tag-token-list"></div>
                 <input id="modal-tags-input" type="text" placeholder="Add a tag..." autocomplete="off" />
+                <div id="modal-tag-chips" class="tag-token-list"></div>
               </div>
               <div id="modal-tag-suggestions" class="tag-suggestions hidden"></div>
             </div>
@@ -704,11 +734,13 @@
             </div>
             <div id="modal-audit-list" class="modal-audit-list"></div>
           </section>
+          </div>
           <div class="card-actions modal-actions">
             <button id="modal-favorite" class="action-button icon-action" type="button" aria-label="Favorite" data-tooltip="Favorite">
               <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M12 20s-6.7-4.4-9.2-8C.8 9.2 2.2 5.5 6 5.5c2.2 0 3.6 1.3 4.4 2.6.8-1.3 2.2-2.6 4.4-2.6 3.8 0 5.2 3.7 3.2 6.5C18.7 15.6 12 20 12 20Z" />
               </svg>
+              <span class="modal-action-label">Favorite</span>
             </button>
             <a id="modal-open-link" class="action-button icon-action" target="_blank" rel="noreferrer" aria-label="Open Original" data-tooltip="Open Original">
               <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -717,6 +749,7 @@
                 <path d="M14 5h4v4" />
                 <path d="M10 5H6a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-4" />
               </svg>
+              <span class="modal-action-label">Open</span>
             </a>
             <button id="modal-save" class="action-button action-button-primary icon-action" type="button" aria-label="Save Changes" data-tooltip="Save Changes">
               <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -724,6 +757,7 @@
                 <path d="M8 5v5h7V5" />
                 <path d="M8 19v-5h8v5" />
               </svg>
+              <span class="modal-action-label">Save</span>
             </button>
             <button id="modal-delete" class="action-button action-button-danger icon-action" type="button" aria-label="Delete" data-tooltip="Delete">
               <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -733,6 +767,7 @@
                 <path d="M10 10v6" />
                 <path d="M14 10v6" />
               </svg>
+              <span class="modal-action-label">Delete</span>
             </button>
           </div>
         </div>
@@ -754,33 +789,44 @@
           </div>
         </div>
         <div class="random-reel-sidebar">
-          <a id="random-reel-open" class="random-reel-copy" target="_blank" rel="noreferrer" aria-label="Open original file">
-            <p class="section-kicker">Random Reel</p>
+          <div class="random-reel-copy">
+            <div class="random-reel-eyebrow">
+              <p>Random Reel</p>
+              <span>Endless shuffle</span>
+            </div>
             <h2 id="random-reel-title" class="random-reel-title"></h2>
             <p id="random-reel-meta" class="random-reel-meta"></p>
-          </a>
+          </div>
           <div id="random-reel-tags" class="random-reel-tags"></div>
           <div class="random-reel-actions">
             <button id="random-reel-favorite" class="random-reel-nav random-reel-favorite" type="button" aria-label="Favorite meme" data-tooltip="Favorite">
-              <span class="random-reel-nav-icon" aria-hidden="true">&#9733;</span>
+              <span class="random-reel-nav-icon" aria-hidden="true">&#9825;</span>
+              <span class="random-reel-nav-label">Favorite</span>
             </button>
+            <a id="random-reel-open" class="random-reel-nav random-reel-open-button" target="_blank" rel="noreferrer" aria-label="Open original file">
+              <span class="random-reel-nav-icon" aria-hidden="true">&#8599;</span>
+              <span class="random-reel-nav-label">Open</span>
+            </a>
             <button id="random-reel-prev" class="random-reel-nav" type="button" aria-label="Previous meme">
               <span class="random-reel-nav-icon" aria-hidden="true">↑</span>
-              <span class="random-reel-nav-label">Up</span>
+              <span class="random-reel-nav-label">Previous</span>
             </button>
             <button id="random-reel-next" class="random-reel-nav random-reel-nav-primary" type="button" aria-label="Next random meme">
               <span class="random-reel-nav-icon" aria-hidden="true">↓</span>
-              <span class="random-reel-nav-label">Next</span>
+              <span class="random-reel-nav-label">Surprise me</span>
             </button>
-            <button id="random-reel-play" class="random-reel-nav" type="button" aria-label="Pause media" data-tooltip="Pause">
-              <span id="random-reel-play-icon" class="random-reel-nav-icon" aria-hidden="true">&#10074;&#10074;</span>
-            </button>
-            <label id="random-reel-volume-wrap" class="random-reel-volume" aria-label="Volume">
-              <button id="random-reel-volume-toggle" class="random-reel-volume-button" type="button" aria-label="Mute media">
-                <span id="random-reel-volume-icon" class="random-reel-volume-icon" aria-hidden="true">&#128266;</span>
+            <div class="random-reel-media-controls">
+              <button id="random-reel-play" class="random-reel-nav random-reel-play-button" type="button" aria-label="Pause media" data-tooltip="Pause">
+                <span id="random-reel-play-icon" class="random-reel-nav-icon" aria-hidden="true">&#10074;&#10074;</span>
+                <span class="random-reel-nav-label">Play / Pause</span>
               </button>
-              <input id="random-reel-volume" class="random-reel-volume-slider" type="range" min="0" max="100" value="10" aria-label="Volume" />
-            </label>
+              <label id="random-reel-volume-wrap" class="random-reel-volume" aria-label="Volume">
+                <button id="random-reel-volume-toggle" class="random-reel-volume-button" type="button" aria-label="Mute media">
+                  <span id="random-reel-volume-icon" class="random-reel-volume-icon" aria-hidden="true">&#128266;</span>
+                </button>
+                <input id="random-reel-volume" class="random-reel-volume-slider" type="range" min="0" max="100" value="10" aria-label="Volume" />
+              </label>
+            </div>
           </div>
           <p id="random-reel-hint" class="random-reel-hint">Scroll down for a new random meme. Scroll up to go back.</p>
         </div>
@@ -789,6 +835,6 @@
 
     <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="false"></div>
 
-    <script src="/static/app.js?v=vault-rebuild-20260722" defer></script>
+    <script src="/static/app.js?v=live-home-recent-20260826" defer></script>
   </body>
 </html>

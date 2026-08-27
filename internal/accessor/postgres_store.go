@@ -548,6 +548,40 @@ func (s *PostgresStore) SetFavorite(userID, id string, favorite bool) (Meme, err
 	return s.GetByID(userID, id)
 }
 
+func (s *PostgresStore) SetFavoriteWithActor(userID, id string, favorite bool, actor AuditActor) (Meme, error) {
+	ctx := context.Background()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Meme{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	if err := s.setFavoriteInExecutor(ctx, tx, userID, strings.TrimSpace(id), favorite); err != nil {
+		return Meme{}, err
+	}
+	action := "favorited"
+	description := "Added meme to favorites"
+	if !favorite {
+		action = "unfavorited"
+		description = "Removed meme from favorites"
+	}
+	if err := s.insertAuditLog(ctx, tx, strings.TrimSpace(id), action, actor, description); err != nil {
+		return Meme{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Meme{}, err
+	}
+	return s.GetByID(userID, id)
+}
+
+func (s *PostgresStore) TotalFavoriteAssignments() (int, error) {
+	var total int
+	if err := s.pool.QueryRow(context.Background(), `SELECT COUNT(*) FROM user_favorites`).Scan(&total); err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
 func (s *PostgresStore) Delete(input DeleteInput) (DeleteResult, error) {
 	ctx := context.Background()
 	id := strings.TrimSpace(input.ID)

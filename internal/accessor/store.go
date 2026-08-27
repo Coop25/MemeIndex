@@ -22,6 +22,19 @@ type AuditLogStore interface {
 	RejectPendingDelete(id string, actor AuditActor) error
 }
 
+// AdminAnalyticsStore exposes aggregate-only values that are intentionally
+// independent of the current viewer (for example, favorites across all users).
+type AdminAnalyticsStore interface {
+	TotalFavoriteAssignments() (int, error)
+}
+
+// FavoriteAuditStore lets stores with an audit log record favorite changes in
+// the same transaction as the favorite itself. Legacy/local stores can keep
+// using Store.SetFavorite without implementing it.
+type FavoriteAuditStore interface {
+	SetFavoriteWithActor(userID, id string, favorite bool, actor AuditActor) (Meme, error)
+}
+
 type AdminMemeStore interface {
 	GetAnyByID(id string) (Meme, error)
 }

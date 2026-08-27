@@ -34,6 +34,23 @@ type Server struct {
 	backup      *portableBackup
 }
 
+type adminSystemHealth struct {
+	Name    string `json:"name"`
+	Status  string `json:"status"`
+	Healthy bool   `json:"healthy"`
+}
+
+type adminDashboardResponse struct {
+	manager.AdminDashboardStats
+	UserCount      int                             `json:"user_count"`
+	ActiveUsers30D int                             `json:"active_users_30d"`
+	NewUsers30D    int                             `json:"new_users_30d"`
+	RecentActivity []accessor.GlobalMemeAuditEntry `json:"recent_activity"`
+	BackupStatus   *backupJobStatus                `json:"backup_status,omitempty"`
+	SystemHealth   []adminSystemHealth             `json:"system_health"`
+	GeneratedAt    time.Time                       `json:"generated_at"`
+}
+
 func NewServer(config Config, memeManager *manager.MemeManager) *Server {
 	userStore, err := newAuthUserStore(context.Background(), config.DatabaseURL)
 	if err != nil {
@@ -103,6 +120,7 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/api/memes/", s.withAPIAuth(http.HandlerFunc(s.handleMemeByID), permissionView))
 	mux.Handle("/api/memes/random", s.withAPIAuth(http.HandlerFunc(s.handleRandomMeme), permissionView))
 	mux.Handle("/api/reel-session", s.withAPIAuth(http.HandlerFunc(s.handleReelSession), permissionView))
+	mux.Handle("/api/tags/popular", s.withAPIAuth(http.HandlerFunc(s.handlePopularTags), permissionView))
 	mux.Handle("/api/tags", s.withAPIAuth(http.HandlerFunc(s.handleTags), permissionView))
 	return mux
 }
@@ -643,6 +661,18 @@ func (s *Server) updateStoredMemeTagSuggestions(w http.ResponseWriter, r *http.R
 			return
 		}
 		writeJSON(w, http.StatusOK, s.protectMemeForResponse(r, meme))
+	case "dismiss_all":
+		meme, err := s.managers.DismissAllMemeTagSuggestions(currentUserID(r), id)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				http.NotFound(w, r)
+				return
+			}
+			log.Printf("dismiss all meme tag suggestions failed: %v", err)
+			http.Error(w, "failed to dismiss tag suggestions", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, s.protectMemeForResponse(r, meme))
 	case "add":
 		meme, err := s.managers.ApplyMemeTagSuggestion(currentUserID(r), id, payload.Tag, currentAuditActor(r))
 		if err != nil {
@@ -695,6 +725,8 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	dashboard := s.managers.Dashboard(currentUserID(r))
 	dashboard.RecentItems = s.protectMemesForResponse(r, dashboard.RecentItems)
+	dashboard.FavoriteItems = s.protectMemesForResponse(r, dashboard.FavoriteItems)
+	dashboard.RandomItems = s.protectMemesForResponse(r, dashboard.RandomItems)
 	writeJSON(w, http.StatusOK, dashboard)
 }
 
@@ -1176,7 +1208,7 @@ func (s *Server) updateFavorite(w http.ResponseWriter, r *http.Request, id strin
 		return
 	}
 
-	meme, err := s.managers.SetFavorite(currentUserID(r), id, payload.Favorite)
+	meme, err := s.managers.SetFavoriteAs(currentUserID(r), id, payload.Favorite, currentAuditActor(r))
 	if errors.Is(err, os.ErrNotExist) {
 		http.NotFound(w, r)
 		return
@@ -1224,6 +1256,18 @@ func (s *Server) handleTags(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handlePopularTags(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	limit := parseQueryInt(r, "limit", 10)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"tags": s.managers.PopularTags(currentUserID(r), limit),
+	})
+}
+
 func (s *Server) handlePendingDeleteQueue(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1248,7 +1292,80 @@ func (s *Server) handleAdminDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, s.managers.AdminDashboard())
+	stats := s.managers.AdminDashboard()
+	for index := range stats.RecentMemes {
+		stats.RecentMemes[index].FilePath = s.protectAssetPathForResponse(r, stats.RecentMemes[index].FilePath)
+		stats.RecentMemes[index].PreviewPath = s.protectAssetPathForResponse(r, stats.RecentMemes[index].PreviewPath)
+	}
+
+	response := adminDashboardResponse{
+		AdminDashboardStats: stats,
+		RecentActivity:      []accessor.GlobalMemeAuditEntry{},
+		SystemHealth: []adminSystemHealth{
+			{Name: "Web Server", Status: "Operational", Healthy: true},
+		},
+		GeneratedAt: time.Now().UTC(),
+	}
+
+	usersHealthy := true
+	if s.users != nil {
+		users, err := s.users.ListUsers(r.Context())
+		if err != nil {
+			usersHealthy = false
+			log.Printf("admin dashboard users failed: %v", err)
+		} else {
+			response.UserCount = len(users)
+			activeCutoff := time.Now().Add(-30 * 24 * time.Hour).Unix()
+			newCutoff := time.Now().Add(-30 * 24 * time.Hour)
+			for _, user := range users {
+				if user.LastActiveAt >= activeCutoff {
+					response.ActiveUsers30D++
+				}
+				if user.CreatedAt.After(newCutoff) {
+					response.NewUsers30D++
+				}
+			}
+		}
+	}
+	databaseStatus := "Local file store"
+	if strings.TrimSpace(s.config.DatabaseURL) != "" {
+		databaseStatus = "Connected"
+	}
+	response.SystemHealth = append(response.SystemHealth, adminSystemHealth{Name: "Database", Status: databaseStatus, Healthy: usersHealthy})
+
+	if activity, err := s.managers.ListAuditFeed(0, 10); err != nil {
+		log.Printf("admin dashboard activity failed: %v", err)
+		response.SystemHealth = append(response.SystemHealth, adminSystemHealth{Name: "Activity Tracking", Status: "Unavailable", Healthy: false})
+	} else {
+		protected := s.protectAuditFeedForResponse(r, activity)
+		response.RecentActivity = protected.Events
+		response.SystemHealth = append(response.SystemHealth, adminSystemHealth{Name: "Activity Tracking", Status: "Operational", Healthy: true})
+	}
+
+	storageHealthy := false
+	if _, err := os.Stat(s.managers.UploadDir()); err == nil {
+		storageHealthy = true
+	}
+	response.SystemHealth = append(response.SystemHealth, adminSystemHealth{Name: "Storage", Status: map[bool]string{true: "Accessible", false: "Unavailable"}[storageHealthy], Healthy: storageHealthy})
+
+	if s.backup != nil {
+		status := s.backup.exportStatus()
+		response.BackupStatus = &status
+		backupHealthy := status.State != "failed"
+		backupState := strings.TrimSpace(status.State)
+		if backupState == "" {
+			backupState = "idle"
+		}
+		response.SystemHealth = append(response.SystemHealth, adminSystemHealth{Name: "Backup Service", Status: strings.ToUpper(backupState[:1]) + backupState[1:], Healthy: backupHealthy})
+	} else {
+		response.SystemHealth = append(response.SystemHealth, adminSystemHealth{Name: "Backup Service", Status: "Requires PostgreSQL", Healthy: false})
+	}
+	response.SystemHealth = append(response.SystemHealth,
+		adminSystemHealth{Name: "Image Processing", Status: "Available", Healthy: s.managers.ThumbnailDir() != ""},
+		adminSystemHealth{Name: "Tag Suggestions", Status: map[bool]string{true: "Configured", false: "Optional / disabled"}[s.config.TagSuggestions.Enabled()], Healthy: true},
+	)
+
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) handleBackupExport(w http.ResponseWriter, r *http.Request) {
@@ -1396,7 +1513,9 @@ func (s *Server) handleTagSuggestionStatus(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	writeJSON(w, http.StatusOK, s.managers.TagSuggestionQueueStatus())
+	reviewOffset := parseQueryInt(r, "review_offset", 0)
+	reviewLimit := parseQueryInt(r, "review_limit", 50)
+	writeJSON(w, http.StatusOK, s.managers.TagSuggestionQueueStatus(reviewOffset, reviewLimit))
 }
 
 func (s *Server) handleResetTagSuggestions(w http.ResponseWriter, r *http.Request) {

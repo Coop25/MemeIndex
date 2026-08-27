@@ -30,6 +30,12 @@ const state = {
       total: 0,
       hasMore: false,
     },
+    tagReview: {
+      offset: 0,
+      limit: 50,
+      total: 0,
+      hasMore: false,
+    },
     tagQueueStatus: null,
     linkRetryStatus: null,
     backupStatus: null,
@@ -55,28 +61,34 @@ const state = {
   },
 };
 
+const LIBRARY_VIEW_TITLES = Object.freeze({
+  library: "All Items",
+  favorites: "Favorites",
+  videos: "Videos",
+  images: "Images",
+  mp3s: "Audio",
+  untagged: "Untagged",
+  files: "Files",
+});
+
 const uploadForm = document.querySelector("#upload-form");
 const uploadStatus = document.querySelector("#upload-status");
 const uploadModal = document.querySelector("#upload-modal");
 const uploadBusyOverlay = document.querySelector("#upload-busy-overlay");
 const uploadBusyMessage = document.querySelector("#upload-busy-message");
 const openUploadModalButton = document.querySelector("#open-upload-modal");
-const openLinkUploadModalButton = document.querySelector("#open-link-upload-modal");
 const addVaultModal = document.querySelector("#add-vault-modal");
 const addVaultClose = document.querySelector("#add-vault-close");
-const saveLinkModal = document.querySelector("#save-link-modal");
-const saveLinkForm = document.querySelector("#save-link-form");
-const saveLinkClose = document.querySelector("#save-link-close");
-const clipboardStatus = document.querySelector("#clipboard-status");
 const homeDashboard = document.querySelector("#home-dashboard");
 const dashboardStats = document.querySelector("#dashboard-stats");
 const dashboardRecent = document.querySelector("#dashboard-recent");
+const dashboardFavorites = document.querySelector("#dashboard-favorites");
+const dashboardRandom = document.querySelector("#dashboard-random");
+const dashboardRandomRefresh = document.querySelector("#dashboard-random-refresh");
 const dashboardStorageLabel = document.querySelector("#dashboard-storage-label");
 const dashboardStorageBar = document.querySelector("#dashboard-storage-bar");
 const dashboardTagsSection = document.querySelector("#dashboard-tags-section");
 const dashboardTags = document.querySelector("#dashboard-tags");
-const sidebarStorageLabel = document.querySelector("#sidebar-storage-label");
-const sidebarStorageBar = document.querySelector("#sidebar-storage-bar");
 const libraryHeading = document.querySelector("#library-heading");
 const libraryTitle = document.querySelector("#library-title");
 const filterPanel = document.querySelector("#filter-panel");
@@ -156,6 +168,9 @@ const adminDashboardPanel = document.querySelector("#admin-dashboard-panel");
 const adminDashboardGrid = document.querySelector("#admin-dashboard-grid");
 const adminDashboardTags = document.querySelector("#admin-dashboard-tags");
 const adminDashboardRecent = document.querySelector("#admin-dashboard-recent");
+const adminDashboardUploadChart = document.querySelector("#admin-dashboard-upload-chart");
+const adminDashboardHealth = document.querySelector("#admin-dashboard-health");
+const adminDashboardActivity = document.querySelector("#admin-dashboard-activity");
 const adminTagHygienePanel = document.querySelector("#admin-tag-hygiene-panel");
 const adminTagHygienePairs = document.querySelector("#admin-tag-hygiene-pairs");
 const adminTagHygieneTags = document.querySelector("#admin-tag-hygiene-tags");
@@ -193,6 +208,8 @@ const emptyState = document.querySelector("#empty-state");
 const tagSearchInput = document.querySelector("#tag-search-input");
 const tagSearchSuggestions = document.querySelector("#tag-search-suggestions");
 const sidebarNavItems = document.querySelectorAll(".nav-item[data-view]");
+const sidebarPopularTagsSection = document.querySelector("#sidebar-popular-tags-section");
+const sidebarPopularTags = document.querySelector("#sidebar-popular-tags");
 const sidebarToggle = document.querySelector("#sidebar-toggle");
 const totalCount = document.querySelector("#total-count");
 const favoriteCount = document.querySelector("#favorite-count");
@@ -264,6 +281,8 @@ const randomReelClose = document.querySelector("#random-reel-close");
 
 let activeMemeId = null;
 let modalSnapshot = null;
+let adminTagReviewSessionActive = false;
+let adminTagReviewAdvancing = false;
 let modalLLMTagSuggestionLoading = false;
 let modalTagState = [];
 let modalSuggestionState = [];
@@ -403,7 +422,9 @@ function tagHygienePairKey(primary, candidate) {
 }
 const drawerMediaQuery = window.matchMedia("(max-width: 1100px)");
 const modalDetailsDrawerMediaQuery = window.matchMedia("(max-width: 1100px)");
+const mobileSearchHeaderMediaQuery = window.matchMedia("(max-width: 760px)");
 const MEME_PAGE_SIZE = 100;
+const HOME_DASHBOARD_REFRESH_MS = 10000;
 const MEDIA_VOLUME_STORAGE_KEY = "memeindex.mediaVolume";
 const DEFAULT_MEDIA_VOLUME = 0.10;
 const MODAL_PROGRESS_SCALE_MAX = 1000;
@@ -536,9 +557,6 @@ function renderAuthState() {
   openUploadModalButton.disabled = !canUpload();
   openUploadModalButton.setAttribute("aria-disabled", String(!canUpload()));
   openUploadModalButton.title = canUpload() ? "Add File" : "You do not have permission to upload";
-  openLinkUploadModalButton.disabled = !canUpload();
-  openLinkUploadModalButton.setAttribute("aria-disabled", String(!canUpload()));
-  openLinkUploadModalButton.title = canUpload() ? "Process Link" : "You do not have permission to upload";
 
   if (state.auth.user?.avatar_url) {
     authAvatar.src = state.auth.user.avatar_url;
@@ -1066,7 +1084,7 @@ function renderManagedUsers() {
         <label><input type="checkbox" data-scope="canRemoveTags" ${checked(user.permissions?.canRemoveTags)} ${disabledAttr} /> <span>Remove tags</span></label>
         <label><input type="checkbox" data-scope="canDeleteMemes" ${checked(user.permissions?.canDeleteMemes)} ${disabledAttr} /> <span>Delete memes</span></label>
       </div>
-      ${user.is_super_admin ? "" : '<div class="users-card-actions"><button class="danger-button users-delete-button" type="button">Remove User</button><button class="primary-button users-save-button" type="button">Save</button></div>'}
+      ${user.is_super_admin ? "" : '<div class="users-card-actions"><button class="danger-button users-delete-button" type="button">Remove User</button><button class="primary-button users-save-button" type="button">Save Permissions</button></div>'}
       `;
 
       const saveButton = card.querySelector(".users-save-button");
@@ -1208,7 +1226,10 @@ function renderAdminTagQueueStatus() {
   adminTagQueueSummary.textContent = summaryParts.join(" * ");
 
   const currentTarget = status.current_meme_name || status.current_meme_id || "Nothing right now";
-  const lastSuccess = status.last_success_at ? formatDateTime(status.last_success_at) : "No completed suggestions yet";
+  const lastSuccessDate = new Date(status.last_success_at || "");
+  const lastSuccess = !Number.isNaN(lastSuccessDate.getTime()) && lastSuccessDate.getUTCFullYear() > 1
+    ? formatDateTime(lastSuccessDate)
+    : "No completed suggestions yet";
   const lastError = formatQueueError(status.last_error);
 
   adminTagQueueGrid.innerHTML = `
@@ -1249,6 +1270,13 @@ function renderAdminTagQueueStatus() {
 
   const queuedMemes = Array.isArray(status.queued_memes) ? status.queued_memes : [];
   const pendingReviewMemes = Array.isArray(status.pending_review_memes) ? status.pending_review_memes : [];
+  const pendingReviewTotal = Number(status.pending_suggestion_memes || 0);
+  const pendingReviewOffset = Number(status.pending_review_offset || 0);
+  const pendingReviewLimit = Math.max(1, Number(status.pending_review_limit || state.admin.tagReview.limit || 50));
+  const pendingReviewStart = pendingReviewTotal > 0 ? pendingReviewOffset + 1 : 0;
+  const pendingReviewEnd = pendingReviewOffset + pendingReviewMemes.length;
+  const pendingReviewPage = Math.floor(pendingReviewOffset / pendingReviewLimit) + 1;
+  const pendingReviewPages = Math.max(1, Math.ceil(pendingReviewTotal / pendingReviewLimit));
   const queueSection = queuedMemes.length === 0
     ? `
       <section class="admin-tag-queue-section">
@@ -1291,7 +1319,7 @@ function renderAdminTagQueueStatus() {
       <section class="admin-tag-queue-section">
         <div class="admin-tag-queue-list-head">
           <strong>Pending Review</strong>
-          <span>${escapeHTML(String(pendingReviewMemes.length))} meme${pendingReviewMemes.length === 1 ? "" : "s"} with suggestions</span>
+          <span>Showing ${escapeHTML(String(pendingReviewStart))}-${escapeHTML(String(pendingReviewEnd))} of ${escapeHTML(String(pendingReviewTotal))}</span>
         </div>
         <div class="admin-tag-queue-items">
           ${pendingReviewMemes.map((item) => `
@@ -1309,6 +1337,11 @@ function renderAdminTagQueueStatus() {
             </article>
           `).join("")}
         </div>
+        <nav class="admin-tag-review-pagination" aria-label="Suggested tag review pages">
+          <button type="button" class="admin-tag-page-button" data-admin-review-page="prev" ${pendingReviewOffset <= 0 ? "disabled" : ""}>Previous</button>
+          <span>Page ${escapeHTML(String(pendingReviewPage))} of ${escapeHTML(String(pendingReviewPages))}</span>
+          <button type="button" class="admin-tag-page-button" data-admin-review-page="next" ${status.pending_review_has_more ? "" : "disabled"}>Next</button>
+        </nav>
       </section>
     `;
 
@@ -1319,7 +1352,13 @@ function renderAdminTagQueueStatus() {
       if (!memeID) {
         return;
       }
-      openAdminMemeByID(memeID).catch((error) => {
+      adminTagReviewSessionActive = true;
+      openAdminMemeByID(memeID).then((opened) => {
+        if (!opened) {
+          adminTagReviewSessionActive = false;
+        }
+      }).catch((error) => {
+        adminTagReviewSessionActive = false;
         console.error(error);
       });
     };
@@ -1331,107 +1370,153 @@ function renderAdminTagQueueStatus() {
       }
     });
   });
+  adminTagQueueList.querySelectorAll("[data-admin-review-page]").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (button.disabled) return;
+      const direction = button.getAttribute("data-admin-review-page");
+      const delta = direction === "prev" ? -state.admin.tagReview.limit : state.admin.tagReview.limit;
+      state.admin.tagReview.offset = Math.max(0, state.admin.tagReview.offset + delta);
+      fetchAdminTagQueueStatus().catch((error) => console.error(error));
+    });
+  });
+}
+
+function dashboardTrend(current, previous, suffix = "vs previous 30 days") {
+  const currentValue = Number(current || 0);
+  const previousValue = Number(previous || 0);
+  if (currentValue === 0 && previousValue === 0) return { direction: "flat", label: `No change ${suffix}` };
+  if (previousValue === 0) return { direction: "up", label: `New activity ${suffix}` };
+  const percent = Math.round(((currentValue - previousValue) / previousValue) * 100);
+  return {
+    direction: percent > 0 ? "up" : percent < 0 ? "down" : "flat",
+    label: `${percent > 0 ? "+" : ""}${percent}% ${suffix}`,
+  };
+}
+
+function buildAdminUploadChart(series) {
+  const points = Array.isArray(series) ? series : [];
+  if (!points.length) return `<p class="users-empty">Upload history will appear here.</p>`;
+  const width = 720;
+  const height = 205;
+  const max = Math.max(1, ...points.map((entry) => Number(entry.uploads || 0)));
+  const coordinates = points.map((entry, index) => {
+    const x = points.length === 1 ? 0 : (index / (points.length - 1)) * width;
+    const y = height - ((Number(entry.uploads || 0) / max) * (height - 18)) - 6;
+    return [x, y];
+  });
+  const line = coordinates.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+  const area = `0,${height} ${line} ${width},${height}`;
+  const total = points.reduce((sum, entry) => sum + Number(entry.uploads || 0), 0);
+  return `
+    <div class="admin-chart-summary"><strong>${escapeHTML(String(total))}</strong><span>uploads in 30 days</span></div>
+    <svg class="admin-upload-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Daily uploads over the last 30 days">
+      <defs><linearGradient id="admin-upload-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#65ca73" stop-opacity=".42"/><stop offset="1" stop-color="#65ca73" stop-opacity="0"/></linearGradient></defs>
+      <path class="admin-chart-grid" d="M0 35H720M0 85H720M0 135H720M0 185H720" />
+      <polygon points="${area}" fill="url(#admin-upload-fill)" />
+      <polyline points="${line}" fill="none" stroke="#72d17c" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+    </svg>
+    <div class="admin-chart-axis"><span>${escapeHTML(points[0]?.date || "")}</span><span>${escapeHTML(points[Math.floor(points.length / 2)]?.date || "")}</span><span>${escapeHTML(points[points.length - 1]?.date || "")}</span></div>
+  `;
 }
 
 function renderAdminDashboard() {
-  if (!adminDashboardPanel || !adminDashboardGrid || !adminDashboardTags || !adminDashboardRecent) {
-    return;
-  }
+  if (!adminDashboardPanel || !adminDashboardGrid || !adminDashboardTags || !adminDashboardRecent || !adminDashboardUploadChart || !adminDashboardHealth || !adminDashboardActivity) return;
 
   const visible = isAdminView() && canManageUsers() && activeAdminTab() === "dashboard";
   adminDashboardPanel.classList.toggle("hidden", !visible);
-  if (!visible) {
-    return;
-  }
+  if (!visible) return;
 
   const dashboard = state.admin.dashboard;
   if (!dashboard) {
     adminDashboardGrid.innerHTML = `<p class="users-empty">Loading dashboard...</p>`;
-    adminDashboardTags.innerHTML = "";
-    adminDashboardRecent.innerHTML = "";
+    [adminDashboardTags, adminDashboardRecent, adminDashboardUploadChart, adminDashboardHealth, adminDashboardActivity].forEach((node) => { node.innerHTML = ""; });
     return;
   }
 
   const counts = dashboard.counts || {};
-  const totalMemes = Number(counts.total || 0);
-  const taggedMemes = Number(dashboard.tagged_memes || 0);
-  const coverage = totalMemes > 0 ? `${Math.round((taggedMemes / totalMemes) * 100)}%` : "0%";
-  const avgTags = Number(dashboard.average_tags_per_meme || 0).toFixed(1);
-  const totalSize = formatSize(Number(dashboard.total_size_bytes || 0));
-  const mediaSizeBreakdown = [
-    `${formatSize(Number(dashboard.image_size_bytes || 0))} images`,
-    `${formatSize(Number(dashboard.video_size_bytes || 0))} videos`,
-    `${formatSize(Number(dashboard.audio_size_bytes || 0))} audio`,
-  ].join(" * ");
+  const uploadTrend = dashboardTrend(dashboard.uploaded_last_30_days, dashboard.uploaded_previous_30_days);
+  const storageTrend = dashboardTrend(dashboard.bytes_last_30_days, dashboard.bytes_previous_30_days);
+  const metrics = [
+    { icon: "M", label: "Total Memes", value: Number(counts.total || 0).toLocaleString(), note: uploadTrend.label, trend: uploadTrend.direction, accent: "green" },
+    { icon: "#", label: "Tags", value: Number(dashboard.unique_tags || 0).toLocaleString(), note: `${Number(dashboard.total_tag_assignments || 0).toLocaleString()} assignments`, trend: "flat", accent: "purple" },
+    { icon: "U", label: "Users", value: Number(dashboard.user_count || 0).toLocaleString(), note: `${Number(dashboard.active_users_30d || 0)} active in 30 days`, trend: Number(dashboard.new_users_30d || 0) > 0 ? "up" : "flat", accent: "blue" },
+    { icon: "S", label: "Storage Used", value: formatSize(Number(dashboard.total_size_bytes || 0)), note: storageTrend.label, trend: storageTrend.direction, accent: "amber" },
+    { icon: "F", label: "Favorites", value: Number(counts.favorites || 0).toLocaleString(), note: "Across all users", trend: "flat", accent: "red" },
+  ];
+  adminDashboardGrid.innerHTML = metrics.map((metric) => `
+    <article class="admin-dashboard-card" data-accent="${metric.accent}">
+      <div class="admin-dashboard-card-head"><span class="admin-dashboard-card-icon">${metric.icon}</span><span class="admin-dashboard-label">${escapeHTML(metric.label)}</span></div>
+      <strong class="admin-dashboard-value">${escapeHTML(metric.value)}</strong>
+      <span class="admin-dashboard-note" data-trend="${metric.trend}">${metric.trend === "up" ? "&#8593; " : metric.trend === "down" ? "&#8595; " : ""}${escapeHTML(metric.note)}</span>
+      <span class="admin-metric-spark" aria-hidden="true"></span>
+    </article>
+  `).join("");
 
-  adminDashboardGrid.innerHTML = `
-    <article class="admin-dashboard-card">
-      <span class="admin-dashboard-label">Memes</span>
-      <strong class="admin-dashboard-value">${escapeHTML(String(totalMemes))}</strong>
-      <span class="admin-dashboard-note">${escapeHTML(String(counts.images || 0))} images * ${escapeHTML(String(counts.videos || 0))} videos</span>
-    </article>
-    <article class="admin-dashboard-card">
-      <span class="admin-dashboard-label">Tag Coverage</span>
-      <strong class="admin-dashboard-value">${escapeHTML(coverage)}</strong>
-      <span class="admin-dashboard-note">${escapeHTML(String(taggedMemes))} tagged * ${escapeHTML(String(counts.untagged || 0))} untagged</span>
-    </article>
-    <article class="admin-dashboard-card">
-      <span class="admin-dashboard-label">Tag Leaderboard</span>
-      <strong class="admin-dashboard-value">${escapeHTML(String(dashboard.unique_tags || 0))}</strong>
-      <span class="admin-dashboard-note">${escapeHTML(String(dashboard.total_tag_assignments || 0))} total assignments</span>
-    </article>
-    <article class="admin-dashboard-card">
-      <span class="admin-dashboard-label">Archive Size</span>
-      <strong class="admin-dashboard-value">${escapeHTML(totalSize)}</strong>
-      <span class="admin-dashboard-note">${escapeHTML(mediaSizeBreakdown)}</span>
-    </article>
-    <article class="admin-dashboard-card">
-      <span class="admin-dashboard-label">Favorites</span>
-      <strong class="admin-dashboard-value">${escapeHTML(String(counts.favorites || 0))}</strong>
-      <span class="admin-dashboard-note">${escapeHTML(avgTags)} avg tags per meme</span>
-    </article>
-    <article class="admin-dashboard-card">
-      <span class="admin-dashboard-label">Fresh Uploads</span>
-      <strong class="admin-dashboard-value">${escapeHTML(String(dashboard.uploaded_last_24_hours || 0))}</strong>
-      <span class="admin-dashboard-note">${escapeHTML(String(dashboard.uploaded_last_7_days || 0))} in the last 7 days</span>
-    </article>
-    <article class="admin-dashboard-card">
-      <span class="admin-dashboard-label">Suggestion Backlog</span>
-      <strong class="admin-dashboard-value">${escapeHTML(String(dashboard.pending_suggestion_memes || 0))}</strong>
-      <span class="admin-dashboard-note">Memes with pending review suggestions</span>
-    </article>
+  adminDashboardUploadChart.innerHTML = buildAdminUploadChart(dashboard.upload_series);
+
+  const topTags = (Array.isArray(dashboard.top_tags) ? dashboard.top_tags : []).slice(0, 6);
+  const totalAssignments = Math.max(1, Number(dashboard.total_tag_assignments || 0));
+  const colors = ["#47b76a", "#55a1f3", "#9b72e4", "#e1ad39", "#32c2c9", "#f08d46"];
+  if (!topTags.length) {
+    adminDashboardTags.innerHTML = `<p class="users-empty">No categories have been used yet.</p>`;
+  } else {
+    let angle = 0;
+    const stops = topTags.map((entry, index) => {
+      const next = angle + ((Number(entry.count || 0) / totalAssignments) * 360);
+      const stop = `${colors[index]} ${angle.toFixed(1)}deg ${next.toFixed(1)}deg`;
+      angle = next;
+      return stop;
+    });
+    if (angle < 360) stops.push(`rgba(255,255,255,.09) ${angle.toFixed(1)}deg 360deg`);
+    adminDashboardTags.innerHTML = `
+      <div class="admin-category-donut" style="--category-segments:${stops.join(",")}"><div><strong>${Number(counts.total || 0).toLocaleString()}</strong><span>Total</span></div></div>
+      <div class="admin-category-legend">${topTags.map((entry, index) => `<button type="button" data-admin-tag="${escapeHTML(entry.tag || "")}"><i style="--tag-color:${colors[index]}"></i><span>${escapeHTML(entry.tag || "")}</span><strong>${Math.round((Number(entry.count || 0) / totalAssignments) * 100)}%</strong><small>${Number(entry.count || 0).toLocaleString()}</small></button>`).join("")}</div>
+    `;
+  }
+
+  const health = Array.isArray(dashboard.system_health) ? dashboard.system_health : [];
+  const healthyCount = health.filter((entry) => entry.healthy).length;
+  adminDashboardHealth.innerHTML = `
+    <div class="admin-health-summary" data-healthy="${healthyCount === health.length}"><strong>${healthyCount === health.length ? "All systems operational" : `${healthyCount} of ${health.length} healthy`}</strong><span>Updated ${escapeHTML(formatDateTime(dashboard.generated_at))}</span></div>
+    <div class="admin-health-list">${health.map((entry) => `<div><span>${escapeHTML(entry.name || "Service")}</span><strong data-healthy="${!!entry.healthy}">${escapeHTML(entry.status || "Unknown")}</strong></div>`).join("")}</div>
   `;
 
-  const topTags = Array.isArray(dashboard.top_tags) ? dashboard.top_tags : [];
-  if (topTags.length === 0) {
-    adminDashboardTags.innerHTML = `<p class="users-empty">No tags have been used yet.</p>`;
+  const activity = Array.isArray(dashboard.recent_activity) ? dashboard.recent_activity : [];
+  const uploadActors = new Map(activity.filter((event) => event.action === "uploaded").map((event) => [event.meme_id, event.actor?.display_name || event.actor?.username || "Unknown"]));
+  const recentMemes = Array.isArray(dashboard.recent_memes) ? dashboard.recent_memes : [];
+  if (!recentMemes.length) {
+    adminDashboardRecent.innerHTML = `<p class="users-empty">No memes uploaded yet.</p>`;
   } else {
-    adminDashboardTags.innerHTML = topTags.map((entry, index) => `
-      <article class="admin-dashboard-tag-row">
-        <span class="admin-dashboard-tag-rank">#${index + 1}</span>
-        <strong class="admin-dashboard-tag-name">${escapeHTML(entry.tag || "")}</strong>
-        <span class="admin-dashboard-tag-count">${escapeHTML(String(entry.count || 0))}</span>
-      </article>
+    adminDashboardRecent.innerHTML = `<div class="admin-upload-table-head"><span>Meme</span><span>Uploaded by</span><span>Tags</span><span>Size</span><span>Uploaded</span></div>${recentMemes.map((meme) => `
+      <button class="admin-dashboard-recent-row" type="button" data-admin-meme-id="${escapeHTML(meme.id || "")}" title="Open ${escapeHTML(meme.original_name || "Unknown meme")}">
+        <span class="admin-recent-meme"><span class="admin-recent-thumb">${meme.preview_path ? `<img src="${escapeHTML(meme.preview_path)}" alt="" />` : "FILE"}</span><strong title="${escapeHTML(meme.original_name || "Unknown meme")}">${escapeHTML(meme.original_name || "Unknown meme")}</strong></span>
+        <span>${escapeHTML(uploadActors.get(meme.id) || "Unknown")}</span>
+        <span class="admin-recent-tags">${(meme.tags || []).slice(0, 2).map((tag) => `<i>${escapeHTML(tag)}</i>`).join("") || "&mdash;"}</span>
+        <span>${escapeHTML(formatSize(Number(meme.size_bytes || 0)))}</span>
+        <span>${escapeHTML(formatDateTime(meme.created_at))}</span>
+      </button>
+    `).join("")}`;
+  }
+
+  if (!activity.length) {
+    adminDashboardActivity.innerHTML = `<p class="users-empty">No tracked activity yet.</p>`;
+  } else {
+    const actionLabels = { uploaded: "uploaded", favorited: "favorited", unfavorited: "unfavorited", deleted: "deleted", delete_requested: "requested deletion of", tag_added: "tagged", tag_removed: "untagged" };
+    adminDashboardActivity.innerHTML = activity.slice(0, 7).map((event) => `
+      <button class="admin-activity-row" type="button" data-admin-meme-id="${escapeHTML(event.meme_id || "")}" title="${escapeHTML(event.meme_original_name || event.description || "Activity")}">
+        <span class="admin-activity-icon" data-action="${escapeHTML(event.action || "activity")}"></span>
+        <span><strong>${escapeHTML(event.actor?.display_name || event.actor?.username || "System")}</strong> ${escapeHTML(actionLabels[event.action] || event.description || "updated")} <b>${escapeHTML(event.meme_original_name || "a meme")}</b></span>
+        <time>${escapeHTML(formatDateTime(event.created_at))}</time>
+      </button>
     `).join("");
   }
 
-  const recentMemes = Array.isArray(dashboard.recent_memes) ? dashboard.recent_memes : [];
-  if (recentMemes.length === 0) {
-    adminDashboardRecent.innerHTML = `<p class="users-empty">No memes uploaded yet.</p>`;
-  } else {
-    adminDashboardRecent.innerHTML = recentMemes.map((meme) => `
-      <article class="admin-dashboard-recent-row">
-        <div class="admin-dashboard-recent-copy">
-          <strong>${escapeHTML(meme.original_name || "Unknown meme")}</strong>
-          <span>${escapeHTML(formatDateTime(meme.created_at))}</span>
-        </div>
-        <div class="admin-dashboard-recent-meta">
-          <span>${escapeHTML(meme.content_type || "unknown")}</span>
-          <span>${escapeHTML(String(meme.tag_count || 0))} tag${Number(meme.tag_count || 0) === 1 ? "" : "s"}</span>
-        </div>
-      </article>
-    `).join("");
-  }
+  document.querySelectorAll("[data-admin-meme-id]").forEach((button) => button.addEventListener("click", () => openAdminMemeByID(button.dataset.adminMemeId)));
+  document.querySelectorAll("[data-admin-tag]").forEach((button) => button.addEventListener("click", () => {
+    state.filters.tag = button.dataset.adminTag || "";
+    state.filters.view = "library";
+    loadInitialMemes().catch((error) => console.error(error));
+  }));
 }
 
 function renderAdminTagHygiene() {
@@ -1601,12 +1686,28 @@ async function fetchAdminTagQueueStatus() {
     return null;
   }
 
-  const response = await fetch("/api/admin/tag-suggestions/status");
+  const reviewParams = new URLSearchParams({
+    review_offset: String(state.admin.tagReview.offset || 0),
+    review_limit: String(state.admin.tagReview.limit || 50),
+  });
+  const response = await fetch(`/api/admin/tag-suggestions/status?${reviewParams.toString()}`);
   if (!(await expectAuthorized(response, "Failed to load tag suggestion queue status."))) {
     return null;
   }
 
   const payload = await response.json();
+  const reviewTotal = Number(payload?.pending_suggestion_memes || 0);
+  const reviewLimit = Math.max(1, Number(payload?.pending_review_limit || state.admin.tagReview.limit || 50));
+  const reviewOffset = Math.max(0, Number(payload?.pending_review_offset || 0));
+  if (reviewTotal > 0 && reviewOffset >= reviewTotal) {
+    state.admin.tagReview.limit = reviewLimit;
+    state.admin.tagReview.offset = Math.floor((reviewTotal - 1) / reviewLimit) * reviewLimit;
+    return fetchAdminTagQueueStatus();
+  }
+  state.admin.tagReview.offset = reviewOffset;
+  state.admin.tagReview.limit = reviewLimit;
+  state.admin.tagReview.total = reviewTotal;
+  state.admin.tagReview.hasMore = !!payload?.pending_review_has_more;
   state.admin.tagQueueStatus = payload || null;
   renderAdminTagQueueStatus();
   return state.admin.tagQueueStatus;
@@ -1832,7 +1933,7 @@ function renderDeleteQueue() {
   }
 
   const table = document.createElement("div");
-  table.className = "admin-table";
+  table.className = "admin-table delete-queue-table";
   table.innerHTML = `
     <div class="admin-table-head">
       <span>Preview</span>
@@ -1943,7 +2044,7 @@ function renderAuditLogs() {
   }
 
   const table = document.createElement("div");
-  table.className = "admin-table";
+  table.className = "admin-table audit-log-table";
   table.innerHTML = `
     <div class="admin-table-head audit-log-table-head">
       <span>Time</span>
@@ -1964,7 +2065,7 @@ function renderAuditLogs() {
     const actionsMarkup = canOpenEditor
       ? `
         <div class="admin-row-actions">
-          <button class="ghost-button audit-log-open-modal-button" type="button">Open In Editor</button>
+          <button class="ghost-button audit-log-open-modal-button" type="button">Edit Meme</button>
           <a class="ghost-button audit-log-open-button" href="${escapeHTML(event.meme_file_path)}" target="_blank" rel="noreferrer">Open File</a>
         </div>
       `
@@ -2225,6 +2326,11 @@ function renderContentMode() {
   const adminMode = isAdminView();
 	const homeMode = state.filters.view === "home";
 	const libraryMode = !adminMode && !homeMode;
+	if (libraryMode && libraryTitle) {
+		libraryTitle.textContent = state.filters.tag
+			? `#${state.filters.tag}`
+			: (LIBRARY_VIEW_TITLES[state.filters.view] || "All Items");
+	}
 	document.body.classList.toggle("home-mode", homeMode);
 	document.body.classList.toggle("admin-mode", adminMode);
 	document.body.classList.toggle("library-mode", libraryMode);
@@ -2335,6 +2441,7 @@ async function fetchMemes({ page = 0 } = {}) {
 async function loadInitialMemes() {
   renderSidebarViewState();
   renderContentMode();
+  fetchSidebarPopularTags().catch((error) => console.error(error));
   if (isAdminView() && canManageUsers()) {
     fetchAdminTagQueueStatus().catch((error) => {
       console.error(error);
@@ -2372,7 +2479,7 @@ async function loadInitialMemes() {
   }
   if (isAdminView() && activeAdminTab() === "audit-logs") {
     adminViewKicker.textContent = "Admin";
-    adminViewTitle.textContent = "Admin Workspace";
+    adminViewTitle.textContent = "Activity Log";
     adminViewCopy.textContent = "A full activity log with actor, action, target meme, and quick-open access for review.";
     setAdminViewStatus("Loading audit logs...");
     adminViewTable.innerHTML = "";
@@ -2384,7 +2491,7 @@ async function loadInitialMemes() {
   }
   if (isAdminView() && activeAdminTab() === "delete-queue") {
     adminViewKicker.textContent = "Admin";
-    adminViewTitle.textContent = "Admin Workspace";
+    adminViewTitle.textContent = "Delete Requests";
     adminViewCopy.textContent = "Review pending meme deletions, inspect the media, and either keep the meme or approve the delete.";
     setAdminViewStatus("Loading delete queue...");
     adminViewTable.innerHTML = "";
@@ -2457,15 +2564,71 @@ async function loadInitialMemes() {
 }
 
 async function applyTagSearch(rawValue) {
+	state.filters.tag = "";
 	state.filters.query = String(rawValue || "").trim();
 	if (state.filters.view === "home") state.filters.view = "library";
   await loadInitialMemes();
 }
 
-async function fetchVaultDashboard() {
-	const response = await fetch("/api/dashboard");
+function syncMobileSearchHeader() {
+  const alreadyCondensed = document.body.classList.contains("mobile-search-only");
+  document.body.classList.toggle(
+    "mobile-search-only",
+    mobileSearchHeaderMediaQuery.matches && window.scrollY > (alreadyCondensed ? 0 : 48),
+  );
+}
+
+async function fetchSidebarPopularTags() {
+	if (!sidebarPopularTags || !sidebarPopularTagsSection) return;
+	const response = await fetch("/api/tags/popular?limit=10", { cache: "no-store" });
+	if (!(await expectAuthorized(response, "Failed to load popular tags."))) return;
+	const payload = await response.json();
+	renderSidebarPopularTags(Array.isArray(payload.tags) ? payload.tags : []);
+}
+
+function renderSidebarPopularTags(tags) {
+	if (!sidebarPopularTags || !sidebarPopularTagsSection) return;
+	sidebarPopularTags.replaceChildren();
+	tags.slice(0, 10).forEach((tag) => {
+		const name = String(tag.name || "").trim();
+		if (!name) return;
+		const button = document.createElement("button");
+		button.type = "button";
+		button.className = "nav-item sidebar-tag-item";
+		button.dataset.sidebarTag = name;
+		button.title = `Show items tagged ${name}`;
+		button.innerHTML = '<span class="nav-icon sidebar-tag-icon" aria-hidden="true">#</span><span class="nav-label"></span><span class="nav-count"></span>';
+		button.querySelector(".nav-label").textContent = name;
+		button.querySelector(".nav-count").textContent = Number(tag.count || 0).toLocaleString();
+		button.addEventListener("click", () => navigateToTag(name));
+		sidebarPopularTags.appendChild(button);
+	});
+	sidebarPopularTagsSection.classList.toggle("hidden", sidebarPopularTags.childElementCount === 0);
+	renderSidebarViewState();
+}
+
+function navigateToTag(tag) {
+	const normalizedTag = String(tag || "").trim();
+	if (!normalizedTag) return;
+	state.filters.query = "";
+	state.filters.tag = normalizedTag;
+	state.filters.view = "library";
+	tagSearchInput.value = "";
+	loadInitialMemes().catch((error) => console.error(error));
+	if (drawerMediaQuery.matches) closeSidebarDrawer();
+}
+
+async function fetchVaultDashboard({ onlyIfNewestChanged = false } = {}) {
+	const response = await fetch("/api/dashboard", { cache: "no-store" });
 	if (!(await expectAuthorized(response, "Failed to load dashboard."))) return;
 	const dashboard = await response.json();
+	if (onlyIfNewestChanged) {
+		const incomingNewestID = String(dashboard.recent_items?.[0]?.id || "");
+		const renderedNewestID = String(dashboardRecent?.querySelector(".meme-card")?.dataset.memeId || "");
+		if (incomingNewestID === renderedNewestID) return false;
+	}
+	state.library.counts = dashboard.counts || state.library.counts;
+	renderSidebarCounts();
 	const cards = [
 		["items", "Total memes", Number(dashboard.total_items || 0).toLocaleString(), "Files and links"],
 		["tags", "Tags", Number(dashboard.tag_count || 0).toLocaleString(), "Across your archive"],
@@ -2479,17 +2642,23 @@ async function fetchVaultDashboard() {
 		article.innerHTML = `<i aria-hidden="true"></i><span>${label}</span><strong>${value}</strong><small>${note}</small>`;
 		return article;
 	}));
-	dashboardRecent.replaceChildren();
-	const recent = Array.isArray(dashboard.recent_items) ? dashboard.recent_items : [];
-	if (!recent.length) {
-		dashboardRecent.innerHTML = '<p class="dashboard-empty">Your newest items will appear here.</p>';
-	} else {
-		recent.forEach((meme) => dashboardRecent.appendChild(buildMemeCardElement(meme)));
-	}
+	renderDashboardMemeCollection(
+		dashboardRecent,
+		dashboard.recent_items,
+		"Your newest items will appear here.",
+	);
+	renderDashboardMemeCollection(
+		dashboardFavorites,
+		dashboard.favorite_items,
+		"Favorite a meme and it will appear here.",
+	);
+	renderDashboardMemeCollection(
+		dashboardRandom,
+		dashboard.random_items,
+		"Add something to your vault to get random picks.",
+	);
 	dashboardStorageLabel.textContent = formatSize(Number(dashboard.storage_bytes || 0));
 	dashboardStorageBar.style.width = dashboard.storage_bytes > 0 ? "100%" : "0%";
-	if (sidebarStorageLabel) sidebarStorageLabel.textContent = formatSize(Number(dashboard.storage_bytes || 0));
-	if (sidebarStorageBar) sidebarStorageBar.style.width = dashboard.storage_bytes > 0 ? "100%" : "0%";
 	const topTags = Array.isArray(dashboard.top_tags) ? dashboard.top_tags : [];
 	dashboardTags?.replaceChildren(...topTags.map((tag, index) => {
 		const button = document.createElement("button");
@@ -2498,13 +2667,64 @@ async function fetchVaultDashboard() {
 		button.innerHTML = `<i aria-hidden="true">${["☺", "▤", "◈", "✦", "◉"][index % 5]}</i><span></span><small></small>`;
 		button.querySelector("span").textContent = tag.name;
 		button.querySelector("small").textContent = `${tag.count} item${tag.count === 1 ? "" : "s"}`;
-		button.addEventListener("click", () => {
-			tagSearchInput.value = tag.name;
-			applyTagSearch(tag.name).catch((error) => console.error(error));
-		});
+		button.addEventListener("click", () => navigateToTag(tag.name));
 		return button;
 	}));
 	dashboardTagsSection?.classList.toggle("hidden", topTags.length === 0);
+	return true;
+}
+
+let homeDashboardRefreshInFlight = false;
+
+async function refreshHomeDashboardForNewMemes() {
+	if (homeDashboardRefreshInFlight || document.hidden || state.filters.view !== "home" || !canView()) return;
+	homeDashboardRefreshInFlight = true;
+	try {
+		await fetchVaultDashboard({ onlyIfNewestChanged: true });
+	} finally {
+		homeDashboardRefreshInFlight = false;
+	}
+}
+
+function renderDashboardMemeCollection(container, items, emptyMessage) {
+	if (!container) return;
+	container.replaceChildren();
+	const memes = Array.isArray(items) ? items : [];
+	if (!memes.length) {
+		const empty = document.createElement("p");
+		empty.className = "dashboard-empty";
+		empty.textContent = emptyMessage;
+		container.appendChild(empty);
+		return;
+	}
+	memes.forEach((meme) => {
+		// Dashboard items share the library state and card component so favorites,
+		// permissions, and the editor modal behave identically everywhere.
+		upsertMemeInState(meme);
+		const card = buildMemeCardElement(meme);
+		card.classList.add("dashboard-meme-card");
+		card.title = `Open ${meme.originalName || "meme"} in the editor`;
+		container.appendChild(card);
+	});
+}
+
+async function refreshDashboardRandomItems() {
+	if (!dashboardRandomRefresh || !dashboardRandom) return;
+	dashboardRandomRefresh.disabled = true;
+	dashboardRandomRefresh.classList.add("is-loading");
+	try {
+		const response = await fetch("/api/dashboard", { cache: "no-store" });
+		if (!(await expectAuthorized(response, "Could not shuffle random picks."))) return;
+		const dashboard = await response.json();
+		renderDashboardMemeCollection(
+			dashboardRandom,
+			dashboard.random_items,
+			"Add something to your vault to get random picks.",
+		);
+	} finally {
+		dashboardRandomRefresh.disabled = false;
+		dashboardRandomRefresh.classList.remove("is-loading");
+	}
 }
 
 function queueTagSearch(rawValue) {
@@ -2560,7 +2780,10 @@ function renderSidebarCounts(counts = state.library.counts) {
 
 function renderSidebarViewState() {
   sidebarNavItems.forEach((item) => {
-    item.classList.toggle("is-active", item.dataset.view === state.filters.view);
+    item.classList.toggle("is-active", !state.filters.tag && item.dataset.view === state.filters.view);
+  });
+  sidebarPopularTags?.querySelectorAll(".sidebar-tag-item").forEach((item) => {
+    item.classList.toggle("is-active", item.dataset.sidebarTag === state.filters.tag);
   });
 }
 
@@ -2732,6 +2955,7 @@ function previewKindForMeme(meme) {
 
 function renderLoadedMemes() {
   const memes = getVisibleMemes();
+  memeGrid.classList.toggle("has-single-item", memes.length === 1);
   if (!memes.length) {
     memeGrid.replaceChildren();
     memeGridTopSpacer.classList.add("hidden");
@@ -3216,7 +3440,7 @@ function renderRandomReelMeme(meme) {
   }
   randomReelTitle.textContent = truncateWithCounter(meme.originalName, 52);
   randomReelTitle.title = meme.originalName;
-  randomReelMeta.textContent = `${formatSize(meme.sizeBytes)} * ${meme.contentType}`;
+  randomReelMeta.textContent = `${formatSize(meme.sizeBytes)} \u2022 ${meme.contentType}`;
   randomReelOpen.href = meme.filePath;
   randomReelTags.innerHTML = "";
   layoutCardTags(randomReelTags, (meme.tags && meme.tags.length > 0) ? meme.tags : ["untagged"], 1);
@@ -3248,6 +3472,7 @@ function getRandomReelMediaControlTarget() {
 function syncRandomReelMediaControls() {
   const media = getRandomReelMediaControlTarget();
   const supportsMediaControls = !!media;
+  const playLabel = randomReelPlay.querySelector(".random-reel-nav-label");
 
   randomReelPlay.disabled = !supportsMediaControls;
   randomReelVolumeToggle.disabled = !supportsMediaControls;
@@ -3259,6 +3484,7 @@ function syncRandomReelMediaControls() {
     randomReelPlay.setAttribute("aria-label", "Play media");
     randomReelPlay.setAttribute("data-tooltip", "Play");
     randomReelPlayIcon.innerHTML = "&#9654;";
+    if (playLabel) playLabel.textContent = "Play";
     randomReelVolumeToggle.setAttribute("aria-label", "Mute media");
     randomReelVolumeIcon.innerHTML = "&#128266;";
     randomReelVolume.value = `${Math.round(loadPreferredMediaVolume() * 100)}`;
@@ -3271,6 +3497,7 @@ function syncRandomReelMediaControls() {
   randomReelPlay.setAttribute("aria-label", paused ? "Play media" : "Pause media");
   randomReelPlay.setAttribute("data-tooltip", paused ? "Play" : "Pause");
   randomReelPlayIcon.innerHTML = paused ? "&#9654;" : "&#10074;&#10074;";
+  if (playLabel) playLabel.textContent = paused ? "Play" : "Pause";
 
   randomReelVolumeToggle.setAttribute("aria-label", muted ? "Unmute media" : "Mute media");
   randomReelVolumeIcon.innerHTML = muted ? "&#128263;" : "&#128266;";
@@ -3452,7 +3679,14 @@ function clearUploadPreview() {
     URL.revokeObjectURL(uploadPreviewURL);
     uploadPreviewURL = null;
   }
-  uploadPreview.innerHTML = `<div class="file-icon upload-empty-preview"><strong>DROP</strong><span>Choose one or more files to preview the first item before uploading.</span></div>`;
+  uploadPreview.innerHTML = `
+    <div class="file-icon upload-empty-preview">
+      <span class="upload-empty-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M12 15V4m0 0L8 8m4-4 4 4M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/></svg>
+      </span>
+      <strong>Drop files to preview</strong>
+      <span>Review your selection before it enters the vault.</span>
+    </div>`;
 }
 
 function setUploadDragActive(active) {
@@ -3557,15 +3791,33 @@ function getMemeById(id) {
   return state.memes.find((item) => item.id === id);
 }
 
-function getCardByMemeId(id) {
-  return memeGrid.querySelector(`.meme-card[data-meme-id="${id}"]`);
+function getCardsByMemeId(id) {
+  return Array.from(document.querySelectorAll(`.meme-card[data-meme-id="${id}"]`));
 }
 
 function applyFavoriteStateToButton(button, favorite) {
   if (!button) return;
   button.classList.toggle("is-active", favorite);
-  button.setAttribute("aria-label", favorite ? "Favorited" : "Favorite");
-  button.setAttribute("data-tooltip", favorite ? "Favorited" : "Favorite");
+  button.classList.toggle("is-favorite", favorite);
+  button.setAttribute("aria-pressed", favorite ? "true" : "false");
+  button.setAttribute("aria-label", favorite ? "Remove from favorites" : "Add to favorites");
+  button.setAttribute("data-tooltip", favorite ? "Remove from Favorites" : "Add to Favorites");
+
+  const label = button.querySelector(".modal-action-label");
+  if (label) {
+    label.textContent = favorite ? "Favorited" : "Favorite";
+  }
+
+  if (button.matches(".random-reel-favorite")) {
+    const icon = button.querySelector(".random-reel-nav-icon");
+    const reelLabel = button.querySelector(".random-reel-nav-label");
+    if (icon) {
+      icon.textContent = favorite ? "\u2665" : "\u2661";
+    }
+    if (reelLabel) {
+      reelLabel.textContent = favorite ? "Favorited" : "Favorite";
+    }
+  }
 }
 
 function syncFavoriteUI(updatedMeme) {
@@ -3578,14 +3830,15 @@ function syncFavoriteUI(updatedMeme) {
   }
   renderSidebarCounts();
 
-  const card = getCardByMemeId(updatedMeme.id);
-  const favoriteButton = card?.querySelector(".favorite-button");
-  applyFavoriteStateToButton(favoriteButton, updatedMeme.favorite);
+  const cards = getCardsByMemeId(updatedMeme.id);
+  cards.forEach((card) => {
+    applyFavoriteStateToButton(card.querySelector(".favorite-button"), updatedMeme.favorite);
+  });
 
   if (state.filters.view === "favorites") {
-    if (!updatedMeme.favorite && card) {
+    if (!updatedMeme.favorite && cards.length > 0) {
       state.memes = state.memes.filter((meme) => meme.id !== updatedMeme.id);
-      card.remove();
+      cards.forEach((card) => card.remove());
     }
     emptyState.classList.toggle("hidden", state.memes.length !== 0);
   }
@@ -3599,6 +3852,10 @@ function syncFavoriteUI(updatedMeme) {
       ...(modalSnapshot || {}),
       favorite: !!updatedMeme.favorite,
     };
+  }
+
+  if (state.filters.view === "home") {
+    fetchVaultDashboard().catch((error) => console.error(error));
   }
 }
 
@@ -3638,13 +3895,52 @@ function setModalAuditVisibility(visible) {
 }
 
 async function openAdminMemeByID(id) {
-  if (!id) return;
+  if (!id) return false;
   const response = await fetch(`/api/admin/memes/${encodeURIComponent(id)}`);
   if (!(await expectAuthorized(response, "Failed to load meme."))) {
-    return;
+    return false;
   }
   const meme = await response.json();
   openModalWithMeme(upsertMemeInState(meme) || meme);
+  return true;
+}
+
+async function completeAdminTagReview(id) {
+  const response = await fetch(`/api/memes/${encodeURIComponent(id)}/tag-suggestions`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "dismiss_all" }),
+  });
+  if (!(await expectAuthorized(response, "Failed to complete suggested tag review."))) {
+    showToast("The meme was saved, but its suggestion review could not be completed.", "error", { title: "Suggested Tags" });
+    return false;
+  }
+
+  const meme = await response.json();
+  updateMemeSuggestedTagsInState(meme.id, meme.suggestedTags || []);
+  return true;
+}
+
+async function openNextAdminTagReview() {
+  if (!adminTagReviewSessionActive || adminTagReviewAdvancing) return;
+  adminTagReviewAdvancing = true;
+  try {
+    const status = await fetchAdminTagQueueStatus();
+    const pending = Array.isArray(status?.pending_review_memes) ? status.pending_review_memes : [];
+    const next = pending[0];
+    if (!next?.id) {
+      adminTagReviewSessionActive = false;
+      showToast("Suggested tag review queue complete.", "success", { title: "Suggested Tags", duration: 2600 });
+      return;
+    }
+
+    const opened = await openAdminMemeByID(next.id);
+    if (!opened) {
+      adminTagReviewSessionActive = false;
+    }
+  } finally {
+    adminTagReviewAdvancing = false;
+  }
 }
 
 function openModalWithMeme(meme) {
@@ -3737,7 +4033,7 @@ function hasUnsavedModalChanges() {
   );
 }
 
-function closeModal() {
+function closeModal(options = {}) {
   clearMemeModalUIHideTimer();
   if (hasUnsavedModalChanges()) {
     const shouldClose = window.confirm("Discard unsaved changes?");
@@ -3753,12 +4049,16 @@ function closeModal() {
   }
   memeModal.classList.remove("meme-modal-ui-hidden");
   memeModal.classList.remove("details-open");
+  memeModal.classList.remove("has-video", "has-audio");
   modalPanelToggle?.setAttribute("aria-expanded", "false");
   modalPanelToggle?.setAttribute("aria-label", "Open details");
   activeMemeId = null;
   modalSnapshot = null;
   setModalAuditVisibility(false);
   overlayClose.classList.add("hidden");
+  if (!options.continueAdminReview) {
+    adminTagReviewSessionActive = false;
+  }
   return true;
 }
 
@@ -3813,13 +4113,16 @@ function getModalMediaControlTarget() {
 function syncModalMediaControls() {
   const media = getModalMediaControlTarget();
   const supportsMediaControls = !!media;
+  const isVideo = media instanceof HTMLVideoElement;
+  const isAudio = media instanceof HTMLAudioElement;
 
+  memeModal?.classList.toggle("has-video", isVideo);
+  memeModal?.classList.toggle("has-audio", isAudio);
   modalMediaControls?.classList.toggle("hidden", !supportsMediaControls);
   modalPlay.disabled = !supportsMediaControls;
   modalVolumeToggle.disabled = !supportsMediaControls;
   modalVolume.disabled = !supportsMediaControls;
   modalVolumeWrap.classList.toggle("hidden", !supportsMediaControls);
-  const isVideo = media instanceof HTMLVideoElement;
   modalProgressWrap?.classList.toggle("hidden", !isVideo);
 
   if (!supportsMediaControls) {
@@ -4785,22 +5088,16 @@ function openVideoImportDialog() {
 
 function openAddVaultDialog() {
 	if (!canAdd()) return;
-	clipboardStatus.textContent = "";
 	addVaultModal?.showModal();
 }
 
 openUploadModalButton.addEventListener("click", openAddVaultDialog);
 
-openLinkUploadModalButton?.addEventListener("click", () => {
-	openVideoImportDialog();
-});
-
-document.querySelectorAll("#top-add-vault, #hero-add-vault, #mobile-add-vault, [data-open-vault]").forEach((button) => button.addEventListener("click", openAddVaultDialog));
+document.querySelectorAll("#top-add-vault, #mobile-add-vault, [data-open-vault]").forEach((button) => button.addEventListener("click", openAddVaultDialog));
 addVaultClose?.addEventListener("click", () => addVaultModal.close());
-saveLinkClose?.addEventListener("click", () => saveLinkModal.close());
 
 document.querySelectorAll("[data-ingest]").forEach((button) => {
-	button.addEventListener("click", async () => {
+	button.addEventListener("click", () => {
 		const mode = button.dataset.ingest;
 		if (mode === "upload") {
 			addVaultModal.close();
@@ -4808,81 +5105,8 @@ document.querySelectorAll("[data-ingest]").forEach((button) => {
 		} else if (mode === "video") {
 			addVaultModal.close();
 			openVideoImportDialog();
-		} else if (mode === "link") {
-			addVaultModal.close();
-			saveLinkForm?.reset();
-			saveLinkModal?.showModal();
-		} else if (mode === "clipboard") {
-			await importFromClipboard();
 		}
 	});
-});
-
-async function importFromClipboard() {
-	clipboardStatus.textContent = "Reading clipboard…";
-	try {
-		if (navigator.clipboard?.read) {
-			const clipboardItems = await navigator.clipboard.read();
-			for (const item of clipboardItems) {
-				const binaryType = item.types.find((type) => type.startsWith("image/") || type === "application/pdf");
-				if (binaryType) {
-					const blob = await item.getType(binaryType);
-					const extension = binaryType.split("/")[1].replace("jpeg", "jpg");
-					const transfer = new DataTransfer();
-					transfer.items.add(new File([blob], `clipboard-${Date.now()}.${extension}`, { type: binaryType }));
-					addVaultModal.close();
-					openUploadDialog();
-					uploadFileInput.files = transfer.files;
-					renderUploadPreview(uploadFileInput.files[0], 1);
-					return;
-				}
-			}
-		}
-		const text = await navigator.clipboard.readText();
-		if (!text.trim()) throw new Error("Clipboard is empty or unavailable.");
-		try {
-			const parsed = new URL(text.trim());
-			if (parsed.protocol === "http:" || parsed.protocol === "https:") {
-				addVaultModal.close();
-				document.querySelector("#save-link-url").value = parsed.href;
-				saveLinkModal.showModal();
-				return;
-			}
-		} catch (error) { /* Treat non-URL clipboard content as text. */ }
-		const transfer = new DataTransfer();
-		transfer.items.add(new File([text], `clipboard-${Date.now()}.txt`, { type: "text/plain" }));
-		addVaultModal.close();
-		openUploadDialog();
-		uploadFileInput.files = transfer.files;
-		renderUploadPreview(uploadFileInput.files[0], 1);
-	} catch (error) {
-		clipboardStatus.textContent = error?.message || "Clipboard access was not available. Use Upload Files instead.";
-	}
-}
-
-saveLinkForm?.addEventListener("submit", async (event) => {
-	event.preventDefault();
-	const status = document.querySelector("#save-link-status");
-	status.textContent = "Saving link…";
-	const response = await fetch("/api/memes/save-link", {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({
-			url: document.querySelector("#save-link-url").value,
-			title: document.querySelector("#save-link-title").value,
-			tags: document.querySelector("#save-link-tags").value.split(",").map((tag) => tag.trim()).filter(Boolean),
-			notes: document.querySelector("#save-link-notes").value,
-			favorite: document.querySelector("#save-link-favorite").checked,
-		}),
-	});
-	if (!response.ok) {
-		status.textContent = await readAPIErrorMessage(response, "Could not save this link.");
-		return;
-	}
-	showToast("External link saved to the vault.", "success", { title: "Saved link" });
-	saveLinkModal.close();
-	state.filters.view = "library";
-	await loadInitialMemes();
 });
 
 openRandomReelButton?.addEventListener("click", () => {
@@ -5222,6 +5446,7 @@ tagSearchInput.addEventListener("keydown", async (event) => {
 
 sidebarNavItems.forEach((item) => {
   item.addEventListener("click", () => {
+    state.filters.tag = "";
     state.filters.view = item.dataset.view || "library";
     loadInitialMemes().catch((error) => {
       console.error(error);
@@ -5233,12 +5458,21 @@ sidebarNavItems.forEach((item) => {
 });
 
 function navigateToView(view) {
+	state.filters.tag = "";
 	state.filters.view = view || "library";
 	loadInitialMemes().catch((error) => console.error(error));
 	if (drawerMediaQuery.matches) closeSidebarDrawer();
 }
 
 document.querySelectorAll("[data-go-library]").forEach((button) => button.addEventListener("click", () => navigateToView("library")));
+document.querySelectorAll("[data-go-view]").forEach((button) => button.addEventListener("click", () => navigateToView(button.dataset.goView)));
+dashboardRandomRefresh?.addEventListener("click", () => {
+	refreshDashboardRandomItems().catch((error) => {
+		console.error(error);
+		showToast("Could not shuffle random picks.", "error", { title: "Dashboard" });
+	});
+});
+document.querySelector("[data-admin-back-to-vault]")?.addEventListener("click", () => navigateToView("home"));
 document.querySelectorAll("[data-mobile-view]").forEach((button) => button.addEventListener("click", () => navigateToView(button.dataset.mobileView)));
 document.querySelectorAll("[data-mobile-drawer]").forEach((button) => button.addEventListener("click", openSidebarDrawer));
 
@@ -5250,6 +5484,7 @@ filterToggle?.addEventListener("click", () => {
 });
 
 document.querySelectorAll("[data-filter-view]").forEach((button) => button.addEventListener("click", () => {
+	state.filters.tag = "";
 	state.filters.view = button.dataset.filterView || "library";
 	loadInitialMemes().catch((error) => console.error(error));
 }));
@@ -5277,6 +5512,11 @@ gridViewButton?.addEventListener("click", () => setLibraryViewMode("grid"));
 listViewButton?.addEventListener("click", () => setLibraryViewMode("list"));
 
 document.addEventListener("keydown", (event) => {
+	if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+		event.preventDefault();
+		tagSearchInput.focus();
+		return;
+	}
 	if (event.key === "/" && !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) {
 		event.preventDefault();
 		tagSearchInput.focus();
@@ -5351,6 +5591,16 @@ adminTabs.forEach((tab) => {
       setAdminViewStatus("Could not load admin workspace.");
       showToast("Could not load admin workspace.", "error", { title: "Admin" });
     });
+  });
+});
+
+document.querySelector("[data-admin-activity]")?.addEventListener("click", () => {
+  if (!canManageUsers()) return;
+  state.filters.view = "admin";
+  state.admin.tab = "audit-logs";
+  loadInitialMemes().catch((error) => {
+    console.error(error);
+    setAdminViewStatus("Could not load audit logs.");
   });
 });
 
@@ -5464,6 +5714,7 @@ memeModal.addEventListener("close", () => {
   modalSnapshot = null;
   memeModal.classList.remove("meme-modal-ui-hidden");
   memeModal.classList.remove("details-open");
+  memeModal.classList.remove("has-video", "has-audio");
   syncModalPanelToggle();
   overlayClose.classList.add("hidden");
 });
@@ -5834,7 +6085,9 @@ window.addEventListener("keydown", (event) => {
 modalSave.addEventListener("click", async () => {
   if (!canEditMetadata()) return;
   if (!activeMemeId) return;
-  const saved = await persistCard(activeMemeId, {
+  const savedMemeID = activeMemeId;
+  const continueAdminReview = adminTagReviewSessionActive && isAdminView() && activeAdminTab() === "tag-review";
+  const saved = await persistCard(savedMemeID, {
     favorite: modalFavorite.classList.contains("is-active"),
     notes: modalNotesInput.value,
     tags: getModalTagValues(),
@@ -5845,7 +6098,13 @@ modalSave.addEventListener("click", async () => {
     notes: modalNotesInput.value,
     tags: [...getModalTagValues()].sort().join(", "),
   };
-  closeModal();
+  if (continueAdminReview && !(await completeAdminTagReview(savedMemeID))) {
+    return;
+  }
+  closeModal({ continueAdminReview });
+  if (continueAdminReview) {
+    await openNextAdminTagReview();
+  }
 });
 
 modalSuggestTagsButton?.addEventListener("click", () => {
@@ -5940,6 +6199,19 @@ try {
 
 syncResponsiveSidebar();
 syncInstallAction();
+syncMobileSearchHeader();
+
+document.addEventListener("scroll", syncMobileSearchHeader, { passive: true });
+
+function checkHomeDashboardForNewMemes() {
+  refreshHomeDashboardForNewMemes().catch((error) => console.error(error));
+}
+
+window.setInterval(checkHomeDashboardForNewMemes, HOME_DASHBOARD_REFRESH_MS);
+window.addEventListener("focus", checkHomeDashboardForNewMemes);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) checkHomeDashboardForNewMemes();
+});
 
 window.addEventListener("beforeinstallprompt", (event) => {
   event.preventDefault();
@@ -5970,6 +6242,7 @@ fetchAuthSession()
 
 window.addEventListener("resize", () => {
   syncResponsiveSidebar();
+  syncMobileSearchHeader();
   queueRenderLoadedMemes({ force: true });
   syncMemeGridObserver();
 });
