@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -343,11 +344,10 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Always fetch the current shell so it points at the latest JS and CSS.
+	w.Header().Set("Cache-Control", "no-store, max-age=0")
+	w.Header().Set("Pragma", "no-cache")
 	refreshToken := strings.TrimSpace(r.URL.Query().Get("refresh"))
-	if refreshToken != "" {
-		w.Header().Set("Cache-Control", "no-store, max-age=0")
-		w.Header().Set("Pragma", "no-cache")
-	}
 
 	indexPath := filepath.Join("static", "index.html")
 	content, err := os.ReadFile(indexPath)
@@ -356,8 +356,8 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	replaced := strings.ReplaceAll(string(content), "/static/styles.css", buildAssetURL("/static/styles.css", refreshToken))
-	replaced = strings.ReplaceAll(replaced, "/static/app.js", buildAssetURL("/static/app.js", refreshToken))
+	replaced := strings.ReplaceAll(string(content), "/static/styles.css", html.EscapeString(buildAssetURL("/static/styles.css", refreshToken)))
+	replaced = strings.ReplaceAll(replaced, "/static/app.js", html.EscapeString(buildAssetURL("/static/app.js", refreshToken)))
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write([]byte(replaced))
@@ -419,6 +419,12 @@ func (s *Server) handleAccessDeniedPage(w http.ResponseWriter, r *http.Request) 
 func buildAssetURL(path string, refreshToken string) string {
 	query := url.Values{}
 	query.Set("v", BuildVersion())
+	// Image tags such as "main" and local builds can retain the same version.
+	// Fingerprint the files themselves so frontend edits always get a new URL.
+	if content, err := os.ReadFile(filepath.FromSlash(strings.TrimPrefix(path, "/"))); err == nil {
+		digest := sha256.Sum256(content)
+		query.Set("h", fmt.Sprintf("%x", digest[:8]))
+	}
 	if refreshToken != "" {
 		query.Set("r", refreshToken)
 	}

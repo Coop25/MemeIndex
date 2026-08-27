@@ -29,7 +29,7 @@
     <link rel="icon" type="image/png" sizes="192x192" href="/static/favicon/android-chrome-192x192.png" />
     <link rel="icon" type="image/png" sizes="512x512" href="/static/favicon/android-chrome-512x512.png" />
     <link rel="shortcut icon" href="/static/favicon/favicon.ico" />
-    <link rel="stylesheet" href="/static/styles.css?v=metric-sparklines-20260826" />
+    <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
     <button id="drawer-toggle" class="drawer-toggle hidden" type="button" aria-label="Open menu" aria-expanded="false">
@@ -309,7 +309,7 @@
                 </section>
                 <section class="admin-dashboard-section admin-dashboard-categories-card">
                   <div class="admin-dashboard-section-head">
-                    <div><p class="section-kicker">Tags</p><h3>Top categories</h3></div>
+                    <div><p class="section-kicker">Tags</p><h3>Top tags</h3></div>
                   </div>
                   <div id="admin-dashboard-tags" class="admin-dashboard-tags"></div>
                 </section>
@@ -514,7 +514,7 @@
               <span>Tags</span>
               <div class="tag-editor upload-tag-editor shared-tag-box">
                 <div class="tag-control">
-                  <input id="upload-tags-input" type="text" placeholder="Add a tag..." autocomplete="off" />
+                  <input id="upload-tags-input" type="text" placeholder="Add a tag..." aria-label="Add upload tags" autocomplete="off" />
                   <div id="upload-tag-chips" class="tag-token-list"></div>
                 </div>
                 <div id="upload-tag-suggestions" class="tag-suggestions hidden"></div>
@@ -562,7 +562,7 @@
               <span>Tags</span>
               <div class="tag-editor upload-tag-editor shared-tag-box">
                 <div class="tag-control">
-                  <input id="link-upload-tags-input" type="text" placeholder="Add a tag..." autocomplete="off" />
+                  <input id="link-upload-tags-input" type="text" placeholder="Add a tag..." aria-label="Add link tags" autocomplete="off" />
                   <div id="link-upload-tag-chips" class="tag-token-list"></div>
                 </div>
                 <div id="link-upload-tag-suggestions" class="tag-suggestions hidden"></div>
@@ -703,7 +703,7 @@
             <span>Tags</span>
             <div class="tag-editor shared-tag-box">
               <div class="tag-control">
-                <input id="modal-tags-input" type="text" placeholder="Add a tag..." autocomplete="off" />
+                <input id="modal-tags-input" type="text" placeholder="Add a tag..." aria-label="Add meme tags" autocomplete="off" />
                 <div id="modal-tag-chips" class="tag-token-list"></div>
               </div>
               <div id="modal-tag-suggestions" class="tag-suggestions hidden"></div>
@@ -835,6 +835,6 @@
 
     <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="false"></div>
 
-    <script src="/static/app.js?v=metric-sparklines-20260826" defer></script>
+    <script src="/static/app.js" defer></script>
   </body>
 </html>

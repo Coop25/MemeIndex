@@ -1393,6 +1393,64 @@ function dashboardTrend(current, previous, suffix = "vs previous 30 days") {
   };
 }
 
+function adminChartTooltipAttributes(label) {
+  const text = escapeHTML(label);
+  return `data-chart-tooltip="${text}" aria-label="${text}"`;
+}
+
+function buildAdminChartPoints(points, coordinates, width, height, valueLabel) {
+  // Each day's target extends to the midpoint of its neighbors, including both endpoints.
+  return points.map((entry, index) => {
+    const [x, y] = coordinates[index];
+    const left = index === 0 ? 0 : (coordinates[index - 1][0] + x) / 2;
+    const right = index === points.length - 1 ? width : (x + coordinates[index + 1][0]) / 2;
+    const label = `${entry.date || "Unknown date"} (UTC day)\n${valueLabel(entry, index)}`;
+    return `<g class="admin-chart-point" tabindex="0" role="img" ${adminChartTooltipAttributes(label)}>
+      <circle class="admin-chart-dot" cx="${x.toFixed(2)}" cy="${y.toFixed(2)}" r="2.6" />
+      <rect class="admin-chart-hit" x="${left.toFixed(2)}" y="0" width="${(right - left).toFixed(2)}" height="${height}" />
+    </g>`;
+  }).join("");
+}
+
+function bindAdminChartTooltips(root) {
+  let tooltip = document.querySelector("#admin-chart-tooltip");
+  if (!tooltip) {
+    tooltip = document.createElement("div");
+    tooltip.id = "admin-chart-tooltip";
+    tooltip.className = "admin-chart-tooltip";
+    tooltip.setAttribute("role", "tooltip");
+    document.body.append(tooltip);
+    // Fixed positioning keeps tooltips clear of the metric cards' clipped edges.
+    window.addEventListener("scroll", () => { tooltip.hidden = true; }, true);
+    window.addEventListener("resize", () => { tooltip.hidden = true; });
+  }
+  tooltip.hidden = true;
+  root.querySelectorAll("[data-chart-tooltip]").forEach((target) => {
+    const show = (event) => {
+      tooltip.textContent = target.dataset.chartTooltip;
+      tooltip.hidden = false;
+      const anchor = (target.querySelector("circle") || target).getBoundingClientRect();
+      const x = event.type.startsWith("pointer") ? event.clientX : anchor.left + anchor.width / 2;
+      const y = event.type.startsWith("pointer") ? event.clientY : anchor.top;
+      const bounds = tooltip.getBoundingClientRect();
+      tooltip.style.left = `${Math.max(8, Math.min(x - bounds.width / 2, window.innerWidth - bounds.width - 8))}px`;
+      const top = y - bounds.height - 12;
+      tooltip.style.top = `${Math.max(8, Math.min(top < 8 ? y + 16 : top, window.innerHeight - bounds.height - 8))}px`;
+    };
+    const hide = () => { tooltip.hidden = true; };
+    target.addEventListener("pointerenter", show);
+    target.addEventListener("pointermove", show);
+    target.addEventListener("pointerleave", hide);
+    target.addEventListener("focus", (event) => {
+      // Focusing a point may scroll it into view; position after that scroll settles.
+      requestAnimationFrame(() => { if (document.activeElement === target) show(event); });
+    });
+    target.addEventListener("blur", hide);
+    target.addEventListener("click", hide);
+    target.addEventListener("keydown", (event) => { if (event.key === "Escape") hide(); });
+  });
+}
+
 function buildAdminMetricSparkline(series, key, label, valueFormatter = (value) => Number(value || 0).toLocaleString()) {
   const points = Array.isArray(series) ? series : [];
   if (!points.length) return "";
@@ -1411,21 +1469,13 @@ function buildAdminMetricSparkline(series, key, label, valueFormatter = (value) 
   });
   const line = coordinates.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
   const area = `0,${height} ${line} ${width},${height}`;
-  const [lastX, lastY] = coordinates[coordinates.length - 1];
-  const hitWidth = width / points.length;
-  const hitAreas = points.map((entry, index) => {
-    const x = Math.max(0, (index * hitWidth) - (hitWidth / 2));
-    const date = escapeHTML(String(entry.date || ""));
-    const value = escapeHTML(valueFormatter(values[index]));
-    return `<rect class="admin-metric-spark-hit" x="${x.toFixed(1)}" y="0" width="${(hitWidth + 1).toFixed(1)}" height="${height}"><title>${date}: ${value}</title></rect>`;
-  }).join("");
+  const hitAreas = buildAdminChartPoints(points, coordinates, width, height, (entry, index) => `${label}: ${valueFormatter(values[index])}`);
   const gradientID = `admin-metric-fill-${key}`;
   return `
-    <svg class="admin-metric-spark" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${escapeHTML(label)} over the last 30 days">
+    <svg class="admin-metric-spark" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="group" aria-label="${escapeHTML(label)} over the last 30 days">
       <defs><linearGradient id="${gradientID}" x1="0" y1="0" x2="0" y2="1"><stop class="admin-metric-spark-fill-start" offset="0"/><stop class="admin-metric-spark-fill-end" offset="1"/></linearGradient></defs>
       <polygon class="admin-metric-spark-area" points="${area}" fill="url(#${gradientID})" />
       <polyline class="admin-metric-spark-line" points="${line}" />
-      <circle class="admin-metric-spark-dot" cx="${lastX.toFixed(1)}" cy="${lastY.toFixed(1)}" r="2.6" />
       ${hitAreas}
     </svg>
   `;
@@ -1438,7 +1488,7 @@ function buildAdminUploadChart(series) {
   const height = 205;
   const max = Math.max(1, ...points.map((entry) => Number(entry.uploads || 0)));
   const coordinates = points.map((entry, index) => {
-    const x = points.length === 1 ? 0 : (index / (points.length - 1)) * width;
+    const x = points.length === 1 ? width / 2 : (index / (points.length - 1)) * width;
     const y = height - ((Number(entry.uploads || 0) / max) * (height - 18)) - 6;
     return [x, y];
   });
@@ -1447,13 +1497,42 @@ function buildAdminUploadChart(series) {
   const total = points.reduce((sum, entry) => sum + Number(entry.uploads || 0), 0);
   return `
     <div class="admin-chart-summary"><strong>${escapeHTML(String(total))}</strong><span>uploads in 30 days</span></div>
-    <svg class="admin-upload-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Daily uploads over the last 30 days">
+    <svg class="admin-upload-svg" viewBox="0 0 ${width} ${height}" role="group" aria-label="Daily uploads over the last 30 days">
       <defs><linearGradient id="admin-upload-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#65ca73" stop-opacity=".42"/><stop offset="1" stop-color="#65ca73" stop-opacity="0"/></linearGradient></defs>
       <path class="admin-chart-grid" d="M0 35H720M0 85H720M0 135H720M0 185H720" />
       <polygon points="${area}" fill="url(#admin-upload-fill)" />
       <polyline points="${line}" fill="none" stroke="#72d17c" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+      ${buildAdminChartPoints(points, coordinates, width, height, (entry) => `Uploads: ${Number(entry.uploads || 0).toLocaleString()}`)}
     </svg>
     <div class="admin-chart-axis"><span>${escapeHTML(points[0]?.date || "")}</span><span>${escapeHTML(points[Math.floor(points.length / 2)]?.date || "")}</span><span>${escapeHTML(points[points.length - 1]?.date || "")}</span></div>
+  `;
+}
+
+function buildAdminTopTags(tags, assignmentCount) {
+  const topTags = (Array.isArray(tags) ? tags : []).slice(0, 6);
+  if (!topTags.length) return `<p class="users-empty">No tags have been used yet.</p>`;
+  const totalAssignments = Math.max(1, Number(assignmentCount || 0));
+  const colors = ["#47b76a", "#55a1f3", "#9b72e4", "#e1ad39", "#32c2c9", "#f08d46"];
+  const segments = topTags.map((entry, index) => ({ label: entry.tag || "", count: Number(entry.count || 0), color: colors[index] }));
+  const otherCount = Math.max(0, totalAssignments - segments.reduce((sum, entry) => sum + entry.count, 0));
+  if (otherCount) segments.push({ label: "Other tags", count: otherCount, color: "#26312b" });
+  const tooltipLabel = (entry) => `${entry.label}\n${entry.count.toLocaleString()} tag assignments (${((entry.count / totalAssignments) * 100).toFixed(1)}%)`;
+  let angle = -Math.PI / 2;
+  const position = (radius, radians) => `${(66 + radius * Math.cos(radians)).toFixed(4)},${(66 + radius * Math.sin(radians)).toFixed(4)}`;
+  const slices = segments.filter((entry) => entry.count > 0).map((entry) => {
+    const end = angle + (entry.count / totalAssignments) * Math.PI * 2;
+    const middle = (angle + end) / 2;
+    // Two arcs per edge also handle a single tag occupying the entire ring.
+    const path = `M${position(65, angle)} A65,65 0 0 1 ${position(65, middle)} A65,65 0 0 1 ${position(65, end)} L${position(37.5, end)} A37.5,37.5 0 0 0 ${position(37.5, middle)} A37.5,37.5 0 0 0 ${position(37.5, angle)} Z`;
+    angle = end;
+    return `<path class="admin-tag-slice" d="${path}" fill="${entry.color}" tabindex="0" role="img" ${adminChartTooltipAttributes(tooltipLabel(entry))} />`;
+  }).join("");
+  return `
+    <div class="admin-category-donut">
+      <svg viewBox="0 0 132 132" role="group" aria-label="Top tags by tag assignments">${slices}</svg>
+      <div><strong>${Number(assignmentCount || 0).toLocaleString()}</strong><span>Assignments</span></div>
+    </div>
+    <div class="admin-category-legend">${segments.slice(0, topTags.length).map((entry) => `<button type="button" data-admin-tag="${escapeHTML(entry.label)}" ${adminChartTooltipAttributes(tooltipLabel(entry))}><i style="--tag-color:${entry.color}"></i><span class="tag-chip">${escapeHTML(entry.label)}</span><strong>${Math.round((entry.count / totalAssignments) * 100)}%</strong><small>${entry.count.toLocaleString()}</small></button>`).join("")}</div>
   `;
 }
 
@@ -1461,6 +1540,8 @@ function renderAdminDashboard() {
   if (!adminDashboardPanel || !adminDashboardGrid || !adminDashboardTags || !adminDashboardRecent || !adminDashboardUploadChart || !adminDashboardHealth || !adminDashboardActivity) return;
 
   const visible = isAdminView() && canManageUsers() && activeAdminTab() === "dashboard";
+  const tooltip = document.querySelector("#admin-chart-tooltip");
+  if (tooltip) tooltip.hidden = true;
   adminDashboardPanel.classList.toggle("hidden", !visible);
   if (!visible) return;
 
@@ -1478,7 +1559,7 @@ function renderAdminDashboard() {
     { icon: "M", label: "Total Memes", value: Number(counts.total || 0).toLocaleString(), note: uploadTrend.label, trend: uploadTrend.direction, accent: "green", seriesKey: "memes", seriesLabel: "Cumulative meme count" },
     { icon: "#", label: "Tags", value: Number(dashboard.unique_tags || 0).toLocaleString(), note: `${Number(dashboard.total_tag_assignments || 0).toLocaleString()} assignments`, trend: "flat", accent: "purple", seriesKey: "tags", seriesLabel: "Cumulative unique tag count" },
     { icon: "U", label: "Users", value: Number(dashboard.user_count || 0).toLocaleString(), note: `${Number(dashboard.active_users_30d || 0)} active in 30 days`, trend: Number(dashboard.new_users_30d || 0) > 0 ? "up" : "flat", accent: "blue", seriesKey: "users", seriesLabel: "Cumulative user count" },
-    { icon: "S", label: "Storage Used", value: formatSize(Number(dashboard.total_size_bytes || 0)), note: storageTrend.label, trend: storageTrend.direction, accent: "amber", seriesKey: "storage_bytes", seriesLabel: "Cumulative storage used", valueFormatter: formatSize },
+    { icon: "S", label: "Storage Used", value: formatSize(Number(dashboard.total_size_bytes || 0)), note: storageTrend.label, trend: storageTrend.direction, accent: "amber", seriesKey: "storage_bytes", seriesLabel: "Cumulative storage used", valueFormatter: (value) => `${formatSize(value)} (${value.toLocaleString()} bytes)` },
     { icon: "F", label: "Favorites", value: Number(counts.favorites || 0).toLocaleString(), note: "Across all users", trend: "flat", accent: "red", seriesKey: "favorites", seriesLabel: "Cumulative favorite assignments" },
   ];
   adminDashboardGrid.innerHTML = metrics.map((metric) => `
@@ -1492,25 +1573,8 @@ function renderAdminDashboard() {
 
   adminDashboardUploadChart.innerHTML = buildAdminUploadChart(dashboard.upload_series);
 
-  const topTags = (Array.isArray(dashboard.top_tags) ? dashboard.top_tags : []).slice(0, 6);
-  const totalAssignments = Math.max(1, Number(dashboard.total_tag_assignments || 0));
-  const colors = ["#47b76a", "#55a1f3", "#9b72e4", "#e1ad39", "#32c2c9", "#f08d46"];
-  if (!topTags.length) {
-    adminDashboardTags.innerHTML = `<p class="users-empty">No categories have been used yet.</p>`;
-  } else {
-    let angle = 0;
-    const stops = topTags.map((entry, index) => {
-      const next = angle + ((Number(entry.count || 0) / totalAssignments) * 360);
-      const stop = `${colors[index]} ${angle.toFixed(1)}deg ${next.toFixed(1)}deg`;
-      angle = next;
-      return stop;
-    });
-    if (angle < 360) stops.push(`rgba(255,255,255,.09) ${angle.toFixed(1)}deg 360deg`);
-    adminDashboardTags.innerHTML = `
-      <div class="admin-category-donut" style="--category-segments:${stops.join(",")}"><div><strong>${Number(counts.total || 0).toLocaleString()}</strong><span>Total</span></div></div>
-      <div class="admin-category-legend">${topTags.map((entry, index) => `<button type="button" data-admin-tag="${escapeHTML(entry.tag || "")}"><i style="--tag-color:${colors[index]}"></i><span>${escapeHTML(entry.tag || "")}</span><strong>${Math.round((Number(entry.count || 0) / totalAssignments) * 100)}%</strong><small>${Number(entry.count || 0).toLocaleString()}</small></button>`).join("")}</div>
-    `;
-  }
+  adminDashboardTags.innerHTML = buildAdminTopTags(dashboard.top_tags, dashboard.total_tag_assignments);
+  bindAdminChartTooltips(adminDashboardPanel);
 
   const health = Array.isArray(dashboard.system_health) ? dashboard.system_health : [];
   const healthyCount = health.filter((entry) => entry.healthy).length;
@@ -1529,7 +1593,7 @@ function renderAdminDashboard() {
       <button class="admin-dashboard-recent-row" type="button" data-admin-meme-id="${escapeHTML(meme.id || "")}" title="Open ${escapeHTML(meme.original_name || "Unknown meme")}">
         <span class="admin-recent-meme"><span class="admin-recent-thumb">${meme.preview_path ? `<img src="${escapeHTML(meme.preview_path)}" alt="" />` : "FILE"}</span><strong title="${escapeHTML(meme.original_name || "Unknown meme")}">${escapeHTML(meme.original_name || "Unknown meme")}</strong></span>
         <span>${escapeHTML(uploadActors.get(meme.id) || "Unknown")}</span>
-        <span class="admin-recent-tags">${(meme.tags || []).slice(0, 2).map((tag) => `<i>${escapeHTML(tag)}</i>`).join("") || "&mdash;"}</span>
+        <span class="admin-recent-tags">${(meme.tags || []).slice(0, 2).map((tag) => `<span class="tag-chip">${escapeHTML(tag)}</span>`).join("") || "&mdash;"}</span>
         <span>${escapeHTML(formatSize(Number(meme.size_bytes || 0)))}</span>
         <span>${escapeHTML(formatDateTime(meme.created_at))}</span>
       </button>
@@ -1585,9 +1649,9 @@ function renderAdminTagHygiene() {
     adminTagHygienePairs.innerHTML = pairs.map((pair) => `
       <article class="admin-tag-hygiene-pair">
         <div class="admin-tag-hygiene-pair-copy">
-          <strong>${escapeHTML(pair.candidate || "")}</strong>
+          <strong class="tag-chip">${escapeHTML(pair.candidate || "")}</strong>
           <span>suggested merge into</span>
-          <strong>${escapeHTML(pair.primary || "")}</strong>
+          <strong class="tag-chip">${escapeHTML(pair.primary || "")}</strong>
         </div>
         <div class="admin-tag-hygiene-pair-actions">
           <button
@@ -1618,7 +1682,7 @@ function renderAdminTagHygiene() {
     adminTagHygieneTags.innerHTML = tags.map((tag) => `
       <article class="admin-tag-hygiene-tag">
         <div class="admin-tag-hygiene-tag-copy">
-          <strong>${escapeHTML(tag.tag || "")}</strong>
+          <strong class="tag-chip">${escapeHTML(tag.tag || "")}</strong>
           <span>${escapeHTML(String(tag.count || 0))} meme${Number(tag.count || 0) === 1 ? "" : "s"}</span>
         </div>
         <div class="admin-tag-hygiene-similar">
@@ -2635,7 +2699,7 @@ function renderSidebarPopularTags(tags) {
 		button.className = "nav-item sidebar-tag-item";
 		button.dataset.sidebarTag = name;
 		button.title = `Show items tagged ${name}`;
-		button.innerHTML = '<span class="nav-icon sidebar-tag-icon" aria-hidden="true">#</span><span class="nav-label"></span><span class="nav-count"></span>';
+		button.innerHTML = '<span class="nav-icon sidebar-tag-icon" aria-hidden="true">#</span><span class="nav-label tag-chip"></span><span class="nav-count"></span>';
 		button.querySelector(".nav-label").textContent = name;
 		button.querySelector(".nav-count").textContent = Number(tag.count || 0).toLocaleString();
 		button.addEventListener("click", () => navigateToTag(name));
@@ -2702,7 +2766,7 @@ async function fetchVaultDashboard({ onlyIfNewestChanged = false } = {}) {
 		const button = document.createElement("button");
 		button.type = "button";
 		button.className = "dashboard-tag-card";
-		button.innerHTML = `<i aria-hidden="true">${["☺", "▤", "◈", "✦", "◉"][index % 5]}</i><span></span><small></small>`;
+		button.innerHTML = `<i aria-hidden="true">${["☺", "▤", "◈", "✦", "◉"][index % 5]}</i><span class="tag-chip"></span><small></small>`;
 		button.querySelector("span").textContent = tag.name;
 		button.querySelector("small").textContent = `${tag.count} item${tag.count === 1 ? "" : "s"}`;
 		button.addEventListener("click", () => navigateToTag(tag.name));
@@ -2825,34 +2889,99 @@ function renderSidebarViewState() {
   });
 }
 
-function renderTopTagSuggestions() {
-  tagSearchSuggestions.innerHTML = "";
+function highlightTagSuggestion(input, list, index, scroll = false) {
+  const options = list.querySelectorAll(".tag-suggestion");
+  options.forEach((option, optionIndex) => {
+    const selected = optionIndex === index;
+    option.classList.toggle("is-active", selected);
+    option.setAttribute("aria-selected", String(selected));
+  });
+  const active = options[index];
+  if (active && !list.classList.contains("hidden")) {
+    input.setAttribute("aria-activedescendant", active.id);
+    if (scroll) active.scrollIntoView({ block: "nearest" });
+  } else {
+    input.removeAttribute("aria-activedescendant");
+  }
+}
 
-  if (topTagSuggestionState.length === 0) {
-    tagSearchSuggestions.classList.add("hidden");
-    activeTopTagSuggestionIndex = -1;
+function dismissTagSuggestions(input, list, setIndex) {
+  list.classList.add("hidden");
+  input.setAttribute("aria-expanded", "false");
+  input.removeAttribute("aria-activedescendant");
+  setIndex(-1);
+}
+
+function navigateTagSuggestions(event, input, list, tags, index, setIndex) {
+  if (event.isComposing || event.ctrlKey || event.altKey || event.metaKey) return false;
+  if (!tags.length || list.classList.contains("hidden")) return false;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    dismissTagSuggestions(input, list, setIndex);
+    return true;
+  }
+  if (!["Tab", "ArrowDown", "ArrowUp"].includes(event.key)) return false;
+  const backwards = event.key === "ArrowUp" || (event.key === "Tab" && event.shiftKey);
+  const next = backwards ? (index <= 0 ? tags.length - 1 : index - 1) : (index + 1) % tags.length;
+  event.preventDefault();
+  setIndex(next);
+  highlightTagSuggestion(input, list, next, true);
+  return true;
+}
+
+function renderTagSuggestionList(input, list, tags, index, setIndex, selectTag) {
+  if (!input.hasAttribute("aria-controls")) {
+    input.setAttribute("role", "combobox");
+    input.setAttribute("aria-autocomplete", "list");
+    input.setAttribute("aria-controls", list.id);
+    input.addEventListener("blur", () => dismissTagSuggestions(input, list, setIndex));
+  }
+  list.setAttribute("role", "listbox");
+  list.setAttribute("aria-label", "Suggested tags");
+  list.replaceChildren();
+  if (!tags.length || document.activeElement !== input) {
+    dismissTagSuggestions(input, list, setIndex);
     return;
   }
-
-  topTagSuggestionState.forEach((tag, index) => {
+  tags.forEach((tag, optionIndex) => {
     const button = document.createElement("button");
     button.type = "button";
+    button.tabIndex = -1;
+    button.id = `${list.id}-option-${optionIndex}`;
     button.className = "tag-suggestion";
-    if (index === activeTopTagSuggestionIndex) {
-      button.classList.add("is-active");
-    }
-    button.innerHTML = `<span>${tag}</span><span class="tag-suggestion-hint">tag</span>`;
-    button.addEventListener("click", async () => {
-      tagSearchInput.value = tag;
-      topTagSuggestionState = [];
-      renderTopTagSuggestions();
-      await applyTagSearch(tag);
-      tagSearchInput.focus();
+    button.setAttribute("role", "option");
+    button.setAttribute("aria-label", tag);
+    button.innerHTML = `<span class="tag-suggestion-name"><span class="tag-suggestion-mark" aria-hidden="true">#</span>${escapeHTML(tag)}</span><span class="tag-suggestion-hint" aria-hidden="true">Enter ↵</span>`;
+    button.addEventListener("pointermove", () => {
+      setIndex(optionIndex);
+      highlightTagSuggestion(input, list, optionIndex);
     });
-    tagSearchSuggestions.appendChild(button);
+    // Keep focus in the combobox so Enter can select a mouse-highlighted option.
+    button.addEventListener("pointerdown", (event) => event.preventDefault());
+    button.addEventListener("click", () => { selectTag(tag); input.focus(); });
+    list.appendChild(button);
   });
+  const help = document.createElement("div");
+  help.className = "tag-suggestion-help";
+  help.setAttribute("role", "presentation");
+  help.textContent = "Tab / ↑ ↓ to browse · Enter to select · Esc to close";
+  list.appendChild(help);
+  list.classList.remove("hidden");
+  input.setAttribute("aria-expanded", "true");
+  highlightTagSuggestion(input, list, index);
+}
 
-  tagSearchSuggestions.classList.remove("hidden");
+function renderTopTagSuggestions() {
+  renderTagSuggestionList(tagSearchInput, tagSearchSuggestions, topTagSuggestionState, activeTopTagSuggestionIndex,
+    (index) => { activeTopTagSuggestionIndex = index; }, (tag) => {
+    tagSearchInput.value = tag;
+    topTagSuggestionState = [];
+    renderTopTagSuggestions();
+    window.clearTimeout(topTagSearchDebounce);
+    topTagSearchDebounce = null;
+    applyTagSearch(tag).catch((error) => console.error(error));
+  });
 }
 
 async function fetchTopTagSuggestions() {
@@ -4294,9 +4423,9 @@ function renderTagEditor() {
     removeButton.className = "tag-token-remove";
     removeButton.setAttribute("aria-label", `Remove ${tag.value}`);
     removeButton.dataset.tagId = tag.id;
-    removeButton.textContent = "x";
+    removeButton.textContent = "×";
     removeButton.disabled = !canRemoveTags();
-    removeButton.addEventListener("pointerdown", (event) => {
+    removeButton.addEventListener("click", (event) => {
       if (!canRemoveTags()) return;
       event.preventDefault();
       event.stopPropagation();
@@ -4310,30 +4439,8 @@ function renderTagEditor() {
 }
 
 function renderTagSuggestions() {
-  modalTagSuggestions.innerHTML = "";
-
-  if (modalSuggestionState.length === 0) {
-    modalTagSuggestions.classList.add("hidden");
-    activeSuggestionIndex = -1;
-    return;
-  }
-
-  modalSuggestionState.forEach((tag, index) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "tag-suggestion";
-    if (index === activeSuggestionIndex) {
-      button.classList.add("is-active");
-    }
-    button.innerHTML = `<span>${tag}</span><span class="tag-suggestion-hint">existing</span>`;
-    button.addEventListener("click", () => {
-      addModalTag(tag);
-      modalTagsInput.focus();
-    });
-    modalTagSuggestions.appendChild(button);
-  });
-
-  modalTagSuggestions.classList.remove("hidden");
+  renderTagSuggestionList(modalTagsInput, modalTagSuggestions, modalSuggestionState, activeSuggestionIndex,
+    (index) => { activeSuggestionIndex = index; }, addModalTag);
 }
 
 function supportsModalAITagSuggestions(meme) {
@@ -4366,7 +4473,7 @@ function renderModalAITagSuggestions() {
     const row = document.createElement("div");
     row.className = "modal-ai-tag-row";
     row.innerHTML = `
-      <span class="modal-ai-tag-label">${escapeHTML(tag)}</span>
+      <span class="modal-ai-tag-label tag-chip">${escapeHTML(tag)}</span>
       <div class="modal-ai-tag-actions">
         <button type="button" class="modal-ai-tag-action" data-action="add" data-tag="${escapeHTML(tag)}">Add</button>
         <button type="button" class="modal-ai-tag-action modal-ai-tag-action-muted" data-action="dismiss" data-tag="${escapeHTML(tag)}">Dismiss</button>
@@ -4673,8 +4780,8 @@ function renderUploadTagEditor() {
     removeButton.type = "button";
     removeButton.className = "tag-token-remove";
     removeButton.setAttribute("aria-label", `Remove ${tag.value}`);
-    removeButton.textContent = "x";
-    removeButton.addEventListener("pointerdown", (event) => {
+    removeButton.textContent = "×";
+    removeButton.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
       removeUploadTag(tag.id);
@@ -4687,30 +4794,8 @@ function renderUploadTagEditor() {
 }
 
 function renderUploadTagSuggestions() {
-  uploadTagSuggestions.innerHTML = "";
-
-  if (uploadSuggestionState.length === 0) {
-    uploadTagSuggestions.classList.add("hidden");
-    activeUploadSuggestionIndex = -1;
-    return;
-  }
-
-  uploadSuggestionState.forEach((tag, index) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "tag-suggestion";
-    if (index === activeUploadSuggestionIndex) {
-      button.classList.add("is-active");
-    }
-    button.innerHTML = `<span>${tag}</span><span class="tag-suggestion-hint">existing</span>`;
-    button.addEventListener("click", () => {
-      addUploadTag(tag);
-      uploadTagsInput.focus();
-    });
-    uploadTagSuggestions.appendChild(button);
-  });
-
-  uploadTagSuggestions.classList.remove("hidden");
+  renderTagSuggestionList(uploadTagsInput, uploadTagSuggestions, uploadSuggestionState, activeUploadSuggestionIndex,
+    (index) => { activeUploadSuggestionIndex = index; }, addUploadTag);
 }
 
 async function fetchUploadTagSuggestions() {
@@ -4807,8 +4892,8 @@ function renderLinkUploadTagEditor() {
     removeButton.type = "button";
     removeButton.className = "tag-token-remove";
     removeButton.setAttribute("aria-label", `Remove ${tag.value}`);
-    removeButton.textContent = "x";
-    removeButton.addEventListener("pointerdown", (event) => {
+    removeButton.textContent = "×";
+    removeButton.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
       removeLinkUploadTag(tag.id);
@@ -4821,30 +4906,8 @@ function renderLinkUploadTagEditor() {
 }
 
 function renderLinkUploadTagSuggestions() {
-  linkUploadTagSuggestions.innerHTML = "";
-
-  if (linkUploadSuggestionState.length === 0) {
-    linkUploadTagSuggestions.classList.add("hidden");
-    activeLinkUploadSuggestionIndex = -1;
-    return;
-  }
-
-  linkUploadSuggestionState.forEach((tag, index) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "tag-suggestion";
-    if (index === activeLinkUploadSuggestionIndex) {
-      button.classList.add("is-active");
-    }
-    button.innerHTML = `<span>${tag}</span><span class="tag-suggestion-hint">existing</span>`;
-    button.addEventListener("click", () => {
-      addLinkUploadTag(tag);
-      linkUploadTagsInput.focus();
-    });
-    linkUploadTagSuggestions.appendChild(button);
-  });
-
-  linkUploadTagSuggestions.classList.remove("hidden");
+  renderTagSuggestionList(linkUploadTagsInput, linkUploadTagSuggestions, linkUploadSuggestionState, activeLinkUploadSuggestionIndex,
+    (index) => { activeLinkUploadSuggestionIndex = index; }, addLinkUploadTag);
 }
 
 async function fetchLinkUploadTagSuggestions() {
@@ -5336,25 +5399,17 @@ uploadPreviewWrap?.addEventListener("drop", (event) => {
 
 uploadTagsInput.addEventListener("input", () => {
   activeUploadSuggestionIndex = -1;
+  uploadSuggestionState = [];
+  renderUploadTagSuggestions();
   fetchUploadTagSuggestions();
 });
 
 uploadTagsInput.addEventListener("keydown", (event) => {
-  if (event.key === "ArrowDown" && uploadSuggestionState.length > 0) {
-    event.preventDefault();
-    activeUploadSuggestionIndex = (activeUploadSuggestionIndex + 1) % uploadSuggestionState.length;
-    renderUploadTagSuggestions();
-    return;
-  }
+  if (event.isComposing) return;
+  if (navigateTagSuggestions(event, uploadTagsInput, uploadTagSuggestions, uploadSuggestionState, activeUploadSuggestionIndex,
+    (index) => { activeUploadSuggestionIndex = index; })) return;
 
-  if (event.key === "ArrowUp" && uploadSuggestionState.length > 0) {
-    event.preventDefault();
-    activeUploadSuggestionIndex = activeUploadSuggestionIndex <= 0 ? uploadSuggestionState.length - 1 : activeUploadSuggestionIndex - 1;
-    renderUploadTagSuggestions();
-    return;
-  }
-
-  if ((event.key === "Enter" || event.key === "Tab" || event.key === ",") && uploadTagsInput.value.trim()) {
+  if ((event.key === "Enter" || event.key === ",") && uploadTagsInput.value.trim()) {
     event.preventDefault();
     if (activeUploadSuggestionIndex >= 0 && uploadSuggestionState[activeUploadSuggestionIndex]) {
       addUploadTag(uploadSuggestionState[activeUploadSuggestionIndex]);
@@ -5369,32 +5424,23 @@ uploadTagsInput.addEventListener("keydown", (event) => {
   }
 
   if (event.key === "Escape") {
-    uploadTagSuggestions.classList.add("hidden");
-    activeUploadSuggestionIndex = -1;
+    dismissTagSuggestions(uploadTagsInput, uploadTagSuggestions, (index) => { activeUploadSuggestionIndex = index; });
   }
 });
 
 linkUploadTagsInput?.addEventListener("input", () => {
   activeLinkUploadSuggestionIndex = -1;
+  linkUploadSuggestionState = [];
+  renderLinkUploadTagSuggestions();
   fetchLinkUploadTagSuggestions();
 });
 
 linkUploadTagsInput?.addEventListener("keydown", (event) => {
-  if (event.key === "ArrowDown" && linkUploadSuggestionState.length > 0) {
-    event.preventDefault();
-    activeLinkUploadSuggestionIndex = (activeLinkUploadSuggestionIndex + 1) % linkUploadSuggestionState.length;
-    renderLinkUploadTagSuggestions();
-    return;
-  }
+  if (event.isComposing) return;
+  if (navigateTagSuggestions(event, linkUploadTagsInput, linkUploadTagSuggestions, linkUploadSuggestionState, activeLinkUploadSuggestionIndex,
+    (index) => { activeLinkUploadSuggestionIndex = index; })) return;
 
-  if (event.key === "ArrowUp" && linkUploadSuggestionState.length > 0) {
-    event.preventDefault();
-    activeLinkUploadSuggestionIndex = activeLinkUploadSuggestionIndex <= 0 ? linkUploadSuggestionState.length - 1 : activeLinkUploadSuggestionIndex - 1;
-    renderLinkUploadTagSuggestions();
-    return;
-  }
-
-  if ((event.key === "Enter" || event.key === "Tab" || event.key === ",") && linkUploadTagsInput.value.trim()) {
+  if ((event.key === "Enter" || event.key === ",") && linkUploadTagsInput.value.trim()) {
     event.preventDefault();
     if (activeLinkUploadSuggestionIndex >= 0 && linkUploadSuggestionState[activeLinkUploadSuggestionIndex]) {
       addLinkUploadTag(linkUploadSuggestionState[activeLinkUploadSuggestionIndex]);
@@ -5409,13 +5455,14 @@ linkUploadTagsInput?.addEventListener("keydown", (event) => {
   }
 
   if (event.key === "Escape") {
-    linkUploadTagSuggestions.classList.add("hidden");
-    activeLinkUploadSuggestionIndex = -1;
+    dismissTagSuggestions(linkUploadTagsInput, linkUploadTagSuggestions, (index) => { activeLinkUploadSuggestionIndex = index; });
   }
 });
 
 tagSearchInput.addEventListener("input", async (event) => {
   activeTopTagSuggestionIndex = -1;
+  topTagSuggestionState = [];
+  renderTopTagSuggestions();
   fetchTopTagSuggestions();
 
   const nextValue = event.target.value;
@@ -5432,19 +5479,9 @@ tagSearchInput.addEventListener("input", async (event) => {
 });
 
 tagSearchInput.addEventListener("keydown", async (event) => {
-  if (event.key === "ArrowDown" && topTagSuggestionState.length > 0) {
-    event.preventDefault();
-    activeTopTagSuggestionIndex = (activeTopTagSuggestionIndex + 1) % topTagSuggestionState.length;
-    renderTopTagSuggestions();
-    return;
-  }
-
-  if (event.key === "ArrowUp" && topTagSuggestionState.length > 0) {
-    event.preventDefault();
-    activeTopTagSuggestionIndex = activeTopTagSuggestionIndex <= 0 ? topTagSuggestionState.length - 1 : activeTopTagSuggestionIndex - 1;
-    renderTopTagSuggestions();
-    return;
-  }
+  if (event.isComposing) return;
+  if (navigateTagSuggestions(event, tagSearchInput, tagSearchSuggestions, topTagSuggestionState, activeTopTagSuggestionIndex,
+    (index) => { activeTopTagSuggestionIndex = index; })) return;
 
   if (event.key === "Enter" && topTagSuggestionState.length > 0 && activeTopTagSuggestionIndex >= 0) {
     event.preventDefault();
@@ -6175,25 +6212,17 @@ modalDelete.addEventListener("click", async () => {
 modalTagsInput.addEventListener("input", () => {
   if (!canAddTags()) return;
   activeSuggestionIndex = -1;
+  modalSuggestionState = [];
+  renderTagSuggestions();
   fetchTagSuggestions();
 });
 
 modalTagsInput.addEventListener("keydown", (event) => {
-  if (event.key === "ArrowDown" && modalSuggestionState.length > 0) {
-    event.preventDefault();
-    activeSuggestionIndex = (activeSuggestionIndex + 1) % modalSuggestionState.length;
-    renderTagSuggestions();
-    return;
-  }
+  if (event.isComposing) return;
+  if (navigateTagSuggestions(event, modalTagsInput, modalTagSuggestions, modalSuggestionState, activeSuggestionIndex,
+    (index) => { activeSuggestionIndex = index; })) return;
 
-  if (event.key === "ArrowUp" && modalSuggestionState.length > 0) {
-    event.preventDefault();
-    activeSuggestionIndex = activeSuggestionIndex <= 0 ? modalSuggestionState.length - 1 : activeSuggestionIndex - 1;
-    renderTagSuggestions();
-    return;
-  }
-
-  if ((event.key === "Enter" || event.key === "Tab" || event.key === ",") && modalTagsInput.value.trim()) {
+  if ((event.key === "Enter" || event.key === ",") && modalTagsInput.value.trim()) {
     if (!canAddTags()) {
       return;
     }
@@ -6214,8 +6243,7 @@ modalTagsInput.addEventListener("keydown", (event) => {
   }
 
   if (event.key === "Escape") {
-    modalTagSuggestions.classList.add("hidden");
-    activeSuggestionIndex = -1;
+    dismissTagSuggestions(modalTagsInput, modalTagSuggestions, (index) => { activeSuggestionIndex = index; });
   }
 });
 
