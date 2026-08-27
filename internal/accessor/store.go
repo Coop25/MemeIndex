@@ -26,6 +26,13 @@ type AuditLogStore interface {
 // independent of the current viewer (for example, favorites across all users).
 type AdminAnalyticsStore interface {
 	TotalFavoriteAssignments() (int, error)
+	FavoriteActivitySince(since time.Time) ([]AdminFavoriteActivity, error)
+}
+
+type AdminFavoriteActivity struct {
+	Date    time.Time
+	Added   int
+	Removed int
 }
 
 // FavoriteAuditStore lets stores with an audit log record favorite changes in

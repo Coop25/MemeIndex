@@ -1393,6 +1393,44 @@ function dashboardTrend(current, previous, suffix = "vs previous 30 days") {
   };
 }
 
+function buildAdminMetricSparkline(series, key, label, valueFormatter = (value) => Number(value || 0).toLocaleString()) {
+  const points = Array.isArray(series) ? series : [];
+  if (!points.length) return "";
+  const width = 240;
+  const height = 44;
+  const padding = 5;
+  const values = points.map((entry) => Number(entry?.[key] || 0));
+  const minimum = Math.min(...values);
+  const maximum = Math.max(...values);
+  const range = maximum - minimum;
+  const coordinates = values.map((value, index) => {
+    const x = points.length === 1 ? width / 2 : (index / (points.length - 1)) * width;
+    const normalized = range === 0 ? .5 : (value - minimum) / range;
+    const y = height - padding - (normalized * (height - (padding * 2)));
+    return [x, y];
+  });
+  const line = coordinates.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+  const area = `0,${height} ${line} ${width},${height}`;
+  const [lastX, lastY] = coordinates[coordinates.length - 1];
+  const hitWidth = width / points.length;
+  const hitAreas = points.map((entry, index) => {
+    const x = Math.max(0, (index * hitWidth) - (hitWidth / 2));
+    const date = escapeHTML(String(entry.date || ""));
+    const value = escapeHTML(valueFormatter(values[index]));
+    return `<rect class="admin-metric-spark-hit" x="${x.toFixed(1)}" y="0" width="${(hitWidth + 1).toFixed(1)}" height="${height}"><title>${date}: ${value}</title></rect>`;
+  }).join("");
+  const gradientID = `admin-metric-fill-${key}`;
+  return `
+    <svg class="admin-metric-spark" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${escapeHTML(label)} over the last 30 days">
+      <defs><linearGradient id="${gradientID}" x1="0" y1="0" x2="0" y2="1"><stop class="admin-metric-spark-fill-start" offset="0"/><stop class="admin-metric-spark-fill-end" offset="1"/></linearGradient></defs>
+      <polygon class="admin-metric-spark-area" points="${area}" fill="url(#${gradientID})" />
+      <polyline class="admin-metric-spark-line" points="${line}" />
+      <circle class="admin-metric-spark-dot" cx="${lastX.toFixed(1)}" cy="${lastY.toFixed(1)}" r="2.6" />
+      ${hitAreas}
+    </svg>
+  `;
+}
+
 function buildAdminUploadChart(series) {
   const points = Array.isArray(series) ? series : [];
   if (!points.length) return `<p class="users-empty">Upload history will appear here.</p>`;
@@ -1437,18 +1475,18 @@ function renderAdminDashboard() {
   const uploadTrend = dashboardTrend(dashboard.uploaded_last_30_days, dashboard.uploaded_previous_30_days);
   const storageTrend = dashboardTrend(dashboard.bytes_last_30_days, dashboard.bytes_previous_30_days);
   const metrics = [
-    { icon: "M", label: "Total Memes", value: Number(counts.total || 0).toLocaleString(), note: uploadTrend.label, trend: uploadTrend.direction, accent: "green" },
-    { icon: "#", label: "Tags", value: Number(dashboard.unique_tags || 0).toLocaleString(), note: `${Number(dashboard.total_tag_assignments || 0).toLocaleString()} assignments`, trend: "flat", accent: "purple" },
-    { icon: "U", label: "Users", value: Number(dashboard.user_count || 0).toLocaleString(), note: `${Number(dashboard.active_users_30d || 0)} active in 30 days`, trend: Number(dashboard.new_users_30d || 0) > 0 ? "up" : "flat", accent: "blue" },
-    { icon: "S", label: "Storage Used", value: formatSize(Number(dashboard.total_size_bytes || 0)), note: storageTrend.label, trend: storageTrend.direction, accent: "amber" },
-    { icon: "F", label: "Favorites", value: Number(counts.favorites || 0).toLocaleString(), note: "Across all users", trend: "flat", accent: "red" },
+    { icon: "M", label: "Total Memes", value: Number(counts.total || 0).toLocaleString(), note: uploadTrend.label, trend: uploadTrend.direction, accent: "green", seriesKey: "memes", seriesLabel: "Cumulative meme count" },
+    { icon: "#", label: "Tags", value: Number(dashboard.unique_tags || 0).toLocaleString(), note: `${Number(dashboard.total_tag_assignments || 0).toLocaleString()} assignments`, trend: "flat", accent: "purple", seriesKey: "tags", seriesLabel: "Cumulative unique tag count" },
+    { icon: "U", label: "Users", value: Number(dashboard.user_count || 0).toLocaleString(), note: `${Number(dashboard.active_users_30d || 0)} active in 30 days`, trend: Number(dashboard.new_users_30d || 0) > 0 ? "up" : "flat", accent: "blue", seriesKey: "users", seriesLabel: "Cumulative user count" },
+    { icon: "S", label: "Storage Used", value: formatSize(Number(dashboard.total_size_bytes || 0)), note: storageTrend.label, trend: storageTrend.direction, accent: "amber", seriesKey: "storage_bytes", seriesLabel: "Cumulative storage used", valueFormatter: formatSize },
+    { icon: "F", label: "Favorites", value: Number(counts.favorites || 0).toLocaleString(), note: "Across all users", trend: "flat", accent: "red", seriesKey: "favorites", seriesLabel: "Cumulative favorite assignments" },
   ];
   adminDashboardGrid.innerHTML = metrics.map((metric) => `
     <article class="admin-dashboard-card" data-accent="${metric.accent}">
       <div class="admin-dashboard-card-head"><span class="admin-dashboard-card-icon">${metric.icon}</span><span class="admin-dashboard-label">${escapeHTML(metric.label)}</span></div>
       <strong class="admin-dashboard-value">${escapeHTML(metric.value)}</strong>
       <span class="admin-dashboard-note" data-trend="${metric.trend}">${metric.trend === "up" ? "&#8593; " : metric.trend === "down" ? "&#8595; " : ""}${escapeHTML(metric.note)}</span>
-      <span class="admin-metric-spark" aria-hidden="true"></span>
+      ${buildAdminMetricSparkline(dashboard.metric_series, metric.seriesKey, metric.seriesLabel, metric.valueFormatter)}
     </article>
   `).join("");
 

@@ -469,6 +469,13 @@ func (s *MemeStore) TotalFavoriteAssignments() (int, error) {
 	return total, nil
 }
 
+func (s *MemeStore) FavoriteActivitySince(time.Time) ([]AdminFavoriteActivity, error) {
+	// The local JSON store does not persist an audit timeline. Returning an
+	// empty series keeps its current favorite total accurate without inventing
+	// historical changes.
+	return []AdminFavoriteActivity{}, nil
+}
+
 func (s *MemeStore) Delete(input DeleteInput) (DeleteResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

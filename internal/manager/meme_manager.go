@@ -387,6 +387,7 @@ type AdminDashboardStats struct {
 	BytesLast30Days        int64                      `json:"bytes_last_30_days"`
 	BytesPrevious30Days    int64                      `json:"bytes_previous_30_days"`
 	UploadSeries           []AdminDashboardDayStat    `json:"upload_series"`
+	MetricSeries           []AdminDashboardMetricStat `json:"metric_series"`
 	RecentMemes            []AdminDashboardRecentMeme `json:"recent_memes"`
 	TopTags                []AdminDashboardTagStat    `json:"top_tags"`
 }
@@ -395,6 +396,15 @@ type AdminDashboardDayStat struct {
 	Date    string `json:"date"`
 	Uploads int    `json:"uploads"`
 	Bytes   int64  `json:"bytes"`
+}
+
+type AdminDashboardMetricStat struct {
+	Date         string `json:"date"`
+	Memes        int    `json:"memes"`
+	Tags         int    `json:"tags"`
+	Users        int    `json:"users"`
+	StorageBytes int64  `json:"storage_bytes"`
+	Favorites    int    `json:"favorites"`
 }
 
 type AdminDashboardRecentMeme struct {
@@ -540,6 +550,7 @@ func (m *MemeManager) AdminDashboard() AdminDashboardStats {
 	stats := AdminDashboardStats{
 		Counts:       buildMemeCounts(memes),
 		UploadSeries: make([]AdminDashboardDayStat, 30),
+		MetricSeries: make([]AdminDashboardMetricStat, 30),
 		RecentMemes:  make([]AdminDashboardRecentMeme, 0, min(6, len(memes))),
 		TopTags:      []AdminDashboardTagStat{},
 	}
@@ -551,8 +562,10 @@ func (m *MemeManager) AdminDashboard() AdminDashboardStats {
 		date := today.AddDate(0, 0, index-29).Format("2006-01-02")
 		seriesIndex[date] = index
 		stats.UploadSeries[index] = AdminDashboardDayStat{Date: date}
+		stats.MetricSeries[index] = AdminDashboardMetricStat{Date: date}
 	}
 	tagCounts := map[string]int{}
+	tagFirstSeen := map[string]time.Time{}
 	for _, meme := range memes {
 		stats.TotalSizeBytes += meme.SizeBytes
 		if len(meme.Tags) > 0 {
@@ -564,6 +577,9 @@ func (m *MemeManager) AdminDashboard() AdminDashboardStats {
 		stats.TotalTagAssignments += len(meme.Tags)
 		for _, tag := range meme.Tags {
 			tagCounts[tag] += 1
+			if firstSeen, ok := tagFirstSeen[tag]; !ok || meme.CreatedAt.Before(firstSeen) {
+				tagFirstSeen[tag] = meme.CreatedAt
+			}
 		}
 
 		age := now.Sub(meme.CreatedAt)
@@ -583,6 +599,8 @@ func (m *MemeManager) AdminDashboard() AdminDashboardStats {
 		if index, ok := seriesIndex[meme.CreatedAt.UTC().Format("2006-01-02")]; ok {
 			stats.UploadSeries[index].Uploads += 1
 			stats.UploadSeries[index].Bytes += meme.SizeBytes
+			stats.MetricSeries[index].Memes += 1
+			stats.MetricSeries[index].StorageBytes += meme.SizeBytes
 		}
 
 		switch {
@@ -601,10 +619,49 @@ func (m *MemeManager) AdminDashboard() AdminDashboardStats {
 		stats.AverageTagsPerMeme = float64(stats.TotalTagAssignments) / float64(len(memes))
 	}
 	stats.UniqueTags = len(tagCounts)
+	for _, firstSeen := range tagFirstSeen {
+		if index, ok := seriesIndex[firstSeen.UTC().Format("2006-01-02")]; ok {
+			stats.MetricSeries[index].Tags += 1
+		}
+	}
+
+	favoriteDeltas := make([]int, len(stats.MetricSeries))
 	if analytics, ok := m.store.(accessor.AdminAnalyticsStore); ok {
 		if totalFavorites, err := analytics.TotalFavoriteAssignments(); err == nil {
 			stats.Counts.Favorites = totalFavorites
 		}
+		if activity, err := analytics.FavoriteActivitySince(today.AddDate(0, 0, -29)); err == nil {
+			for _, day := range activity {
+				if index, ok := seriesIndex[day.Date.UTC().Format("2006-01-02")]; ok {
+					favoriteDeltas[index] += day.Added - day.Removed
+				}
+			}
+		}
+	}
+
+	recentMemes := 0
+	recentTags := 0
+	var recentStorage int64
+	recentFavoriteDelta := 0
+	for index, point := range stats.MetricSeries {
+		recentMemes += point.Memes
+		recentTags += point.Tags
+		recentStorage += point.StorageBytes
+		recentFavoriteDelta += favoriteDeltas[index]
+	}
+	runningMemes := max(0, stats.Counts.Total-recentMemes)
+	runningTags := max(0, stats.UniqueTags-recentTags)
+	runningStorage := max(int64(0), stats.TotalSizeBytes-recentStorage)
+	runningFavorites := max(0, stats.Counts.Favorites-recentFavoriteDelta)
+	for index := range stats.MetricSeries {
+		runningMemes += stats.MetricSeries[index].Memes
+		runningTags += stats.MetricSeries[index].Tags
+		runningStorage += stats.MetricSeries[index].StorageBytes
+		runningFavorites += favoriteDeltas[index]
+		stats.MetricSeries[index].Memes = runningMemes
+		stats.MetricSeries[index].Tags = runningTags
+		stats.MetricSeries[index].StorageBytes = runningStorage
+		stats.MetricSeries[index].Favorites = max(0, runningFavorites)
 	}
 
 	recentLimit := min(6, len(memes))

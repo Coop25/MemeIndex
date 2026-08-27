@@ -1317,6 +1317,7 @@ func (s *Server) handleAdminDashboard(w http.ResponseWriter, r *http.Request) {
 			response.UserCount = len(users)
 			activeCutoff := time.Now().Add(-30 * 24 * time.Hour).Unix()
 			newCutoff := time.Now().Add(-30 * 24 * time.Hour)
+			newUsersByDate := map[string]int{}
 			for _, user := range users {
 				if user.LastActiveAt >= activeCutoff {
 					response.ActiveUsers30D++
@@ -1324,6 +1325,17 @@ func (s *Server) handleAdminDashboard(w http.ResponseWriter, r *http.Request) {
 				if user.CreatedAt.After(newCutoff) {
 					response.NewUsers30D++
 				}
+				newUsersByDate[user.CreatedAt.UTC().Format("2006-01-02")]++
+			}
+
+			recentUsers := 0
+			for _, point := range response.MetricSeries {
+				recentUsers += newUsersByDate[point.Date]
+			}
+			runningUsers := max(0, response.UserCount-recentUsers)
+			for index := range response.MetricSeries {
+				runningUsers += newUsersByDate[response.MetricSeries[index].Date]
+				response.MetricSeries[index].Users = runningUsers
 			}
 		}
 	}

@@ -582,6 +582,34 @@ func (s *PostgresStore) TotalFavoriteAssignments() (int, error) {
 	return total, nil
 }
 
+func (s *PostgresStore) FavoriteActivitySince(since time.Time) ([]AdminFavoriteActivity, error) {
+	rows, err := s.pool.Query(context.Background(), `
+		SELECT
+			date_trunc('day', created_at) AS activity_day,
+			COUNT(*) FILTER (WHERE action = 'favorited') AS added,
+			COUNT(*) FILTER (WHERE action = 'unfavorited') AS removed
+		FROM meme_audit_logs
+		WHERE created_at >= $1
+			AND action IN ('favorited', 'unfavorited')
+		GROUP BY activity_day
+		ORDER BY activity_day
+	`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	activity := []AdminFavoriteActivity{}
+	for rows.Next() {
+		var day AdminFavoriteActivity
+		if err := rows.Scan(&day.Date, &day.Added, &day.Removed); err != nil {
+			return nil, err
+		}
+		activity = append(activity, day)
+	}
+	return activity, rows.Err()
+}
+
 func (s *PostgresStore) Delete(input DeleteInput) (DeleteResult, error) {
 	ctx := context.Background()
 	id := strings.TrimSpace(input.ID)
