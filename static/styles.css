@@ -2954,17 +2954,21 @@ body.random-reel-open {
   }
 
   .random-reel-modal .random-reel-stage {
+    height: 100%;
     padding: 0;
   }
 
   .random-reel-modal .random-reel-media {
-    inset: 78px 8px 112px;
+    /* Controls overlay the media; do not reserve empty space for them. */
+    inset: 0;
   }
 
   .random-reel-modal .random-reel-media > img,
   .random-reel-modal .random-reel-media > video,
   .random-reel-modal .random-reel-media > iframe {
-    border-radius: 3px;
+    border-radius: 0;
+    object-fit: contain;
+    box-shadow: none;
   }
 
   .random-reel-modal .random-reel-copy {
