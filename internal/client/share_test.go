@@ -76,8 +76,15 @@ func TestSignedShareEmbedsAndRevocationDeniesPublicMedia(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("active status = %d", recorder.Code)
 	}
-	if body := recorder.Body.String(); !strings.Contains(body, `/m/`+meme.ID+`/media?share=`) || !strings.Contains(body, `property="og:image"`) {
+	if body := recorder.Body.String(); !strings.Contains(body, `/m/`+meme.ID+`/media/shared.png?share=`) || !strings.Contains(body, `property="og:image:secure_url"`) || !strings.Contains(body, `name="twitter:image"`) {
 		t.Fatalf("active share is missing Discord metadata: %s", body)
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "https://memes.example.com/m/"+meme.ID+"/media/shared.png?share="+url.QueryEscape(token), nil)
+	server.handleMemeLink(recorder, request)
+	if recorder.Code != http.StatusOK || recorder.Header().Get("Content-Type") != "image/png" || recorder.Header().Get("Accept-Ranges") != "bytes" {
+		t.Fatalf("shared asset status = %d, content-type = %q, accept-ranges = %q", recorder.Code, recorder.Header().Get("Content-Type"), recorder.Header().Get("Accept-Ranges"))
 	}
 
 	if err := store.RevokeMemeShare(meme.ID); err != nil {
