@@ -56,7 +56,7 @@ func TestCreateMemeShareReturnsStableSignedMemeURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed.Path != "/m/"+meme.ID || parsed.Query().Get("share") == "" {
+	if parsed.Path != "/m/"+meme.ID+"/media/shared.png" || parsed.Query().Get("share") == "" {
 		t.Fatalf("share URL = %q", first)
 	}
 }
@@ -132,6 +132,12 @@ func TestInvalidShareFallsBackToAuthenticatedMemeRoute(t *testing.T) {
 	}
 	if location := recorder.Header().Get("Location"); location != "/m/"+meme.ID {
 		t.Fatalf("dead-token redirect = %q", location)
+	}
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "http://localhost/m/"+meme.ID+"/media/shared.png?share=expired", nil)
+	server.handleMemeLink(recorder, request)
+	if recorder.Code != http.StatusFound || recorder.Header().Get("Location") != "/m/"+meme.ID {
+		t.Fatalf("dead media redirect status = %d, location = %q", recorder.Code, recorder.Header().Get("Location"))
 	}
 	recorder = httptest.NewRecorder()
 	request = httptest.NewRequest(http.MethodGet, "http://localhost/m/"+meme.ID, nil)

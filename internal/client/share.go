@@ -60,8 +60,14 @@ func (s *Server) createMemeShare(w http.ResponseWriter, r *http.Request, memeID 
 		http.Error(w, "failed to create share link", http.StatusInternalServerError)
 		return
 	}
+	_, meme, err := s.managers.GetMemeShare(memeID)
+	if err != nil {
+		http.Error(w, "failed to load shared meme", http.StatusInternalServerError)
+		return
+	}
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"url":        s.memeShareURL(r, share),
+		"url":        s.memeShareMediaURL(r, share, meme),
+		"page_url":   s.memeSharePageURL(r, share),
 		"expires_at": share.ExpiresAt,
 	})
 }
@@ -113,6 +119,10 @@ func (s *Server) handleMemeLink(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if assetKind != "" {
+		if len(parts) == 3 {
+			http.Redirect(w, r, "/m/"+url.PathEscape(memeID), http.StatusFound)
+			return
+		}
 		http.NotFound(w, r)
 		return
 	}
@@ -154,7 +164,8 @@ func (s *Server) handleAdminShares(w http.ResponseWriter, r *http.Request) {
 				"meme":                   s.protectMemeForResponse(r, entry.Meme),
 				"share":                  entry.Share,
 				"shared_by_display_name": sharedByDisplayName,
-				"url":                    s.memeShareURL(r, entry.Share),
+				"url":                    s.memeShareMediaURL(r, entry.Share, entry.Meme),
+				"page_url":               s.memeSharePageURL(r, entry.Share),
 			})
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"shares": items})
@@ -181,8 +192,12 @@ func (s *Server) handleAdminShares(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) memeShareURL(r *http.Request, share accessor.MemeShareState) string {
+func (s *Server) memeSharePageURL(r *http.Request, share accessor.MemeShareState) string {
 	return requestOrigin(r) + "/m/" + url.PathEscape(share.MemeID) + "?share=" + url.QueryEscape(s.signMemeShare(share))
+}
+
+func (s *Server) memeShareMediaURL(r *http.Request, share accessor.MemeShareState, meme accessor.Meme) string {
+	return requestOrigin(r) + "/m/" + url.PathEscape(share.MemeID) + "/media/" + url.PathEscape(sharedAssetFileName(meme, false)) + "?share=" + url.QueryEscape(s.signMemeShare(share))
 }
 
 func (s *Server) signMemeShare(share accessor.MemeShareState) string {
