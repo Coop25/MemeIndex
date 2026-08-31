@@ -1413,10 +1413,10 @@ function renderAdminShares() {
     row.className = "admin-table-row shared-memes-table-row";
     row.innerHTML = `
       <div class="admin-table-cell admin-table-preview-cell" data-label="Preview"><div class="shared-meme-preview"></div></div>
-      <div class="admin-table-cell" data-label="Meme"><div class="users-copy"><strong>${escapeHTML(meme.originalName || "Unknown meme")}</strong><code>${escapeHTML(meme.id || "")}</code></div></div>
-      <div class="admin-table-cell" data-label="Shared By"><div class="users-copy"><strong>${escapeHTML(sharedByDisplayName)}</strong>${sharedByIDDetail}</div></div>
-      <div class="admin-table-cell" data-label="Expires"><span>${escapeHTML(formatDateTime(share.expires_at))}</span></div>
-      <div class="admin-table-cell" data-label="Actions"><div class="admin-row-actions">
+      <div class="admin-table-cell shared-meme-name-cell" data-label="Meme"><div class="users-copy"><strong>${escapeHTML(meme.originalName || "Unknown meme")}</strong><code>${escapeHTML(meme.id || "")}</code></div></div>
+      <div class="admin-table-cell shared-meme-owner-cell" data-label="Shared By"><div class="users-copy"><strong>${escapeHTML(sharedByDisplayName)}</strong>${sharedByIDDetail}</div></div>
+      <div class="admin-table-cell shared-meme-expiry-cell" data-label="Expires"><span>${escapeHTML(formatDateTime(share.expires_at))}</span></div>
+      <div class="admin-table-cell shared-meme-actions-cell" data-label="Actions"><div class="admin-row-actions">
         <button class="ghost-button shared-copy-button" type="button">Copy Link</button>
         <button class="ghost-button shared-open-button" type="button">Open Meme</button>
         <button class="ghost-button shared-revoke-button" type="button">Revoke</button>

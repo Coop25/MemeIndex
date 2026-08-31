@@ -938,6 +938,45 @@ body.admin-mode .shared-meme-preview { width: 82px; height: 62px; overflow: hidd
 body.admin-mode .shared-meme-preview > img,
 body.admin-mode .shared-meme-preview > video { width: 100%; height: 100%; object-fit: cover; }
 
+@media (max-width: 1180px) and (min-width: 761px) {
+  body.admin-mode .shared-memes-table-row {
+    grid-template-columns: 104px minmax(0,1fr) minmax(160px,.5fr);
+    grid-template-areas:
+      "preview meme meme"
+      "preview owner expiry"
+      "actions actions actions";
+    align-items: center;
+    gap: 13px 18px;
+    padding: 16px;
+  }
+  body.admin-mode .shared-memes-table-row .admin-table-preview-cell {
+    grid-area: preview;
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 7px;
+    align-self: stretch;
+  }
+  body.admin-mode .shared-memes-table-row .shared-meme-name-cell { grid-area: meme; }
+  body.admin-mode .shared-memes-table-row .shared-meme-owner-cell { grid-area: owner; }
+  body.admin-mode .shared-memes-table-row .shared-meme-expiry-cell { grid-area: expiry; }
+  body.admin-mode .shared-memes-table-row .shared-meme-actions-cell {
+    grid-area: actions;
+    display: block;
+  }
+  body.admin-mode .shared-memes-table-row .shared-meme-actions-cell::before { display: none; }
+  body.admin-mode .shared-memes-table-row .shared-meme-preview {
+    width: 104px;
+    height: 82px;
+  }
+  body.admin-mode .shared-memes-table-row .shared-meme-name-cell .users-copy strong {
+    display: -webkit-box;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+}
+
 @media (max-width: 1180px) {
   body.admin-mode .audit-log-table-row { grid-template-columns: repeat(2,minmax(0,1fr)); }
   body.admin-mode .audit-log-table .admin-row-actions { max-width: 330px; }
@@ -951,6 +990,50 @@ body.admin-mode .shared-meme-preview > video { width: 100%; height: 100%; object
   body.admin-mode .admin-dashboard-note { font-size: 13px; }
   body.admin-mode .audit-log-table-row { grid-template-columns: 1fr; }
   body.admin-mode .audit-log-table .admin-row-actions { max-width: none; }
+  body.admin-mode .shared-memes-table-row {
+    grid-template-columns: 88px minmax(0,1fr);
+    grid-template-areas:
+      "preview meme"
+      "owner owner"
+      "expiry expiry"
+      "actions actions";
+    gap: 12px 14px;
+    padding: 14px;
+  }
+  body.admin-mode .shared-memes-table-row .admin-table-preview-cell {
+    grid-area: preview;
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+  body.admin-mode .shared-memes-table-row .shared-meme-name-cell { grid-area: meme; }
+  body.admin-mode .shared-memes-table-row .shared-meme-owner-cell { grid-area: owner; }
+  body.admin-mode .shared-memes-table-row .shared-meme-expiry-cell { grid-area: expiry; }
+  body.admin-mode .shared-memes-table-row .shared-meme-actions-cell {
+    grid-area: actions;
+    display: block;
+  }
+  body.admin-mode .shared-memes-table-row .shared-meme-actions-cell::before { display: none; }
+  body.admin-mode .shared-memes-table-row .shared-meme-preview {
+    width: 88px;
+    height: 76px;
+  }
+  body.admin-mode .shared-memes-table-row .shared-meme-name-cell {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+  body.admin-mode .shared-memes-table-row .shared-meme-name-cell::before { display: none; }
+  body.admin-mode .shared-memes-table-row .shared-meme-name-cell .users-copy strong {
+    display: -webkit-box;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+  }
+  body.admin-mode .shared-memes-table .admin-row-actions {
+    grid-template-columns: 1fr 1fr;
+  }
+  body.admin-mode .shared-memes-table .shared-revoke-button { grid-column: 1 / -1; }
 }
 
 /* Keep long filenames and generated labels inside admin cards and tables. */
