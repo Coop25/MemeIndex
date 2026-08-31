@@ -37,6 +37,10 @@ type Meme struct {
 	Favorite            bool      `json:"favorite"`
 	CreatedAt           time.Time `json:"createdAt"`
 	UpdatedAt           time.Time `json:"updatedAt"`
+	ShareGeneration     int64     `json:"-"`
+	ShareExpiresAt      time.Time `json:"-"`
+	SharedAt            time.Time `json:"-"`
+	SharedByUserID      string    `json:"-"`
 }
 
 type AuditActor struct {
@@ -108,6 +112,10 @@ type persistedMeme struct {
 	SourceURL           string    `json:"sourceUrl,omitempty"`
 	CreatedAt           time.Time `json:"createdAt"`
 	UpdatedAt           time.Time `json:"updatedAt"`
+	ShareGeneration     int64     `json:"shareGeneration,omitempty"`
+	ShareExpiresAt      time.Time `json:"shareExpiresAt,omitempty"`
+	SharedAt            time.Time `json:"sharedAt,omitempty"`
+	SharedByUserID      string    `json:"sharedByUserId,omitempty"`
 }
 
 type MemeUpdate struct {
@@ -173,6 +181,72 @@ func NewMemeStore(dataDir string) (*MemeStore, error) {
 	}
 
 	return store, nil
+}
+
+func (s *MemeStore) GetOrCreateMemeShare(memeID, userID string, now, expiresAt time.Time) (MemeShareState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	memeID = strings.TrimSpace(memeID)
+	for i := range s.memes {
+		if s.memes[i].ID != memeID {
+			continue
+		}
+		if !s.memes[i].ShareExpiresAt.After(now) {
+			s.memes[i].ShareGeneration++
+			s.memes[i].ShareExpiresAt = expiresAt.UTC()
+			s.memes[i].SharedAt = now.UTC()
+			s.memes[i].SharedByUserID = strings.TrimSpace(userID)
+			s.byID[memeID] = s.memes[i]
+			if err := s.saveMemesLocked(); err != nil {
+				return MemeShareState{}, err
+			}
+		}
+		return memeShareStateFromMeme(s.memes[i]), nil
+	}
+	return MemeShareState{}, os.ErrNotExist
+}
+
+func (s *MemeStore) GetMemeShareState(memeID string) (MemeShareState, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	meme, ok := s.byID[strings.TrimSpace(memeID)]
+	if !ok {
+		return MemeShareState{}, os.ErrNotExist
+	}
+	return memeShareStateFromMeme(meme), nil
+}
+
+func (s *MemeStore) ListActiveMemeShares(now time.Time) ([]MemeShareState, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	shares := []MemeShareState{}
+	for _, meme := range s.memes {
+		if meme.ShareExpiresAt.After(now) {
+			shares = append(shares, memeShareStateFromMeme(meme))
+		}
+	}
+	sort.Slice(shares, func(i, j int) bool { return shares[i].SharedAt.After(shares[j].SharedAt) })
+	return shares, nil
+}
+
+func (s *MemeStore) RevokeMemeShare(memeID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	memeID = strings.TrimSpace(memeID)
+	for i := range s.memes {
+		if s.memes[i].ID != memeID {
+			continue
+		}
+		s.memes[i].ShareGeneration++
+		s.memes[i].ShareExpiresAt = time.Time{}
+		s.byID[memeID] = s.memes[i]
+		return s.saveMemesLocked()
+	}
+	return os.ErrNotExist
+}
+
+func memeShareStateFromMeme(meme Meme) MemeShareState {
+	return MemeShareState{MemeID: meme.ID, Generation: meme.ShareGeneration, SharedByUserID: meme.SharedByUserID, SharedAt: meme.SharedAt, ExpiresAt: meme.ShareExpiresAt}
 }
 
 func (s *MemeStore) List(userID, query string, favoritesOnly bool, tag string) []Meme {
@@ -625,6 +699,10 @@ func (s *MemeStore) loadMemes() error {
 			SourceURL:           item.SourceURL,
 			CreatedAt:           item.CreatedAt,
 			UpdatedAt:           item.UpdatedAt,
+			ShareGeneration:     item.ShareGeneration,
+			ShareExpiresAt:      item.ShareExpiresAt,
+			SharedAt:            item.SharedAt,
+			SharedByUserID:      item.SharedByUserID,
 		})
 	}
 
@@ -691,6 +769,10 @@ func (s *MemeStore) saveMemesLocked() error {
 			SourceURL:           meme.SourceURL,
 			CreatedAt:           meme.CreatedAt,
 			UpdatedAt:           meme.UpdatedAt,
+			ShareGeneration:     meme.ShareGeneration,
+			ShareExpiresAt:      meme.ShareExpiresAt,
+			SharedAt:            meme.SharedAt,
+			SharedByUserID:      meme.SharedByUserID,
 		})
 	}
 

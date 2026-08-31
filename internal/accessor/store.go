@@ -14,6 +14,21 @@ type Store interface {
 	UploadDir() string
 }
 
+type MemeShareState struct {
+	MemeID         string    `json:"meme_id"`
+	Generation     int64     `json:"generation"`
+	SharedByUserID string    `json:"shared_by_user_id"`
+	SharedAt       time.Time `json:"shared_at"`
+	ExpiresAt      time.Time `json:"expires_at"`
+}
+
+type MemeShareStore interface {
+	GetOrCreateMemeShare(memeID, userID string, now, expiresAt time.Time) (MemeShareState, error)
+	GetMemeShareState(memeID string) (MemeShareState, error)
+	ListActiveMemeShares(now time.Time) ([]MemeShareState, error)
+	RevokeMemeShare(memeID string) error
+}
+
 type AuditLogStore interface {
 	ListMemeAudit(id string, limit int) ([]MemeAuditEntry, error)
 	ListAuditFeed(offset int, limit int) (PagedAuditFeed, error)

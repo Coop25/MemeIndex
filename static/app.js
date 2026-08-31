@@ -41,6 +41,7 @@ const state = {
     backupStatus: null,
     dashboard: null,
     tagHygiene: null,
+    shares: [],
   },
   auth: {
     enabled: false,
@@ -252,7 +253,7 @@ const modalAITagSuggestions = document.querySelector("#modal-ai-tag-suggestions"
 const modalNotesInput = document.querySelector("#modal-notes-input");
 const modalSourceField = document.querySelector("#modal-source-field");
 const modalSourceLink = document.querySelector("#modal-source-link");
-const modalOpenLink = document.querySelector("#modal-open-link");
+const modalShare = document.querySelector("#modal-share");
 const modalSave = document.querySelector("#modal-save");
 const modalDelete = document.querySelector("#modal-delete");
 const modalFavorite = document.querySelector("#modal-favorite");
@@ -266,7 +267,7 @@ const randomReelEdgeBanner = document.querySelector("#random-reel-edge-banner");
 const randomReelTitle = document.querySelector("#random-reel-title");
 const randomReelMeta = document.querySelector("#random-reel-meta");
 const randomReelTags = document.querySelector("#random-reel-tags");
-const randomReelOpen = document.querySelector("#random-reel-open");
+const randomReelShare = document.querySelector("#random-reel-share");
 const randomReelHint = document.querySelector("#random-reel-hint");
 const randomReelFavorite = document.querySelector("#random-reel-favorite");
 const randomReelPlay = document.querySelector("#random-reel-play");
@@ -1381,6 +1382,69 @@ function renderAdminTagQueueStatus() {
   });
 }
 
+async function fetchAdminShares() {
+  const response = await fetch("/api/admin/shares", { cache: "no-store" });
+  if (!(await expectAuthorized(response, "Failed to load shared memes."))) return null;
+  const payload = await response.json();
+  state.admin.shares = Array.isArray(payload.shares) ? payload.shares : [];
+  renderAdminShares();
+  return state.admin.shares;
+}
+
+function renderAdminShares() {
+  if (!adminViewTable || activeAdminTab() !== "shares") return;
+  const shares = Array.isArray(state.admin.shares) ? state.admin.shares : [];
+  const table = document.createElement("div");
+  table.className = "admin-table shared-memes-table";
+  table.innerHTML = `
+    <div class="admin-table-head shared-memes-table-head">
+      <span>Preview</span><span>Meme</span><span>Shared By</span><span>Expires</span><span>Actions</span>
+    </div>`;
+
+  shares.forEach((entry) => {
+    const meme = entry.meme || {};
+    const share = entry.share || {};
+    const sharedByID = String(share.shared_by_user_id || "").trim();
+    const sharedByDisplayName = String(entry.shared_by_display_name || sharedByID || "Local user").trim();
+    const sharedByIDDetail = sharedByID && sharedByID !== sharedByDisplayName
+      ? `<code>${escapeHTML(sharedByID)}</code>`
+      : "";
+    const row = document.createElement("article");
+    row.className = "admin-table-row shared-memes-table-row";
+    row.innerHTML = `
+      <div class="admin-table-cell admin-table-preview-cell" data-label="Preview"><div class="shared-meme-preview"></div></div>
+      <div class="admin-table-cell" data-label="Meme"><div class="users-copy"><strong>${escapeHTML(meme.originalName || "Unknown meme")}</strong><code>${escapeHTML(meme.id || "")}</code></div></div>
+      <div class="admin-table-cell" data-label="Shared By"><div class="users-copy"><strong>${escapeHTML(sharedByDisplayName)}</strong>${sharedByIDDetail}</div></div>
+      <div class="admin-table-cell" data-label="Expires"><span>${escapeHTML(formatDateTime(share.expires_at))}</span></div>
+      <div class="admin-table-cell" data-label="Actions"><div class="admin-row-actions">
+        <button class="ghost-button shared-copy-button" type="button">Copy Link</button>
+        <button class="ghost-button shared-open-button" type="button">Open Meme</button>
+        <button class="ghost-button shared-revoke-button" type="button">Revoke</button>
+      </div></div>`;
+    const preview = row.querySelector(".shared-meme-preview");
+    if (preview && meme.id) preview.appendChild(buildPreview(meme));
+    row.querySelector(".shared-copy-button")?.addEventListener("click", async () => {
+      try {
+        await copyShareText(String(entry.url || ""));
+        showToast("Share link copied.", "success", { title: "Shared Memes" });
+      } catch (error) {
+        showToast("Could not copy the share link.", "error", { title: "Shared Memes" });
+      }
+    });
+    row.querySelector(".shared-open-button")?.addEventListener("click", () => openAdminMemeByID(meme.id));
+    row.querySelector(".shared-revoke-button")?.addEventListener("click", async () => {
+      if (!window.confirm(`Revoke public access to ${meme.originalName || "this meme"}?`)) return;
+      const response = await fetch(`/api/admin/shares/${encodeURIComponent(meme.id)}`, { method: "DELETE" });
+      if (!(await expectAuthorized(response, "Failed to revoke share."))) return;
+      showToast("Share revoked. The public link now requires login.", "success", { title: "Shared Memes" });
+      await fetchAdminShares();
+      setAdminViewStatus(state.admin.shares.length ? "" : "No memes are currently shared.");
+    });
+    table.appendChild(row);
+  });
+  adminViewTable.replaceChildren(table);
+}
+
 function dashboardTrend(current, previous, suffix = "vs previous 30 days") {
   const currentValue = Number(current || 0);
   const previousValue = Number(previous || 0);
@@ -2437,7 +2501,7 @@ function renderContentMode() {
 	document.body.classList.toggle("admin-mode", adminMode);
 	document.body.classList.toggle("library-mode", libraryMode);
   const canBrowseLibrary = canView();
-  const usesSharedAdminTable = adminMode && ["delete-queue", "audit-logs"].includes(activeAdminTab());
+  const usesSharedAdminTable = adminMode && ["delete-queue", "audit-logs", "shares"].includes(activeAdminTab());
   const showAdminUsersPanel = adminMode && activeAdminTab() === "users";
   const showAdminBackupPanel = adminMode && activeAdminTab() === "backup";
   adminView?.classList.toggle("hidden", !adminMode);
@@ -2611,6 +2675,17 @@ async function loadInitialMemes() {
     adminViewTable.innerHTML = "";
     const users = await fetchManagedUsers();
     setAdminViewStatus(users ? "" : "Could not load users.");
+    renderContentMode();
+    return;
+  }
+  if (isAdminView() && activeAdminTab() === "shares") {
+    adminViewKicker.textContent = "Admin";
+    adminViewTitle.textContent = "Shared Memes";
+    adminViewCopy.textContent = "See every meme with active public access, copy its current link, or revoke it immediately.";
+    setAdminViewStatus("Loading shared memes...");
+    adminViewTable.innerHTML = "";
+    const shares = await fetchAdminShares();
+    setAdminViewStatus(shares?.length ? "" : "No memes are currently shared.");
     renderContentMode();
     return;
   }
@@ -3391,7 +3466,7 @@ function buildModalPreview(meme) {
 
   const icon = document.createElement("div");
   icon.className = "file-icon";
-  icon.innerHTML = `<strong>${pickIcon(meme.contentType)}</strong><span>${meme.contentType}</span><span>Use Open Original to access this file.</span>`;
+  icon.innerHTML = `<strong>${pickIcon(meme.contentType)}</strong><span>${meme.contentType}</span><span>Use Share to create a 30-day access link.</span>`;
   return icon;
 }
 
@@ -3439,7 +3514,7 @@ function buildRandomReelPreview(meme) {
 
   const icon = document.createElement("div");
   icon.className = "file-icon";
-  icon.innerHTML = `<strong>${pickIcon(meme.contentType)}</strong><span>${meme.originalName}</span><span>Open original to view this file type.</span>`;
+  icon.innerHTML = `<strong>${pickIcon(meme.contentType)}</strong><span>${meme.originalName}</span><span>Use Share to create a 30-day access link.</span>`;
   return icon;
 }
 
@@ -3608,7 +3683,7 @@ function renderRandomReelMeme(meme) {
   randomReelTitle.textContent = truncateWithCounter(meme.originalName, 52);
   randomReelTitle.title = meme.originalName;
   randomReelMeta.textContent = `${formatSize(meme.sizeBytes)} \u2022 ${meme.contentType}`;
-  randomReelOpen.href = meme.filePath;
+  randomReelShare.disabled = !canView();
   randomReelTags.innerHTML = "";
   layoutCardTags(randomReelTags, (meme.tags && meme.tags.length > 0) ? meme.tags : ["untagged"], 1);
 
@@ -3949,7 +4024,7 @@ function renderUploadPreview(file, totalFiles = 1) {
 
   const icon = document.createElement("div");
   icon.className = "file-icon";
-  icon.innerHTML = `<strong>${pickIcon(type || fileName)}</strong><span>${fileName}</span><span>Preview available after upload via Open Original for this file type.</span>`;
+  icon.innerHTML = `<strong>${pickIcon(type || fileName)}</strong><span>${fileName}</span><span>Preview availability depends on the file type.</span>`;
   uploadPreview.appendChild(icon);
   appendSelectionCount();
 }
@@ -4134,7 +4209,7 @@ function openModalWithMeme(meme) {
   renderTagEditor();
   renderTagSuggestions();
   modalNotesInput.value = meme.notes || "";
-  modalOpenLink.href = meme.filePath;
+  modalShare.disabled = !canView();
   if (modalSourceField && modalSourceLink) {
     const hasSourceURL = Boolean((meme.sourceUrl || "").trim());
     modalSourceField.classList.toggle("hidden", !hasSourceURL);
@@ -4226,6 +4301,7 @@ function closeModal(options = {}) {
   if (!options.continueAdminReview) {
     adminTagReviewSessionActive = false;
   }
+  clearMemeDeepLinkURL();
   return true;
 }
 
@@ -4986,6 +5062,101 @@ async function persistCard(id, payload) {
   showToast("Saved meme updates.", "success", { title: "Meme" });
 
   return true;
+}
+
+async function copyShareText(value) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+  const input = document.createElement("textarea");
+  input.value = value;
+  input.setAttribute("readonly", "");
+  input.style.position = "fixed";
+  input.style.opacity = "0";
+  document.body.appendChild(input);
+  input.select();
+  const copied = document.execCommand("copy");
+  input.remove();
+  if (!copied) throw new Error("clipboard unavailable");
+}
+
+function showShareCopiedFeedback(button) {
+  if (!button) return;
+  const label = button.querySelector(".modal-action-label, .random-reel-nav-label");
+  const originalLabel = label?.textContent || "Share";
+  button.classList.add("share-copied");
+  button.setAttribute("aria-label", "Share link copied");
+  button.setAttribute("data-tooltip", "Copied to Clipboard");
+  if (label) label.textContent = "Copied!";
+
+  const dialog = button.closest("dialog");
+  if (dialog) {
+    dialog.querySelector(".share-copy-confirmation")?.remove();
+    const confirmation = document.createElement("div");
+    confirmation.className = "share-copy-confirmation";
+    confirmation.setAttribute("role", "status");
+    confirmation.setAttribute("aria-live", "assertive");
+    confirmation.innerHTML = `<span aria-hidden="true">&#10003;</span><strong>Share link copied</strong><small>Ready to paste anywhere</small>`;
+    dialog.appendChild(confirmation);
+    window.setTimeout(() => confirmation.remove(), 2600);
+  }
+
+  window.setTimeout(() => {
+    button.classList.remove("share-copied");
+    button.setAttribute("aria-label", "Share meme");
+    button.setAttribute("data-tooltip", "Share Meme");
+    if (label) label.textContent = originalLabel;
+  }, 2400);
+}
+
+async function shareMeme(id, button) {
+  if (!canView() || !id || button?.disabled) return false;
+  if (button) button.disabled = true;
+  try {
+    const response = await fetch(`/api/memes/${encodeURIComponent(id)}/share`, { method: "POST" });
+    if (!(await expectAuthorized(response, "Could not create a share link."))) return false;
+    const payload = await response.json();
+    const shareURL = String(payload.url || "");
+    if (!shareURL) throw new Error("share URL missing");
+    await copyShareText(shareURL);
+    showShareCopiedFeedback(button);
+    showToast("30-day share link copied.", "success", { title: "Share", duration: 3200 });
+    return true;
+  } catch (error) {
+    console.error(error);
+    showToast("The share link could not be copied.", "error", { title: "Share" });
+    return false;
+  } finally {
+    if (button) button.disabled = !canView();
+  }
+}
+
+function deepLinkedMemeID() {
+  const match = window.location.pathname.match(/^\/m\/([^/]+)$/);
+  if (!match) return "";
+  try {
+    return decodeURIComponent(match[1]);
+  } catch (error) {
+    return "";
+  }
+}
+
+function clearMemeDeepLinkURL() {
+  if (!deepLinkedMemeID()) return;
+  window.history.replaceState({}, "", "/");
+}
+
+async function openDeepLinkedMeme() {
+  const id = deepLinkedMemeID();
+  if (!id) return;
+  const response = await fetch(`/api/memes/${encodeURIComponent(id)}`);
+  if (!(await expectAuthorized(response, "Could not open the shared meme."))) {
+    clearMemeDeepLinkURL();
+    return;
+  }
+  const meme = await response.json();
+  openModalWithMeme(upsertMemeInState(meme) || meme);
 }
 
 async function persistFavorite(id, favorite) {
@@ -6182,6 +6353,12 @@ modalSave.addEventListener("click", async () => {
   }
 });
 
+randomReelShare?.addEventListener("click", async () => {
+  showRandomReelUI();
+  if (!randomReelActiveMemeID) return;
+  await shareMeme(randomReelActiveMemeID, randomReelShare);
+});
+
 modalSuggestTagsButton?.addEventListener("click", () => {
   fetchModalAITagSuggestions().catch((error) => {
     console.error(error);
@@ -6279,6 +6456,11 @@ document.addEventListener("visibilitychange", () => {
   if (!document.hidden) checkHomeDashboardForNewMemes();
 });
 
+modalShare?.addEventListener("click", async () => {
+  if (!activeMemeId) return;
+  await shareMeme(activeMemeId, modalShare);
+});
+
 window.addEventListener("beforeinstallprompt", (event) => {
   event.preventDefault();
   deferredInstallPrompt = event;
@@ -6300,7 +6482,10 @@ if ("serviceWorker" in navigator) {
 }
 
 fetchAuthSession()
-  .then(() => loadInitialMemes())
+  .then(async () => {
+    await loadInitialMemes();
+    await openDeepLinkedMeme();
+  })
   .catch((error) => {
     console.error(error);
     uploadStatus.textContent = "Could not load existing memes.";

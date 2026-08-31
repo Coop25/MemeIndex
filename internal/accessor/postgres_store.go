@@ -725,6 +725,69 @@ func (s *PostgresStore) CleanupStaleReelSessions(before time.Time) error {
 	return err
 }
 
+func (s *PostgresStore) GetOrCreateMemeShare(memeID, userID string, now, expiresAt time.Time) (MemeShareState, error) {
+	var share MemeShareState
+	err := s.pool.QueryRow(context.Background(), `
+		UPDATE memes
+		SET share_generation = CASE WHEN share_expires_at > $2 THEN share_generation ELSE share_generation + 1 END,
+			share_expires_at = CASE WHEN share_expires_at > $2 THEN share_expires_at ELSE $3 END,
+			shared_at = CASE WHEN share_expires_at > $2 THEN shared_at ELSE $2 END,
+			shared_by_user_id = CASE WHEN share_expires_at > $2 THEN shared_by_user_id ELSE $4 END
+		WHERE id = $1 AND COALESCE(hidden_from_app, FALSE) = FALSE
+		RETURNING id, share_generation, shared_by_user_id, shared_at, share_expires_at
+	`, strings.TrimSpace(memeID), now.UTC(), expiresAt.UTC(), strings.TrimSpace(userID)).Scan(&share.MemeID, &share.Generation, &share.SharedByUserID, &share.SharedAt, &share.ExpiresAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return MemeShareState{}, os.ErrNotExist
+	}
+	return share, err
+}
+
+func (s *PostgresStore) GetMemeShareState(memeID string) (MemeShareState, error) {
+	var share MemeShareState
+	err := s.pool.QueryRow(context.Background(), `
+		SELECT id, share_generation, shared_by_user_id, COALESCE(shared_at, 'epoch'::timestamptz), COALESCE(share_expires_at, 'epoch'::timestamptz)
+		FROM memes WHERE id = $1 AND COALESCE(hidden_from_app, FALSE) = FALSE
+	`, strings.TrimSpace(memeID)).Scan(&share.MemeID, &share.Generation, &share.SharedByUserID, &share.SharedAt, &share.ExpiresAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return MemeShareState{}, os.ErrNotExist
+	}
+	return share, err
+}
+
+func (s *PostgresStore) ListActiveMemeShares(now time.Time) ([]MemeShareState, error) {
+	rows, err := s.pool.Query(context.Background(), `
+		SELECT id, share_generation, shared_by_user_id, shared_at, share_expires_at
+		FROM memes
+		WHERE share_expires_at > $1 AND COALESCE(hidden_from_app, FALSE) = FALSE
+		ORDER BY shared_at DESC
+	`, now.UTC())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	shares := []MemeShareState{}
+	for rows.Next() {
+		var share MemeShareState
+		if err := rows.Scan(&share.MemeID, &share.Generation, &share.SharedByUserID, &share.SharedAt, &share.ExpiresAt); err != nil {
+			return nil, err
+		}
+		shares = append(shares, share)
+	}
+	return shares, rows.Err()
+}
+
+func (s *PostgresStore) RevokeMemeShare(memeID string) error {
+	tag, err := s.pool.Exec(context.Background(), `
+		UPDATE memes
+		SET share_generation = share_generation + 1, share_expires_at = NULL
+		WHERE id = $1
+	`, strings.TrimSpace(memeID))
+	if err == nil && tag.RowsAffected() == 0 {
+		return os.ErrNotExist
+	}
+	return err
+}
+
 func (s *PostgresStore) ensureSchema(ctx context.Context) error {
 	if err := dbschema.Apply(ctx, s.pool,
 		"001_memes_core.sql",
@@ -732,6 +795,7 @@ func (s *PostgresStore) ensureSchema(ctx context.Context) error {
 		"006_memes_source_url.sql",
 		"007_memes_suggested_tags.sql",
 		"008_memes_auto_suggest_disabled.sql",
+		"009_meme_shares.sql",
 	); err != nil {
 		return fmt.Errorf("ensure schema: %w", err)
 	}

@@ -257,6 +257,7 @@
               </button>
               <button class="admin-tab is-active" type="button" role="tab" data-admin-tab="dashboard" aria-selected="true">Dashboard</button>
               <button class="admin-tab" type="button" role="tab" data-admin-tab="users" aria-selected="false">Users</button>
+              <button class="admin-tab" type="button" role="tab" data-admin-tab="shares" aria-selected="false">Shared Memes</button>
               <button class="admin-tab" type="button" role="tab" data-admin-tab="tag-hygiene" aria-selected="false">Tag Hygiene</button>
               <button class="admin-tab" type="button" role="tab" data-admin-tab="tag-queue" aria-selected="false">Tag Queue</button>
               <button class="admin-tab" type="button" role="tab" data-admin-tab="tag-review" aria-selected="false">Suggested Tags</button>
@@ -742,15 +743,15 @@
               </svg>
               <span class="modal-action-label">Favorite</span>
             </button>
-            <a id="modal-open-link" class="action-button icon-action" target="_blank" rel="noreferrer" aria-label="Open Original" data-tooltip="Open Original">
+            <button id="modal-share" class="action-button icon-action" type="button" aria-label="Share meme" data-tooltip="Share Meme">
               <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M9 15 15 9" />
-                <path d="M10 8h6v6" />
-                <path d="M14 5h4v4" />
-                <path d="M10 5H6a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-4" />
+                <circle cx="18" cy="5" r="2.5" />
+                <circle cx="6" cy="12" r="2.5" />
+                <circle cx="18" cy="19" r="2.5" />
+                <path d="m8.2 10.8 7.6-4.4M8.2 13.2l7.6 4.4" />
               </svg>
-              <span class="modal-action-label">Open</span>
-            </a>
+              <span class="modal-action-label">Share</span>
+            </button>
             <button id="modal-save" class="action-button action-button-primary icon-action" type="button" aria-label="Save Changes" data-tooltip="Save Changes">
               <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M5 6.5A1.5 1.5 0 0 1 6.5 5h9.9L19 7.6V18a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6.5Z" />
@@ -803,10 +804,17 @@
               <span class="random-reel-nav-icon" aria-hidden="true">&#9825;</span>
               <span class="random-reel-nav-label">Favorite</span>
             </button>
-            <a id="random-reel-open" class="random-reel-nav random-reel-open-button" target="_blank" rel="noreferrer" aria-label="Open original file">
-              <span class="random-reel-nav-icon" aria-hidden="true">&#8599;</span>
-              <span class="random-reel-nav-label">Open</span>
-            </a>
+            <button id="random-reel-share" class="random-reel-nav random-reel-share-button" type="button" aria-label="Share meme">
+              <span class="random-reel-nav-icon random-reel-share-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <circle cx="18" cy="5" r="2.5" />
+                  <circle cx="6" cy="12" r="2.5" />
+                  <circle cx="18" cy="19" r="2.5" />
+                  <path d="m8.2 10.8 7.6-4.4M8.2 13.2l7.6 4.4" />
+                </svg>
+              </span>
+              <span class="random-reel-nav-label">Share</span>
+            </button>
             <button id="random-reel-prev" class="random-reel-nav" type="button" aria-label="Previous meme">
               <span class="random-reel-nav-icon" aria-hidden="true">↑</span>
               <span class="random-reel-nav-label">Previous</span>

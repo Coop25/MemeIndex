@@ -21,6 +21,7 @@ import (
 const (
 	authSessionCookieName = "memeindex_session"
 	authStateCookieName   = "memeindex_oauth_state"
+	authReturnCookieName  = "memeindex_oauth_return"
 )
 
 type permissionLevel string

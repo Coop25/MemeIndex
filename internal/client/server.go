@@ -33,6 +33,7 @@ type Server struct {
 	mediaClient *mediafetch.Client
 	linkRetries *linkRetryQueue
 	backup      *portableBackup
+	shareSecret []byte
 }
 
 type adminSystemHealth struct {
@@ -53,6 +54,10 @@ type adminDashboardResponse struct {
 }
 
 func NewServer(config Config, memeManager *manager.MemeManager) *Server {
+	shareSecret, err := loadOrCreateShareSecret(config.DataDir, config.ShareSecret)
+	if err != nil {
+		log.Fatalf("share secret init failed: %v", err)
+	}
 	userStore, err := newAuthUserStore(context.Background(), config.DatabaseURL)
 	if err != nil {
 		log.Fatalf("auth user store init failed: %v", err)
@@ -78,6 +83,7 @@ func NewServer(config Config, memeManager *manager.MemeManager) *Server {
 		users:       userStore,
 		mediaClient: mediaClient,
 		backup:      newPortableBackup(config.DatabaseURL, config.DataDir),
+		shareSecret: shareSecret,
 	}
 	server.linkRetries = newLinkRetryQueue(config.MediaFetchRetry.Interval, config.MediaFetchRetry.MaxAttempts, server.processRetriedLinkJob)
 	return server
@@ -110,11 +116,14 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/api/admin/link-downloads/", s.withAPIAuth(http.HandlerFunc(s.handleLinkDownloadActions), permissionManageUsers))
 	mux.Handle("/api/admin/memes/pending-delete", s.withAPIAuth(http.HandlerFunc(s.handlePendingDeleteQueue), permissionManageUsers))
 	mux.Handle("/api/admin/memes/", s.withAPIAuth(http.HandlerFunc(s.handleAdminMemeActions), permissionManageUsers))
+	mux.Handle("/api/admin/shares", s.withAPIAuth(http.HandlerFunc(s.handleAdminShares), permissionManageUsers))
+	mux.Handle("/api/admin/shares/", s.withAPIAuth(http.HandlerFunc(s.handleAdminShares), permissionManageUsers))
 	mux.Handle("/uploads/", s.withProtectedAssetAuth(http.StripPrefix("/uploads/", http.FileServer(http.Dir(s.managers.UploadDir())))))
 	if thumbnailDir := s.managers.ThumbnailDir(); strings.TrimSpace(thumbnailDir) != "" {
 		mux.Handle("/thumbnails/", s.withProtectedAssetAuth(http.StripPrefix("/thumbnails/", http.FileServer(http.Dir(thumbnailDir)))))
 	}
 	mux.Handle("/static/", s.withPageAuth(http.StripPrefix("/static/", http.FileServer(http.Dir("static")))))
+	mux.HandleFunc("/m/", s.handleMemeLink)
 	mux.Handle("/", s.withPageAuth(http.HandlerFunc(s.handleIndex)))
 	mux.Handle("/api/memes", s.withAPIAuth(http.HandlerFunc(s.handleMemes), permissionView))
 	mux.Handle("/api/memes/save-link", s.withAPIAuth(http.HandlerFunc(s.handleSaveLink), permissionUpload))
@@ -159,7 +168,8 @@ func (s *Server) withPageAuth(next http.Handler) http.Handler {
 			return
 		}
 		if !ok {
-			http.Redirect(w, r, "/auth/login", http.StatusFound)
+			loginURL := "/auth/login?return_to=" + url.QueryEscape(r.URL.RequestURI())
+			http.Redirect(w, r, loginURL, http.StatusFound)
 			return
 		}
 		if !session.Permissions.CanView && !allowsAuthenticatedShellOnly(r.URL.Path) {
@@ -339,7 +349,7 @@ func hasPermission(permissions authPermissions, minimum permissionLevel) bool {
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
+	if r.URL.Path != "/" && !isMemeDeepLinkPath(r.URL.Path) {
 		http.NotFound(w, r)
 		return
 	}
@@ -527,6 +537,21 @@ func (s *Server) handleMemeByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if strings.HasSuffix(path, "/share") {
+		id := strings.TrimSuffix(path, "/share")
+		id = strings.TrimSuffix(id, "/")
+		if id == "" || strings.Contains(id, "/") {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		s.createMemeShare(w, r, id)
+		return
+	}
+
 	if strings.HasSuffix(path, "/tag-suggestions") {
 		id := strings.TrimSuffix(path, "/tag-suggestions")
 		id = strings.TrimSuffix(id, "/")
@@ -576,6 +601,17 @@ func (s *Server) handleMemeByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch r.Method {
+	case http.MethodGet:
+		meme, err := s.managers.GetMeme(currentUserID(r), id)
+		if errors.Is(err, os.ErrNotExist) {
+			http.NotFound(w, r)
+			return
+		}
+		if err != nil {
+			http.Error(w, "failed to load meme", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, s.protectMemeForResponse(r, meme))
 	case http.MethodPatch:
 		s.updateMeme(w, r, id)
 	case http.MethodDelete:
@@ -1902,6 +1938,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	s.auth.rememberState(state)
 	s.auth.setStateCookie(w, r, state)
+	if returnTo := safeLocalReturnPath(r.URL.Query().Get("return_to")); returnTo != "" {
+		s.auth.setCookie(w, r, authReturnCookieName, s.auth.signedValue(returnTo), time.Now().Add(10*time.Minute))
+	}
 	http.Redirect(w, r, s.auth.buildLoginURLForRequest(r, state), http.StatusFound)
 }
 
@@ -1912,6 +1951,7 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	defer s.auth.clearCookie(w, r, authStateCookieName)
+	defer s.auth.clearCookie(w, r, authReturnCookieName)
 
 	if !s.auth.consumeValidState(r) {
 		http.Error(w, "invalid oauth state", http.StatusBadRequest)
@@ -1950,7 +1990,15 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.auth.setSessionCookie(w, r, token, session.ExpiresAt)
-	http.Redirect(w, r, "/", http.StatusFound)
+	returnTo := "/"
+	if signedReturn, ok := s.auth.readCookie(r, authReturnCookieName); ok {
+		if value, valid := s.auth.verifySignedValue(signedReturn); valid {
+			if safe := safeLocalReturnPath(value); safe != "" {
+				returnTo = safe
+			}
+		}
+	}
+	http.Redirect(w, r, returnTo, http.StatusFound)
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {

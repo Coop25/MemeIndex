@@ -13,6 +13,7 @@ type Config struct {
 	Addr                  string
 	DataDir               string
 	DatabaseURL           string
+	ShareSecret           string
 	MediaFetchYTDLPBinary string
 	MediaFetchRetry       MediaFetchRetryConfig
 	TagSuggestions        TagSuggestionsConfig
@@ -86,6 +87,7 @@ type rawConfig struct {
 	DiscordRedirectURL              string   `envconfig:"DISCORD_REDIRECT_URL"`
 	DiscordDynamicRedirect          bool     `envconfig:"DISCORD_DYNAMIC_REDIRECT" default:"false"`
 	SessionSecret                   string   `envconfig:"SESSION_SECRET"`
+	ShareSecret                     string   `envconfig:"SHARE_SECRET"`
 	SessionDurationDays             int      `envconfig:"SESSION_DURATION_DAYS" default:"30"`
 	CookieSecure                    bool     `envconfig:"COOKIE_SECURE" default:"false"`
 	SuperAdminUserIDs               []string `envconfig:"SUPER_ADMIN_USER_IDS"`
@@ -130,6 +132,7 @@ func LoadConfig() (Config, error) {
 		Addr:                  strings.TrimSpace(raw.Addr),
 		DataDir:               strings.TrimSpace(raw.DataDir),
 		DatabaseURL:           strings.TrimSpace(raw.DatabaseURL),
+		ShareSecret:           firstNonEmpty(strings.TrimSpace(raw.ShareSecret), strings.TrimSpace(raw.SessionSecret)),
 		MediaFetchYTDLPBinary: strings.TrimSpace(raw.MediaFetchYTDLPBinary),
 		MediaFetchRetry: MediaFetchRetryConfig{
 			Interval:    time.Duration(max(raw.MediaFetchRetryIntervalSecs, 1)) * time.Second,
@@ -166,6 +169,15 @@ func LoadConfig() (Config, error) {
 			AddUserIDs:  toSet(raw.AddUserIDs),
 		},
 	}, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func toSet(rawValues []string) map[string]struct{} {

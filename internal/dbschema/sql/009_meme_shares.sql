@@ -1,0 +1,6 @@
+ALTER TABLE memes ADD COLUMN IF NOT EXISTS share_generation BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE memes ADD COLUMN IF NOT EXISTS share_expires_at TIMESTAMPTZ;
+ALTER TABLE memes ADD COLUMN IF NOT EXISTS shared_at TIMESTAMPTZ;
+ALTER TABLE memes ADD COLUMN IF NOT EXISTS shared_by_user_id TEXT NOT NULL DEFAULT '';
+
+CREATE INDEX IF NOT EXISTS idx_memes_share_expires_at ON memes(share_expires_at);

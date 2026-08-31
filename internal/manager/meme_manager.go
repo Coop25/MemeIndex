@@ -297,6 +297,59 @@ func (m *MemeManager) GetMeme(userID, id string) (accessor.Meme, error) {
 	return m.store.GetByID(strings.TrimSpace(userID), strings.TrimSpace(id))
 }
 
+func (m *MemeManager) GetOrCreateMemeShare(memeID, userID string, now time.Time) (accessor.MemeShareState, error) {
+	store, ok := m.store.(accessor.MemeShareStore)
+	if !ok {
+		return accessor.MemeShareState{}, errors.New("meme sharing is unavailable")
+	}
+	return store.GetOrCreateMemeShare(strings.TrimSpace(memeID), strings.TrimSpace(userID), now.UTC(), now.UTC().Add(30*24*time.Hour))
+}
+
+func (m *MemeManager) GetMemeShare(memeID string) (accessor.MemeShareState, accessor.Meme, error) {
+	store, ok := m.store.(accessor.MemeShareStore)
+	if !ok {
+		return accessor.MemeShareState{}, accessor.Meme{}, errors.New("meme sharing is unavailable")
+	}
+	share, err := store.GetMemeShareState(strings.TrimSpace(memeID))
+	if err != nil {
+		return accessor.MemeShareState{}, accessor.Meme{}, err
+	}
+	meme, err := m.store.GetByID("", share.MemeID)
+	return share, meme, err
+}
+
+type ActiveMemeShare struct {
+	Meme  accessor.Meme           `json:"meme"`
+	Share accessor.MemeShareState `json:"share"`
+}
+
+func (m *MemeManager) ListActiveMemeShares(now time.Time) ([]ActiveMemeShare, error) {
+	store, ok := m.store.(accessor.MemeShareStore)
+	if !ok {
+		return nil, errors.New("meme sharing is unavailable")
+	}
+	states, err := store.ListActiveMemeShares(now.UTC())
+	if err != nil {
+		return nil, err
+	}
+	result := make([]ActiveMemeShare, 0, len(states))
+	for _, state := range states {
+		meme, err := m.store.GetByID("", state.MemeID)
+		if err == nil {
+			result = append(result, ActiveMemeShare{Meme: meme, Share: state})
+		}
+	}
+	return result, nil
+}
+
+func (m *MemeManager) RevokeMemeShare(memeID string) error {
+	store, ok := m.store.(accessor.MemeShareStore)
+	if !ok {
+		return errors.New("meme sharing is unavailable")
+	}
+	return store.RevokeMemeShare(strings.TrimSpace(memeID))
+}
+
 func (m *MemeManager) GetAdminMeme(id string) (accessor.Meme, error) {
 	store, ok := m.store.(accessor.AdminMemeStore)
 	if ok {

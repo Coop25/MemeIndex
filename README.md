@@ -18,6 +18,7 @@ MemeIndex is a self-hosted meme organizer built with Go and a lightweight fronte
 - Suggest reviewable tags for images and videos through an optional local Ollama model
 - Keep the original source link attached to imported link-based memes
 - Preview image and video files inline
+- Create unguessable, Discord-embeddable share links that expire after 30 days and fall back to the authenticated meme view
 - Search by filename, notes, and tags
 - Mark favorites for quick filtering
 - Keep favorites per Discord user
@@ -111,6 +112,7 @@ Optional flags:
 - `MEMEINDEX_DISCORD_REDIRECT_URL`: Discord OAuth callback URL, for example `http://localhost:8080/auth/callback`
 - `MEMEINDEX_DISCORD_DYNAMIC_REDIRECT`: when `true`, dev mode builds the callback URL from the current browser host, so `localhost` and your LAN IP can both work
 - `MEMEINDEX_SESSION_SECRET`: random secret used to sign auth cookies
+- `MEMEINDEX_SHARE_SECRET`: optional dedicated secret used to sign 30-day share URLs. It defaults to `MEMEINDEX_SESSION_SECRET`; without either secret, MemeIndex creates `data/share_secret`. Keep it stable or active links will stop validating
 - `MEMEINDEX_SESSION_DURATION_DAYS`: how long Discord login cookies stay valid, default `30`
 - `MEMEINDEX_COOKIE_SECURE`: set to `true` when serving over HTTPS so auth cookies are marked secure
 - `MEMEINDEX_SUPER_ADMIN_USER_IDS`: comma-separated Discord user IDs that should always have full access plus user-management access
