@@ -109,6 +109,44 @@ func TestSignedShareEmbedsAndRevocationDeniesPublicMedia(t *testing.T) {
 	}
 }
 
+func TestDiscordReceivesNativeMediaWhileBrowserReceivesSharePage(t *testing.T) {
+	server, store, meme := newShareTestServer(t)
+	now := time.Now().UTC()
+	share, err := store.GetOrCreateMemeShare(meme.ID, "admin-1", now, now.Add(memeShareLifetime))
+	if err != nil {
+		t.Fatal(err)
+	}
+	shareURL := "https://memes.example.com/m/" + meme.ID + "?share=" + url.QueryEscape(server.signMemeShare(share))
+
+	discordRecorder := httptest.NewRecorder()
+	discordRequest := httptest.NewRequest(http.MethodGet, shareURL, nil)
+	discordRequest.Header.Set("User-Agent", "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)")
+	server.handleMemeLink(discordRecorder, discordRequest)
+	if discordRecorder.Code != http.StatusOK || discordRecorder.Header().Get("Content-Type") != "image/png" {
+		t.Fatalf("Discord response status = %d, content-type = %q", discordRecorder.Code, discordRecorder.Header().Get("Content-Type"))
+	}
+	if discordRecorder.Body.String() != "test image bytes" {
+		t.Fatalf("Discord response body = %q", discordRecorder.Body.String())
+	}
+	if cacheControl := discordRecorder.Header().Get("Cache-Control"); cacheControl != "no-store, max-age=0" {
+		t.Fatalf("Discord cache control = %q", cacheControl)
+	}
+	if vary := discordRecorder.Header().Get("Vary"); vary != "User-Agent" {
+		t.Fatalf("Discord vary = %q", vary)
+	}
+
+	browserRecorder := httptest.NewRecorder()
+	browserRequest := httptest.NewRequest(http.MethodGet, shareURL, nil)
+	browserRequest.Header.Set("User-Agent", "Mozilla/5.0 Chrome/140.0.0.0 Safari/537.36")
+	server.handleMemeLink(browserRecorder, browserRequest)
+	if browserRecorder.Code != http.StatusOK || !strings.HasPrefix(browserRecorder.Header().Get("Content-Type"), "text/html") {
+		t.Fatalf("browser response status = %d, content-type = %q", browserRecorder.Code, browserRecorder.Header().Get("Content-Type"))
+	}
+	if !strings.Contains(browserRecorder.Body.String(), "Shared meme from MemeIndex") {
+		t.Fatalf("browser response is missing share page: %s", browserRecorder.Body.String())
+	}
+}
+
 func TestExpiredTokenFallsBackWithoutHistoricalShareRecord(t *testing.T) {
 	server, store, meme := newShareTestServer(t)
 	now := time.Now().UTC()

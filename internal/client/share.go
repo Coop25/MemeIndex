@@ -110,6 +110,10 @@ func (s *Server) handleMemeLink(w http.ResponseWriter, r *http.Request) {
 				s.serveSharedMemeAsset(w, r, meme, true)
 				return
 			}
+			if isDiscordLinkPreviewRequest(r) {
+				s.serveDiscordMemeEmbed(w, r, meme)
+				return
+			}
 			s.renderSharedMemePage(w, r, token, meme, share.ExpiresAt)
 			return
 		}
@@ -128,6 +132,19 @@ func (s *Server) handleMemeLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.withPageAuth(http.HandlerFunc(s.handleIndex)).ServeHTTP(w, r)
+}
+
+func isDiscordLinkPreviewRequest(r *http.Request) bool {
+	return strings.Contains(strings.ToLower(r.Header.Get("User-Agent")), "discordbot")
+}
+
+func (s *Server) serveDiscordMemeEmbed(w http.ResponseWriter, r *http.Request, meme accessor.Meme) {
+	w.Header().Set("Cache-Control", "no-store, max-age=0")
+	w.Header().Set("CDN-Cache-Control", "no-store")
+	w.Header().Set("Cloudflare-CDN-Cache-Control", "no-store")
+	w.Header().Set("Surrogate-Control", "no-store")
+	w.Header().Set("Vary", "User-Agent")
+	s.serveSharedMemeAsset(w, r, meme, false)
 }
 
 func (s *Server) handleAdminShares(w http.ResponseWriter, r *http.Request) {
@@ -246,8 +263,12 @@ func (s *Server) serveSharedMemeAsset(w http.ResponseWriter, r *http.Request, me
 	}
 	w.Header().Set("X-Robots-Tag", "noindex, nofollow, noarchive")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Cache-Control", "public, max-age=300")
-	w.Header().Set("CDN-Cache-Control", "public, max-age=300")
+	if w.Header().Get("Cache-Control") == "" {
+		w.Header().Set("Cache-Control", "public, max-age=300")
+	}
+	if w.Header().Get("CDN-Cache-Control") == "" {
+		w.Header().Set("CDN-Cache-Control", "public, max-age=300")
+	}
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("Accept-Ranges", "bytes")
 	if contentType != "" {
@@ -289,6 +310,7 @@ func (s *Server) renderSharedMemePage(w http.ResponseWriter, r *http.Request, to
 	page := `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>` + title + `</title><meta name="robots" content="noindex,nofollow,noarchive"><meta property="og:type" content="website"><meta property="og:site_name" content="MemeIndex"><meta property="og:title" content="` + title + `"><meta property="og:description" content="Shared privately for 30 days."><meta property="og:url" content="` + html.EscapeString(shareURL) + `"><meta name="twitter:title" content="` + title + `"><meta name="twitter:description" content="Shared privately for 30 days.">` + meta + `<style>html,body{margin:0;min-height:100%;background:#070b0a;color:#eef7f0;font:16px system-ui}body{display:grid;place-items:center;padding:24px;box-sizing:border-box}.wrap{width:min(1100px,100%);text-align:center}img,video{max-width:100%;max-height:82vh;border-radius:12px;background:#000}audio{width:min(680px,100%)}a{color:#72c77a}.open{display:inline-block;margin-top:18px;padding:11px 16px;border:1px solid #315d3b;border-radius:9px;text-decoration:none}.meta{color:#91a397;font-size:13px}</style></head><body><main class="wrap">` + mediaTag + `<p><a class="open" href="` + html.EscapeString(openURL) + `">Open in MemeIndex</a></p><p class="meta">Public link expires ` + html.EscapeString(expiresAt.Local().Format("January 2, 2006")) + `.</p></main></body></html>`
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store, max-age=0")
+	w.Header().Set("Vary", "User-Agent")
 	w.Header().Set("X-Robots-Tag", "noindex, nofollow, noarchive")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'")
