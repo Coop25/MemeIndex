@@ -3255,21 +3255,21 @@ body.random-reel-open {
 
   .meme-modal .modal-mobile-summary {
     position: absolute;
-    top: calc(12px + env(safe-area-inset-top));
-    left: 12px;
+    top: calc(18px + env(safe-area-inset-top));
+    left: 16px;
     z-index: 8;
     display: grid;
-    width: calc(100% - 78px);
+    width: calc(100% - 86px);
     min-width: 0;
     gap: 2px;
-    padding: 10px 12px;
-    border: 1px solid rgba(190,215,197,.12);
-    border-radius: 13px;
-    background: rgba(5,13,9,.66);
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
     color: inherit;
     cursor: pointer;
     text-align: left;
-    backdrop-filter: blur(14px);
+    text-shadow: 0 2px 12px rgba(0,0,0,.9);
     transition: opacity .18s ease, transform .18s ease;
   }
 
@@ -3303,12 +3303,14 @@ body.random-reel-open {
     left: 12px;
     z-index: 8;
     display: grid;
-    grid-template-columns: 44px minmax(0,1fr);
-    gap: 7px 9px;
-    padding: 9px;
+    grid-template-columns: 42px minmax(0,1fr) 40px;
+    align-items: center;
+    gap: 8px;
+    min-height: 56px;
+    padding: 7px 8px;
     border-color: rgba(190,215,197,.14);
-    border-radius: 16px;
-    background: rgba(4,12,8,.78);
+    border-radius: 15px;
+    background: rgba(4,12,8,.84);
     box-shadow: 0 12px 34px rgba(0,0,0,.34);
     opacity: 1;
     pointer-events: auto;
@@ -3323,16 +3325,20 @@ body.random-reel-open {
   }
 
   .meme-modal .modal-progress-wrap {
-    grid-column: 1 / -1;
+    grid-column: 2;
+    grid-row: 1;
     display: grid;
     grid-template-columns: auto minmax(0,1fr) auto;
     width: 100%;
     min-width: 0;
-    gap: 8px;
+    gap: 7px;
   }
 
-  .meme-modal #modal-play { width: 44px; height: 40px; min-height: 40px; }
-  .meme-modal .random-reel-volume { display: flex; width: 100%; min-width: 0; height: 40px; }
+  .meme-modal .modal-time-label { font-size: 9px; }
+  .meme-modal #modal-play { grid-column: 1; grid-row: 1; width: 42px; height: 42px; min-height: 42px; }
+  .meme-modal .random-reel-volume { display: grid; grid-column: 3; grid-row: 1; width: 40px; min-width: 40px; height: 40px; place-items: center; padding: 0; border-radius: 10px; }
+  .meme-modal .random-reel-volume-button { width: 100%; height: 100%; }
+  .meme-modal .random-reel-volume-slider { display: none; }
 
   .meme-modal .modal-panel-toggle {
     right: 12px;
