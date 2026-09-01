@@ -1425,7 +1425,7 @@ function renderAdminShares() {
     if (preview && meme.id) preview.appendChild(buildPreview(meme));
     row.querySelector(".shared-copy-button")?.addEventListener("click", async () => {
       try {
-        await copyShareText(String(entry.url || ""));
+        await copyShareText(String(entry.page_url || entry.url || ""));
         showToast("Share link copied.", "success", { title: "Shared Memes" });
       } catch (error) {
         showToast("Could not copy the share link.", "error", { title: "Shared Memes" });
@@ -5065,19 +5065,31 @@ async function persistCard(id, payload) {
 }
 
 async function copyShareText(value) {
+  const shareText = String(value || "").trim();
+  if (!shareText) throw new Error("share URL missing");
   if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(value);
-    return;
+    try {
+      await navigator.clipboard.writeText(shareText);
+      return;
+    } catch (error) {
+      console.warn("Clipboard API unavailable; trying browser copy fallback.", error);
+    }
   }
   const input = document.createElement("textarea");
-  input.value = value;
+  input.value = shareText;
   input.setAttribute("readonly", "");
   input.style.position = "fixed";
   input.style.opacity = "0";
   document.body.appendChild(input);
+  input.focus();
   input.select();
-  const copied = document.execCommand("copy");
-  input.remove();
+  input.setSelectionRange?.(0, input.value.length);
+  let copied = false;
+  try {
+    copied = document.execCommand("copy");
+  } finally {
+    input.remove();
+  }
   if (!copied) throw new Error("clipboard unavailable");
 }
 
@@ -5117,7 +5129,7 @@ async function shareMeme(id, button) {
     const response = await fetch(`/api/memes/${encodeURIComponent(id)}/share`, { method: "POST" });
     if (!(await expectAuthorized(response, "Could not create a share link."))) return false;
     const payload = await response.json();
-    const shareURL = String(payload.url || "");
+    const shareURL = String(payload.page_url || payload.url || "");
     if (!shareURL) throw new Error("share URL missing");
     await copyShareText(shareURL);
     showShareCopiedFeedback(button);

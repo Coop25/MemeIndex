@@ -31,7 +31,7 @@ func newShareTestServer(t *testing.T) (*Server, *accessor.MemeStore, accessor.Me
 	return &Server{managers: manager.NewMemeManager(store), shareSecret: []byte("test-share-secret")}, store, meme
 }
 
-func TestCreateMemeShareReturnsStableSignedMemeURL(t *testing.T) {
+func TestCreateMemeShareReturnsStableSignedPageURL(t *testing.T) {
 	server, _, meme := newShareTestServer(t)
 	create := func() string {
 		recorder := httptest.NewRecorder()
@@ -56,8 +56,19 @@ func TestCreateMemeShareReturnsStableSignedMemeURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed.Path != "/m/"+meme.ID+"/media/shared.png" || parsed.Query().Get("share") == "" {
+	if parsed.Path != "/m/"+meme.ID || parsed.Query().Get("share") == "" {
 		t.Fatalf("share URL = %q", first)
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "https://memes.example.com/api/memes/"+meme.ID+"/share", nil)
+	server.createMemeShare(recorder, request, meme.ID)
+	body := recorder.Body.String()
+	if !strings.Contains(body, `"page_url":"https://memes.example.com/m/`+meme.ID+`?share=`) {
+		t.Fatalf("share response is missing page URL: %s", body)
+	}
+	if !strings.Contains(body, `"media_url":"https://memes.example.com/m/`+meme.ID+`/media/shared.png?share=`) {
+		t.Fatalf("share response is missing media URL: %s", body)
 	}
 }
 

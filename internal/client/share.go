@@ -66,8 +66,9 @@ func (s *Server) createMemeShare(w http.ResponseWriter, r *http.Request, memeID 
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"url":        s.memeShareMediaURL(r, share, meme),
+		"url":        s.memeSharePageURL(r, share),
 		"page_url":   s.memeSharePageURL(r, share),
+		"media_url":  s.memeShareMediaURL(r, share, meme),
 		"expires_at": share.ExpiresAt,
 	})
 }
@@ -164,8 +165,9 @@ func (s *Server) handleAdminShares(w http.ResponseWriter, r *http.Request) {
 				"meme":                   s.protectMemeForResponse(r, entry.Meme),
 				"share":                  entry.Share,
 				"shared_by_display_name": sharedByDisplayName,
-				"url":                    s.memeShareMediaURL(r, entry.Share, entry.Meme),
+				"url":                    s.memeSharePageURL(r, entry.Share),
 				"page_url":               s.memeSharePageURL(r, entry.Share),
+				"media_url":              s.memeShareMediaURL(r, entry.Share, entry.Meme),
 			})
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"shares": items})
