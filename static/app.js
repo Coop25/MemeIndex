@@ -227,6 +227,9 @@ const modalPreviewWrap = document.querySelector(".modal-preview-wrap");
 const modalBody = document.querySelector("#meme-modal .modal-body");
 const modalTitle = document.querySelector("#modal-title");
 const modalMeta = document.querySelector("#modal-meta");
+const modalMobileSummary = document.querySelector("#modal-mobile-summary");
+const modalMobileTitle = document.querySelector("#modal-mobile-title");
+const modalMobileMeta = document.querySelector("#modal-mobile-meta");
 const modalCloseButton = document.querySelector("#modal-close");
 const modalPanelToggle = document.querySelector("#modal-panel-toggle");
 const modalDrawerToggle = document.querySelector("#modal-drawer-toggle");
@@ -4231,6 +4234,13 @@ function openModalWithMeme(meme) {
   }
   modalTitle.textContent = meme.originalName;
   modalMeta.textContent = `${formatSize(meme.sizeBytes)} * ${meme.contentType}`;
+  if (modalMobileTitle) {
+    modalMobileTitle.textContent = truncateWithCounter(meme.originalName, 44);
+    modalMobileTitle.title = meme.originalName;
+  }
+  if (modalMobileMeta) {
+    modalMobileMeta.textContent = `${formatSize(meme.sizeBytes)} \u2022 ${meme.contentType}`;
+  }
   setModalTags(meme.tags || []);
   modalTagsInput.value = "";
   renderTagEditor();
@@ -5981,6 +5991,11 @@ modalCloseButton?.addEventListener("click", () => {
 modalPanelToggle?.addEventListener("click", () => {
   showMemeModalUI();
   toggleModalDetailsPanel();
+});
+
+modalMobileSummary?.addEventListener("click", () => {
+  showMemeModalUI(false);
+  toggleModalDetailsPanel(true);
 });
 
 modalDrawerToggle?.addEventListener("click", () => {
