@@ -353,22 +353,27 @@ function showToast(message, type = "info", options = {}) {
     return 0;
   }
 
+  const toastType = ["success", "error", "info"].includes(type) ? type : "info";
   const title = options.title || (
-    type === "success"
+    toastType === "success"
       ? "Success"
-      : type === "error"
+      : toastType === "error"
         ? "Problem"
         : "Heads Up"
   );
-  const duration = Number.isFinite(options.duration) ? options.duration : (type === "error" ? 4200 : 2600);
+  const duration = Number.isFinite(options.duration) ? options.duration : (toastType === "error" ? 4200 : 2600);
   const toastID = ++toastSequence;
   const toast = document.createElement("article");
-  toast.className = `toast toast-${type}`;
+  toast.className = `toast toast-${toastType}`;
   toast.dataset.toastId = String(toastID);
+  toast.setAttribute("role", toastType === "error" ? "alert" : "status");
+  const icon = toastType === "success" ? "&#10003;" : toastType === "error" ? "!" : "i";
   toast.innerHTML = `
-    <span class="toast-title">${escapeHTML(title)}</span>
-    <strong class="toast-message">${escapeHTML(message)}</strong>
+    <span class="toast-icon" aria-hidden="true">${icon}</span>
+    <div class="toast-copy"><strong class="toast-title">${escapeHTML(title)}</strong><span class="toast-message">${escapeHTML(message)}</span></div>
+    <button class="toast-dismiss" type="button" aria-label="Dismiss notification">&#10005;</button>
   `;
+  toast.querySelector(".toast-dismiss")?.addEventListener("click", () => dismissToast(toastID));
   toastRegion.appendChild(toast);
 
   window.requestAnimationFrame(() => {
@@ -1394,6 +1399,29 @@ async function fetchAdminShares() {
 function renderAdminShares() {
   if (!adminViewTable || activeAdminTab() !== "shares") return;
   const shares = Array.isArray(state.admin.shares) ? state.admin.shares : [];
+  const layout = document.createElement("div");
+  layout.className = "admin-shares-layout";
+  if (shares.length) {
+    const toolbar = document.createElement("div");
+    toolbar.className = "admin-shares-toolbar";
+    toolbar.innerHTML = `<div><strong>${shares.length.toLocaleString()} active share link${shares.length === 1 ? "" : "s"}</strong><span>Revoke individual links below or remove public access from all of them.</span></div><button class="danger-button shared-revoke-all-button" type="button">Revoke All</button>`;
+    toolbar.querySelector(".shared-revoke-all-button")?.addEventListener("click", async (event) => {
+      if (!window.confirm(`Revoke all ${shares.length} active share link${shares.length === 1 ? "" : "s"}?\n\nEvery existing public link will stop working immediately.`)) return;
+      const button = event.currentTarget;
+      button.disabled = true;
+      const response = await fetch("/api/admin/shares", { method: "DELETE" });
+      if (!(await expectAuthorized(response, "Failed to revoke all shares."))) {
+        button.disabled = false;
+        return;
+      }
+      const payload = await response.json();
+      const revoked = Number(payload.revoked || 0);
+      showToast(`${revoked.toLocaleString()} share link${revoked === 1 ? "" : "s"} revoked.`, "success", { title: "Public Access Removed", duration: 3600 });
+      await fetchAdminShares();
+      setAdminViewStatus("No memes are currently shared.");
+    });
+    layout.appendChild(toolbar);
+  }
   const table = document.createElement("div");
   table.className = "admin-table shared-memes-table";
   table.innerHTML = `
@@ -1436,13 +1464,14 @@ function renderAdminShares() {
       if (!window.confirm(`Revoke public access to ${meme.originalName || "this meme"}?`)) return;
       const response = await fetch(`/api/admin/shares/${encodeURIComponent(meme.id)}`, { method: "DELETE" });
       if (!(await expectAuthorized(response, "Failed to revoke share."))) return;
-      showToast("Share revoked. The public link now requires login.", "success", { title: "Shared Memes" });
+      showToast("Public access has been removed.", "success", { title: "Share Revoked" });
       await fetchAdminShares();
       setAdminViewStatus(state.admin.shares.length ? "" : "No memes are currently shared.");
     });
     table.appendChild(row);
   });
-  adminViewTable.replaceChildren(table);
+  layout.appendChild(table);
+  adminViewTable.replaceChildren(layout);
 }
 
 function dashboardTrend(current, previous, suffix = "vs previous 30 days") {

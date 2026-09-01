@@ -27,6 +27,7 @@ type MemeShareStore interface {
 	GetMemeShareState(memeID string) (MemeShareState, error)
 	ListActiveMemeShares(now time.Time) ([]MemeShareState, error)
 	RevokeMemeShare(memeID string) error
+	RevokeAllMemeShares(now time.Time) (int, error)
 }
 
 type AuditLogStore interface {

@@ -350,6 +350,14 @@ func (m *MemeManager) RevokeMemeShare(memeID string) error {
 	return store.RevokeMemeShare(strings.TrimSpace(memeID))
 }
 
+func (m *MemeManager) RevokeAllMemeShares(now time.Time) (int, error) {
+	store, ok := m.store.(accessor.MemeShareStore)
+	if !ok {
+		return 0, errors.New("meme sharing is unavailable")
+	}
+	return store.RevokeAllMemeShares(now.UTC())
+}
+
 func (m *MemeManager) GetAdminMeme(id string) (accessor.Meme, error) {
 	store, ok := m.store.(accessor.AdminMemeStore)
 	if ok {

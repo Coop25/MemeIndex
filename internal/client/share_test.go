@@ -218,6 +218,34 @@ func TestAdminCanListAndRevokeActiveShare(t *testing.T) {
 	}
 }
 
+func TestAdminCanRevokeAllActiveShares(t *testing.T) {
+	server, store, first := newShareTestServer(t)
+	second, err := store.Create(accessor.CreateInput{
+		File:        strings.NewReader("second image"),
+		Header:      textproto.MIMEHeader{"Content-Type": []string{"image/png"}},
+		Filename:    "second.png",
+		ContentType: "image/png",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	for _, memeID := range []string{first.ID, second.ID} {
+		if _, err := store.GetOrCreateMemeShare(memeID, "admin-1", now, now.Add(memeShareLifetime)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recorder := httptest.NewRecorder()
+	server.handleAdminShares(recorder, httptest.NewRequest(http.MethodDelete, "https://memes.example.com/api/admin/shares", nil))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"revoked":2`) {
+		t.Fatalf("bulk revoke status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	active, err := store.ListActiveMemeShares(time.Now().UTC())
+	if err != nil || len(active) != 0 {
+		t.Fatalf("active shares after bulk revoke = %d, err = %v", len(active), err)
+	}
+}
+
 func TestAdminDashboardIncludesActiveShareCount(t *testing.T) {
 	server, store, meme := newShareTestServer(t)
 	now := time.Now().UTC()

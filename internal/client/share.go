@@ -149,6 +149,15 @@ func (s *Server) serveDiscordMemeEmbed(w http.ResponseWriter, r *http.Request, m
 
 func (s *Server) handleAdminShares(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/api/admin/shares" {
+		if r.Method == http.MethodDelete {
+			revoked, err := s.managers.RevokeAllMemeShares(time.Now().UTC())
+			if err != nil {
+				http.Error(w, "failed to revoke shares", http.StatusInternalServerError)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"revoked": revoked})
+			return
+		}
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return

@@ -245,6 +245,25 @@ func (s *MemeStore) RevokeMemeShare(memeID string) error {
 	return os.ErrNotExist
 }
 
+func (s *MemeStore) RevokeAllMemeShares(now time.Time) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	revoked := 0
+	for i := range s.memes {
+		if !s.memes[i].ShareExpiresAt.After(now.UTC()) {
+			continue
+		}
+		s.memes[i].ShareGeneration++
+		s.memes[i].ShareExpiresAt = time.Time{}
+		s.byID[s.memes[i].ID] = s.memes[i]
+		revoked++
+	}
+	if revoked == 0 {
+		return 0, nil
+	}
+	return revoked, s.saveMemesLocked()
+}
+
 func memeShareStateFromMeme(meme Meme) MemeShareState {
 	return MemeShareState{MemeID: meme.ID, Generation: meme.ShareGeneration, SharedByUserID: meme.SharedByUserID, SharedAt: meme.SharedAt, ExpiresAt: meme.ShareExpiresAt}
 }

@@ -788,6 +788,18 @@ func (s *PostgresStore) RevokeMemeShare(memeID string) error {
 	return err
 }
 
+func (s *PostgresStore) RevokeAllMemeShares(now time.Time) (int, error) {
+	tag, err := s.pool.Exec(context.Background(), `
+		UPDATE memes
+		SET share_generation = share_generation + 1, share_expires_at = NULL
+		WHERE share_expires_at > $1 AND COALESCE(hidden_from_app, FALSE) = FALSE
+	`, now.UTC())
+	if err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 func (s *PostgresStore) ensureSchema(ctx context.Context) error {
 	if err := dbschema.Apply(ctx, s.pool,
 		"001_memes_core.sql",
