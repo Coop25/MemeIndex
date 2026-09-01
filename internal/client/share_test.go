@@ -180,6 +180,19 @@ func TestAdminCanListAndRevokeActiveShare(t *testing.T) {
 	}
 }
 
+func TestAdminDashboardIncludesActiveShareCount(t *testing.T) {
+	server, store, meme := newShareTestServer(t)
+	now := time.Now().UTC()
+	if _, err := store.GetOrCreateMemeShare(meme.ID, "admin-1", now, now.Add(memeShareLifetime)); err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	server.handleAdminDashboard(recorder, httptest.NewRequest(http.MethodGet, "https://memes.example.com/api/admin/dashboard", nil))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"active_share_count":1`) {
+		t.Fatalf("dashboard status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestSafeLocalReturnPathRejectsExternalTargets(t *testing.T) {
 	for _, unsafe := range []string{"https://evil.example", "//evil.example/path", "javascript:alert(1)", "relative"} {
 		if got := safeLocalReturnPath(unsafe); got != "" {

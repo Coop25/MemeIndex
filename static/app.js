@@ -1572,19 +1572,17 @@ function buildAdminUploadChart(series) {
   `;
 }
 
-function buildAdminTopTags(tags, assignmentCount) {
-  const topTags = (Array.isArray(tags) ? tags : []).slice(0, 6);
+function buildAdminTopTags(tags) {
+  const topTags = (Array.isArray(tags) ? tags : []).slice(0, 12);
   if (!topTags.length) return `<p class="users-empty">No tags have been used yet.</p>`;
-  const totalAssignments = Math.max(1, Number(assignmentCount || 0));
-  const colors = ["#47b76a", "#55a1f3", "#9b72e4", "#e1ad39", "#32c2c9", "#f08d46"];
+  const colors = ["#47b76a", "#55a1f3", "#9b72e4", "#e1ad39", "#32c2c9", "#f08d46", "#e66791", "#79c95b", "#4f78d6", "#c869d4", "#d6ca4f", "#45a98f"];
   const segments = topTags.map((entry, index) => ({ label: entry.tag || "", count: Number(entry.count || 0), color: colors[index] }));
-  const otherCount = Math.max(0, totalAssignments - segments.reduce((sum, entry) => sum + entry.count, 0));
-  if (otherCount) segments.push({ label: "Other tags", count: otherCount, color: "#26312b" });
-  const tooltipLabel = (entry) => `${entry.label}\n${entry.count.toLocaleString()} tag assignments (${((entry.count / totalAssignments) * 100).toFixed(1)}%)`;
+  const displayedAssignments = Math.max(1, segments.reduce((sum, entry) => sum + entry.count, 0));
+  const tooltipLabel = (entry) => `${entry.label}\n${entry.count.toLocaleString()} tag assignments (${((entry.count / displayedAssignments) * 100).toFixed(1)}% of top tags)`;
   let angle = -Math.PI / 2;
   const position = (radius, radians) => `${(66 + radius * Math.cos(radians)).toFixed(4)},${(66 + radius * Math.sin(radians)).toFixed(4)}`;
   const slices = segments.filter((entry) => entry.count > 0).map((entry) => {
-    const end = angle + (entry.count / totalAssignments) * Math.PI * 2;
+    const end = angle + (entry.count / displayedAssignments) * Math.PI * 2;
     const middle = (angle + end) / 2;
     // Two arcs per edge also handle a single tag occupying the entire ring.
     const path = `M${position(65, angle)} A65,65 0 0 1 ${position(65, middle)} A65,65 0 0 1 ${position(65, end)} L${position(37.5, end)} A37.5,37.5 0 0 0 ${position(37.5, middle)} A37.5,37.5 0 0 0 ${position(37.5, angle)} Z`;
@@ -1594,9 +1592,8 @@ function buildAdminTopTags(tags, assignmentCount) {
   return `
     <div class="admin-category-donut">
       <svg viewBox="0 0 132 132" role="group" aria-label="Top tags by tag assignments">${slices}</svg>
-      <div><strong>${Number(assignmentCount || 0).toLocaleString()}</strong><span>Assignments</span></div>
     </div>
-    <div class="admin-category-legend">${segments.slice(0, topTags.length).map((entry) => `<button type="button" data-admin-tag="${escapeHTML(entry.label)}" ${adminChartTooltipAttributes(tooltipLabel(entry))}><i style="--tag-color:${entry.color}"></i><span class="tag-chip">${escapeHTML(entry.label)}</span><strong>${Math.round((entry.count / totalAssignments) * 100)}%</strong><small>${entry.count.toLocaleString()}</small></button>`).join("")}</div>
+    <div class="admin-category-legend">${segments.map((entry) => `<button type="button" data-admin-tag="${escapeHTML(entry.label)}" ${adminChartTooltipAttributes(tooltipLabel(entry))}><i style="--tag-color:${entry.color}"></i><span class="tag-chip">${escapeHTML(entry.label)}</span><strong>${Math.round((entry.count / displayedAssignments) * 100)}%</strong><small>${entry.count.toLocaleString()}</small></button>`).join("")}</div>
   `;
 }
 
@@ -1625,19 +1622,20 @@ function renderAdminDashboard() {
     { icon: "U", label: "Users", value: Number(dashboard.user_count || 0).toLocaleString(), note: `${Number(dashboard.active_users_30d || 0)} active in 30 days`, trend: Number(dashboard.new_users_30d || 0) > 0 ? "up" : "flat", accent: "blue", seriesKey: "users", seriesLabel: "Cumulative user count" },
     { icon: "S", label: "Storage Used", value: formatSize(Number(dashboard.total_size_bytes || 0)), note: storageTrend.label, trend: storageTrend.direction, accent: "amber", seriesKey: "storage_bytes", seriesLabel: "Cumulative storage used", valueFormatter: (value) => `${formatSize(value)} (${value.toLocaleString()} bytes)` },
     { icon: "F", label: "Favorites", value: Number(counts.favorites || 0).toLocaleString(), note: "Across all users", trend: "flat", accent: "red", seriesKey: "favorites", seriesLabel: "Cumulative favorite assignments" },
+    { icon: "L", label: "Active Share Links", value: Number(dashboard.active_share_count || 0).toLocaleString(), note: "Public links available now", trend: "flat", accent: "cyan" },
   ];
   adminDashboardGrid.innerHTML = metrics.map((metric) => `
     <article class="admin-dashboard-card" data-accent="${metric.accent}">
       <div class="admin-dashboard-card-head"><span class="admin-dashboard-card-icon">${metric.icon}</span><span class="admin-dashboard-label">${escapeHTML(metric.label)}</span></div>
       <strong class="admin-dashboard-value">${escapeHTML(metric.value)}</strong>
       <span class="admin-dashboard-note" data-trend="${metric.trend}">${metric.trend === "up" ? "&#8593; " : metric.trend === "down" ? "&#8595; " : ""}${escapeHTML(metric.note)}</span>
-      ${buildAdminMetricSparkline(dashboard.metric_series, metric.seriesKey, metric.seriesLabel, metric.valueFormatter)}
+      ${metric.seriesKey ? buildAdminMetricSparkline(dashboard.metric_series, metric.seriesKey, metric.seriesLabel, metric.valueFormatter) : ""}
     </article>
   `).join("");
 
   adminDashboardUploadChart.innerHTML = buildAdminUploadChart(dashboard.upload_series);
 
-  adminDashboardTags.innerHTML = buildAdminTopTags(dashboard.top_tags, dashboard.total_tag_assignments);
+  adminDashboardTags.innerHTML = buildAdminTopTags(dashboard.top_tags);
   bindAdminChartTooltips(adminDashboardPanel);
 
   const health = Array.isArray(dashboard.system_health) ? dashboard.system_health : [];

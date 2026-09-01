@@ -46,26 +46,39 @@ test("empty, flat, and single-day series stay valid and expose exact values", ()
   assert.match(storage, /Storage: 1234567 bytes/);
 });
 
-test("tag sections and legend expose counts, including the unlisted remainder", () => {
-  const html = context.buildAdminTopTags([{ tag: "music", count: 49 }, { tag: "song", count: 37 }], 2271);
-  assert.match(html, /music\n49 tag assignments \(2.2%\)/);
-  assert.match(html, /Other tags\n2,185 tag assignments/);
-  assert.match(html, /<strong>2,271<\/strong><span>Assignments/);
-  assert.equal((html.match(/class="admin-tag-slice"/g) || []).length, 3);
+test("top tag chart compares displayed tags without an unlisted remainder or center total", () => {
+  const tags = [
+    { tag: "music", count: 49 }, { tag: "song", count: 37 }, { tag: "politics", count: 31 },
+    { tag: "food", count: 29 }, { tag: "cat", count: 23 }, { tag: "dog", count: 21 },
+    { tag: "gaming", count: 19 }, { tag: "sports", count: 17 },
+  ];
+  const html = context.buildAdminTopTags(tags);
+  assert.match(html, /gaming\n19 tag assignments/);
+  assert.doesNotMatch(html, /Other tags|2,271|Assignments<\/span>/);
+  assert.equal((html.match(/class="admin-tag-slice"/g) || []).length, tags.length);
+  assert.equal((html.match(/data-admin-tag=/g) || []).length, tags.length);
   assert.match(html, /data-admin-tag="music"/);
 });
 
+test("top tag chart caps dense distributions at twelve named slices", () => {
+  const tags = Array.from({ length: 15 }, (_, index) => ({ tag: `tag-${index + 1}`, count: 20 - index }));
+  const html = context.buildAdminTopTags(tags);
+  assert.equal((html.match(/class="admin-tag-slice"/g) || []).length, 12);
+  assert.match(html, /data-admin-tag="tag-12"/);
+  assert.doesNotMatch(html, /tag-13|Other tags/);
+});
+
 test("empty and full-circle tag distributions render without phantom sections", () => {
-  assert.match(context.buildAdminTopTags([], 0), /No tags have been used yet/);
-  const html = context.buildAdminTopTags([{ tag: "only", count: 7 }], 7);
+  assert.match(context.buildAdminTopTags([]), /No tags have been used yet/);
+  const html = context.buildAdminTopTags([{ tag: "only", count: 7 }]);
   assert.equal((html.match(/class="admin-tag-slice"/g) || []).length, 1);
   assert.doesNotMatch(html, /Other tags|NaN|Infinity/);
-  assert.match(html, /7 tag assignments \(100.0%\)/);
+  assert.match(html, /7 tag assignments \(100.0% of top tags\)/);
   assert.equal((html.match(/A65,65/g) || []).length, 2);
 });
 
 test("tag names are escaped in both tooltip attributes and legend text", () => {
-  const html = context.buildAdminTopTags([{ tag: '\"><img src=x onerror=alert(1)>', count: 1 }], 1);
+  const html = context.buildAdminTopTags([{ tag: '\"><img src=x onerror=alert(1)>', count: 1 }]);
   assert.doesNotMatch(html, /<img/);
   assert.match(html, /&quot;&gt;&lt;img/);
 });

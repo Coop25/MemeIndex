@@ -47,6 +47,7 @@ type adminDashboardResponse struct {
 	UserCount      int                             `json:"user_count"`
 	ActiveUsers30D int                             `json:"active_users_30d"`
 	NewUsers30D    int                             `json:"new_users_30d"`
+	ActiveShares   int                             `json:"active_share_count"`
 	RecentActivity []accessor.GlobalMemeAuditEntry `json:"recent_activity"`
 	BackupStatus   *backupJobStatus                `json:"backup_status,omitempty"`
 	SystemHealth   []adminSystemHealth             `json:"system_health"`
@@ -1347,6 +1348,11 @@ func (s *Server) handleAdminDashboard(w http.ResponseWriter, r *http.Request) {
 			{Name: "Web Server", Status: "Operational", Healthy: true},
 		},
 		GeneratedAt: time.Now().UTC(),
+	}
+	if shares, err := s.managers.ListActiveMemeShares(response.GeneratedAt); err != nil {
+		log.Printf("admin dashboard active shares failed: %v", err)
+	} else {
+		response.ActiveShares = len(shares)
 	}
 
 	usersHealthy := true
