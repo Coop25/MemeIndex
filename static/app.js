@@ -245,6 +245,7 @@ const modalVolumeWrap = document.querySelector("#modal-volume-wrap");
 const modalVolumeToggle = document.querySelector("#modal-volume-toggle");
 const modalVolumeIcon = document.querySelector("#modal-volume-icon");
 const modalVolume = document.querySelector("#modal-volume");
+const modalVolumeValue = document.querySelector("#modal-volume-value");
 const modalTagChips = document.querySelector("#modal-tag-chips");
 const modalTagsInput = document.querySelector("#modal-tags-input");
 const modalTagSuggestions = document.querySelector("#modal-tag-suggestions");
@@ -4416,6 +4417,7 @@ function syncModalMediaControls() {
     modalVolumeToggle.setAttribute("aria-expanded", "false");
     modalVolumeIcon.innerHTML = "&#128266;";
     modalVolume.value = `${Math.round(loadPreferredMediaVolume() * 100)}`;
+    if (modalVolumeValue) modalVolumeValue.textContent = `${modalVolume.value}%`;
     if (modalCurrentTime) modalCurrentTime.textContent = "0:00";
     if (modalDuration) modalDuration.textContent = "0:00";
     if (modalProgress) modalProgress.value = "0";
@@ -4439,6 +4441,7 @@ function syncModalMediaControls() {
   modalVolumeToggle.setAttribute("aria-expanded", String(volumeControlExpanded));
   modalVolumeIcon.innerHTML = muted ? "&#128263;" : "&#128266;";
   modalVolume.value = `${Math.round((media.muted ? 0 : media.volume) * 100)}`;
+  if (modalVolumeValue) modalVolumeValue.textContent = `${modalVolume.value}%`;
 
   if (!isVideo) {
     return;

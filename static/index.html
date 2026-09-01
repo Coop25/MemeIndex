@@ -676,12 +676,18 @@
             <button id="modal-play" class="random-reel-nav" type="button" aria-label="Pause media" data-tooltip="Pause">
               <span id="modal-play-icon" class="random-reel-nav-icon" aria-hidden="true">&#10074;&#10074;</span>
             </button>
-            <label id="modal-volume-wrap" class="random-reel-volume" aria-label="Volume">
-              <button id="modal-volume-toggle" class="random-reel-volume-button" type="button" aria-label="Mute media">
+            <div id="modal-volume-wrap" class="random-reel-volume" aria-label="Volume">
+              <button id="modal-volume-toggle" class="random-reel-volume-button" type="button" aria-label="Mute media" aria-controls="modal-volume-popover" aria-expanded="false">
                 <span id="modal-volume-icon" class="random-reel-volume-icon" aria-hidden="true">&#128266;</span>
               </button>
-              <input id="modal-volume" class="random-reel-volume-slider" type="range" min="0" max="100" value="10" aria-label="Volume" />
-            </label>
+              <div id="modal-volume-popover" class="modal-volume-popover">
+                <div class="modal-volume-popover-head">
+                  <span>Volume</span>
+                  <output id="modal-volume-value" for="modal-volume">10%</output>
+                </div>
+                <input id="modal-volume" class="random-reel-volume-slider" type="range" min="0" max="100" value="10" aria-label="Volume" />
+              </div>
+            </div>
             <button id="modal-panel-toggle" class="modal-panel-toggle" type="button" aria-label="Open details" aria-expanded="false">
               Details
             </button>
