@@ -4365,6 +4365,8 @@ function toggleModalDetailsPanel(forceOpen) {
   const nextState = typeof forceOpen === "boolean"
     ? forceOpen
     : !memeModal.classList.contains("details-open");
+  modalVolumeWrap?.classList.remove("is-expanded");
+  modalVolumeToggle?.setAttribute("aria-expanded", "false");
   memeModal.classList.toggle("details-open", nextState);
   syncModalPanelToggle();
 }
@@ -4410,7 +4412,8 @@ function syncModalMediaControls() {
     modalPlay.setAttribute("aria-label", "Play media");
     modalPlay.setAttribute("data-tooltip", "Play");
     modalPlayIcon.innerHTML = "&#9654;";
-    modalVolumeToggle.setAttribute("aria-label", "Mute media");
+    modalVolumeToggle.setAttribute("aria-label", mobileSearchHeaderMediaQuery.matches ? "Adjust volume" : "Mute media");
+    modalVolumeToggle.setAttribute("aria-expanded", "false");
     modalVolumeIcon.innerHTML = "&#128266;";
     modalVolume.value = `${Math.round(loadPreferredMediaVolume() * 100)}`;
     if (modalCurrentTime) modalCurrentTime.textContent = "0:00";
@@ -4426,7 +4429,14 @@ function syncModalMediaControls() {
   modalPlay.setAttribute("data-tooltip", paused ? "Play" : "Pause");
   modalPlayIcon.innerHTML = paused ? "&#9654;" : "&#10074;&#10074;";
 
-  modalVolumeToggle.setAttribute("aria-label", muted ? "Unmute media" : "Mute media");
+  const volumeControlExpanded = modalVolumeWrap?.classList.contains("is-expanded") || false;
+  modalVolumeToggle.setAttribute(
+    "aria-label",
+    mobileSearchHeaderMediaQuery.matches
+      ? (volumeControlExpanded ? "Close volume control" : "Adjust volume")
+      : (muted ? "Unmute media" : "Mute media"),
+  );
+  modalVolumeToggle.setAttribute("aria-expanded", String(volumeControlExpanded));
   modalVolumeIcon.innerHTML = muted ? "&#128263;" : "&#128266;";
   modalVolume.value = `${Math.round((media.muted ? 0 : media.volume) * 100)}`;
 
@@ -6015,11 +6025,17 @@ memeModal.addEventListener("close", () => {
   memeModal.classList.remove("meme-modal-ui-hidden");
   memeModal.classList.remove("details-open");
   memeModal.classList.remove("has-video", "has-audio");
+  modalVolumeWrap?.classList.remove("is-expanded");
   syncModalPanelToggle();
   overlayClose.classList.add("hidden");
 });
 
 memeModal.addEventListener("click", (event) => {
+  if (modalVolumeWrap?.classList.contains("is-expanded") && !modalVolumeWrap.contains(event.target)) {
+    modalVolumeWrap.classList.remove("is-expanded");
+    syncModalMediaControls();
+  }
+
   const clickedDrawerControl = modalPanelToggle?.contains(event.target)
     || modalDrawerToggle?.contains(event.target)
     || modalDrawerClose?.contains(event.target)
@@ -6096,10 +6112,17 @@ modalPlay?.addEventListener("click", async () => {
   syncModalMediaControls();
 });
 
-modalVolumeToggle?.addEventListener("click", () => {
+modalVolumeToggle?.addEventListener("click", (event) => {
   showMemeModalUI();
   const media = getModalMediaControlTarget();
   if (!media) return;
+
+  if (mobileSearchHeaderMediaQuery.matches) {
+    event.preventDefault();
+    modalVolumeWrap.classList.toggle("is-expanded");
+    syncModalMediaControls();
+    return;
+  }
 
   media.muted = !media.muted;
   syncStoredMediaVolumeFromElement(media);
