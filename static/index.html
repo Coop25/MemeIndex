@@ -838,12 +838,19 @@
                 <span id="random-reel-play-icon" class="random-reel-nav-icon" aria-hidden="true">&#10074;&#10074;</span>
                 <span class="random-reel-nav-label">Play / Pause</span>
               </button>
-              <label id="random-reel-volume-wrap" class="random-reel-volume" aria-label="Volume">
-                <button id="random-reel-volume-toggle" class="random-reel-volume-button" type="button" aria-label="Mute media">
+              <div id="random-reel-volume-wrap" class="random-reel-volume" aria-label="Volume">
+                <button id="random-reel-volume-toggle" class="random-reel-volume-button" type="button" aria-label="Mute media" aria-controls="random-reel-volume-popover" aria-expanded="false">
                   <span id="random-reel-volume-icon" class="random-reel-volume-icon" aria-hidden="true">&#128266;</span>
+                  <span class="random-reel-nav-label">Volume</span>
                 </button>
-                <input id="random-reel-volume" class="random-reel-volume-slider" type="range" min="0" max="100" value="10" aria-label="Volume" />
-              </label>
+                <div id="random-reel-volume-popover" class="random-reel-volume-popover">
+                  <div class="random-reel-volume-popover-head">
+                    <span>Volume</span>
+                    <output id="random-reel-volume-value" for="random-reel-volume">10%</output>
+                  </div>
+                  <input id="random-reel-volume" class="random-reel-volume-slider" type="range" min="0" max="100" value="10" aria-label="Volume" />
+                </div>
+              </div>
             </div>
           </div>
           <p id="random-reel-hint" class="random-reel-hint">Scroll down for a new random meme. Scroll up to go back.</p>

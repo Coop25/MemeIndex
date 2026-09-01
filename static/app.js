@@ -280,6 +280,7 @@ const randomReelVolumeWrap = document.querySelector("#random-reel-volume-wrap");
 const randomReelVolumeToggle = document.querySelector("#random-reel-volume-toggle");
 const randomReelVolumeIcon = document.querySelector("#random-reel-volume-icon");
 const randomReelVolume = document.querySelector("#random-reel-volume");
+const randomReelVolumeValue = document.querySelector("#random-reel-volume-value");
 const randomReelPrev = document.querySelector("#random-reel-prev");
 const randomReelNext = document.querySelector("#random-reel-next");
 const randomReelClose = document.querySelector("#random-reel-close");
@@ -3758,9 +3759,11 @@ function syncRandomReelMediaControls() {
     randomReelPlay.setAttribute("data-tooltip", "Play");
     randomReelPlayIcon.innerHTML = "&#9654;";
     if (playLabel) playLabel.textContent = "Play";
-    randomReelVolumeToggle.setAttribute("aria-label", "Mute media");
+    randomReelVolumeToggle.setAttribute("aria-label", mobileSearchHeaderMediaQuery.matches ? "Adjust volume" : "Mute media");
+    randomReelVolumeToggle.setAttribute("aria-expanded", "false");
     randomReelVolumeIcon.innerHTML = "&#128266;";
     randomReelVolume.value = `${Math.round(loadPreferredMediaVolume() * 100)}`;
+    if (randomReelVolumeValue) randomReelVolumeValue.textContent = `${randomReelVolume.value}%`;
     return;
   }
 
@@ -3772,9 +3775,17 @@ function syncRandomReelMediaControls() {
   randomReelPlayIcon.innerHTML = paused ? "&#9654;" : "&#10074;&#10074;";
   if (playLabel) playLabel.textContent = paused ? "Play" : "Pause";
 
-  randomReelVolumeToggle.setAttribute("aria-label", muted ? "Unmute media" : "Mute media");
+  const volumeControlExpanded = randomReelVolumeWrap?.classList.contains("is-expanded") || false;
+  randomReelVolumeToggle.setAttribute(
+    "aria-label",
+    mobileSearchHeaderMediaQuery.matches
+      ? (volumeControlExpanded ? "Close volume control" : "Adjust volume")
+      : (muted ? "Unmute media" : "Mute media"),
+  );
+  randomReelVolumeToggle.setAttribute("aria-expanded", String(volumeControlExpanded));
   randomReelVolumeIcon.innerHTML = muted ? "&#128263;" : "&#128266;";
   randomReelVolume.value = `${Math.round((media.muted ? 0 : media.volume) * 100)}`;
+  if (randomReelVolumeValue) randomReelVolumeValue.textContent = `${randomReelVolume.value}%`;
 }
 
 function clearRandomReelUIHideTimer() {
@@ -3925,6 +3936,7 @@ async function openRandomReel() {
 function closeRandomReel() {
   clearRandomReelUIHideTimer();
   randomReelModal.classList.remove("random-reel-ui-hidden");
+  randomReelVolumeWrap?.classList.remove("is-expanded");
   const media = randomReelMedia.querySelector("video, audio");
   if (media) {
     media.pause();
@@ -6206,10 +6218,17 @@ randomReelPlay?.addEventListener("click", async () => {
   syncRandomReelMediaControls();
 });
 
-randomReelVolumeToggle?.addEventListener("click", () => {
+randomReelVolumeToggle?.addEventListener("click", (event) => {
   showRandomReelUI();
   const media = getRandomReelMediaControlTarget();
   if (!media) return;
+
+  if (mobileSearchHeaderMediaQuery.matches) {
+    event.preventDefault();
+    randomReelVolumeWrap.classList.toggle("is-expanded");
+    syncRandomReelMediaControls();
+    return;
+  }
 
   media.muted = !media.muted;
   syncStoredMediaVolumeFromElement(media);
@@ -6264,6 +6283,11 @@ randomReelStage?.addEventListener("click", (event) => {
 });
 
 randomReelModal?.addEventListener("click", (event) => {
+  if (randomReelVolumeWrap?.classList.contains("is-expanded") && !randomReelVolumeWrap.contains(event.target)) {
+    randomReelVolumeWrap.classList.remove("is-expanded");
+    syncRandomReelMediaControls();
+  }
+
   if (event.target !== randomReelModal) {
     showRandomReelUI();
     return;
