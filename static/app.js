@@ -13,6 +13,7 @@ const state = {
     pageIndex: 0,
     hasMore: false,
     loading: false,
+		appending: false,
 		sort: "newest",
 		viewMode: "grid",
   },
@@ -200,6 +201,7 @@ const memeGridTopSpacer = document.querySelector("#meme-grid-top-spacer");
 const memeGridBottomSpacer = document.querySelector("#meme-grid-bottom-spacer");
 const memeGrid = document.querySelector("#meme-grid");
 const memeGridSentinel = document.querySelector("#meme-grid-sentinel");
+const libraryToolbar = document.querySelector(".library-toolbar");
 const memePagePrev = document.querySelector("#meme-page-prev");
 const memePageNext = document.querySelector("#meme-page-next");
 const memePageLabel = document.querySelector("#meme-page-label");
@@ -327,6 +329,10 @@ let randomReelTouchBlocked = false;
 let randomReelStepLock = false;
 let randomReelPreloadCache = new Map();
 let memeGridObserver = null;
+let memeGridLoadArmed = true;
+let memeGridLastRequestedPage = 0;
+let memeGridScrollRevision = 0;
+let memeGridLastLoadScrollRevision = 0;
 let memeGridRenderFrame = null;
 let memePageFetchSequence = 0;
 let memePendingPageIndex = 0;
@@ -2507,17 +2513,102 @@ function syncMemePagination() {
   memePageNext.disabled = state.library.loading || !state.library.hasMore;
 }
 
+function canAppendMemePage({ loading, hasMore, currentPage, requestedPage }) {
+  return !loading && hasMore && requestedPage === currentPage + 1;
+}
+
+function canRequestMemeAutoPage({
+  armed,
+  libraryMode,
+  loading,
+  hasMore,
+  currentPage,
+  requestedPage,
+  lastRequestedPage,
+  scrollRevision,
+  lastLoadScrollRevision,
+}) {
+  return (
+    armed &&
+    libraryMode &&
+    requestedPage > lastRequestedPage &&
+    scrollRevision > lastLoadScrollRevision &&
+    canAppendMemePage({ loading, hasMore, currentPage, requestedPage })
+  );
+}
+
+function ensureMemeGridObserver() {
+  if (memeGridObserver || !memeGridSentinel || !("IntersectionObserver" in window)) {
+    return;
+  }
+
+  memeGridObserver = new IntersectionObserver((entries) => {
+    const entry = entries.find((candidate) => candidate.target === memeGridSentinel);
+    if (!entry) {
+      return;
+    }
+
+    if (!entry.isIntersecting) {
+      memeGridLoadArmed = true;
+      return;
+    }
+
+    const nextPage = state.library.pageIndex + 1;
+    const libraryMode = document.body.classList.contains("library-mode");
+    if (!canRequestMemeAutoPage({
+      armed: memeGridLoadArmed,
+      libraryMode,
+      loading: state.library.loading,
+      hasMore: state.library.hasMore,
+      currentPage: state.library.pageIndex,
+      requestedPage: nextPage,
+      lastRequestedPage: memeGridLastRequestedPage,
+      scrollRevision: memeGridScrollRevision,
+      lastLoadScrollRevision: memeGridLastLoadScrollRevision,
+    })) {
+      return;
+    }
+
+    // One intersection and one user scroll may request exactly one page. Layout
+    // changes alone cannot arm another request.
+    memeGridLoadArmed = false;
+    memeGridLastRequestedPage = nextPage;
+    memeGridLastLoadScrollRevision = memeGridScrollRevision;
+    fetchMemes({ page: nextPage, append: true }).catch((error) => {
+      memeGridLastRequestedPage = state.library.pageIndex;
+      console.error(error);
+      setMemeGridStatus("Could not load more memes. Scroll away and back to retry.", false);
+    });
+  }, {
+    root: null,
+    rootMargin: "0px 0px 480px 0px",
+    threshold: 0,
+  });
+
+  memeGridObserver.observe(memeGridSentinel);
+}
+
 function syncMemeGridObserver() {
   if (!memeGridSentinel) {
     return;
   }
 
-  memeGridSentinel.classList.add("hidden");
+  const libraryMode = document.body.classList.contains("library-mode");
+  const autoPagination = "IntersectionObserver" in window;
+  ensureMemeGridObserver();
+
+  memeGridSentinel.classList.toggle(
+    "hidden",
+    !autoPagination || !libraryMode || (!state.library.hasMore && !state.library.appending),
+  );
+  memeGridSentinel.classList.toggle("is-loading", state.library.appending);
+  memeGridSentinel.textContent = state.library.appending ? "Loading more memes..." : "";
+  libraryToolbar?.classList.toggle("hidden", !libraryMode || !canView() || autoPagination);
   syncMemePagination();
-  setMemeGridLoading(state.library.loading);
+  setMemeGridLoading(state.library.loading && !state.library.appending);
 
   if (state.library.loading) {
-    setMemeGridStatus("Loading memes...", false);
+    setMemeGridStatus(state.library.appending ? "" : "Loading memes...", state.library.appending);
     return;
   }
 
@@ -2554,14 +2645,20 @@ function renderContentMode() {
   adminViewTable?.classList.toggle("hidden", !usesSharedAdminTable);
   const pageState = getActiveAdminPageState();
   adminPagination?.classList.toggle("hidden", !adminMode || !pageState);
-  memeGridLoader?.classList.toggle("hidden", !libraryMode || !state.library.loading);
+  memeGridLoader?.classList.toggle("hidden", !libraryMode || !state.library.loading || state.library.appending);
   memeGridStatus?.classList.toggle("hidden", !libraryMode || memeGridStatus.textContent === "");
   memeGridTopSpacer?.classList.toggle("hidden", !libraryMode);
   memeGridBottomSpacer?.classList.toggle("hidden", !libraryMode);
   memeGrid?.classList.toggle("hidden", !libraryMode);
-  memeGridSentinel?.classList.toggle("hidden", !libraryMode);
+  memeGridSentinel?.classList.toggle(
+    "hidden",
+    !("IntersectionObserver" in window) || !libraryMode || (!state.library.hasMore && !state.library.appending),
+  );
   emptyState?.classList.toggle("hidden", !libraryMode || (canBrowseLibrary && state.memes.length !== 0));
-  document.querySelector(".library-toolbar")?.classList.toggle("hidden", !libraryMode || !canBrowseLibrary);
+  libraryToolbar?.classList.toggle(
+    "hidden",
+    !libraryMode || !canBrowseLibrary || ("IntersectionObserver" in window),
+  );
 	document.body.classList.toggle("library-list-view", state.library.viewMode === "list");
 	gridViewButton?.classList.toggle("is-active", state.library.viewMode === "grid");
 	listViewButton?.classList.toggle("is-active", state.library.viewMode === "list");
@@ -2589,14 +2686,29 @@ function syncAdminPagination() {
   adminPageNext.disabled = !pageState.hasMore;
 }
 
-async function fetchMemes({ page = 0 } = {}) {
-  if (state.library.loading) {
-    return;
+async function fetchMemes({ page = 0, append = false } = {}) {
+  const requestedPage = Math.max(0, page);
+  if (
+    state.library.loading ||
+    (append && !canAppendMemePage({
+      loading: state.library.loading,
+      hasMore: state.library.hasMore,
+      currentPage: state.library.pageIndex,
+      requestedPage,
+    }))
+  ) {
+    return false;
   }
 
-  const requestedPage = Math.max(0, page);
+  if (!append) {
+    memeGridLoadArmed = true;
+    memeGridLastRequestedPage = requestedPage;
+    memeGridLastLoadScrollRevision = memeGridScrollRevision;
+  }
+
   const fetchSequence = ++memePageFetchSequence;
   state.library.loading = true;
+  state.library.appending = append;
   memePendingPageIndex = requestedPage;
   syncMemeGridObserver();
 
@@ -2626,15 +2738,25 @@ async function fetchMemes({ page = 0 } = {}) {
     state.library.pageIndex = requestedPage;
     state.library.counts = payload.counts || state.library.counts;
     state.library.hasMore = !!payload.has_more;
-    state.memes = payload.memes || [];
+    const fetchedMemes = Array.isArray(payload.memes) ? payload.memes : [];
+    let appendedMemes = [];
+    if (append) {
+      const knownIDs = new Set(state.memes.map((meme) => meme.id));
+      appendedMemes = fetchedMemes.filter((meme) => !knownIDs.has(meme.id));
+      state.memes = [...state.memes, ...appendedMemes];
+    } else {
+      state.memes = fetchedMemes;
+    }
     emptyState.textContent = "No memes match this view yet.";
-    renderMemes();
+    renderMemes({ preserveScroll: append, appendMemes: appendedMemes });
+    return true;
   } finally {
     if (fetchSequence !== memePageFetchSequence) {
       return;
     }
 
     state.library.loading = false;
+    state.library.appending = false;
     memePendingPageIndex = state.library.pageIndex;
     syncMemeGridObserver();
   }
@@ -2918,6 +3040,7 @@ function renderDashboardMemeCollection(container, items, emptyMessage) {
 		card.classList.add("dashboard-meme-card");
 		card.title = `Open ${meme.originalName || "meme"} in the editor`;
 		container.appendChild(card);
+		layoutCardTags(card._tagList, card._tags, 1);
 	});
 }
 
@@ -3134,14 +3257,20 @@ async function fetchTopTagSuggestions() {
   }
 }
 
-function renderMemes() {
+function renderMemes({ preserveScroll = false, appendMemes = [] } = {}) {
   const visibleMemes = getVisibleMemes();
   renderSidebarCounts();
   renderSidebarViewState();
   emptyState.classList.toggle("hidden", visibleMemes.length !== 0);
   renderContentMode();
-  contentPanel.scrollTop = 0;
-  queueRenderLoadedMemes({ force: true });
+  if (!preserveScroll) {
+    contentPanel.scrollTop = 0;
+  }
+  if (appendMemes.length > 0) {
+    appendLoadedMemeCards(appendMemes);
+  } else if (!preserveScroll) {
+    queueRenderLoadedMemes({ force: true });
+  }
 }
 
 function buildMemeCardElement(meme) {
@@ -3210,13 +3339,6 @@ function updateMemeCardElement(card, meme) {
   }
 
   card._tags = meme.tags || [];
-	const title = card.querySelector(".card-title");
-	const meta = card.querySelector(".card-meta");
-	if (title) title.textContent = meme.originalName || "Untitled item";
-	if (meta) {
-		const extension = String(meme.originalName || "").split(".").pop();
-		meta.textContent = `${meme.sourceUrl ? "External source" : (extension || meme.contentType || "File").toUpperCase()} · ${formatSize(meme.sizeBytes || 0)}`;
-	}
 	card.querySelector(".card-hitarea")?.setAttribute("aria-label", `Open ${meme.originalName || "item"} details`);
   return card;
 }
@@ -3251,7 +3373,26 @@ function renderLoadedMemes() {
 
   memeGrid.replaceChildren(fragment);
   Array.from(memeGrid.querySelectorAll(".meme-card")).forEach((card) => {
-    layoutCardTags(card._tagList, card._tags);
+    layoutCardTags(card._tagList, card._tags, 1);
+  });
+}
+
+function appendLoadedMemeCards(memes) {
+  if (!Array.isArray(memes) || memes.length === 0) {
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+  const cards = memes.map((meme) => {
+    const card = buildMemeCardElement(meme);
+    fragment.appendChild(card);
+    return card;
+  });
+
+  memeGrid.appendChild(fragment);
+  memeGrid.classList.toggle("has-single-item", state.memes.length === 1);
+  cards.forEach((card) => {
+    layoutCardTags(card._tagList, card._tags, 1);
   });
 }
 
@@ -3282,7 +3423,7 @@ function createCardTagChip(label, className = "tag-chip") {
   return chip;
 }
 
-function layoutCardTags(tagList, tags, maxRows = 2) {
+function layoutCardTags(tagList, tags, maxRows = 1) {
   tagList.innerHTML = "";
 
   if (!tags.length) {
@@ -6642,6 +6783,15 @@ window.addEventListener("resize", () => {
   queueRenderLoadedMemes({ force: true });
   syncMemeGridObserver();
 });
+
+function noteMemeGridUserScroll() {
+  if (document.body.classList.contains("library-mode")) {
+    memeGridScrollRevision += 1;
+  }
+}
+
+contentPanel?.addEventListener("scroll", noteMemeGridUserScroll, { passive: true });
+window.addEventListener("scroll", noteMemeGridUserScroll, { passive: true });
 
 memePagePrev?.addEventListener("click", () => {
   if (state.library.loading || state.library.pageIndex === 0) {
