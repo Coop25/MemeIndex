@@ -3190,6 +3190,45 @@ body.random-reel-open {
   }
 }
 
+.random-reel-modal .random-reel-progress-wrap {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 3px 7px 5px;
+}
+
+.random-reel-modal .random-reel-time-label {
+  color: #829087;
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+.random-reel-modal .random-reel-progress-slider {
+  width: 100%;
+  min-width: 0;
+  accent-color: var(--green);
+}
+
+@media (min-width: 761px) {
+  .random-reel-modal .random-reel-media {
+    bottom: clamp(120px, 12vh, 138px);
+  }
+}
+
+@media (max-width: 760px) {
+  .random-reel-modal .random-reel-tags {
+    bottom: calc(108px + env(safe-area-inset-bottom));
+  }
+
+  .random-reel-modal .random-reel-progress-wrap {
+    gap: 7px;
+    padding: 2px 6px 4px;
+  }
+}
+
 /* Fullscreen reel controls: one quiet dock instead of scattered edge buttons. */
 @media (min-width: 761px) {
   .random-reel-modal .random-reel-media {

@@ -271,6 +271,10 @@ const randomReelEdgeBanner = document.querySelector("#random-reel-edge-banner");
 const randomReelTitle = document.querySelector("#random-reel-title");
 const randomReelMeta = document.querySelector("#random-reel-meta");
 const randomReelTags = document.querySelector("#random-reel-tags");
+const randomReelProgressWrap = document.querySelector("#random-reel-progress-wrap");
+const randomReelCurrentTime = document.querySelector("#random-reel-current-time");
+const randomReelProgress = document.querySelector("#random-reel-progress");
+const randomReelDuration = document.querySelector("#random-reel-duration");
 const randomReelShare = document.querySelector("#random-reel-share");
 const randomReelHint = document.querySelector("#random-reel-hint");
 const randomReelFavorite = document.querySelector("#random-reel-favorite");
@@ -3711,6 +3715,8 @@ function renderRandomReelMeme(meme) {
     preview.addEventListener("pause", syncRandomReelMediaControls);
     preview.addEventListener("volumechange", syncRandomReelMediaControls);
     preview.addEventListener("loadedmetadata", syncRandomReelMediaControls);
+    preview.addEventListener("durationchange", syncRandomReelMediaControls);
+    preview.addEventListener("timeupdate", syncRandomReelMediaControls);
   }
   randomReelTitle.textContent = truncateWithCounter(meme.originalName, 52);
   randomReelTitle.title = meme.originalName;
@@ -3746,6 +3752,7 @@ function getRandomReelMediaControlTarget() {
 function syncRandomReelMediaControls() {
   const media = getRandomReelMediaControlTarget();
   const supportsMediaControls = !!media;
+  const isVideo = media instanceof HTMLVideoElement;
   const playLabel = randomReelPlay.querySelector(".random-reel-nav-label");
 
   randomReelPlay.disabled = !supportsMediaControls;
@@ -3753,6 +3760,7 @@ function syncRandomReelMediaControls() {
   randomReelVolume.disabled = !supportsMediaControls;
   randomReelPlay.classList.toggle("hidden", !supportsMediaControls);
   randomReelVolumeWrap.classList.toggle("hidden", !supportsMediaControls);
+  randomReelProgressWrap?.classList.toggle("hidden", !isVideo);
 
   if (!supportsMediaControls) {
     randomReelPlay.setAttribute("aria-label", "Play media");
@@ -3764,6 +3772,9 @@ function syncRandomReelMediaControls() {
     randomReelVolumeIcon.innerHTML = "&#128266;";
     randomReelVolume.value = `${Math.round(loadPreferredMediaVolume() * 100)}`;
     if (randomReelVolumeValue) randomReelVolumeValue.textContent = `${randomReelVolume.value}%`;
+    if (randomReelCurrentTime) randomReelCurrentTime.textContent = "0:00";
+    if (randomReelDuration) randomReelDuration.textContent = "0:00";
+    if (randomReelProgress) randomReelProgress.value = "0";
     return;
   }
 
@@ -3786,6 +3797,23 @@ function syncRandomReelMediaControls() {
   randomReelVolumeIcon.innerHTML = muted ? "&#128263;" : "&#128266;";
   randomReelVolume.value = `${Math.round((media.muted ? 0 : media.volume) * 100)}`;
   if (randomReelVolumeValue) randomReelVolumeValue.textContent = `${randomReelVolume.value}%`;
+
+  if (!isVideo) {
+    return;
+  }
+
+  const duration = Number.isFinite(media.duration) ? media.duration : 0;
+  const currentTime = Number.isFinite(media.currentTime) ? media.currentTime : 0;
+  const progressValue = duration > 0
+    ? Math.round((currentTime / duration) * MODAL_PROGRESS_SCALE_MAX)
+    : 0;
+
+  if (randomReelCurrentTime) randomReelCurrentTime.textContent = formatMediaTime(currentTime);
+  if (randomReelDuration) randomReelDuration.textContent = formatMediaTime(duration);
+  if (randomReelProgress) {
+    randomReelProgress.value = `${Math.max(0, Math.min(MODAL_PROGRESS_SCALE_MAX, progressValue))}`;
+    randomReelProgress.disabled = duration <= 0;
+  }
 }
 
 function clearRandomReelUIHideTimer() {
@@ -6244,6 +6272,19 @@ randomReelVolume?.addEventListener("input", () => {
   media.volume = volume;
   media.muted = volume === 0;
   syncStoredMediaVolumeFromElement(media);
+  syncRandomReelMediaControls();
+});
+
+randomReelProgress?.addEventListener("input", () => {
+  showRandomReelUI();
+  const media = getRandomReelMediaControlTarget();
+  if (!(media instanceof HTMLVideoElement)) return;
+
+  const duration = Number.isFinite(media.duration) ? media.duration : 0;
+  if (duration <= 0) return;
+
+  const progressRatio = Number(randomReelProgress.value) / MODAL_PROGRESS_SCALE_MAX;
+  media.currentTime = Math.max(0, Math.min(duration, duration * progressRatio));
   syncRandomReelMediaControls();
 });
 

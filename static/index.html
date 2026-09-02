@@ -810,6 +810,11 @@
           </div>
           <div id="random-reel-tags" class="random-reel-tags"></div>
           <div class="random-reel-actions">
+            <div id="random-reel-progress-wrap" class="random-reel-progress-wrap hidden">
+              <span id="random-reel-current-time" class="random-reel-time-label">0:00</span>
+              <input id="random-reel-progress" class="random-reel-progress-slider" type="range" min="0" max="1000" value="0" step="1" aria-label="Video playback progress" />
+              <span id="random-reel-duration" class="random-reel-time-label">0:00</span>
+            </div>
             <button id="random-reel-favorite" class="random-reel-nav random-reel-favorite" type="button" aria-label="Favorite meme" data-tooltip="Favorite">
               <span class="random-reel-nav-icon" aria-hidden="true">&#9825;</span>
               <span class="random-reel-nav-label">Favorite</span>
