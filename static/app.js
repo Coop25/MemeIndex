@@ -4327,6 +4327,15 @@ function updateMemeInState(updatedMeme) {
   return state.memes[index];
 }
 
+function syncMemeCardElements(updatedMeme) {
+  if (!updatedMeme?.id) return;
+
+  getCardsByMemeId(updatedMeme.id).forEach((card) => {
+    updateMemeCardElement(card, updatedMeme);
+    layoutCardTags(card._tagList, card._tags, 1);
+  });
+}
+
 function upsertMemeInState(meme) {
   if (!meme?.id) return null;
 
@@ -5281,18 +5290,24 @@ async function persistCard(id, payload) {
   }
 
   if (updatedMeme?.id) {
-    updateMemeInState(updatedMeme);
-    queueRenderLoadedMemes({ force: true });
+    const previousMeme = getMemeById(updatedMeme.id);
+    const wasUntagged = previousMeme ? isUntaggedMeme(previousMeme) : false;
+    const savedMeme = updateMemeInState(updatedMeme) || updatedMeme;
+    const isNowUntagged = isUntaggedMeme(savedMeme);
+    if (previousMeme && wasUntagged !== isNowUntagged) {
+      state.library.counts.untagged = Math.max(
+        0,
+        Number(state.library.counts.untagged || 0) + (isNowUntagged ? 1 : -1),
+      );
+      renderSidebarCounts();
+    }
+    syncMemeCardElements(savedMeme);
     syncMemeGridObserver();
   }
 
-  loadInitialMemes().catch((error) => {
-    console.error(error);
-  });
-
   showToast("Saved meme updates.", "success", { title: "Meme" });
 
-  return true;
+  return updatedMeme || true;
 }
 
 async function copyShareText(value) {
@@ -6619,23 +6634,30 @@ modalSave.addEventListener("click", async () => {
   if (!activeMemeId) return;
   const savedMemeID = activeMemeId;
   const continueAdminReview = adminTagReviewSessionActive && isAdminView() && activeAdminTab() === "tag-review";
-  const saved = await persistCard(savedMemeID, {
-    favorite: modalFavorite.classList.contains("is-active"),
-    notes: modalNotesInput.value,
-    tags: getModalTagValues(),
-  });
-  if (!saved) return;
-  modalSnapshot = {
-    favorite: modalFavorite.classList.contains("is-active"),
-    notes: modalNotesInput.value,
-    tags: [...getModalTagValues()].sort().join(", "),
-  };
-  if (continueAdminReview && !(await completeAdminTagReview(savedMemeID))) {
-    return;
-  }
-  closeModal({ continueAdminReview });
-  if (continueAdminReview) {
-    await openNextAdminTagReview();
+  modalSave.disabled = true;
+  try {
+    const saved = await persistCard(savedMemeID, {
+      favorite: modalFavorite.classList.contains("is-active"),
+      notes: modalNotesInput.value,
+      tags: getModalTagValues(),
+    });
+    if (!saved) return;
+    modalSnapshot = {
+      favorite: modalFavorite.classList.contains("is-active"),
+      notes: modalNotesInput.value,
+      tags: [...getModalTagValues()].sort().join(", "),
+    };
+    if (continueAdminReview && !(await completeAdminTagReview(savedMemeID))) {
+      return;
+    }
+    if (continueAdminReview) {
+      closeModal({ continueAdminReview });
+      await openNextAdminTagReview();
+    } else {
+      loadModalAudit(savedMemeID).catch((error) => console.error(error));
+    }
+  } finally {
+    modalSave.disabled = !canEditMetadata();
   }
 });
 
