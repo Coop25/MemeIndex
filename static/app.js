@@ -328,6 +328,44 @@ let randomReelTouchActive = false;
 let randomReelTouchBlocked = false;
 let randomReelStepLock = false;
 let randomReelPreloadCache = new Map();
+const MODAL_HISTORY_STATE_KEY = "memeIndexModal";
+let suppressNextModalHistoryPop = false;
+
+function currentModalHistoryState() {
+  return window.history.state?.[MODAL_HISTORY_STATE_KEY] || "";
+}
+
+function pushModalHistoryState(modalName, url = window.location.href) {
+  if (!modalName || currentModalHistoryState() === modalName) return;
+  const currentState = window.history.state && typeof window.history.state === "object"
+    ? window.history.state
+    : {};
+  window.history.pushState({ ...currentState, [MODAL_HISTORY_STATE_KEY]: modalName }, "", url);
+}
+
+function unwindModalHistoryState(modalName) {
+  if (currentModalHistoryState() !== modalName) return;
+  suppressNextModalHistoryPop = true;
+  window.history.back();
+}
+
+function handleModalHistoryPop() {
+  if (suppressNextModalHistoryPop) {
+    suppressNextModalHistoryPop = false;
+    return;
+  }
+
+  if (randomReelModal?.open) {
+    closeRandomReel({ syncHistory: false });
+    return;
+  }
+
+  if (memeModal?.open && !closeModal({ syncHistory: false })) {
+    // Back already consumed the guard entry. Restore it when the user chooses
+    // to keep editing so the next Android Back press is still modal-scoped.
+    pushModalHistoryState("meme");
+  }
+}
 let memeGridObserver = null;
 let memeGridLoadArmed = true;
 let memeGridLastRequestedPage = 0;
@@ -4077,6 +4115,7 @@ async function stepRandomReel(direction) {
 async function openRandomReel() {
   if (!randomReelModal.open) {
     randomReelModal.showModal();
+    pushModalHistoryState("random-reel");
   }
   setRandomReelScrollLock(true);
   showRandomReelUI(false);
@@ -4102,7 +4141,7 @@ async function openRandomReel() {
   }
 }
 
-function closeRandomReel() {
+function closeRandomReel(options = {}) {
   clearRandomReelUIHideTimer();
   randomReelModal.classList.remove("random-reel-ui-hidden");
   randomReelVolumeWrap?.classList.remove("is-expanded");
@@ -4126,6 +4165,9 @@ function closeRandomReel() {
   randomReelHint.classList.remove("is-edge", "is-bump");
   randomReelEdgeBanner.classList.remove("is-bump");
   discardRandomReelSession();
+  if (options.syncHistory !== false) {
+    unwindModalHistoryState("random-reel");
+  }
 }
 
 function clearUploadPreview() {
@@ -4403,11 +4445,22 @@ async function openNextAdminTagReview() {
     }
   } finally {
     adminTagReviewAdvancing = false;
+    if (!memeModal.open) {
+      unwindModalHistoryState("meme");
+    }
   }
 }
 
 function openModalWithMeme(meme) {
   if (!meme) return;
+
+  const modalURL = window.location.href;
+  const openedFromDeepLink = !memeModal.open && !!deepLinkedMemeID();
+  if (openedFromDeepLink) {
+    // Give an app launched directly at /m/:id an in-app page to return to.
+    // The modal entry keeps the share URL visible until the modal closes.
+    window.history.replaceState(window.history.state || {}, "", "/");
+  }
 
   activeMemeId = meme.id;
   setModalAuditVisibility(canManageUsers());
@@ -4475,6 +4528,7 @@ function openModalWithMeme(meme) {
 
   if (!memeModal.open) {
     memeModal.showModal();
+    pushModalHistoryState("meme", modalURL);
   }
   overlayClose.classList.remove("hidden");
   showMemeModalUI();
@@ -4530,6 +4584,9 @@ function closeModal(options = {}) {
     adminTagReviewSessionActive = false;
   }
   clearMemeDeepLinkURL();
+  if (options.syncHistory !== false && !options.continueAdminReview) {
+    unwindModalHistoryState("meme");
+  }
   return true;
 }
 
@@ -5402,7 +5459,7 @@ function deepLinkedMemeID() {
 
 function clearMemeDeepLinkURL() {
   if (!deepLinkedMemeID()) return;
-  window.history.replaceState({}, "", "/");
+  window.history.replaceState(window.history.state || {}, "", "/");
 }
 
 async function openDeepLinkedMeme() {
@@ -6780,6 +6837,8 @@ window.addEventListener("appinstalled", () => {
   syncInstallAction();
   showToast("MemeIndex was added to your home screen.", "success", { title: "App Installed", duration: 4200 });
 });
+
+window.addEventListener("popstate", handleModalHistoryPop);
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
