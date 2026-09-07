@@ -3318,6 +3318,9 @@ function buildMemeCardElement(meme) {
   const previewFrame = fragment.querySelector(".preview-frame");
   const favoriteButton = fragment.querySelector(".favorite-button");
   const tagList = fragment.querySelector(".tag-list");
+  const copyLinkButton = fragment.querySelector(".card-copy-link");
+  copyLinkButton.addEventListener("click", () => shareMeme(meme.id, copyLinkButton));
+  card._copyLinkButton = copyLinkButton;
 
   card.dataset.memeId = meme.id;
   applyFavoriteStateToButton(favoriteButton, meme.favorite);
@@ -3359,6 +3362,7 @@ function updateMemeCardElement(card, meme) {
 
   card.dataset.memeId = meme.id;
   applyFavoriteStateToButton(card._favoriteButton, meme.favorite);
+  card._copyLinkButton.disabled = !canView();
   card._favoriteButton.disabled = !canView();
   card._favoriteButton.title = canView() ? "" : "You do not have permission to favorite memes";
 
@@ -5398,7 +5402,9 @@ async function copyShareText(value) {
 
 function showShareCopiedFeedback(button) {
   if (!button) return;
-  const label = button.querySelector(".modal-action-label, .random-reel-nav-label");
+  const label = button.querySelector(".modal-action-label, .random-reel-nav-label, .card-copy-label");
+  const originalAriaLabel = button.getAttribute("aria-label");
+  const originalTooltip = button.getAttribute("data-tooltip");
   const originalLabel = label?.textContent || "Share";
   button.classList.add("share-copied");
   button.setAttribute("aria-label", "Share link copied");
@@ -5419,8 +5425,10 @@ function showShareCopiedFeedback(button) {
 
   window.setTimeout(() => {
     button.classList.remove("share-copied");
-    button.setAttribute("aria-label", "Share meme");
-    button.setAttribute("data-tooltip", "Share Meme");
+    if (originalAriaLabel) button.setAttribute("aria-label", originalAriaLabel);
+    else button.removeAttribute("aria-label");
+    if (originalTooltip) button.setAttribute("data-tooltip", originalTooltip);
+    else button.removeAttribute("data-tooltip");
     if (label) label.textContent = originalLabel;
   }, 2400);
 }

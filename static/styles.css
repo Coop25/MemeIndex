@@ -154,14 +154,24 @@ body.library-mode .content-panel, body.admin-mode .content-panel { padding: 28px
 .filter-panel button { min-height: 34px; padding: 0 12px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--muted); cursor: pointer; }
 .filter-panel button:hover { border-color: rgba(201,149,93,.35); color: var(--text); }
 .meme-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(215px, 1fr)); gap: 14px; max-width: 1500px; margin: 0 auto; }
-.meme-card { min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 13px; background: var(--panel); transition: border-color .16s, transform .16s, box-shadow .16s; }
+.meme-card { position: relative; min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 13px; background: var(--panel); transition: border-color .16s, transform .16s, box-shadow .16s; }
 .meme-card:hover { border-color: rgba(201,149,93,.34); transform: translateY(-2px); box-shadow: 0 14px 34px rgba(0,0,0,.22); }
 .card-hitarea { position: relative; cursor: pointer; }
 .preview-frame { position: relative; aspect-ratio: 1.22; overflow: hidden; background: #08080a; }
 .preview-frame > img, .preview-frame > video, .preview-frame > iframe { display: block; width: 100%; height: 100%; border: 0; object-fit: cover; }
 .preview-frame audio { width: calc(100% - 24px); margin: 35% 12px 0; }
 .file-icon { display: grid; width: 100%; height: 100%; place-content: center; gap: 7px; padding: 20px; background: linear-gradient(145deg, #242329, #111115); color: var(--muted); text-align: center; }.file-icon strong { color: var(--green); font-size: 22px; }
-.card-overlay { position: absolute; top: 8px; right: 8px; z-index: 2; }
+.card-overlay { position: absolute; top: 0; right: 0; z-index: 3; display: flex; width: 76px; height: 42px; gap: 0; padding: 0; overflow: hidden; border-radius: 0 12px 0 12px; background: rgba(6,12,9,.82); opacity: 0; visibility: hidden; transition: opacity .15s ease 5s, visibility 0s linear 5.15s; }
+.meme-card:hover .card-overlay, .meme-card:has(:focus-visible) .card-overlay { opacity: 1; visibility: visible; transition-delay: 0s; }
+@media (hover: none), (pointer: coarse) {
+  .meme-card .card-overlay { opacity: 1; visibility: visible; transition: none; }
+}
+.card-overlay .favorite-button, .card-copy-link { display: grid; flex: 1; width: 50%; height: 100%; place-items: center; padding: 0; border: 0; border-radius: 0; background: transparent; color: white; cursor: pointer; }
+.card-copy-link svg { width: 17px; height: 17px; }
+.card-copy-link:hover, .card-copy-link:focus-visible, .card-copy-link.share-copied { background: #315d3b; }
+.card-copy-link:disabled { opacity: .6; cursor: default; }
+.card-overlay .favorite-button.is-favorite { background: #d94f67; }
+.card-overlay .favorite-button:hover { transform: none; }
 .favorite-button { display: grid; width: 34px; height: 34px; place-items: center; padding: 0; border: 1px solid rgba(255,255,255,.14); border-radius: 50%; background: rgba(6,12,9,.72); color: white; cursor: pointer; backdrop-filter: blur(7px); transition: color .16s ease, background .16s ease, border-color .16s ease, box-shadow .16s ease, transform .16s ease; }
 .favorite-button.is-favorite {
   border-color: rgba(255, 180, 190, .9);
@@ -2386,8 +2396,8 @@ body.admin-mode .admin-health-list strong { min-width: 0; overflow-wrap: anywher
 /* Useful home dashboard */
 .dashboard-overview {
   display: grid;
-  gap: 18px;
-  padding: 26px clamp(28px, 3vw, 52px) 22px;
+  gap: 10px;
+  padding: 16px clamp(28px, 3vw, 52px) 14px;
   border-bottom: 1px solid var(--line);
   background:
     radial-gradient(circle at 92% -40%, rgba(177, 117, 64, .2), transparent 38%),
@@ -2403,7 +2413,7 @@ body.admin-mode .admin-health-list strong { min-width: 0; overflow-wrap: anywher
 
 .dashboard-overview-heading h2 {
   margin: 0;
-  font-size: clamp(25px, 2.2vw, 34px);
+  font-size: 22px;
   letter-spacing: -.035em;
 }
 
@@ -2418,13 +2428,22 @@ body.admin-mode .admin-health-list strong { min-width: 0; overflow-wrap: anywher
   z-index: auto;
   width: 100%;
   margin: 0;
+  gap: 8px;
 }
 
 .dashboard-overview .dashboard-stat-card {
-  min-height: 82px;
+  min-height: 58px;
+  padding: 9px 12px;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 2px 9px;
   background: rgba(17, 17, 21, .78);
   box-shadow: none;
 }
+
+.dashboard-overview .dashboard-stat-card i { width: 28px; height: 28px; }
+.dashboard-overview .dashboard-stat-card i::before { font-size: 15px; }
+.dashboard-overview .dashboard-stat-card span { font-size: 11px; }
+.dashboard-overview .dashboard-stat-card strong { font-size: 18px; }
 
 .dashboard-feature-grid {
   display: grid;
@@ -2536,12 +2555,12 @@ body.admin-mode .admin-health-list strong { min-width: 0; overflow-wrap: anywher
 
 @media (max-width: 760px) {
   .dashboard-overview {
-    gap: 13px;
-    padding: 18px 14px 14px;
+    gap: 8px;
+    padding: 12px 14px;
   }
 
   .dashboard-overview-heading h2 {
-    font-size: 24px;
+    font-size: 19px;
   }
 
   .dashboard-overview-heading .primary-button {
@@ -2553,7 +2572,11 @@ body.admin-mode .admin-health-list strong { min-width: 0; overflow-wrap: anywher
 
   .dashboard-overview .dashboard-stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
   }
+
+  .dashboard-overview .dashboard-stat-card { min-height: 54px; padding: 8px 10px; }
+  .dashboard-overview .dashboard-stat-card strong { font-size: 16px; }
 
   .dashboard-feature-grid {
     grid-template-columns: 1fr;
@@ -3794,4 +3817,85 @@ body.random-reel-open {
     width: 100%;
     min-height: 52px;
   }
+}
+
+/* Keep card actions edge-to-edge across dashboard and library layouts. */
+.meme-card .card-overlay > button {
+  flex: 1 1 0;
+  align-self: stretch;
+  width: 50%;
+  height: 100%;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+  transform: none;
+  transition: background-color .15s ease, color .15s ease;
+}
+.meme-card .card-overlay .favorite-icon {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.meme-card .card-overlay .favorite-button:hover,
+.meme-card .card-overlay .favorite-button:focus-visible { background: #623340; }
+.meme-card .card-overlay .favorite-button.is-favorite { background: #b83e58; }
+.meme-card .card-overlay .favorite-button.is-favorite:hover,
+.meme-card .card-overlay .favorite-button.is-favorite:focus-visible { background: #cf4b66; }
+.meme-card .card-overlay .favorite-button.is-favorite .favorite-icon { fill: currentColor; }
+
+/* A single slim overview strip, with no separate stat cards. */
+.dashboard-overview {
+  display: block;
+  padding: 0 clamp(14px, 3vw, 52px);
+  background: rgba(17, 17, 21, .65);
+}
+.dashboard-overview-heading {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.dashboard-overview .dashboard-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0;
+}
+.dashboard-overview .dashboard-stat-card {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+.dashboard-overview .dashboard-stat-card + .dashboard-stat-card {
+  border-left: 1px solid var(--line);
+}
+.dashboard-overview .dashboard-stat-card i { display: none; }
+.dashboard-overview .dashboard-stat-card span { font-size: 11px; white-space: nowrap; }
+.dashboard-overview .dashboard-stat-card strong { font-size: 13px; white-space: nowrap; }
+@media (max-width: 760px) {
+  .dashboard-overview { padding: 0 6px; }
+  .dashboard-overview .dashboard-stat-card {
+    flex-direction: column;
+    justify-content: center;
+    gap: 2px;
+    min-height: 40px;
+    padding: 5px 3px;
+  }
+  .dashboard-overview .dashboard-stat-card span { font-size: 10px; }
+  .dashboard-overview .dashboard-stat-card strong { font-size: 12px; }
 }
