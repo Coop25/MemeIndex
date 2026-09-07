@@ -1,6 +1,9 @@
 .git
 .env
-data/uploads
+data
+.gocache
+.cache
+.security-tests
 node_modules
 tmp
 bin

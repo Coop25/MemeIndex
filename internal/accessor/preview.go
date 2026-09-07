@@ -1,6 +1,7 @@
 package accessor
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -10,9 +11,35 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 var ffmpegWarningOnce sync.Once
+
+// Uploaded playlists are not self-contained media. Disallow demuxers that can
+// open referenced files/URLs, and disallow network protocols for all inputs.
+const localMediaFormats = "mov,matroska,avi,mpeg,mpegts,mp3,wav,flac,ogg,aac,flv,asf,gif,apng,png_pipe,jpeg_pipe,webp_pipe,bmp_pipe,tiff_pipe"
+
+func localMediaCommand(ctx context.Context, binary string, args ...string) *exec.Cmd {
+	flags := []string{"-v", "error", "-protocol_whitelist", "file", "-format_whitelist", localMediaFormats}
+	return exec.CommandContext(ctx, binary, append(flags, args...)...)
+}
+
+type boundedMediaOutput struct{ data []byte }
+
+func (b *boundedMediaOutput) Write(p []byte) (int, error) {
+	n := len(p)
+	if remaining := 16*1024 - len(b.data); remaining > 0 {
+		b.data = append(b.data, p[:min(remaining, len(p))]...)
+	}
+	return n, nil
+}
+func runMediaCommand(cmd *exec.Cmd) ([]byte, error) {
+	var output boundedMediaOutput
+	cmd.Stdout, cmd.Stderr = &output, &output
+	err := cmd.Run()
+	return output.data, err
+}
 
 type previewAssetResult string
 
@@ -147,14 +174,16 @@ func videoTagFrameOffsets(inputPath string, frameCount int) []string {
 		frameCount = 3
 	}
 	frameCount = min(frameCount, 5)
-	cmd := exec.Command(
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := localMediaCommand(ctx,
 		"ffprobe",
 		"-v", "error",
 		"-show_entries", "format=duration",
 		"-of", "default=noprint_wrappers=1:nokey=1",
 		inputPath,
 	)
-	output, err := cmd.Output()
+	output, err := runMediaCommand(cmd)
 	if err == nil {
 		if duration, parseErr := strconv.ParseFloat(strings.TrimSpace(string(output)), 64); parseErr == nil && duration > 0 {
 			return evenlySpacedVideoOffsets(duration, frameCount)
@@ -239,7 +268,9 @@ func generateVideoFrameAtOffset(inputPath, outputPath string, offset string, wid
 	if width <= 0 {
 		width = 640
 	}
-	cmd := exec.Command(
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := localMediaCommand(ctx,
 		"ffmpeg",
 		"-y",
 		"-ss", offset,
@@ -248,7 +279,7 @@ func generateVideoFrameAtOffset(inputPath, outputPath string, offset string, wid
 		"-vf", fmt.Sprintf("scale=%d:-1", width),
 		outputPath,
 	)
-	output, err := cmd.CombinedOutput()
+	output, err := runMediaCommand(cmd)
 	if err != nil {
 		ffmpegWarningOnce.Do(func() {
 			log.Printf("video thumbnail generation is unavailable until ffmpeg is installed: %v", err)
@@ -262,7 +293,9 @@ func generateVideoFrameAtOffset(inputPath, outputPath string, offset string, wid
 }
 
 func extractVideoAudio(inputPath, outputPath string) error {
-	cmd := exec.Command(
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := localMediaCommand(ctx,
 		"ffmpeg",
 		"-y",
 		"-i", inputPath,
@@ -272,7 +305,7 @@ func extractVideoAudio(inputPath, outputPath string) error {
 		"-t", "90",
 		outputPath,
 	)
-	output, err := cmd.CombinedOutput()
+	output, err := runMediaCommand(cmd)
 	if err != nil {
 		ffmpegWarningOnce.Do(func() {
 			log.Printf("video audio extraction is unavailable until ffmpeg is installed: %v", err)

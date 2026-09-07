@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -203,7 +204,11 @@ func TestValidateRestoredMemesRequiresEveryUpload(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(staging, "uploads"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	csv := "id,stored_name\nabc,abc.webp\n"
+	columns := strings.Split(portableBackupTables[0].columns, ", ")
+	values := make([]string, len(columns))
+	values[0], values[2] = "abc", "abc.webp"
+	values[3] = "/uploads/abc.webp"
+	csv := strings.Join(columns, ",") + "\n" + strings.Join(values, ",") + "\n"
 	if err := os.WriteFile(filepath.Join(staging, "database", "memes.csv"), []byte(csv), 0o600); err != nil {
 		t.Fatal(err)
 	}

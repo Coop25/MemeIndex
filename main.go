@@ -70,7 +70,13 @@ func main() {
 	server := client.NewServer(config, memeManager)
 
 	log.Printf("MemeIndex listening on http://localhost%s", config.Addr)
-	if err := http.ListenAndServe(config.Addr, client.LoggingMiddleware(server.Routes())); err != nil {
+	httpServer := &http.Server{
+		Addr:              config.Addr,
+		Handler:           client.LoggingMiddleware(server.Routes()),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	if err := httpServer.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
 }

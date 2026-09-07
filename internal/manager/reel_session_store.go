@@ -297,7 +297,8 @@ func (s *ReelSessionStore) windowMemesLocked(session *reelSession, startOffset i
 }
 
 func randomSessionID() (string, error) {
-	return uuid.Must(uuid.NewV6()).String(), nil
+	id, err := uuid.NewRandom()
+	return id.String(), err
 }
 
 func (s *ReelSessionStore) load() error {

@@ -194,16 +194,7 @@ func (a *authService) verifySignedValue(signed string) (string, bool) {
 }
 
 func (a *authService) cookieSecureForRequest(r *http.Request) bool {
-	if !a.config.CookieSecure {
-		return false
-	}
-
-	scheme := forwardedHeaderFirstValue(r.Header.Get("X-Forwarded-Proto"))
-	if scheme != "" {
-		return strings.EqualFold(scheme, "https")
-	}
-
-	return r.TLS != nil
+	return a.config.CookieSecure || r.TLS != nil
 }
 
 func (a *authService) setCookie(w http.ResponseWriter, r *http.Request, name, value string, expires time.Time) {
@@ -248,9 +239,9 @@ func (a *authService) setStateCookie(w http.ResponseWriter, r *http.Request, sta
 	a.setCookie(w, r, authStateCookieName, a.signedValue(state), time.Now().Add(10*time.Minute))
 }
 
-func (a *authService) rememberState(state string) {
+func (a *authService) rememberState(state string) bool {
 	if strings.TrimSpace(state) == "" {
-		return
+		return false
 	}
 
 	expiresAt := time.Now().Add(10 * time.Minute)
@@ -264,12 +255,25 @@ func (a *authService) rememberState(state string) {
 		}
 	}
 
+	if len(a.pendingStates) >= 4096 {
+		return false
+	}
 	a.pendingStates[state] = expiresAt
+	return true
 }
 
 func (a *authService) consumeValidState(r *http.Request) bool {
 	queryState := strings.TrimSpace(r.URL.Query().Get("state"))
 	if queryState == "" {
+		return false
+	}
+	// Bind the callback to the browser that initiated login before consuming it.
+	signedState, cookieOK := a.readCookie(r, authStateCookieName)
+	if !cookieOK {
+		return false
+	}
+	value, verifyOK := a.verifySignedValue(signedState)
+	if !verifyOK || value != queryState {
 		return false
 	}
 
@@ -287,17 +291,7 @@ func (a *authService) consumeValidState(r *http.Request) bool {
 	}
 	a.mu.Unlock()
 
-	if ok && now.Before(expiresAt) {
-		return true
-	}
-
-	signedState, cookieOK := a.readCookie(r, authStateCookieName)
-	if !cookieOK {
-		return false
-	}
-
-	value, verifyOK := a.verifySignedValue(signedState)
-	return verifyOK && value == queryState
+	return ok && now.Before(expiresAt)
 }
 
 func (a *authService) createSession(user discordUser) (authSession, string, error) {

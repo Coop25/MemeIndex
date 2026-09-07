@@ -74,6 +74,11 @@ func (s *Server) createMemeShare(w http.ResponseWriter, r *http.Request, memeID 
 }
 
 func (s *Server) handleMemeLink(w http.ResponseWriter, r *http.Request) {
+	// Every response depends on current share validity, including redirects.
+	w.Header().Set("Cache-Control", "no-store, max-age=0")
+	w.Header().Set("CDN-Cache-Control", "no-store")
+	w.Header().Set("Cloudflare-CDN-Cache-Control", "no-store")
+	w.Header().Set("Surrogate-Control", "no-store")
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -272,12 +277,10 @@ func (s *Server) serveSharedMemeAsset(w http.ResponseWriter, r *http.Request, me
 	}
 	w.Header().Set("X-Robots-Tag", "noindex, nofollow, noarchive")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	if w.Header().Get("Cache-Control") == "" {
-		w.Header().Set("Cache-Control", "public, max-age=300")
-	}
-	if w.Header().Get("CDN-Cache-Control") == "" {
-		w.Header().Set("CDN-Cache-Control", "public, max-age=300")
-	}
+	w.Header().Set("Cache-Control", "no-store, max-age=0")
+	w.Header().Set("CDN-Cache-Control", "no-store")
+	w.Header().Set("Cloudflare-CDN-Cache-Control", "no-store")
+	w.Header().Set("Surrogate-Control", "no-store")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("Accept-Ranges", "bytes")
 	if contentType != "" {
@@ -351,10 +354,8 @@ func requestOrigin(r *http.Request) string {
 			scheme = "http"
 		}
 	}
-	host := forwardedHeaderFirstValue(r.Header.Get("X-Forwarded-Host"))
-	if host == "" {
-		host = r.Host
-	}
+	// The public proxy preserves Host; arbitrary forwarded hosts are untrusted.
+	host := r.Host
 	return scheme + "://" + host
 }
 
@@ -369,7 +370,7 @@ func safeLocalReturnPath(raw string) string {
 		return ""
 	}
 	parsed, err := url.Parse(trimmed)
-	if err != nil || parsed.IsAbs() || parsed.Host != "" {
+	if err != nil || parsed.IsAbs() || parsed.Host != "" || strings.ContainsAny(parsed.Path, "\\\r\n") || strings.HasPrefix(parsed.Path, "//") {
 		return ""
 	}
 	return parsed.RequestURI()

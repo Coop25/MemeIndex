@@ -3584,7 +3584,7 @@ function buildPreview(meme) {
 
   const icon = document.createElement("div");
   icon.className = "file-icon";
-  icon.innerHTML = `<strong>${pickIcon(meme.contentType)}</strong><span>${meme.contentType}</span>`;
+  icon.innerHTML = `<strong>${pickIcon(meme.contentType)}</strong><span>${escapeHTML(meme.contentType)}</span>`;
   return icon;
 }
 
@@ -3685,7 +3685,7 @@ function buildModalPreview(meme) {
 
   const icon = document.createElement("div");
   icon.className = "file-icon";
-  icon.innerHTML = `<strong>${pickIcon(meme.contentType)}</strong><span>${meme.contentType}</span><span>Use Share to create a 30-day access link.</span>`;
+  icon.innerHTML = `<strong>${pickIcon(meme.contentType)}</strong><span>${escapeHTML(meme.contentType)}</span><span>Use Share to create a 30-day access link.</span>`;
   return icon;
 }
 
@@ -3733,7 +3733,7 @@ function buildRandomReelPreview(meme) {
 
   const icon = document.createElement("div");
   icon.className = "file-icon";
-  icon.innerHTML = `<strong>${pickIcon(meme.contentType)}</strong><span>${meme.originalName}</span><span>Use Share to create a 30-day access link.</span>`;
+  icon.innerHTML = `<strong>${pickIcon(meme.contentType)}</strong><span>${escapeHTML(meme.originalName)}</span><span>Use Share to create a 30-day access link.</span>`;
   return icon;
 }
 
@@ -4282,7 +4282,7 @@ function renderUploadPreview(file, totalFiles = 1) {
 
   const icon = document.createElement("div");
   icon.className = "file-icon";
-  icon.innerHTML = `<strong>${pickIcon(type || fileName)}</strong><span>${fileName}</span><span>Preview availability depends on the file type.</span>`;
+  icon.innerHTML = `<strong>${pickIcon(type || fileName)}</strong><span>${escapeHTML(fileName)}</span><span>Preview availability depends on the file type.</span>`;
   uploadPreview.appendChild(icon);
   appendSelectionCount();
 }
