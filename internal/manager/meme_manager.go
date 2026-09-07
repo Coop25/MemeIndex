@@ -41,7 +41,20 @@ type MemeManager struct {
 	suggestionCurrentID   string
 	suggestionLastError   string
 	suggestionLastSuccess time.Time
+
+	// adminReadMu guards short-lived memoization of the two admin read models
+	// that each require a full store scan. This is a burst coalescer, not a
+	// freshness cache: entries expire after adminReadCacheTTL and are dropped
+	// outright on ReloadAfterRestore. Deep copies are handed out so callers
+	// (which rewrite asset paths per request) never touch the stored value.
+	adminReadMu            sync.Mutex
+	adminDashboardCache    *AdminDashboardStats
+	adminDashboardCachedAt time.Time
+	tagHygieneCache        *TagHygieneReport
+	tagHygieneCachedAt     time.Time
 }
+
+const adminReadCacheTTL = 5 * time.Second
 
 type TagSuggestionRuntimeConfig struct {
 	VideoFrameCount   int
@@ -576,7 +589,7 @@ func (m *MemeManager) QueueMemeTagSuggestions(id string) {
 	m.enqueueTagSuggestion(memeID)
 }
 
-func (m *MemeManager) ResetTagSuggestionsAndRequeueUntagged() (ResetTagSuggestionQueueResult, error) {
+func (m *MemeManager) ResetTagSuggestionsAndRequeueUntagged(actor accessor.AuditActor) (ResetTagSuggestionQueueResult, error) {
 	suggestionStore, ok := m.store.(accessor.SuggestedTagStore)
 	if !ok {
 		return ResetTagSuggestionQueueResult{}, tagsuggest.ErrDisabled
@@ -603,10 +616,43 @@ func (m *MemeManager) ResetTagSuggestionsAndRequeueUntagged() (ResetTagSuggestio
 		}
 	}
 
+	m.invalidateAdminReadCache()
+	if writer, ok := m.store.(accessor.SystemAuditStore); ok {
+		description := fmt.Sprintf(
+			"Reset tag suggestions: cleared %d suggestion set(s), re-enabled %d exhausted, requeued %d untagged",
+			result.ClearedSuggestions, result.ClearedExhausted, result.QueuedUntagged,
+		)
+		if err := writer.RecordSystemAudit("tag_suggestions_reset", actor, description); err != nil {
+			log.Printf("record tag suggestion reset audit failed: %v", err)
+		}
+	}
+
 	return result, nil
 }
 
+// AdminDashboard returns the admin overview stats, memoized for adminReadCacheTTL
+// so repeated loads (and the merge-then-refresh burst) do not each trigger a full
+// store scan. Callers receive an independent deep copy.
 func (m *MemeManager) AdminDashboard() AdminDashboardStats {
+	m.adminReadMu.Lock()
+	if m.adminDashboardCache != nil && time.Since(m.adminDashboardCachedAt) < adminReadCacheTTL {
+		cached := cloneAdminDashboardStats(*m.adminDashboardCache)
+		m.adminReadMu.Unlock()
+		return cached
+	}
+	m.adminReadMu.Unlock()
+
+	stats := m.computeAdminDashboard()
+
+	m.adminReadMu.Lock()
+	stored := cloneAdminDashboardStats(stats)
+	m.adminDashboardCache = &stored
+	m.adminDashboardCachedAt = time.Now()
+	m.adminReadMu.Unlock()
+	return stats
+}
+
+func (m *MemeManager) computeAdminDashboard() AdminDashboardStats {
 	memes := m.store.List("", "", false, "")
 	stats := AdminDashboardStats{
 		Counts:       buildMemeCounts(memes),
@@ -760,7 +806,28 @@ func (m *MemeManager) AdminDashboard() AdminDashboardStats {
 	return stats
 }
 
+// TagHygieneReport returns the tag-hygiene read model, memoized for
+// adminReadCacheTTL like AdminDashboard. Callers receive an independent deep copy.
 func (m *MemeManager) TagHygieneReport() TagHygieneReport {
+	m.adminReadMu.Lock()
+	if m.tagHygieneCache != nil && time.Since(m.tagHygieneCachedAt) < adminReadCacheTTL {
+		cached := cloneTagHygieneReport(*m.tagHygieneCache)
+		m.adminReadMu.Unlock()
+		return cached
+	}
+	m.adminReadMu.Unlock()
+
+	report := m.computeTagHygieneReport()
+
+	m.adminReadMu.Lock()
+	stored := cloneTagHygieneReport(report)
+	m.tagHygieneCache = &stored
+	m.tagHygieneCachedAt = time.Now()
+	m.adminReadMu.Unlock()
+	return report
+}
+
+func (m *MemeManager) computeTagHygieneReport() TagHygieneReport {
 	memes := m.store.List("", "", false, "")
 	tagCounts := map[string]int{}
 	for _, meme := range memes {
@@ -826,6 +893,40 @@ func (m *MemeManager) TagHygieneReport() TagHygieneReport {
 	}
 }
 
+// invalidateAdminReadCache drops the memoized admin read models so the next load
+// recomputes. Call after any change that alters their inputs (tag merges, restore).
+func (m *MemeManager) invalidateAdminReadCache() {
+	m.adminReadMu.Lock()
+	m.adminDashboardCache = nil
+	m.tagHygieneCache = nil
+	m.adminReadMu.Unlock()
+}
+
+func cloneAdminDashboardStats(in AdminDashboardStats) AdminDashboardStats {
+	out := in
+	out.UploadSeries = append([]AdminDashboardDayStat(nil), in.UploadSeries...)
+	out.MetricSeries = append([]AdminDashboardMetricStat(nil), in.MetricSeries...)
+	out.TopTags = append([]AdminDashboardTagStat(nil), in.TopTags...)
+	out.RecentMemes = make([]AdminDashboardRecentMeme, len(in.RecentMemes))
+	for i, meme := range in.RecentMemes {
+		meme.Tags = append([]string(nil), in.RecentMemes[i].Tags...)
+		out.RecentMemes[i] = meme
+	}
+	return out
+}
+
+func cloneTagHygieneReport(in TagHygieneReport) TagHygieneReport {
+	out := TagHygieneReport{
+		Tags:  make([]TagHygieneTag, len(in.Tags)),
+		Pairs: append([]TagHygienePair(nil), in.Pairs...),
+	}
+	for i, tag := range in.Tags {
+		tag.Similar = append([]string(nil), in.Tags[i].Similar...)
+		out.Tags[i] = tag
+	}
+	return out
+}
+
 func (m *MemeManager) MergeTags(sourceTag string, targetTag string, actor accessor.AuditActor) (TagMergeResult, error) {
 	sourceTag = strings.ToLower(strings.TrimSpace(sourceTag))
 	targetTag = strings.ToLower(strings.TrimSpace(targetTag))
@@ -868,6 +969,9 @@ func (m *MemeManager) MergeTags(sourceTag string, targetTag string, actor access
 		result.AffectedMemes += 1
 	}
 
+	if result.AffectedMemes > 0 {
+		m.invalidateAdminReadCache()
+	}
 	return result, nil
 }
 
@@ -985,6 +1089,7 @@ func (m *MemeManager) ReloadAfterRestore() error {
 	}
 	m.suggestionQueueMu.Unlock()
 	m.SeedTagSuggestionQueue()
+	m.invalidateAdminReadCache()
 	return nil
 }
 

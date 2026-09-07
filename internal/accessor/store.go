@@ -38,6 +38,13 @@ type AuditLogStore interface {
 	RejectPendingDelete(id string, actor AuditActor) error
 }
 
+// SystemAuditStore records audit entries that are not tied to a single meme
+// (for example, an admin resetting the tag-suggestion queue). Stores without an
+// audit log simply do not implement it.
+type SystemAuditStore interface {
+	RecordSystemAudit(action string, actor AuditActor, description string) error
+}
+
 // AdminAnalyticsStore exposes aggregate-only values that are intentionally
 // independent of the current viewer (for example, favorites across all users).
 type AdminAnalyticsStore interface {

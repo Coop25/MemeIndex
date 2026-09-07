@@ -73,6 +73,80 @@ const LIBRARY_VIEW_TITLES = Object.freeze({
   files: "Files",
 });
 
+// ADMIN_TABS is the single source of truth for the admin workspace: which tabs
+// exist, how they are grouped in the rail, the header copy shown for each, and
+// (via load) how the tab's data is fetched. loadInitialMemes and the tab rail
+// renderer both read from here instead of duplicating an entry per tab.
+//   superOnly  - tab requires manage-users permission (all currently do, but the
+//                flag keeps that explicit and future-proof)
+//   panel      - id of the element that becomes the visible tabpanel content
+//   sibling    - a closely-related tab surfaced as a quick cross-link
+//   badge      - key into adminTabBadgeCounts() for an attention count
+const ADMIN_TABS = Object.freeze({
+  dashboard: {
+    group: "Overview", label: "Dashboard", superOnly: true, panel: "admin-dashboard-panel",
+    title: "Archive Dashboard", kicker: "Admin",
+    copy: "A quick pulse-check on backlog size, tag coverage, recent uploads, and the tags that define your archive.",
+  },
+  users: {
+    group: "Overview", label: "Users", superOnly: true, panel: "admin-users-panel",
+    title: "User Access", kicker: "Admin",
+    copy: "Manage users and permissions from one place.",
+  },
+  shares: {
+    group: "Overview", label: "Shared Memes", superOnly: true, panel: "admin-view-table",
+    title: "Shared Memes", kicker: "Admin",
+    copy: "See every meme with active public access, copy its current link, or revoke it immediately.",
+  },
+  "tag-hygiene": {
+    group: "Tags", label: "Tag Hygiene", superOnly: true, panel: "admin-tag-hygiene-panel",
+    title: "Tag Hygiene", kicker: "Admin",
+    copy: "Review likely misspellings, separator variants, and close tag duplicates, then merge them into cleaner canonical tags.",
+  },
+  "tag-queue": {
+    group: "Tags", label: "Tag Queue", superOnly: true, panel: "admin-tag-queue-panel", sibling: "tag-review",
+    title: "Tag Queue", kicker: "Admin",
+    copy: "Monitor the background tag suggestion worker and the memes waiting to be processed.",
+  },
+  "tag-review": {
+    group: "Tags", label: "Suggested Tags", superOnly: true, panel: "admin-tag-queue-panel", sibling: "tag-queue", badge: "tagReview",
+    title: "Suggested Tags", kicker: "Admin",
+    copy: "Review memes with pending AI tag suggestions and open them directly in the edit modal.",
+  },
+  "link-retries": {
+    group: "Imports", label: "Link Retries", superOnly: true, panel: "admin-link-queue-panel", sibling: "rejected-links", badge: "linkRetries",
+    title: "Link Retries", kicker: "Admin",
+    copy: "Failed link imports waiting for another download attempt.",
+  },
+  "rejected-links": {
+    group: "Imports", label: "Rejected Links", superOnly: true, panel: "admin-link-queue-panel", sibling: "link-retries", badge: "rejectedLinks",
+    title: "Rejected Links", kicker: "Admin",
+    copy: "Links that exhausted their retry budget and need a manual requeue if you want to try again later.",
+  },
+  "delete-queue": {
+    group: "Operations", label: "Delete Queue", superOnly: true, panel: "admin-view-table", badge: "deleteQueue",
+    title: "Delete Requests", kicker: "Admin",
+    copy: "Review pending meme deletions, inspect the media, and either keep the meme or approve the delete.",
+  },
+  "audit-logs": {
+    group: "Operations", label: "Audit Logs", superOnly: true, panel: "admin-view-table",
+    title: "Activity Log", kicker: "Admin",
+    copy: "A full activity log with actor, action, target meme, and quick-open access for review.",
+  },
+  backup: {
+    group: "Operations", label: "Backup & Restore", superOnly: true, panel: "admin-backup-panel",
+    title: "Backup & Restore", kicker: "Admin",
+    copy: "Move the complete meme library and its database to another MemeIndex Docker instance.",
+  },
+});
+const ADMIN_TAB_IDS = Object.freeze(Object.keys(ADMIN_TABS));
+const ADMIN_TAB_GROUPS = Object.freeze(["Overview", "Tags", "Imports", "Operations"]);
+const ADMIN_DEFAULT_TAB = "dashboard";
+
+function isValidAdminTab(tab) {
+  return Object.prototype.hasOwnProperty.call(ADMIN_TABS, tab);
+}
+
 const uploadForm = document.querySelector("#upload-form");
 const uploadStatus = document.querySelector("#upload-status");
 const uploadModal = document.querySelector("#upload-modal");
@@ -151,8 +225,10 @@ const adminView = document.querySelector("#admin-view");
 const adminViewKicker = document.querySelector("#admin-view-kicker");
 const adminViewTitle = document.querySelector("#admin-view-title");
 const adminViewCopy = document.querySelector("#admin-view-copy");
-const adminTabs = document.querySelectorAll(".admin-tab");
+const adminTabList = document.querySelector("#admin-tab-list");
+const adminPanelRegion = document.querySelector("#admin-panel-region");
 const adminViewStatus = document.querySelector("#admin-view-status");
+const adminTabCrosslink = document.querySelector("#admin-tab-crosslink");
 const adminTagQueuePanel = document.querySelector("#admin-tag-queue-panel");
 const adminTagQueueKicker = document.querySelector("#admin-tag-queue-kicker");
 const adminTagQueueTitle = document.querySelector("#admin-tag-queue-title");
@@ -377,9 +453,6 @@ let memePendingPageIndex = 0;
 let managedUsersState = [];
 let deleteQueueState = [];
 let auditLogState = [];
-let adminTagQueuePollInterval = null;
-let adminLinkQueuePollInterval = null;
-let adminBackupPollInterval = null;
 let adminBackupImportBusy = false;
 let toastSequence = 0;
 let deferredInstallPrompt = null;
@@ -400,6 +473,295 @@ function setAdminViewStatus(message = "") {
   adminViewStatus.textContent = message;
   adminViewStatus.classList.toggle("hidden", !String(message || "").trim());
 }
+
+// setAdminPanelLoading dims the current panel and marks it busy instead of
+// blanking it, so switching tabs no longer flashes an empty container.
+function setAdminPanelLoading(loading) {
+  if (!adminPanelRegion) return;
+  adminPanelRegion.classList.toggle("is-loading", !!loading);
+  adminPanelRegion.setAttribute("aria-busy", loading ? "true" : "false");
+}
+
+// adminTabBadgeCounts derives the "needs attention" number shown on a few tabs
+// from data the workspace already polls.
+function adminTabBadgeCounts() {
+  const linkStatus = state.admin.linkRetryStatus || {};
+  const queued = Array.isArray(linkStatus.queued) ? linkStatus.queued.length : 0;
+  const rejected = Array.isArray(linkStatus.rejected) ? linkStatus.rejected.length : 0;
+  return {
+    tagReview: Number(state.admin.tagReview?.total || 0) || 0,
+    linkRetries: queued,
+    rejectedLinks: rejected,
+    deleteQueue: Number(state.admin.queue?.total || 0) || 0,
+  };
+}
+
+let adminTabRailWired = false;
+
+function adminTabButtons() {
+  return adminTabList ? Array.from(adminTabList.querySelectorAll(".admin-tab")) : [];
+}
+
+function focusAdminTab(tab) {
+  const button = adminTabList?.querySelector(`.admin-tab[data-admin-tab="${CSS.escape(tab)}"]`);
+  if (button) {
+    button.tabIndex = 0;
+    button.focus();
+  }
+}
+
+function moveAdminTabFocus(current, delta) {
+  const ids = ADMIN_TAB_IDS.filter((id) => !ADMIN_TABS[id].superOnly || canManageUsers());
+  if (!ids.length) return;
+  const index = ids.indexOf(current);
+  const nextIndex = delta === "home" ? 0
+    : delta === "end" ? ids.length - 1
+    : (index + delta + ids.length) % ids.length;
+  const nextTab = ids[nextIndex];
+  adminTabButtons().forEach((button) => { button.tabIndex = button.dataset.adminTab === nextTab ? 0 : -1; });
+  focusAdminTab(nextTab);
+}
+
+function setupAdminTabRail() {
+  if (adminTabRailWired || !adminTabList) return;
+  adminTabRailWired = true;
+
+  adminTabList.addEventListener("click", (event) => {
+    const button = event.target.closest(".admin-tab");
+    if (!button || !adminTabList.contains(button)) return;
+    navigateAdminTab(button.dataset.adminTab);
+  });
+
+  adminTabList.addEventListener("keydown", (event) => {
+    const button = event.target.closest(".admin-tab");
+    if (!button) return;
+    const current = button.dataset.adminTab;
+    switch (event.key) {
+      case "ArrowDown":
+      case "ArrowRight":
+        event.preventDefault();
+        moveAdminTabFocus(current, 1);
+        break;
+      case "ArrowUp":
+      case "ArrowLeft":
+        event.preventDefault();
+        moveAdminTabFocus(current, -1);
+        break;
+      case "Home":
+        event.preventDefault();
+        moveAdminTabFocus(current, "home");
+        break;
+      case "End":
+        event.preventDefault();
+        moveAdminTabFocus(current, "end");
+        break;
+      case "Enter":
+      case " ":
+        event.preventDefault();
+        navigateAdminTab(current);
+        break;
+      default:
+        break;
+    }
+  });
+}
+
+// renderAdminTabRail rebuilds the grouped tab rail from ADMIN_TABS, applying APG
+// tab semantics (roving tabindex, aria-selected) and attention badges.
+function renderAdminTabRail() {
+  if (!adminTabList) return;
+  setupAdminTabRail();
+  const active = activeAdminTab();
+  const badges = adminTabBadgeCounts();
+  const canManage = canManageUsers();
+  const hadFocus = adminTabList.contains(document.activeElement);
+
+  const groups = ADMIN_TAB_GROUPS.map((group) => {
+    const tabs = ADMIN_TAB_IDS.filter((id) => ADMIN_TABS[id].group === group && (!ADMIN_TABS[id].superOnly || canManage));
+    if (!tabs.length) return "";
+    const buttons = tabs.map((id) => {
+      const config = ADMIN_TABS[id];
+      const isActive = id === active;
+      const count = config.badge ? (badges[config.badge] || 0) : 0;
+      const badgeMarkup = count > 0
+        ? `<span class="admin-tab-badge" aria-hidden="true">${count > 99 ? "99+" : count}</span>`
+        : "";
+      const label = count > 0 ? `${config.label}, ${count} need attention` : config.label;
+      return `
+        <button class="admin-tab${isActive ? " is-active" : ""}" type="button" role="tab"
+          id="admin-tab-${id}" data-admin-tab="${escapeHTML(id)}"
+          aria-controls="admin-panel-region" aria-selected="${isActive ? "true" : "false"}"
+          aria-label="${escapeHTML(label)}" tabindex="${isActive ? "0" : "-1"}">
+          <span class="admin-tab-label">${escapeHTML(config.label)}</span>${badgeMarkup}
+        </button>`;
+    }).join("");
+    return `<div class="admin-tab-group" role="presentation"><p class="admin-tab-group-label">${escapeHTML(group)}</p>${buttons}</div>`;
+  }).join("");
+
+  adminTabList.innerHTML = groups;
+  adminTabList.setAttribute(
+    "aria-orientation",
+    window.matchMedia("(max-width: 760px)").matches ? "horizontal" : "vertical",
+  );
+  if (!adminTabButtons().some((button) => button.tabIndex === 0)) {
+    const first = adminTabButtons()[0];
+    if (first) first.tabIndex = 0;
+  }
+  if (hadFocus) focusAdminTab(active);
+}
+
+// ----- Admin workspace URL state -------------------------------------------------
+// The admin workspace lives at /?view=admin&tab=<tab> so a reload, bookmark, or
+// browser Back/Forward lands on the same tab instead of the vault.
+
+function readAdminTabFromURL() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("view") !== "admin") return null;
+  const tab = params.get("tab");
+  return isValidAdminTab(tab) ? tab : ADMIN_DEFAULT_TAB;
+}
+
+function applyAdminStateFromURL() {
+  const tab = readAdminTabFromURL();
+  if (!tab) return false;
+  if (!canManageUsers()) {
+    // URL asked for admin but this session cannot manage users: clean it up.
+    window.history.replaceState(window.history.state || {}, "", "/");
+    return false;
+  }
+  state.filters.view = "admin";
+  state.admin.tab = tab;
+  return true;
+}
+
+function syncAdminURL({ push = false } = {}) {
+  const inAdmin = isAdminView() && canManageUsers();
+  const params = new URLSearchParams(window.location.search);
+  const currentlyAdminURL = params.get("view") === "admin";
+  if (inAdmin) {
+    const desired = `/?view=admin&tab=${encodeURIComponent(activeAdminTab())}`;
+    if (window.location.pathname + window.location.search === desired) return;
+    const nextState = { ...(window.history.state || {}), adminTab: activeAdminTab() };
+    if (push) {
+      window.history.pushState(nextState, "", desired);
+    } else {
+      window.history.replaceState(nextState, "", desired);
+    }
+  } else if (currentlyAdminURL) {
+    window.history.replaceState({ ...(window.history.state || {}) }, "", "/");
+  }
+}
+
+function navigateAdminTab(tab, { push = true } = {}) {
+  if (!isValidAdminTab(tab) || !canManageUsers()) return;
+  if (isAdminView() && activeAdminTab() === tab) return;
+  state.filters.view = "admin";
+  state.admin.tab = tab;
+  syncAdminURL({ push });
+  loadInitialMemes().catch((error) => {
+    console.error(error);
+    setAdminViewStatus("Could not load the admin workspace.");
+    showToast("Could not load the admin workspace.", "error", { title: "Admin" });
+  });
+}
+
+// renderAdminTabCrosslink surfaces the "sibling" tab (Tag Queue <-> Suggested
+// Tags, Link Retries <-> Rejected Links) as a one-click jump so the pair is not
+// something you have to hunt for in the rail.
+function renderAdminTabCrosslink() {
+  if (!adminTabCrosslink) return;
+  const sibling = isAdminView() && canManageUsers() ? ADMIN_TABS[activeAdminTab()]?.sibling : null;
+  if (!sibling || !ADMIN_TABS[sibling]) {
+    adminTabCrosslink.classList.add("hidden");
+    adminTabCrosslink.innerHTML = "";
+    return;
+  }
+  adminTabCrosslink.classList.remove("hidden");
+  adminTabCrosslink.innerHTML = `<span>Related:</span> <button type="button" class="text-button" data-admin-crosslink="${escapeHTML(sibling)}">${escapeHTML(ADMIN_TABS[sibling].label)} &rarr;</button>`;
+  adminTabCrosslink.querySelector("[data-admin-crosslink]")?.addEventListener("click", () => {
+    navigateAdminTab(sibling);
+  });
+}
+
+function handleAdminHistoryPop() {
+  const tab = readAdminTabFromURL();
+  if (tab && canManageUsers()) {
+    if (isAdminView() && activeAdminTab() === tab) return;
+    state.filters.view = "admin";
+    state.admin.tab = tab;
+    loadInitialMemes().catch((error) => console.error(error));
+  } else if (isAdminView()) {
+    state.filters.view = "home";
+    loadInitialMemes().catch((error) => console.error(error));
+  }
+}
+
+// createAdminPoller builds a self-scheduling poller that only runs while its
+// shouldRun() predicate holds AND the tab is visible, and that backs off
+// geometrically when a request fails so a broken endpoint is not hammered.
+function createAdminPoller({ baseInterval, maxInterval = 60000, shouldRun, tick }) {
+  let timer = null;
+  let delay = baseInterval;
+
+  function stop() {
+    if (timer) {
+      window.clearTimeout(timer);
+      timer = null;
+    }
+    delay = baseInterval;
+  }
+
+  function schedule() {
+    if (timer) window.clearTimeout(timer);
+    timer = window.setTimeout(run, delay);
+  }
+
+  async function run() {
+    timer = null;
+    if (!shouldRun() || document.hidden) return;
+    try {
+      await tick();
+      delay = baseInterval;
+    } catch (error) {
+      console.error(error);
+      delay = Math.min(maxInterval, Math.max(baseInterval, delay * 2));
+    }
+    if (shouldRun() && !document.hidden) schedule();
+  }
+
+  return {
+    sync() {
+      if (shouldRun() && !document.hidden) {
+        if (!timer) schedule();
+      } else {
+        stop();
+      }
+    },
+    stop,
+  };
+}
+
+const adminTagQueuePoller = createAdminPoller({
+  baseInterval: 8000,
+  shouldRun: () => isAdminView() && canManageUsers() && ["tag-queue", "tag-review"].includes(activeAdminTab()),
+  tick: () => fetchAdminTagQueueStatus(),
+});
+const adminLinkQueuePoller = createAdminPoller({
+  baseInterval: 8000,
+  shouldRun: () => isAdminView() && canManageUsers() && ["link-retries", "rejected-links"].includes(activeAdminTab()),
+  tick: () => fetchAdminLinkRetryStatus(),
+});
+const adminBackupPoller = createAdminPoller({
+  baseInterval: 3000,
+  shouldRun: () => isAdminView() && canManageUsers() && activeAdminTab() === "backup",
+  tick: () => fetchAdminBackupStatus(),
+});
+
+const adminPollers = [adminTagQueuePoller, adminLinkQueuePoller, adminBackupPoller];
+
+document.addEventListener("visibilitychange", () => {
+  adminPollers.forEach((poller) => poller.sync());
+});
 
 function showToast(message, type = "info", options = {}) {
   if (!toastRegion || !message) {
@@ -831,14 +1193,14 @@ function renderAdminBackupStatus() {
     ? " The previous completed backup remains available to download."
     : "";
   if (running) {
-    const started = status.started_at ? ` Started ${formatDateTime(status.started_at)}.` : "";
+    const started = status.started_at ? ` Started ${formatDateTimeZoned(status.started_at)}.` : "";
     adminBackupStatus.textContent = `The server is building a backup.${started} You can leave this page and return later.${availableSuffix}`;
     return;
   }
   if (status.state === "ready" && status.download_available) {
     const details = [status.filename || "Backup ready"];
     if (status.size_bytes) details.push(formatSize(Number(status.size_bytes)));
-    if (status.completed_at) details.push(`completed ${formatDateTime(status.completed_at)}`);
+    if (status.completed_at) details.push(`completed ${formatDateTimeZoned(status.completed_at)}`);
     adminBackupStatus.textContent = `${details.join(" · ")}. This file remains available until a newer backup completes.`;
     return;
   }
@@ -905,27 +1267,25 @@ async function startAdminBackup() {
 }
 
 function syncAdminBackupPolling() {
-  if (adminBackupPollInterval) {
-    window.clearInterval(adminBackupPollInterval);
-    adminBackupPollInterval = null;
-  }
-  const visible = isAdminView() && canManageUsers() && activeAdminTab() === "backup";
-  if (!visible) return;
-
-  adminBackupPollInterval = window.setInterval(() => {
-    fetchAdminBackupStatus().catch((error) => {
-      console.error(error);
-    });
-  }, 3000);
+  adminBackupPoller.sync();
 }
 
 async function importPortableBackup(file) {
   if (!file || !adminBackupImport) return;
-  const confirmed = window.confirm(
-    `Import ${file.name}?\n\nThis replaces every meme and all database data on this server. This cannot be undone unless you export the current server first.`
+  const typed = window.prompt(
+    `Import ${file.name}?\n\nThis REPLACES every meme and all database data on this server with the contents of the backup. ` +
+    `The server automatically snapshots itself first, but the safest undo is your own export.\n\n` +
+    `Type REPLACE to confirm:`,
+    "",
   );
-  if (!confirmed) {
+  if (typed === null) {
     adminBackupFile.value = "";
+    return;
+  }
+  if (typed.trim().toUpperCase() !== "REPLACE") {
+    adminBackupFile.value = "";
+    adminBackupStatus.textContent = "Import cancelled — confirmation text did not match.";
+    showToast("Import cancelled.", "info", { title: "Backup & Restore" });
     return;
   }
 
@@ -1032,6 +1392,48 @@ function formatDateTime(value) {
   } catch (error) {
     return date.toLocaleString();
   }
+}
+
+// formatDateTimeZoned is formatDateTime plus an explicit timezone abbreviation,
+// for admin columns (share expiry, backup timestamps) where the absolute moment
+// matters and there is no relative-time context to lean on.
+function formatDateTimeZoned(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "Unknown time";
+  }
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+      timeZoneName: "short",
+    }).format(date);
+  } catch (error) {
+    return date.toLocaleString();
+  }
+}
+
+// formatRelativeTime renders "just now" / "5m ago" / "3h ago" / "2d ago" for
+// recent moments and falls back to the absolute date beyond a week. Admin feeds
+// use this as the visible label and keep the absolute time in a title tooltip.
+function formatRelativeTime(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "Unknown time";
+  }
+  const deltaSeconds = Math.round((Date.now() - date.getTime()) / 1000);
+  const future = deltaSeconds < 0;
+  const seconds = Math.abs(deltaSeconds);
+  const frame = (text) => (future ? `in ${text}` : `${text} ago`);
+  if (seconds < 45) return future ? "in a moment" : "just now";
+  if (seconds < 90) return frame("a minute");
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return frame(`${minutes}m`);
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return frame(`${hours}h`);
+  const days = Math.round(hours / 24);
+  if (days < 7) return frame(`${days}d`);
+  return formatDateTime(date);
 }
 
 function formatRelativeQueueState(value) {
@@ -1496,7 +1898,7 @@ function renderAdminShares() {
       <div class="admin-table-cell admin-table-preview-cell" data-label="Preview"><div class="shared-meme-preview"></div></div>
       <div class="admin-table-cell shared-meme-name-cell" data-label="Meme"><div class="users-copy"><strong>${escapeHTML(meme.originalName || "Unknown meme")}</strong><code>${escapeHTML(meme.id || "")}</code></div></div>
       <div class="admin-table-cell shared-meme-owner-cell" data-label="Shared By"><div class="users-copy"><strong>${escapeHTML(sharedByDisplayName)}</strong>${sharedByIDDetail}</div></div>
-      <div class="admin-table-cell shared-meme-expiry-cell" data-label="Expires"><span>${escapeHTML(formatDateTime(share.expires_at))}</span></div>
+      <div class="admin-table-cell shared-meme-expiry-cell" data-label="Expires"><span title="${escapeHTML(formatDateTimeZoned(share.expires_at))}">${escapeHTML(formatRelativeTime(share.expires_at))}</span></div>
       <div class="admin-table-cell shared-meme-actions-cell" data-label="Actions"><div class="admin-row-actions">
         <button class="ghost-button shared-copy-button" type="button">Copy Link</button>
         <button class="ghost-button shared-open-button" type="button">Open Meme</button>
@@ -1723,7 +2125,7 @@ function renderAdminDashboard() {
   const health = Array.isArray(dashboard.system_health) ? dashboard.system_health : [];
   const healthyCount = health.filter((entry) => entry.healthy).length;
   adminDashboardHealth.innerHTML = `
-    <div class="admin-health-summary" data-healthy="${healthyCount === health.length}"><strong>${healthyCount === health.length ? "All systems operational" : `${healthyCount} of ${health.length} healthy`}</strong><span>Updated ${escapeHTML(formatDateTime(dashboard.generated_at))}</span></div>
+    <div class="admin-health-summary" data-healthy="${healthyCount === health.length}"><strong>${healthyCount === health.length ? "All systems operational" : `${healthyCount} of ${health.length} healthy`}</strong><span title="${escapeHTML(formatDateTimeZoned(dashboard.generated_at))}">Updated ${escapeHTML(formatRelativeTime(dashboard.generated_at))}</span></div>
     <div class="admin-health-list">${health.map((entry) => `<div><span>${escapeHTML(entry.name || "Service")}</span><strong data-healthy="${!!entry.healthy}">${escapeHTML(entry.status || "Unknown")}</strong></div>`).join("")}</div>
   `;
 
@@ -1739,7 +2141,7 @@ function renderAdminDashboard() {
         <span>${escapeHTML(uploadActors.get(meme.id) || "Unknown")}</span>
         <span class="admin-recent-tags">${(meme.tags || []).slice(0, 2).map((tag) => `<span class="tag-chip">${escapeHTML(tag)}</span>`).join("") || "&mdash;"}</span>
         <span>${escapeHTML(formatSize(Number(meme.size_bytes || 0)))}</span>
-        <span>${escapeHTML(formatDateTime(meme.created_at))}</span>
+        <span title="${escapeHTML(formatDateTimeZoned(meme.created_at))}">${escapeHTML(formatRelativeTime(meme.created_at))}</span>
       </button>
     `).join("")}`;
   }
@@ -1752,7 +2154,7 @@ function renderAdminDashboard() {
       <button class="admin-activity-row" type="button" data-admin-meme-id="${escapeHTML(event.meme_id || "")}" title="${escapeHTML(event.meme_original_name || event.description || "Activity")}">
         <span class="admin-activity-icon" data-action="${escapeHTML(event.action || "activity")}"></span>
         <span><strong>${escapeHTML(event.actor?.display_name || event.actor?.username || "System")}</strong> ${escapeHTML(actionLabels[event.action] || event.description || "updated")} <b>${escapeHTML(event.meme_original_name || "a meme")}</b></span>
-        <time>${escapeHTML(formatDateTime(event.created_at))}</time>
+        <time datetime="${escapeHTML(String(event.created_at || ""))}" title="${escapeHTML(formatDateTimeZoned(event.created_at))}">${escapeHTML(formatRelativeTime(event.created_at))}</time>
       </button>
     `).join("");
   }
@@ -2015,21 +2417,10 @@ async function resetAdminTagSuggestions() {
 }
 
 function syncAdminTagQueuePolling() {
-  if (adminTagQueuePollInterval) {
-    window.clearInterval(adminTagQueuePollInterval);
-    adminTagQueuePollInterval = null;
-  }
-
   if (!canManageUsers() || !isAdminView()) {
     renderAdminTagQueueStatus();
-    return;
   }
-
-  adminTagQueuePollInterval = window.setInterval(() => {
-    fetchAdminTagQueueStatus().catch((error) => {
-      console.error(error);
-    });
-  }, 8000);
+  adminTagQueuePoller.sync();
 }
 
 function renderAdminLinkRetryStatus() {
@@ -2137,21 +2528,10 @@ function renderAdminLinkRetryStatus() {
 }
 
 function syncAdminLinkQueuePolling() {
-  if (adminLinkQueuePollInterval) {
-    window.clearInterval(adminLinkQueuePollInterval);
-    adminLinkQueuePollInterval = null;
-  }
-
   if (!canManageUsers() || !isAdminView()) {
     renderAdminLinkRetryStatus();
-    return;
   }
-
-  adminLinkQueuePollInterval = window.setInterval(() => {
-    fetchAdminLinkRetryStatus().catch((error) => {
-      console.error(error);
-    });
-  }, 8000);
+  adminLinkQueuePoller.sync();
 }
 
 async function retryRejectedLinkDownload(id) {
@@ -2215,7 +2595,7 @@ function renderDeleteQueue() {
         </div>
       </div>
       <div class="admin-table-cell" data-label="Requested At">
-        <span>${escapeHTML(formatDateTime(entry.requested_at))}</span>
+        <span title="${escapeHTML(formatDateTimeZoned(entry.requested_at))}">${escapeHTML(formatRelativeTime(entry.requested_at))}</span>
       </div>
       <div class="admin-table-cell" data-label="Actions">
         <div class="admin-row-actions">
@@ -2248,6 +2628,10 @@ function renderDeleteQueue() {
     });
 
     card.querySelector(".queue-approve-button")?.addEventListener("click", async () => {
+      const label = entry.meme.originalName || "this meme";
+      if (!window.confirm(`Permanently delete ${label}?\n\nThe file, its thumbnail, and all of its tags and favorites are removed. This cannot be undone.`)) {
+        return;
+      }
       const response = await fetch(`/api/admin/memes/${encodeURIComponent(entry.meme.id)}/approve-delete`, {
         method: "POST",
       });
@@ -2306,7 +2690,8 @@ function renderAuditLogs() {
     row.className = "admin-table-row audit-log-table-row";
     const actorName = event.actor?.display_name || event.actor?.username || event.actor?.user_id || "Unknown user";
     const actorHandle = event.actor?.username ? `@${event.actor.username}` : "";
-    const memeTitle = event.meme_original_name || "Unknown or deleted meme";
+    const isSystemEvent = !event.meme_id;
+    const memeTitle = isSystemEvent ? "System action" : (event.meme_original_name || "Unknown or deleted meme");
     const canOpenEditor = !!event.meme_id && !!event.meme_file_path;
     const actionsMarkup = canOpenEditor
       ? `
@@ -2315,11 +2700,11 @@ function renderAuditLogs() {
           <a class="ghost-button audit-log-open-button" href="${escapeHTML(event.meme_file_path)}" target="_blank" rel="noreferrer">Open File</a>
         </div>
       `
-      : `<span class="users-empty">Meme no longer available</span>`;
+      : `<span class="users-empty">${isSystemEvent ? "Workspace-wide action" : "Meme no longer available"}</span>`;
 
     row.innerHTML = `
       <div class="admin-table-cell" data-label="Time">
-        <span>${escapeHTML(formatDateTime(event.created_at))}</span>
+        <span title="${escapeHTML(formatDateTimeZoned(event.created_at))}">${escapeHTML(formatRelativeTime(event.created_at))}</span>
       </div>
       <div class="admin-table-cell" data-label="Action">
         <div class="users-copy">
@@ -2336,7 +2721,7 @@ function renderAuditLogs() {
       <div class="admin-table-cell" data-label="Meme">
         <div class="users-copy">
           <strong>${escapeHTML(memeTitle)}</strong>
-          <span>${escapeHTML(event.meme_content_type || "Unknown type")}</span>
+          <span>${escapeHTML(isSystemEvent ? "—" : (event.meme_content_type || "Unknown type"))}</span>
           <code>${escapeHTML(event.meme_id || "")}</code>
         </div>
       </div>
@@ -2673,11 +3058,11 @@ function renderContentMode() {
 	homeDashboard?.classList.toggle("hidden", !homeMode);
 	libraryHeading?.classList.toggle("hidden", !libraryMode);
 	filterPanel?.classList.toggle("is-unavailable", !libraryMode);
-  adminTabs.forEach((tab) => {
-    const active = tab.dataset.adminTab === activeAdminTab();
-    tab.classList.toggle("is-active", active);
-    tab.setAttribute("aria-selected", String(active));
-  });
+  renderAdminTabRail();
+  renderAdminTabCrosslink();
+  if (adminMode && adminPanelRegion) {
+    adminPanelRegion.setAttribute("aria-labelledby", `admin-tab-${activeAdminTab()}`);
+  }
   adminUsersPanel?.classList.toggle("hidden", !showAdminUsersPanel);
   adminBackupPanel?.classList.toggle("hidden", !showAdminBackupPanel);
   adminViewTable?.classList.toggle("hidden", !usesSharedAdminTable);
@@ -2800,135 +3185,65 @@ async function fetchMemes({ page = 0, append = false } = {}) {
   }
 }
 
+// ADMIN_TAB_LOADERS maps each admin tab to how its data is fetched and what
+// status text to show. This replaces the previous per-tab if/else ladder in
+// loadInitialMemes; the header copy comes from ADMIN_TABS.
+const ADMIN_TAB_LOADERS = {
+  dashboard: { loading: "Loading dashboard...", run: () => fetchAdminDashboard(), fail: "Could not load dashboard." },
+  users: { loading: "Loading users...", run: () => fetchManagedUsers(), fail: "Could not load users." },
+  shares: {
+    loading: "Loading shared memes...", run: () => fetchAdminShares(),
+    ok: (result) => (result?.length ? "" : "No memes are currently shared."),
+    fail: "Could not load shared memes.",
+  },
+  "tag-hygiene": { loading: "Loading tag hygiene tools...", run: () => fetchAdminTagHygiene(), fail: "Could not load tag hygiene tools." },
+  "audit-logs": { loading: "Loading audit logs...", paginated: true, run: () => fetchAuditLogs(), fail: "Could not load audit logs." },
+  "delete-queue": { loading: "Loading delete queue...", paginated: true, run: () => fetchDeleteQueue(), fail: "Could not load delete queue." },
+  "tag-queue": { run: () => fetchAdminTagQueueStatus() },
+  "tag-review": { run: () => fetchAdminTagQueueStatus() },
+  "link-retries": { run: () => fetchAdminLinkRetryStatus() },
+  "rejected-links": { run: () => fetchAdminLinkRetryStatus() },
+  backup: { run: () => { renderAdminBackupStatus(); return fetchAdminBackupStatus(); } },
+};
+
 async function loadInitialMemes() {
   renderSidebarViewState();
   renderContentMode();
+  syncAdminURL();
   fetchSidebarPopularTags().catch((error) => console.error(error));
-  if (isAdminView() && canManageUsers()) {
-    fetchAdminTagQueueStatus().catch((error) => {
-      console.error(error);
-    });
-    fetchAdminLinkRetryStatus().catch((error) => {
-      console.error(error);
-    });
-  }
 	if (state.filters.view === "home") {
 		await fetchVaultDashboard();
 		renderContentMode();
 		return;
 	}
-  if (isAdminView() && canManageUsers() && activeAdminTab() === "dashboard") {
-    adminViewKicker.textContent = "Admin";
-    adminViewTitle.textContent = "Archive Dashboard";
-    adminViewCopy.textContent = "A quick pulse-check on backlog size, tag coverage, recent uploads, and the tags that define your archive.";
-    setAdminViewStatus("Loading dashboard...");
-    adminViewTable.innerHTML = "";
-    const dashboard = await fetchAdminDashboard();
-    setAdminViewStatus(dashboard ? "" : "Could not load dashboard.");
-    renderContentMode();
-    return;
-  }
-  if (isAdminView() && canManageUsers() && activeAdminTab() === "tag-hygiene") {
-    adminViewKicker.textContent = "Admin";
-    adminViewTitle.textContent = "Tag Hygiene";
-    adminViewCopy.textContent = "Review likely misspellings, separator variants, and close tag duplicates, then merge them into cleaner canonical tags.";
-    setAdminViewStatus("Loading tag hygiene tools...");
-    adminViewTable.innerHTML = "";
-    const report = await fetchAdminTagHygiene();
-    setAdminViewStatus(report ? "" : "Could not load tag hygiene tools.");
-    renderContentMode();
-    return;
-  }
-  if (isAdminView() && activeAdminTab() === "audit-logs") {
-    adminViewKicker.textContent = "Admin";
-    adminViewTitle.textContent = "Activity Log";
-    adminViewCopy.textContent = "A full activity log with actor, action, target meme, and quick-open access for review.";
-    setAdminViewStatus("Loading audit logs...");
-    adminViewTable.innerHTML = "";
-    syncAdminPagination();
-    const events = await fetchAuditLogs();
-    setAdminViewStatus(events ? "" : "Could not load audit logs.");
-    renderContentMode();
-    return;
-  }
-  if (isAdminView() && activeAdminTab() === "delete-queue") {
-    adminViewKicker.textContent = "Admin";
-    adminViewTitle.textContent = "Delete Requests";
-    adminViewCopy.textContent = "Review pending meme deletions, inspect the media, and either keep the meme or approve the delete.";
-    setAdminViewStatus("Loading delete queue...");
-    adminViewTable.innerHTML = "";
-    syncAdminPagination();
-    const entries = await fetchDeleteQueue();
-    setAdminViewStatus(entries ? "" : "Could not load delete queue.");
-    renderContentMode();
-    return;
-  }
-  if (isAdminView() && activeAdminTab() === "users") {
-    adminViewKicker.textContent = "Admin";
-    adminViewTitle.textContent = "User Access";
-    adminViewCopy.textContent = "Manage users and permissions from one place.";
-    setAdminViewStatus("Loading users...");
-    adminViewTable.innerHTML = "";
-    const users = await fetchManagedUsers();
-    setAdminViewStatus(users ? "" : "Could not load users.");
-    renderContentMode();
-    return;
-  }
-  if (isAdminView() && activeAdminTab() === "shares") {
-    adminViewKicker.textContent = "Admin";
-    adminViewTitle.textContent = "Shared Memes";
-    adminViewCopy.textContent = "See every meme with active public access, copy its current link, or revoke it immediately.";
-    setAdminViewStatus("Loading shared memes...");
-    adminViewTable.innerHTML = "";
-    const shares = await fetchAdminShares();
-    setAdminViewStatus(shares?.length ? "" : "No memes are currently shared.");
-    renderContentMode();
-    return;
-  }
-  if (isAdminView() && activeAdminTab() === "tag-queue") {
-    adminViewKicker.textContent = "Admin";
-    adminViewTitle.textContent = "Tag Queue";
-    adminViewCopy.textContent = "Monitor the background tag suggestion worker and the memes waiting to be processed.";
-    setAdminViewStatus("");
-    adminViewTable.innerHTML = "";
-    renderContentMode();
-    return;
-  }
-  if (isAdminView() && activeAdminTab() === "tag-review") {
-    adminViewKicker.textContent = "Admin";
-    adminViewTitle.textContent = "Suggested Tags";
-    adminViewCopy.textContent = "Review memes with pending AI tag suggestions and open them directly in the edit modal.";
-    setAdminViewStatus("");
-    adminViewTable.innerHTML = "";
-    renderContentMode();
-    return;
-  }
-  if (isAdminView() && activeAdminTab() === "link-retries") {
-    adminViewKicker.textContent = "Admin";
-    adminViewTitle.textContent = "Link Retries";
-    adminViewCopy.textContent = "Failed link imports waiting for another download attempt.";
-    setAdminViewStatus("");
-    adminViewTable.innerHTML = "";
-    renderContentMode();
-    return;
-  }
-  if (isAdminView() && activeAdminTab() === "rejected-links") {
-    adminViewKicker.textContent = "Admin";
-    adminViewTitle.textContent = "Rejected Links";
-    adminViewCopy.textContent = "Links that exhausted their retry budget and need a manual requeue if you want to try again later.";
-    setAdminViewStatus("");
-    adminViewTable.innerHTML = "";
-    renderContentMode();
-    return;
-  }
-  if (isAdminView() && canManageUsers() && activeAdminTab() === "backup") {
-    adminViewKicker.textContent = "Admin";
-    adminViewTitle.textContent = "Backup & Restore";
-    adminViewCopy.textContent = "Move the complete meme library and its database to another MemeIndex Docker instance.";
-    setAdminViewStatus("");
-    adminViewTable.innerHTML = "";
-    renderAdminBackupStatus();
-    await fetchAdminBackupStatus();
+  if (isAdminView() && canManageUsers()) {
+    const tab = isValidAdminTab(activeAdminTab()) ? activeAdminTab() : ADMIN_DEFAULT_TAB;
+    const config = ADMIN_TABS[tab];
+    const loader = ADMIN_TAB_LOADERS[tab] || {};
+    adminViewKicker.textContent = config.kicker || "Admin";
+    adminViewTitle.textContent = config.title || "Admin Workspace";
+    adminViewCopy.textContent = config.copy || "";
+    setAdminViewStatus(loader.loading || "");
+    if (loader.paginated) syncAdminPagination();
+    setAdminPanelLoading(!!loader.run);
+    let result = null;
+    try {
+      result = loader.run ? await loader.run() : null;
+    } catch (error) {
+      console.error(error);
+      setAdminPanelLoading(false);
+      setAdminViewStatus(loader.fail || "Could not load the admin workspace.");
+      renderContentMode();
+      return;
+    }
+    setAdminPanelLoading(false);
+    if (typeof loader.ok === "function") {
+      setAdminViewStatus(loader.ok(result));
+    } else if (loader.run && loader.fail) {
+      setAdminViewStatus(result ? "" : loader.fail);
+    } else {
+      setAdminViewStatus("");
+    }
     renderContentMode();
     return;
   }
@@ -6158,14 +6473,7 @@ authVersion?.addEventListener("click", (event) => {
 authAdmin?.addEventListener("click", (event) => {
   event.stopPropagation();
   closeAuthMenu();
-  state.filters.view = "admin";
-  state.admin.tab = "dashboard";
-  showToast("Loading admin dashboard...", "info", { title: "Admin", duration: 1600 });
-  loadInitialMemes().catch((error) => {
-    console.error(error);
-    setAdminViewStatus("Could not load admin workspace.");
-    showToast("Could not load admin workspace.", "error", { title: "Admin" });
-  });
+  navigateAdminTab(ADMIN_DEFAULT_TAB);
 });
 
 authInstall?.addEventListener("click", () => {
@@ -6175,37 +6483,17 @@ authInstall?.addEventListener("click", () => {
   });
 });
 
-adminTabs.forEach((tab) => {
-  tab.addEventListener("click", () => {
-    if (!canManageUsers()) {
-      return;
-    }
-    state.filters.view = "admin";
-    state.admin.tab = tab.dataset.adminTab || "users";
-    showToast(`Loading ${state.admin.tab.replaceAll("-", " ")}...`, "info", { title: "Admin", duration: 1600 });
-    loadInitialMemes().catch((error) => {
-      console.error(error);
-      setAdminViewStatus("Could not load admin workspace.");
-      showToast("Could not load admin workspace.", "error", { title: "Admin" });
-    });
-  });
-});
+// The admin tab rail is rendered by renderAdminTabRail() and wired once through
+// setupAdminTabRail() (click + keyboard delegation on #admin-tab-list).
 
 document.querySelector("[data-admin-activity]")?.addEventListener("click", () => {
-  if (!canManageUsers()) return;
-  state.filters.view = "admin";
-  state.admin.tab = "audit-logs";
-  loadInitialMemes().catch((error) => {
-    console.error(error);
-    setAdminViewStatus("Could not load audit logs.");
-  });
+  navigateAdminTab("audit-logs");
 });
 
 adminPagePrev?.addEventListener("click", () => {
   const pageState = getActiveAdminPageState();
   if (!pageState || pageState.offset <= 0) return;
   pageState.offset = Math.max(0, pageState.offset - pageState.limit);
-  showToast("Loading previous admin page...", "info", { title: "Admin", duration: 1500 });
   loadInitialMemes().catch((error) => {
     console.error(error);
     setAdminViewStatus("Could not load admin page.");
@@ -6217,7 +6505,6 @@ adminPageNext?.addEventListener("click", () => {
   const pageState = getActiveAdminPageState();
   if (!pageState || !pageState.hasMore) return;
   pageState.offset += pageState.limit;
-  showToast("Loading next admin page...", "info", { title: "Admin", duration: 1500 });
   loadInitialMemes().catch((error) => {
     console.error(error);
     setAdminViewStatus("Could not load admin page.");
@@ -6247,6 +6534,45 @@ adminBackupExport?.addEventListener("click", () => {
 
 adminBackupImport?.addEventListener("click", () => {
   adminBackupFile?.click();
+});
+
+// Fetch the archive via XHR so an expired session surfaces as a handled error
+// instead of navigating the tab to a broken/forbidden page.
+adminBackupDownload?.addEventListener("click", async (event) => {
+  event.preventDefault();
+  const link = adminBackupDownload;
+  if (link.dataset.busy === "1") return;
+  link.dataset.busy = "1";
+  const previousText = link.textContent;
+  link.textContent = "Preparing download...";
+  try {
+    const response = await fetch("/api/admin/backup/download", { cache: "no-store" });
+    if (!(await expectAuthorized(response, "Could not download the backup."))) {
+      return;
+    }
+    if (!response.ok) {
+      adminBackupStatus.textContent = await readAPIErrorMessage(response, "Could not download the backup.");
+      showToast("Could not download the backup.", "error", { title: "Backup & Restore" });
+      return;
+    }
+    const blob = await response.blob();
+    const filename = state.admin.backupStatus?.filename || "memeindex-backup.tar.gz";
+    const objectURL = URL.createObjectURL(blob);
+    const temp = document.createElement("a");
+    temp.href = objectURL;
+    temp.download = filename;
+    document.body.appendChild(temp);
+    temp.click();
+    temp.remove();
+    window.setTimeout(() => URL.revokeObjectURL(objectURL), 10000);
+  } catch (error) {
+    console.error(error);
+    adminBackupStatus.textContent = "Could not download the backup.";
+    showToast("Could not download the backup.", "error", { title: "Backup & Restore" });
+  } finally {
+    link.textContent = previousText;
+    delete link.dataset.busy;
+  }
 });
 
 adminBackupFile?.addEventListener("change", () => {
@@ -6875,6 +7201,7 @@ window.addEventListener("appinstalled", () => {
 });
 
 window.addEventListener("popstate", handleModalHistoryPop);
+window.addEventListener("popstate", handleAdminHistoryPop);
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
@@ -6886,6 +7213,7 @@ if ("serviceWorker" in navigator) {
 
 fetchAuthSession()
   .then(async () => {
+    applyAdminStateFromURL();
     await loadInitialMemes();
     await openDeepLinkedMeme();
     consumeShareTargetResult();
