@@ -975,10 +975,14 @@ func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-var errUnsupportedMediaURL = errors.New("only YouTube, Facebook, Reddit, Instagram, TikTok, and Twitter/X links are supported right now")
+var errUnsupportedMediaURL = errors.New("use a direct image or video link (including Discord attachments), or a supported YouTube, Facebook, Reddit, Instagram, TikTok, or Twitter/X link")
 var errUndownloadableSourceURL = errors.New("this link looks valid, but the source video is not directly downloadable from that URL. Try opening the post/video itself and copying the direct Facebook video URL instead of the share link")
 
 func (s *Server) createMemeFromSourceURL(ctx context.Context, actor accessor.AuditActor, sourceURL string, tags []string, notes string) (accessor.Meme, error) {
+	sourceURL = strings.TrimSpace(sourceURL)
+	if isDirectMediaURL(sourceURL) {
+		return s.createMemeFromDirectURL(ctx, actor, sourceURL, tags, notes)
+	}
 	if s.mediaClient == nil {
 		return accessor.Meme{}, errors.New("link downloads are not configured")
 	}
@@ -990,6 +994,9 @@ func (s *Server) createMemeFromSourceURL(ctx context.Context, actor accessor.Aud
 	if err != nil {
 		log.Printf("normalize source url failed for %q: %v", sourceURL, err)
 		return accessor.Meme{}, err
+	}
+	if isDirectMediaURL(resolvedSourceURL) {
+		return s.createMemeFromDirectURL(ctx, actor, sourceURL, tags, notes)
 	}
 
 	candidates := sourceURLCandidates(sourceURL, resolvedSourceURL)
@@ -1071,7 +1078,7 @@ func (s *Server) shouldQueueLinkRetry(sourceURL string, err error) bool {
 	if strings.Contains(strings.ToLower(err.Error()), "not configured") {
 		return false
 	}
-	return supportedSourceURL(sourceURL)
+	return isDirectMediaURL(sourceURL) || supportedSourceURL(sourceURL)
 }
 
 func (s *Server) processRetriedLinkJob(ctx context.Context, job LinkRetryJob) error {
@@ -1134,7 +1141,7 @@ func normalizeSourceURL(ctx context.Context, raw string) (string, error) {
 			if len(via) >= 5 {
 				return errors.New("too many redirects")
 			}
-			if !supportedSourceURL(req.URL.String()) {
+			if !supportedSourceURL(req.URL.String()) && !isDirectMediaURL(req.URL.String()) {
 				return errUnsupportedMediaURL
 			}
 			return validateRemoteURL(req.Context(), req.URL.String())
