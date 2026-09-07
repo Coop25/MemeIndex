@@ -417,14 +417,19 @@ func (s *Server) handleAccessDeniedPage(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	nonce := newCSPNonce()
 	page := string(content)
 	page = strings.ReplaceAll(page, "{{DISPLAY_NAME}}", html.EscapeString(displayName))
 	page = strings.ReplaceAll(page, "{{USERNAME}}", html.EscapeString(username))
 	page = strings.ReplaceAll(page, "{{USER_ID}}", html.EscapeString(userID))
 	page = strings.ReplaceAll(page, "{{VERSION}}", html.EscapeString(BuildVersion()))
+	page = strings.ReplaceAll(page, "{{SCRIPT_NONCE}}", html.EscapeString(nonce))
 
 	w.Header().Set("Cache-Control", "no-store, max-age=0")
 	w.Header().Set("Pragma", "no-cache")
+	// The page ships one static inline <script> and inline <style>; pin the
+	// script to a per-response nonce instead of allowing 'unsafe-inline'.
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'nonce-"+nonce+"'; style-src 'self' 'unsafe-inline'; img-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(page))
