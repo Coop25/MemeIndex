@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -370,7 +371,74 @@ func (b *portableBackup) export(ctx context.Context) (string, error) {
 	return outputPath, nil
 }
 
+// preRestoreDir holds automatic snapshots taken immediately before an import.
+// It is a sibling of backupDir so it never shadows the user-facing "latest
+// backup" that restoreLatestExport scans for.
+func (b *portableBackup) preRestoreDir() string {
+	return filepath.Join(b.backupDir(), "pre-restore")
+}
+
+// snapshotBeforeRestore builds a full archive of the current server and stores it
+// under preRestoreDir, keeping only the most recent few. It returns the path to
+// the snapshot it wrote.
+func (b *portableBackup) snapshotBeforeRestore(ctx context.Context) (string, error) {
+	exportFunc := b.exportFunc
+	if exportFunc == nil {
+		exportFunc = b.export
+	}
+	archivePath, err := exportFunc(ctx)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(b.preRestoreDir(), 0o755); err != nil {
+		_ = os.Remove(archivePath)
+		return "", err
+	}
+	dest := filepath.Join(b.preRestoreDir(), "memeindex-pre-restore-"+time.Now().UTC().Format("20060102-150405")+".tar.gz")
+	if _, err := os.Stat(dest); err == nil {
+		dest = filepath.Join(b.preRestoreDir(), fmt.Sprintf("memeindex-pre-restore-%d.tar.gz", time.Now().UTC().UnixNano()))
+	}
+	if err := os.Rename(archivePath, dest); err != nil {
+		_ = os.Remove(archivePath)
+		return "", err
+	}
+	b.pruneOldPreRestoreSnapshots(3)
+	return dest, nil
+}
+
+// pruneOldPreRestoreSnapshots keeps the newest keep snapshots and removes the rest.
+func (b *portableBackup) pruneOldPreRestoreSnapshots(keep int) {
+	entries, err := os.ReadDir(b.preRestoreDir())
+	if err != nil {
+		return
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "memeindex-pre-restore-") || !strings.HasSuffix(entry.Name(), ".tar.gz") {
+			continue
+		}
+		names = append(names, entry.Name())
+	}
+	if len(names) <= keep {
+		return
+	}
+	slices.Sort(names) // timestamped names sort chronologically
+	for _, name := range names[:len(names)-keep] {
+		_ = os.Remove(filepath.Join(b.preRestoreDir(), name))
+	}
+}
+
 func (b *portableBackup) importArchive(ctx context.Context, source io.Reader) error {
+	// Snapshot the current server before we replace it so a mistaken restore can be
+	// rolled back. Best-effort: a snapshot failure is logged loudly but must not
+	// block a deliberate restore. Runs before b.mu is taken because the export
+	// path locks b.mu itself.
+	if snapshotPath, err := b.snapshotBeforeRestore(ctx); err != nil {
+		log.Printf("WARNING: could not snapshot server before restore; proceeding without an undo point: %v", err)
+	} else {
+		log.Printf("pre-restore snapshot saved to %s", snapshotPath)
+	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 

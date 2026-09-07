@@ -1432,6 +1432,13 @@ func (s *PostgresStore) RejectPendingDelete(id string, actor AuditActor) error {
 	return s.insertAuditLog(ctx, s.pool, strings.TrimSpace(id), "delete_rejected", actor, "Rejected delete request")
 }
 
+// RecordSystemAudit writes an audit entry that is not associated with a specific
+// meme. The empty meme_id is surfaced by ListAuditFeed's LEFT JOIN as a row with
+// no meme attached.
+func (s *PostgresStore) RecordSystemAudit(action string, actor AuditActor, description string) error {
+	return s.insertAuditLog(context.Background(), s.pool, "", action, actor, description)
+}
+
 func (s *PostgresStore) insertAuditLog(ctx context.Context, db queryable, memeID, action string, actor AuditActor, description string) error {
 	_, err := db.Exec(ctx, `
 		INSERT INTO meme_audit_logs (

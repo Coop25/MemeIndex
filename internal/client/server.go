@@ -1653,6 +1653,23 @@ func (s *Server) handleBackupStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.backup.exportStatus())
 }
 
+// sanitizeDownloadFilename strips path separators and control/quote characters so
+// the value is safe to place inside a Content-Disposition header even if the
+// stored backup name is ever influenced by something other than our own writer.
+func sanitizeDownloadFilename(name string) string {
+	name = filepath.Base(strings.TrimSpace(name))
+	if name == "." || name == ".." || name == string(filepath.Separator) {
+		return ""
+	}
+	cleaned := strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f || r == '"' || r == '\\' || r == '/' {
+			return -1
+		}
+		return r
+	}, name)
+	return cleaned
+}
+
 func (s *Server) handleBackupDownload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1681,11 +1698,15 @@ func (s *Server) handleBackupDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	filename := status.Filename
+	filename := sanitizeDownloadFilename(status.Filename)
 	if filename == "" {
 		filename = "memeindex-backup.tar.gz"
 	}
-	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+	disposition := mime.FormatMediaType("attachment", map[string]string{"filename": filename})
+	if disposition == "" {
+		disposition = `attachment; filename="memeindex-backup.tar.gz"`
+	}
+	w.Header().Set("Content-Disposition", disposition)
 	w.Header().Set("Content-Type", "application/gzip")
 	w.Header().Set("Cache-Control", "no-store")
 	http.ServeContent(w, r, filename, info.ModTime(), file)
@@ -1778,7 +1799,7 @@ func (s *Server) handleResetTagSuggestions(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	result, err := s.managers.ResetTagSuggestionsAndRequeueUntagged()
+	result, err := s.managers.ResetTagSuggestionsAndRequeueUntagged(currentAuditActor(r))
 	if err != nil {
 		switch {
 		case errors.Is(err, tagsuggest.ErrDisabled):

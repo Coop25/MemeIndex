@@ -3899,3 +3899,71 @@ body.random-reel-open {
   .dashboard-overview .dashboard-stat-card span { font-size: 10px; }
   .dashboard-overview .dashboard-stat-card strong { font-size: 12px; }
 }
+
+/* ---- Admin workspace: grouped tab rail, badges, panel loading ------------- */
+body.admin-mode .admin-tab-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+body.admin-mode .admin-tab-group { display: flex; flex-direction: column; gap: 3px; }
+body.admin-mode .admin-tab-group-label {
+  margin: 2px 0 1px;
+  padding: 0 11px;
+  color: var(--faint);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+}
+body.admin-mode .admin-tab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+.admin-tab-label { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+body.admin-mode .admin-tab { min-height: 39px; height: auto; padding-top: 6px; padding-bottom: 6px; line-height: 1.25; }
+.admin-tab-badge {
+  flex: none;
+  min-width: 18px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--green);
+  color: #08110e;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.5;
+  text-align: center;
+}
+body.admin-mode .admin-tab.is-active .admin-tab-badge { background: var(--green-bright); }
+.admin-tab:focus-visible { outline: 2px solid var(--green-bright); outline-offset: 2px; }
+
+#admin-panel-region:focus-visible { outline: 2px solid var(--green-bright); outline-offset: 3px; }
+#admin-panel-region.is-loading { cursor: progress; }
+#admin-panel-region.is-loading > *:not(#admin-view-status):not(#admin-tab-crosslink) {
+  opacity: .5;
+  pointer-events: none;
+  transition: opacity .12s ease;
+}
+
+.admin-tab-crosslink { display: flex; align-items: center; gap: 6px; margin: 0 0 4px; color: var(--muted); font-size: 13px; }
+.admin-tab-crosslink .text-button { padding: 0; font-size: 13px; }
+
+@media (max-width: 760px) {
+  body.admin-mode .admin-tab-list {
+    flex: 1 1 auto;
+    flex-direction: row;
+    gap: 6px;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: none;
+  }
+  body.admin-mode .admin-tab-list::-webkit-scrollbar { display: none; }
+  body.admin-mode .admin-tab-group { flex-direction: row; flex: none; align-items: center; gap: 4px; }
+  body.admin-mode .admin-tab-group + .admin-tab-group { margin-left: 4px; padding-left: 8px; border-left: 1px solid var(--line); }
+  body.admin-mode .admin-tab-group-label { display: none; }
+  body.admin-mode .admin-tab { flex: none; width: auto; }
+  .admin-tab-label { white-space: nowrap; }
+}

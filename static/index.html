@@ -239,7 +239,7 @@
           <section id="filter-panel" class="filter-panel hidden" aria-label="Library filters">
             <button type="button" data-filter-view="library">All types</button><button type="button" data-filter-view="images">Images</button><button type="button" data-filter-view="videos">Videos</button><button type="button" data-filter-view="mp3s">Audio</button><button type="button" data-filter-view="files">Documents & other</button><button type="button" data-filter-view="untagged">Unsorted</button><button id="clear-search" type="button">Clear search</button>
           </section>
-          <section id="admin-view" class="admin-view hidden" aria-live="polite">
+          <section id="admin-view" class="admin-view hidden">
             <div class="admin-view-header">
               <div>
                 <p id="admin-view-kicker" class="section-kicker">Admin</p>
@@ -247,7 +247,7 @@
               </div>
               <p id="admin-view-copy" class="admin-view-copy"></p>
             </div>
-            <div id="admin-tabs" class="admin-tabs" role="tablist" aria-label="Admin sections">
+            <div id="admin-tabs" class="admin-tabs">
               <div class="admin-nav-brand" role="presentation">
                 <span class="admin-nav-brand-mark" aria-hidden="true">M</span>
                 <span><strong>meme vault</strong><small>Admin workspace</small></span>
@@ -255,21 +255,12 @@
               <button class="admin-back-to-vault" type="button" data-admin-back-to-vault>
                 <span aria-hidden="true">←</span> Back to Vault
               </button>
-              <button class="admin-tab is-active" type="button" role="tab" data-admin-tab="dashboard" aria-selected="true">Dashboard</button>
-              <button class="admin-tab" type="button" role="tab" data-admin-tab="users" aria-selected="false">Users</button>
-              <button class="admin-tab" type="button" role="tab" data-admin-tab="shares" aria-selected="false">Shared Memes</button>
-              <button class="admin-tab" type="button" role="tab" data-admin-tab="tag-hygiene" aria-selected="false">Tag Hygiene</button>
-              <button class="admin-tab" type="button" role="tab" data-admin-tab="tag-queue" aria-selected="false">Tag Queue</button>
-              <button class="admin-tab" type="button" role="tab" data-admin-tab="tag-review" aria-selected="false">Suggested Tags</button>
-              <button class="admin-tab" type="button" role="tab" data-admin-tab="link-retries" aria-selected="false">Link Retries</button>
-              <button class="admin-tab" type="button" role="tab" data-admin-tab="rejected-links" aria-selected="false">Rejected Links</button>
-              <button class="admin-tab" type="button" role="tab" data-admin-tab="delete-queue" aria-selected="false">Delete Queue</button>
-              <button class="admin-tab" type="button" role="tab" data-admin-tab="audit-logs" aria-selected="false">Audit Logs</button>
-              <button class="admin-tab" type="button" role="tab" data-admin-tab="backup" aria-selected="false">Backup & Restore</button>
+              <div id="admin-tab-list" class="admin-tab-list" role="tablist" aria-label="Admin sections" aria-orientation="vertical"></div>
             </div>
-            <div class="admin-page-content">
-            <p id="admin-view-status" class="status-text"></p>
-            <section id="admin-tag-queue-panel" class="admin-tag-queue-panel hidden" aria-live="polite">
+            <div id="admin-panel-region" class="admin-page-content" role="tabpanel" tabindex="0" aria-labelledby="admin-tab-dashboard">
+            <p id="admin-view-status" class="status-text" role="status" aria-live="polite"></p>
+            <p id="admin-tab-crosslink" class="admin-tab-crosslink hidden"></p>
+            <section id="admin-tag-queue-panel" class="admin-tag-queue-panel hidden">
               <div class="admin-tag-queue-header">
                 <div>
                   <p id="admin-tag-queue-kicker" class="section-kicker">Tag Queue</p>
@@ -285,7 +276,7 @@
               <div id="admin-tag-queue-grid" class="admin-tag-queue-grid"></div>
               <div id="admin-tag-queue-list" class="admin-tag-queue-list"></div>
             </section>
-            <section id="admin-link-queue-panel" class="admin-tag-queue-panel hidden" aria-live="polite">
+            <section id="admin-link-queue-panel" class="admin-tag-queue-panel hidden">
               <div class="admin-tag-queue-header">
                 <div>
                   <p id="admin-link-queue-kicker" class="section-kicker">Link Retries</p>
@@ -298,7 +289,7 @@
               <div id="admin-link-queue-grid" class="admin-tag-queue-grid"></div>
               <div id="admin-link-queue-list" class="admin-tag-queue-list"></div>
             </section>
-            <section id="admin-dashboard-panel" class="admin-dashboard-panel hidden" aria-live="polite">
+            <section id="admin-dashboard-panel" class="admin-dashboard-panel hidden">
               <div id="admin-dashboard-grid" class="admin-dashboard-grid"></div>
               <div class="admin-dashboard-analytics">
                 <section class="admin-dashboard-section admin-dashboard-chart-card">
@@ -338,7 +329,7 @@
                 </section>
               </div>
             </section>
-            <section id="admin-tag-hygiene-panel" class="admin-tag-hygiene-panel hidden" aria-live="polite">
+            <section id="admin-tag-hygiene-panel" class="admin-tag-hygiene-panel hidden">
               <div class="admin-tag-hygiene-top">
                 <form id="admin-tag-merge-form" class="admin-tag-merge-form">
                   <label class="field compact-field">
@@ -369,7 +360,7 @@
                 </section>
               </div>
             </section>
-            <section id="admin-users-panel" class="admin-users-panel hidden" aria-live="polite">
+            <section id="admin-users-panel" class="admin-users-panel hidden">
               <form id="admin-users-add-form" class="users-add-form">
                 <label class="field compact-field">
                   <span>Discord User ID</span>
@@ -380,7 +371,7 @@
               <p id="admin-users-status" class="status-text"></p>
               <div id="admin-users-list" class="users-list"></div>
             </section>
-            <section id="admin-backup-panel" class="admin-backup-panel hidden" aria-live="polite">
+            <section id="admin-backup-panel" class="admin-backup-panel hidden">
               <article class="admin-backup-card">
                 <div>
                   <p class="section-kicker">Export</p>
