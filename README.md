@@ -91,7 +91,8 @@ Optional flags:
 - `MEMEINDEX_ADDR`: server bind address, default `:8080`
 - `MEMEINDEX_DATA_DIR`: data directory, default `data`
 - `MEMEINDEX_DATABASE_URL`: Postgres connection string. When empty, MemeIndex falls back to the legacy JSON store
-- `MEMEINDEX_MEDIAFETCH_YTDLP_BINARY`: path to the `yt-dlp` binary used for link downloads, default `yt-dlp`
+- `MEMEINDEX_MEDIAFETCH_YTDLP_BINARY`: path to the `yt-dlp` binary used for social-site link downloads, default `yt-dlp`
+- Import Media Link also downloads direct picture and video URLs, including Discord CDN attachments, without `yt-dlp`. Direct downloads are limited to 256 MB, retain the source URL, and use the normal duplicate detection. Paste the complete Discord attachment URL including its query parameters; unavailable or expired attachments require a fresh link.
 - `MEMEINDEX_MEDIAFETCH_RETRY_INTERVAL_SECONDS`: how long failed link imports wait before retrying, default `300`
 - `MEMEINDEX_MEDIAFETCH_RETRY_MAX_ATTEMPTS`: how many retry attempts failed link imports get before moving to the rejected queue, default `3`
 - `MEMEINDEX_TAGSUGGEST_OLLAMA_URL`: optional Ollama base URL, for example `http://ollama:11434`
