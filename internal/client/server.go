@@ -182,7 +182,7 @@ func (s *Server) handleShareTarget(w http.ResponseWriter, r *http.Request) {
 
 	if s.auth.enabled() {
 		session, ok := sessionFromContext(r.Context())
-		if !ok || !hasPermission(session.Permissions, permissionUpload) {
+		if !ok || !hasPermission(session.Permissions, permissionView) {
 			http.Redirect(w, r, "/?shared=forbidden", http.StatusSeeOther)
 			return
 		}

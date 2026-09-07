@@ -98,6 +98,36 @@ func TestHandleShareTargetEmptyShareRedirects(t *testing.T) {
 	}
 }
 
+func TestHandleShareTargetGatesOnViewPermission(t *testing.T) {
+	server, store := newShareTargetTestServer(t)
+	server.auth = &authService{}
+
+	anon := httptest.NewRecorder()
+	server.handleShareTarget(anon, shareTargetRequest(t, nil, "files", "a.png", []byte("x")))
+	if got := anon.Header().Get("Location"); got != "/?shared=forbidden" {
+		t.Fatalf("no session: Location = %q (status %d)", got, anon.Code)
+	}
+
+	noView := httptest.NewRecorder()
+	noViewReq := shareTargetRequest(t, nil, "files", "a.png", []byte("x"))
+	noViewReq = noViewReq.WithContext(contextWithSession(noViewReq.Context(), authSession{Permissions: authPermissions{}}))
+	server.handleShareTarget(noView, noViewReq)
+	if got := noView.Header().Get("Location"); got != "/?shared=forbidden" {
+		t.Fatalf("view-less session: Location = %q", got)
+	}
+
+	viewer := httptest.NewRecorder()
+	viewerReq := shareTargetRequest(t, nil, "files", "shared.png", []byte("viewer shared bytes"))
+	viewerReq = viewerReq.WithContext(contextWithSession(viewerReq.Context(), authSession{Permissions: authPermissions{CanView: true}}))
+	server.handleShareTarget(viewer, viewerReq)
+	if got := viewer.Header().Get("Location"); got != "/?shared=ok&n=1" {
+		t.Fatalf("viewer session: Location = %q (status %d)", got, viewer.Code)
+	}
+	if got := len(store.List("", "", false, "")); got != 1 {
+		t.Fatalf("expected 1 stored meme for a view-permission user, got %d", got)
+	}
+}
+
 func TestHandleShareTargetGetRedirectsToApp(t *testing.T) {
 	server, _ := newShareTargetTestServer(t)
 	recorder := httptest.NewRecorder()
