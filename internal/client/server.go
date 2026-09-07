@@ -55,6 +55,9 @@ type adminDashboardResponse struct {
 }
 
 func NewServer(config Config, memeManager *manager.MemeManager) *Server {
+	if err := config.validateSecurity(); err != nil {
+		log.Fatalf("unsafe configuration: %v", err)
+	}
 	shareSecret, err := loadOrCreateShareSecret(config.DataDir, config.ShareSecret)
 	if err != nil {
 		log.Fatalf("share secret init failed: %v", err)
@@ -133,7 +136,7 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/api/reel-session", s.withAPIAuth(http.HandlerFunc(s.handleReelSession), permissionView))
 	mux.Handle("/api/tags/popular", s.withAPIAuth(http.HandlerFunc(s.handlePopularTags), permissionView))
 	mux.Handle("/api/tags", s.withAPIAuth(http.HandlerFunc(s.handleTags), permissionView))
-	return mux
+	return securityHeaders(http.NewCrossOriginProtection().Handler(mux))
 }
 
 func (s *Server) handleWebManifest(w http.ResponseWriter, r *http.Request) {
@@ -717,6 +720,13 @@ func (s *Server) updateStoredMemeTagSuggestions(w http.ResponseWriter, r *http.R
 		}
 		writeJSON(w, http.StatusOK, s.protectMemeForResponse(r, meme))
 	case "add":
+		if s.auth.enabled() {
+			session, ok := sessionFromContext(r.Context())
+			if !ok || (!session.Permissions.CanAddTags && !session.Permissions.CanManageUsers) {
+				writeJSON(w, http.StatusForbidden, map[string]any{"error": "missing add-tag permission"})
+				return
+			}
+		}
 		meme, err := s.managers.ApplyMemeTagSuggestion(currentUserID(r), id, payload.Tag, currentAuditActor(r))
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
@@ -843,10 +853,21 @@ func safeLinkFilename(value string) string {
 }
 
 func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseMultipartForm(256 << 20); err != nil {
+	limit := s.config.MaxUploadBytes
+	if limit <= 0 {
+		limit = 256 << 20
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
+	if err := r.ParseMultipartForm(8 << 20); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			http.Error(w, "upload exceeds size limit", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "invalid multipart request", http.StatusBadRequest)
 		return
 	}
+	defer r.MultipartForm.RemoveAll()
 
 	sourceURL := strings.TrimSpace(r.FormValue("source_url"))
 	fileHeaders := r.MultipartForm.File["file"]
@@ -974,7 +995,7 @@ func (s *Server) createMemeFromSourceURL(ctx context.Context, actor accessor.Aud
 	candidates := sourceURLCandidates(sourceURL, resolvedSourceURL)
 	supportedCandidates := make([]string, 0, len(candidates))
 	for _, candidate := range candidates {
-		if mediafetch.ValidateSupportedURL(candidate) {
+		if supportedSourceURL(candidate) {
 			supportedCandidates = append(supportedCandidates, candidate)
 		}
 	}
@@ -1050,10 +1071,13 @@ func (s *Server) shouldQueueLinkRetry(sourceURL string, err error) bool {
 	if strings.Contains(strings.ToLower(err.Error()), "not configured") {
 		return false
 	}
-	return mediafetch.ValidateSupportedURL(sourceURL)
+	return supportedSourceURL(sourceURL)
 }
 
 func (s *Server) processRetriedLinkJob(ctx context.Context, job LinkRetryJob) error {
+	if s.auth.enabled() && !hasPermission(s.auth.permissionsForUser(job.Actor.UserID), permissionUpload) {
+		return errors.New("upload permission was revoked before retry")
+	}
 	meme, err := s.createMemeFromSourceURL(ctx, job.Actor, job.SourceURL, job.Tags, job.Notes)
 	if err != nil {
 		var duplicateErr *accessor.DuplicateMemeError
@@ -1088,7 +1112,7 @@ func friendlySourceDownloadError(originalURL, resolvedURL string, err error) err
 
 func normalizeSourceURL(ctx context.Context, raw string) (string, error) {
 	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
+	if !supportedSourceURL(trimmed) {
 		return "", errUnsupportedMediaURL
 	}
 	if err := validateRemoteURL(ctx, trimmed); err != nil {
@@ -1101,11 +1125,17 @@ func normalizeSourceURL(ctx context.Context, raw string) (string, error) {
 	}
 	request.Header.Set("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1")
 
+	transport := newPublicRemoteTransport()
+	defer transport.CloseIdleConnections()
 	client := &http.Client{
-		Timeout: 20 * time.Second,
+		Transport: transport,
+		Timeout:   20 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 5 {
 				return errors.New("too many redirects")
+			}
+			if !supportedSourceURL(req.URL.String()) {
+				return errUnsupportedMediaURL
 			}
 			return validateRemoteURL(req.Context(), req.URL.String())
 		},
@@ -1113,7 +1143,7 @@ func normalizeSourceURL(ctx context.Context, raw string) (string, error) {
 
 	response, err := client.Do(request)
 	if err != nil {
-		return trimmed, nil
+		return "", err
 	}
 	defer response.Body.Close()
 
@@ -1157,8 +1187,7 @@ func validateRemoteURL(ctx context.Context, raw string) error {
 		return errors.New("remote host did not resolve")
 	}
 	for _, address := range addresses {
-		if address.IsLoopback() || address.IsPrivate() || address.IsLinkLocalUnicast() ||
-			address.IsLinkLocalMulticast() || address.IsUnspecified() || address.IsMulticast() {
+		if !publicRemoteIP(address) {
 			return errors.New("private and local network addresses are not allowed")
 		}
 	}
@@ -1889,7 +1918,10 @@ func (s *Server) handleRandomMeme(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sessionID := r.URL.Query().Get("session_id")
+	sessionID, validSession := s.reelID(r, r.URL.Query().Get("session_id"))
+	if !validSession {
+		sessionID = ""
+	}
 	direction := r.URL.Query().Get("direction")
 	result, err := s.managers.StepRandomReel(sessionID, direction)
 	if errors.Is(err, os.ErrNotExist) {
@@ -1903,8 +1935,8 @@ func (s *Server) handleRandomMeme(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"session_id":       result.SessionID,
-		"session_replaced": result.SessionReplaced,
+		"session_id":       s.reelToken(r, result.SessionID),
+		"session_replaced": result.SessionReplaced || !validSession,
 		"reason":           result.Reason,
 		"can_go_prev":      result.CanGoPrev,
 		"meme":             s.protectMemeForResponse(r, result.Meme),
@@ -1919,7 +1951,11 @@ func (s *Server) handleReelSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sessionID := r.URL.Query().Get("session_id")
+	sessionID, validSession := s.reelID(r, r.URL.Query().Get("session_id"))
+	if !validSession {
+		http.NotFound(w, r)
+		return
+	}
 	if err := s.managers.DeleteRandomReelSession(sessionID); err != nil {
 		log.Printf("delete reel session failed: %v", err)
 		http.Error(w, "failed to delete reel session", http.StatusInternalServerError)
@@ -1942,7 +1978,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.auth.rememberState(state)
+	if !s.auth.rememberState(state) {
+		w.Header().Set("Retry-After", "60")
+		http.Error(w, "too many pending logins; try again shortly", http.StatusTooManyRequests)
+		return
+	}
 	s.auth.setStateCookie(w, r, state)
 	if returnTo := safeLocalReturnPath(r.URL.Query().Get("return_to")); returnTo != "" {
 		s.auth.setCookie(w, r, authReturnCookieName, s.auth.signedValue(returnTo), time.Now().Add(10*time.Minute))
@@ -1956,8 +1996,9 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	defer s.auth.clearCookie(w, r, authStateCookieName)
-	defer s.auth.clearCookie(w, r, authReturnCookieName)
+	// Set deletion headers before any error or redirect commits the response.
+	s.auth.clearCookie(w, r, authStateCookieName)
+	s.auth.clearCookie(w, r, authReturnCookieName)
 
 	if !s.auth.consumeValidState(r) {
 		http.Error(w, "invalid oauth state", http.StatusBadRequest)

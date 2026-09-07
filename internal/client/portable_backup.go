@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -472,6 +473,17 @@ func validateRestoredMemes(staging string) error {
 	if err != nil {
 		return fmt.Errorf("read memes CSV header: %w", err)
 	}
+	// COPY imports by position, not the header labels. Validate the same schema
+	// before checking stored_name so a reordered header cannot bypass the check.
+	expected := strings.Split(portableBackupTables[0].columns, ", ")
+	if len(header) != len(expected) {
+		return errors.New("memes CSV schema does not match backup format")
+	}
+	for i := range expected {
+		if header[i] != expected[i] {
+			return errors.New("memes CSV column order does not match backup format")
+		}
+	}
 	storedNameColumn := -1
 	for index, name := range header {
 		if name == "stored_name" {
@@ -494,6 +506,15 @@ func validateRestoredMemes(staging string) error {
 			return errors.New("memes CSV contains an invalid stored file name")
 		}
 		storedName := record[storedNameColumn]
+		if record[3] != "/uploads/"+storedName {
+			return errors.New("memes CSV contains a noncanonical media path")
+		}
+		if source := strings.TrimSpace(record[8]); source != "" {
+			parsed, err := url.Parse(source)
+			if err != nil || parsed.Hostname() == "" || parsed.User != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+				return errors.New("memes CSV contains an unsafe source URL")
+			}
+		}
 		info, err := os.Stat(filepath.Join(staging, "uploads", storedName))
 		if err != nil || !info.Mode().IsRegular() {
 			return fmt.Errorf("backup is missing meme file uploads/%s", storedName)
@@ -614,12 +635,18 @@ func addDirectoryToTar(tw *tar.Writer, root, archiveRoot string) error {
 }
 
 func extractPortableArchive(source io.Reader, destination string) error {
+	return extractPortableArchiveWithLimits(source, destination, 64<<30, 1000000)
+}
+
+func extractPortableArchiveWithLimits(source io.Reader, destination string, maxBytes int64, maxEntries int) error {
 	gz, err := gzip.NewReader(source)
 	if err != nil {
 		return errors.New("file is not a valid MemeIndex backup")
 	}
 	defer gz.Close()
 	tr := tar.NewReader(gz)
+	var expanded int64
+	entries := 0
 	for {
 		header, err := tr.Next()
 		if errors.Is(err, io.EOF) {
@@ -628,6 +655,11 @@ func extractPortableArchive(source io.Reader, destination string) error {
 		if err != nil {
 			return fmt.Errorf("read backup archive: %w", err)
 		}
+		entries++
+		if entries > maxEntries || header.Size < 0 || header.Size > maxBytes-expanded {
+			return errors.New("backup exceeds extraction limits")
+		}
+		expanded += header.Size
 		name := strings.TrimPrefix(filepath.ToSlash(header.Name), "./")
 		clean := filepath.ToSlash(filepath.Clean(name))
 		allowed := clean == "manifest.json" || strings.HasPrefix(clean, "database/") || clean == "uploads" || strings.HasPrefix(clean, "uploads/") || clean == "thumbnails" || strings.HasPrefix(clean, "thumbnails/")

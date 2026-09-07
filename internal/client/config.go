@@ -10,6 +10,8 @@ import (
 )
 
 type Config struct {
+	AllowAnonymous        bool
+	MaxUploadBytes        int64
 	Addr                  string
 	DataDir               string
 	DatabaseURL           string
@@ -63,6 +65,8 @@ func (c DiscordAuthConfig) Enabled() bool {
 }
 
 type rawConfig struct {
+	AllowAnonymous                  bool     `envconfig:"ALLOW_ANONYMOUS" default:"false"`
+	MaxUploadBytes                  int64    `envconfig:"MAX_UPLOAD_BYTES" default:"268435456"`
 	Addr                            string   `envconfig:"ADDR" default:":8080"`
 	DataDir                         string   `envconfig:"DATA_DIR" default:"data"`
 	DatabaseURL                     string   `envconfig:"DATABASE_URL"`
@@ -128,7 +132,9 @@ func LoadConfig() (Config, error) {
 	modelName := strings.TrimSpace(raw.TagSuggestOllamaModel)
 	generateOnly := raw.TagSuggestGenerateOnly || shouldPreferGenerateOnlyModel(modelName)
 
-	return Config{
+	config := Config{
+		AllowAnonymous:        raw.AllowAnonymous,
+		MaxUploadBytes:        raw.MaxUploadBytes,
 		Addr:                  strings.TrimSpace(raw.Addr),
 		DataDir:               strings.TrimSpace(raw.DataDir),
 		DatabaseURL:           strings.TrimSpace(raw.DatabaseURL),
@@ -168,7 +174,34 @@ func LoadConfig() (Config, error) {
 			ViewUserIDs: toSet(raw.ViewUserIDs),
 			AddUserIDs:  toSet(raw.AddUserIDs),
 		},
-	}, nil
+	}
+	return config, config.validateSecurity()
+}
+
+func (c Config) validateSecurity() error {
+	a := c.DiscordAuth
+	if !a.Enabled() {
+		if a.ClientID != "" || a.ClientSecret != "" || a.RedirectURL != "" || a.DynamicRedirect {
+			return fmt.Errorf("incomplete Discord authentication configuration")
+		}
+		if !c.AllowAnonymous {
+			return fmt.Errorf("Discord authentication is required; use MEMEINDEX_ALLOW_ANONYMOUS=true only for intentional anonymous operation")
+		}
+	} else if !strongSigningSecret(a.SessionSecret) {
+		return fmt.Errorf("MEMEINDEX_SESSION_SECRET must be a random secret of at least 32 characters, not an example value")
+	}
+	if c.ShareSecret != "" && !strongSigningSecret(c.ShareSecret) {
+		return fmt.Errorf("MEMEINDEX_SHARE_SECRET must be a random secret of at least 32 characters, not an example value")
+	}
+	if c.MaxUploadBytes <= 0 {
+		return fmt.Errorf("MEMEINDEX_MAX_UPLOAD_BYTES must be positive")
+	}
+	return nil
+}
+
+func strongSigningSecret(value string) bool {
+	value = strings.TrimSpace(value)
+	return len(value) >= 32 && !strings.Contains(strings.ToLower(value), "replace-") && !strings.Contains(strings.ToLower(value), "your-secret")
 }
 
 func firstNonEmpty(values ...string) string {
