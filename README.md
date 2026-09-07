@@ -204,6 +204,8 @@ MemeIndex is an installable Progressive Web App when served over HTTPS. Open the
 
 The installed app gets its own home-screen icon and standalone window. Its service worker caches only the public manifest and app icons; API responses, account details, thumbnails, and meme files remain network-only and are never placed in the offline cache.
 
+Once installed, MemeIndex registers as a share target. From any app that can share an image, video, or link (a gallery, a browser, Discord, Reddit), choose **Share > MemeIndex** and the file or URL is handed straight to the normal import pipeline: files reuse duplicate detection and queued tag suggestions, and a shared link is routed through the same downloader as the Process Link modal. When a shared link needs downloading it is queued and appears once it finishes. Users need upload permission for the share to be accepted. Android and most desktop browsers expose this in the system share sheet; iOS support depends on the Safari version.
+
 Or with Task:
 
 ```powershell

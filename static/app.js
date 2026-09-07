@@ -5470,6 +5470,34 @@ function clearMemeDeepLinkURL() {
   window.history.replaceState(window.history.state || {}, "", "/");
 }
 
+// consumeShareTargetResult reads the ?shared= status the server sets after an
+// operating-system share sheet hands content to the installed PWA, shows a
+// matching toast, and strips the marker so a reload does not repeat it.
+function consumeShareTargetResult() {
+  const params = new URLSearchParams(window.location.search);
+  const status = params.get("shared");
+  if (!status) return;
+
+  const count = Math.max(0, parseInt(params.get("n") || "0", 10) || 0);
+  const messages = {
+    ok: [`Added ${count || 1} shared ${count === 1 || !count ? "item" : "items"} to your archive.`, "success", "Shared to MemeIndex"],
+    dup: ["That item is already in your archive.", "info", "Shared to MemeIndex"],
+    queued: ["Shared link queued for download. It will appear once it finishes.", "info", "Shared to MemeIndex"],
+    linkerror: ["Could not import that shared link.", "error", "Shared to MemeIndex"],
+    toolarge: ["That shared file is larger than the upload limit.", "error", "Shared to MemeIndex"],
+    forbidden: ["You do not have permission to add memes.", "error", "Shared to MemeIndex"],
+    empty: ["Nothing usable was in that share.", "info", "Shared to MemeIndex"],
+    error: ["Something went wrong handling that share.", "error", "Shared to MemeIndex"],
+  };
+  const [message, type, title] = messages[status] || messages.error;
+  showToast(message, type, { title, duration: type === "error" ? 5200 : 3600 });
+
+  params.delete("shared");
+  params.delete("n");
+  const query = params.toString();
+  window.history.replaceState(window.history.state || {}, "", query ? `/?${query}` : "/");
+}
+
 async function openDeepLinkedMeme() {
   const id = deepLinkedMemeID();
   if (!id) return;
@@ -6860,6 +6888,7 @@ fetchAuthSession()
   .then(async () => {
     await loadInitialMemes();
     await openDeepLinkedMeme();
+    consumeShareTargetResult();
   })
   .catch((error) => {
     console.error(error);

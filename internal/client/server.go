@@ -9,12 +9,14 @@ import (
 	"html"
 	"log"
 	"mime"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/textproto"
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -103,6 +105,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/manifest.webmanifest", s.handleWebManifest)
 	mux.HandleFunc("/service-worker.js", s.handleServiceWorker)
 	mux.Handle("/pwa-icons/", http.StripPrefix("/pwa-icons/", http.FileServer(http.Dir(filepath.Join("static", "favicon")))))
+	mux.Handle("/share-target", s.withPageAuth(http.HandlerFunc(s.handleShareTarget)))
 	mux.HandleFunc("/api/auth/session", s.handleAuthSession)
 	mux.Handle("/api/dashboard", s.withAPIAuth(http.HandlerFunc(s.handleDashboard), permissionView))
 	mux.Handle("/api/users", s.withAPIAuth(http.HandlerFunc(s.handleUsers), permissionManageUsers))
@@ -158,6 +161,156 @@ func (s *Server) handleServiceWorker(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Service-Worker-Allowed", "/")
 	http.ServeFile(w, r, filepath.Join("static", "service-worker.js"))
+}
+
+// handleShareTarget receives content sent to the installed PWA through the
+// operating system share sheet. The web app manifest points its share_target
+// action here, so a share becomes a top-level multipart POST navigation that
+// carries either attached files or a shared link/text. Files reuse the normal
+// upload pipeline and a shared URL is routed through the same link-import path
+// as the Process Link modal. The handler always redirects back to the app shell
+// with a ?shared= status the frontend turns into a toast.
+func (s *Server) handleShareTarget(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if s.auth.enabled() {
+		session, ok := sessionFromContext(r.Context())
+		if !ok || !hasPermission(session.Permissions, permissionUpload) {
+			http.Redirect(w, r, "/?shared=forbidden", http.StatusSeeOther)
+			return
+		}
+	}
+
+	limit := s.config.MaxUploadBytes
+	if limit <= 0 {
+		limit = 256 << 20
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
+	if err := r.ParseMultipartForm(8 << 20); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			http.Redirect(w, r, "/?shared=toolarge", http.StatusSeeOther)
+			return
+		}
+		http.Redirect(w, r, "/?shared=error", http.StatusSeeOther)
+		return
+	}
+	defer r.MultipartForm.RemoveAll()
+
+	actor := currentAuditActor(r)
+	notes := sharedNotes(r.FormValue("title"), r.FormValue("text"))
+
+	var fileHeaders []*multipart.FileHeader
+	if r.MultipartForm != nil {
+		fileHeaders = r.MultipartForm.File["files"]
+	}
+
+	if len(fileHeaders) > 0 {
+		created, duplicates := 0, 0
+		for _, fileHeader := range fileHeaders {
+			src, err := fileHeader.Open()
+			if err != nil {
+				log.Printf("share-target: open shared file failed: %v", err)
+				continue
+			}
+			meme, err := s.managers.CreateMemeAs(actor, src, fileHeader.Header, fileHeader.Filename, nil, notes)
+			src.Close()
+			if err != nil {
+				var duplicateErr *accessor.DuplicateMemeError
+				if errors.As(err, &duplicateErr) {
+					duplicates++
+					continue
+				}
+				log.Printf("share-target: save shared file failed: %v", err)
+				continue
+			}
+			created++
+			s.managers.QueueMemeTagSuggestions(meme.ID)
+		}
+		switch {
+		case created > 0:
+			http.Redirect(w, r, "/?shared=ok&n="+strconv.Itoa(created), http.StatusSeeOther)
+		case duplicates > 0:
+			http.Redirect(w, r, "/?shared=dup", http.StatusSeeOther)
+		default:
+			http.Redirect(w, r, "/?shared=error", http.StatusSeeOther)
+		}
+		return
+	}
+
+	if sharedURL := firstSharedURL(r.FormValue("url"), r.FormValue("text")); sharedURL != "" {
+		meme, err := s.createMemeFromSourceURL(r.Context(), actor, sharedURL, nil, notes)
+		if err != nil {
+			var duplicateErr *accessor.DuplicateMemeError
+			switch {
+			case errors.As(err, &duplicateErr):
+				http.Redirect(w, r, "/?shared=dup", http.StatusSeeOther)
+			case s.shouldQueueLinkRetry(sharedURL, err):
+				s.linkRetries.Enqueue(sharedURL, nil, notes, actor)
+				http.Redirect(w, r, "/?shared=queued", http.StatusSeeOther)
+			default:
+				log.Printf("share-target: link import failed for %q: %v", sharedURL, err)
+				http.Redirect(w, r, "/?shared=linkerror", http.StatusSeeOther)
+			}
+			return
+		}
+		s.managers.QueueMemeTagSuggestions(meme.ID)
+		http.Redirect(w, r, "/?shared=ok&n=1", http.StatusSeeOther)
+		return
+	}
+
+	http.Redirect(w, r, "/?shared=empty", http.StatusSeeOther)
+}
+
+var sharedURLPattern = regexp.MustCompile(`https?://[^\s<>"']+`)
+
+// firstSharedURL returns the first syntactically valid http(s) URL found across
+// the supplied share fields. Apps often drop the link into the free-text "text"
+// field instead of the dedicated "url" field, so both are scanned.
+func firstSharedURL(values ...string) string {
+	for _, value := range values {
+		for _, candidate := range sharedURLPattern.FindAllString(value, -1) {
+			candidate = strings.TrimRight(candidate, ".,);]")
+			parsed, err := url.Parse(candidate)
+			if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" || parsed.User != nil {
+				continue
+			}
+			return candidate
+		}
+	}
+	return ""
+}
+
+// sharedNotes builds an optional note from the share sheet's title and text,
+// keeping whichever fields are present, dropping a title the text already
+// contains, and length-capping the result.
+func sharedNotes(title, text string) string {
+	title = strings.TrimSpace(title)
+	text = strings.TrimSpace(text)
+	switch {
+	case title == "":
+		return capSharedNote(text)
+	case text == "":
+		return capSharedNote(title)
+	case strings.Contains(text, title):
+		return capSharedNote(text)
+	default:
+		return capSharedNote(title + "\n" + text)
+	}
+}
+
+func capSharedNote(note string) string {
+	if len(note) > 2000 {
+		note = strings.TrimSpace(note[:2000])
+	}
+	return note
 }
 
 func (s *Server) withPageAuth(next http.Handler) http.Handler {
