@@ -64,9 +64,9 @@ func (s *ReelSessionStore) Step(sessionID string, direction string) (ReelStepRes
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if err := s.cleanupLocked(); err != nil {
-		return ReelStepResult{}, err
-	}
+	// Prune expired sessions from memory only. The nightly CleanupStale sweeps
+	// the backend; doing it here would add a DELETE to every reel step.
+	s.pruneMemoryLocked(time.Now().UTC().Add(-reelSessionTTL))
 
 	now := time.Now().UTC()
 	sessionID = strings.TrimSpace(sessionID)
@@ -124,7 +124,10 @@ func (s *ReelSessionStore) Step(sessionID string, direction string) (ReelStepRes
 	if err := s.ensureAheadLocked(session, reelPrefetchAhead); err != nil {
 		return ReelStepResult{}, err
 	}
-	if err := s.saveLocked(); err != nil {
+	// Persist only the session that changed. The previous full save rewrote
+	// every in-memory session's row on every step, so N concurrent reel users
+	// meant N database writes per navigation.
+	if err := s.persistSessionLocked(sessionID); err != nil {
 		return ReelStepResult{}, err
 	}
 	memeID := session.History[session.Position]
@@ -204,32 +207,51 @@ func (s *ReelSessionStore) newSessionLocked(now time.Time) (string, *reelSession
 	return id, session, nil
 }
 
-func (s *ReelSessionStore) cleanupLocked() error {
-	if s.backend != nil {
-		before := time.Now().UTC().Add(-reelSessionTTL)
-		if err := s.backend.CleanupStaleReelSessions(before); err != nil {
-			return err
-		}
-		for id, session := range s.sessions {
-			if session.LastActivity.Before(before) {
-				delete(s.sessions, id)
-			}
-		}
-		return nil
-	}
-
+// pruneMemoryLocked drops every session last touched before cutoff from the
+// in-memory map. It performs no I/O and reports whether anything was removed.
+func (s *ReelSessionStore) pruneMemoryLocked(cutoff time.Time) bool {
 	changed := false
-	now := time.Now().UTC()
 	for id, session := range s.sessions {
-		if now.Sub(session.LastActivity) > reelSessionTTL {
+		if session.LastActivity.Before(cutoff) {
 			delete(s.sessions, id)
 			changed = true
 		}
+	}
+	return changed
+}
+
+// cleanupLocked prunes memory and then persists the removal: the backend sweeps
+// stale rows in one statement, the file store rewrites its document. It is meant
+// for the nightly job and for load(), not the per-step hot path.
+func (s *ReelSessionStore) cleanupLocked() error {
+	cutoff := time.Now().UTC().Add(-reelSessionTTL)
+	changed := s.pruneMemoryLocked(cutoff)
+
+	if s.backend != nil {
+		return s.backend.CleanupStaleReelSessions(cutoff)
 	}
 	if changed {
 		return s.saveLocked()
 	}
 	return nil
+}
+
+// persistSessionLocked writes just the one session that changed. The database
+// backend upserts a single row; the file backend must rewrite its whole
+// document, so it falls back to the full save.
+func (s *ReelSessionStore) persistSessionLocked(sessionID string) error {
+	session, ok := s.sessions[sessionID]
+	if !ok {
+		return nil
+	}
+	if s.backend != nil {
+		return s.backend.SaveReelSession(sessionID, accessor.ReelSessionRecord{
+			History:      append([]string(nil), session.History...),
+			Position:     session.Position,
+			LastActivity: session.LastActivity,
+		})
+	}
+	return s.saveLocked()
 }
 
 func (s *ReelSessionStore) recentHistoryLocked(session *reelSession) []string {
