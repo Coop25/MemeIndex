@@ -96,6 +96,7 @@ Optional flags:
 ## Configuration
 
 - `MEMEINDEX_ADDR`: server bind address, default `:8080`
+- `MEMEINDEX_DEBUG_ADDR`: optional bind address for a separate diagnostics listener that serves Prometheus metrics at `/metrics` and `net/http/pprof` at `/debug/pprof/`. Unset by default (nothing extra is exposed). Bind it to loopback or a private interface only, e.g. `127.0.0.1:6060`; it is never mounted on the main `MEMEINDEX_ADDR` port
 - `MEMEINDEX_DATA_DIR`: data directory, default `data`
 - `MEMEINDEX_DATABASE_URL`: Postgres connection string. When empty, MemeIndex falls back to the legacy JSON store
 - `MEMEINDEX_MEDIAFETCH_YTDLP_BINARY`: path to the `yt-dlp` binary used for social-site link downloads, default `yt-dlp`
@@ -178,11 +179,20 @@ When enabled, MemeIndex will use whichever host you started from in the browser.
 MemeIndex exposes two unauthenticated probes for orchestration and load balancers:
 
 - `GET /healthz` — liveness. Returns `200` with `{"status":"ok"}` as long as the process can serve HTTP. It never touches the database.
-- `GET /readyz` — readiness. Returns `200` only when the server is not draining and its backing store answers a ping (`{"checks":{"accepting_traffic":"ok","datastore":"ok"}}`). Returns `503` during shutdown or when Postgres is unreachable. On the legacy JSON store the datastore check reports `"skipped"`.
+- `GET /readyz` — readiness. Returns `200` only when the server is not draining and its backing store answers a ping (`{"checks":{"accepting_traffic":"ok","datastore":"ok"}}`). Returns `503` during shutdown or when Postgres is unreachable. On the legacy JSON store the datastore check reports `"skipped"`. When the optional `pg_trgm` search indexes could not be created (a locked-down database role), `readyz` still returns `200` but adds `"search_index":"degraded"`, and the admin dashboard's system-health panel shows **Search Index: Degraded**.
 
 Neither path is written to the request log. The bundled `Dockerfile` and `docker-compose.yml` wire `/healthz` into their container health checks.
 
 On `SIGINT` or `SIGTERM` the server stops accepting new connections, flips `/readyz` to `503`, drains in-flight requests for up to 30 seconds, then closes the database pool before exiting.
+
+### Metrics and profiling
+
+Set `MEMEINDEX_DEBUG_ADDR` (e.g. `127.0.0.1:6060`) to start a second listener, separate from the public port, that serves:
+
+- `GET /metrics` — Prometheus text exposition: `memeindex_http_requests_total{method,code}`, the `memeindex_http_request_duration_seconds` histogram, `memeindex_http_requests_in_flight`, `memeindex_build_info{version}`, and `memeindex_search_trgm_index_available`.
+- `GET /debug/pprof/` — the standard `net/http/pprof` handlers for CPU, heap, goroutine, and trace profiles.
+
+Leave `MEMEINDEX_DEBUG_ADDR` unset in normal operation; when set, keep it on loopback or a private interface (it is unauthenticated by design, like the health probes).
 
 ## Docker Compose
 

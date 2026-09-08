@@ -14,6 +14,7 @@ type Config struct {
 	AllowAnonymous        bool
 	MaxUploadBytes        int64
 	Addr                  string
+	DebugAddr             string
 	DataDir               string
 	DatabaseURL           string
 	ShareSecret           string
@@ -72,6 +73,7 @@ type rawConfig struct {
 	AllowAnonymous                  bool     `envconfig:"ALLOW_ANONYMOUS" default:"false"`
 	MaxUploadBytes                  int64    `envconfig:"MAX_UPLOAD_BYTES" default:"268435456"`
 	Addr                            string   `envconfig:"ADDR" default:":8080"`
+	DebugAddr                       string   `envconfig:"DEBUG_ADDR"`
 	DataDir                         string   `envconfig:"DATA_DIR" default:"data"`
 	DatabaseURL                     string   `envconfig:"DATABASE_URL"`
 	MediaFetchYTDLPBinary           string   `envconfig:"MEDIAFETCH_YTDLP_BINARY" default:"yt-dlp"`
@@ -143,6 +145,7 @@ func LoadConfig() (Config, error) {
 		AllowAnonymous:        raw.AllowAnonymous,
 		MaxUploadBytes:        raw.MaxUploadBytes,
 		Addr:                  strings.TrimSpace(raw.Addr),
+		DebugAddr:             strings.TrimSpace(raw.DebugAddr),
 		DataDir:               strings.TrimSpace(raw.DataDir),
 		DatabaseURL:           strings.TrimSpace(raw.DatabaseURL),
 		ShareSecret:           firstNonEmpty(strings.TrimSpace(raw.ShareSecret), strings.TrimSpace(raw.SessionSecret)),

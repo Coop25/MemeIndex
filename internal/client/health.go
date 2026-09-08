@@ -13,6 +13,13 @@ type readinessChecker interface {
 	Ping(ctx context.Context) error
 }
 
+// searchIndexReporter is implemented by stores that can run in a degraded search
+// mode (Postgres without pg_trgm). The check is informational: it never flips
+// readiness, it just makes the state observable.
+type searchIndexReporter interface {
+	SearchIndexAvailable() bool
+}
+
 // BeginDraining marks the server as shutting down. From that point /readyz
 // reports NOT ready, so a load balancer or orchestrator stops routing new
 // traffic here before in-flight connections are cut during shutdown.
@@ -54,7 +61,9 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 		checks["accepting_traffic"] = "ok"
 	}
 
-	switch store := s.storeForHealth().(type) {
+	storeForHealth := s.storeForHealth()
+
+	switch store := storeForHealth.(type) {
 	case readinessChecker:
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer cancel()
@@ -66,6 +75,17 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 		}
 	default:
 		checks["datastore"] = "skipped"
+	}
+
+	// Informational only: a degraded search index does not make the process
+	// unready, but a load balancer log or dashboard scrape should be able to see
+	// it.
+	if reporter, ok := storeForHealth.(searchIndexReporter); ok {
+		if reporter.SearchIndexAvailable() {
+			checks["search_index"] = "ok"
+		} else {
+			checks["search_index"] = "degraded"
+		}
 	}
 
 	status := http.StatusOK

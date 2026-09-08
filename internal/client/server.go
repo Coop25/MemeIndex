@@ -115,6 +115,13 @@ func NewServer(config Config, memeManager *manager.MemeManager) *Server {
 	}
 	server.linkRetries = newLinkRetryQueue(config.MediaFetchRetry.Interval, config.MediaFetchRetry.MaxAttempts, server.processRetriedLinkJob)
 
+	// Seed the metrics that are known at startup: the running build, and (for a
+	// Postgres deployment) whether the trigram search indexes came up.
+	SetMetricsBuildVersion(BuildVersion())
+	if reporter, ok := server.storeForHealth().(searchIndexReporter); ok {
+		metrics.setGauge("memeindex_search_trgm_index_available", boolGauge(reporter.SearchIndexAvailable()))
+	}
+
 	if config.RateLimitEnabled {
 		server.authLimiter = newRateLimiter(authRatePerSecond, authRateBurst)
 		server.writeLimiter = newRateLimiter(writeRatePerSecond, writeRateBurst)
@@ -1800,6 +1807,14 @@ func (s *Server) handleAdminDashboard(w http.ResponseWriter, r *http.Request) {
 		adminSystemHealth{Name: "Image Processing", Status: "Available", Healthy: s.managers.ThumbnailDir() != ""},
 		adminSystemHealth{Name: "Tag Suggestions", Status: map[bool]string{true: "Configured", false: "Optional / disabled"}[s.config.TagSuggestions.Enabled()], Healthy: true},
 	)
+	if reporter, ok := s.storeForHealth().(searchIndexReporter); ok {
+		searchOK := reporter.SearchIndexAvailable()
+		response.SystemHealth = append(response.SystemHealth, adminSystemHealth{
+			Name:    "Search Index",
+			Status:  map[bool]string{true: "Operational", false: "Degraded (pg_trgm unavailable)"}[searchOK],
+			Healthy: searchOK,
+		})
+	}
 
 	writeJSON(w, http.StatusOK, response)
 }
