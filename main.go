@@ -75,7 +75,7 @@ func main() {
 
 	httpServer := &http.Server{
 		Addr:              config.Addr,
-		Handler:           client.LoggingMiddleware(server.Routes()),
+		Handler:           client.LoggingMiddleware(client.AssetCompression(server.Routes())),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}

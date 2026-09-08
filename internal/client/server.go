@@ -162,7 +162,7 @@ func (s *Server) Routes() http.Handler {
 	if thumbnailDir := s.managers.ThumbnailDir(); strings.TrimSpace(thumbnailDir) != "" {
 		mux.Handle("/thumbnails/", s.withProtectedAssetAuth(http.StripPrefix("/thumbnails/", http.FileServer(http.Dir(thumbnailDir)))))
 	}
-	mux.Handle("/static/", s.withPageAuth(http.StripPrefix("/static/", http.FileServer(http.Dir("static")))))
+	mux.Handle("/static/", s.withPageAuth(staticAssetHandler("static")))
 	mux.HandleFunc("/m/", s.handleMemeLink)
 	mux.Handle("/", s.withPageAuth(http.HandlerFunc(s.handleIndex)))
 	mux.Handle("/api/memes", s.withAPIAuth(http.HandlerFunc(s.handleMemes), permissionView))
@@ -566,6 +566,73 @@ func hasPermission(permissions authPermissions, minimum permissionLevel) bool {
 	}
 }
 
+// staticAssetHandler serves the bundled frontend assets. When the request URL
+// carries a cache-busting fingerprint (…?v=&h=, produced by buildAssetURL) the
+// body for that URL can never change, so it is marked immutable for a year.
+// The directive stays "private": the bundle is served behind session auth and
+// must not be retained by a shared proxy or CDN.
+func staticAssetHandler(dir string) http.Handler {
+	fs := http.StripPrefix("/static/", http.FileServer(http.Dir(dir)))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if q := r.URL.Query(); q.Get("h") != "" || q.Get("v") != "" {
+			w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+		}
+		fs.ServeHTTP(w, r)
+	})
+}
+
+// indexShellState memoises the transformed app-shell HTML. The shell is
+// identical for every viewer; only its embedded asset URLs move, and those
+// change only when index.html, the JS bundle, the stylesheet, or the build
+// version changes. Caching it avoids re-reading and rewriting ~50 KB of HTML on
+// every "/" hit and every meme deep link.
+var indexShellState struct {
+	mu   sync.Mutex
+	key  string
+	body []byte
+}
+
+func renderIndexShell(refreshToken string) ([]byte, error) {
+	indexPath := filepath.Join("static", "index.html")
+	stylesRel := filepath.Join("static", "styles.css")
+	appRel := filepath.Join("static", "app.js")
+
+	stylesHash := assetContentHash(stylesRel)
+	appHash := assetContentHash(appRel)
+
+	var key string
+	if info, err := os.Stat(indexPath); err == nil {
+		key = fmt.Sprintf("%d:%d:%s:%s:%s:%s", info.Size(), info.ModTime().UnixNano(), BuildVersion(), stylesHash, appHash, refreshToken)
+	}
+
+	if key != "" {
+		indexShellState.mu.Lock()
+		if indexShellState.body != nil && indexShellState.key == key {
+			body := indexShellState.body
+			indexShellState.mu.Unlock()
+			return body, nil
+		}
+		indexShellState.mu.Unlock()
+	}
+
+	content, err := os.ReadFile(indexPath)
+	if err != nil {
+		return nil, err
+	}
+
+	replaced := strings.ReplaceAll(string(content), "/static/styles.css", html.EscapeString(buildAssetURL("/static/styles.css", refreshToken)))
+	replaced = strings.ReplaceAll(replaced, "/static/app.js", html.EscapeString(buildAssetURL("/static/app.js", refreshToken)))
+	body := []byte(replaced)
+
+	if key != "" {
+		indexShellState.mu.Lock()
+		indexShellState.key = key
+		indexShellState.body = body
+		indexShellState.mu.Unlock()
+	}
+	return body, nil
+}
+
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" && !isMemeDeepLinkPath(r.URL.Path) {
 		http.NotFound(w, r)
@@ -577,18 +644,14 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Pragma", "no-cache")
 	refreshToken := strings.TrimSpace(r.URL.Query().Get("refresh"))
 
-	indexPath := filepath.Join("static", "index.html")
-	content, err := os.ReadFile(indexPath)
+	body, err := renderIndexShell(refreshToken)
 	if err != nil {
 		http.Error(w, "failed to load index", http.StatusInternalServerError)
 		return
 	}
 
-	replaced := strings.ReplaceAll(string(content), "/static/styles.css", html.EscapeString(buildAssetURL("/static/styles.css", refreshToken)))
-	replaced = strings.ReplaceAll(replaced, "/static/app.js", html.EscapeString(buildAssetURL("/static/app.js", refreshToken)))
-
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(replaced))
+	_, _ = w.Write(body)
 }
 
 func (s *Server) handleAccessDeniedPage(w http.ResponseWriter, r *http.Request) {

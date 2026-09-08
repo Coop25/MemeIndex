@@ -103,17 +103,17 @@ func (s *PostgresStore) ThumbnailDir() string {
 }
 
 func (s *PostgresStore) EnsurePreviewAssets() error {
-	memes := s.List("", "", false, "")
-	totalVideos := 0
+	// Only the video rows are relevant here, and only their stored name and
+	// content type are needed - not the per-row tag aggregation and favourites
+	// lookup that List() hydrates for the whole archive.
+	memes, err := s.videoMemesForPreview(context.Background())
+	if err != nil {
+		return fmt.Errorf("preview asset backfill: list videos: %w", err)
+	}
+	totalVideos := len(memes)
 	generated := 0
 	existing := 0
 	failed := 0
-
-	for _, meme := range memes {
-		if strings.HasPrefix(meme.ContentType, "video/") {
-			totalVideos += 1
-		}
-	}
 
 	if totalVideos == 0 {
 		log.Printf("preview asset backfill: no video memes found")
@@ -124,10 +124,6 @@ func (s *PostgresStore) EnsurePreviewAssets() error {
 
 	processedVideos := 0
 	for i := range memes {
-		if !strings.HasPrefix(memes[i].ContentType, "video/") {
-			continue
-		}
-
 		result, err := ensurePreviewAssetWithResult(s.uploadDir, s.previewDir, &memes[i])
 		processedVideos += 1
 		switch result {
@@ -164,6 +160,32 @@ func (s *PostgresStore) EnsurePreviewAssets() error {
 		failed,
 	)
 	return nil
+}
+
+// videoMemesForPreview returns the minimal shape the thumbnail backfill needs:
+// every visible video meme's id, stored name, and content type, newest first.
+func (s *PostgresStore) videoMemesForPreview(ctx context.Context) ([]Meme, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, stored_name, content_type
+		FROM memes
+		WHERE content_type LIKE 'video/%'
+		  AND COALESCE(hidden_from_app, FALSE) = FALSE
+		ORDER BY created_at DESC, id ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var memes []Meme
+	for rows.Next() {
+		var meme Meme
+		if err := rows.Scan(&meme.ID, &meme.StoredName, &meme.ContentType); err != nil {
+			return nil, err
+		}
+		memes = append(memes, meme)
+	}
+	return memes, rows.Err()
 }
 
 func (s *PostgresStore) List(userID, query string, favoritesOnly bool, tag string) []Meme {
@@ -370,11 +392,6 @@ func (s *PostgresStore) QueryMemes(q MemeQuery) (MemeQueryPage, error) {
 
 	where, filterArgs, _ := buildMemeWhere(search, q.Tag, 2)
 
-	counts, err := s.memeCounts(ctx, where, append([]any{uid}, filterArgs...))
-	if err != nil {
-		return MemeQueryPage{}, err
-	}
-
 	pageWhere := where
 	if vc := memeViewCondition(q.View, 1); vc != "" {
 		pageWhere += "\n  AND " + vc
@@ -383,9 +400,37 @@ func (s *PostgresStore) QueryMemes(q MemeQuery) (MemeQueryPage, error) {
 		pageWhere += "\n  AND EXISTS (SELECT 1 FROM user_favorites uf WHERE uf.user_id = $1 AND uf.meme_id = m.id)"
 	}
 
-	// Fetch one extra row to decide HasMore without a second query.
-	memes, err := s.queryMemeRows(ctx, uid, pageWhere, memeSortOrder(q.Sort), limit+1, offset, filterArgs...)
-	if err != nil {
+	// The facet counts depend only on the search + tag filter, so they are the
+	// same for every scroll page of one filter. Resolve them for the first page
+	// only; later pages keep the counts the client already holds. When they are
+	// needed, run them concurrently with the row page on a separate pooled
+	// connection instead of back to back.
+	wantCounts := offset == 0
+
+	var counts MemeCategoryCounts
+	var memes []Meme
+	g, gctx := errgroup.WithContext(ctx)
+	if wantCounts {
+		countArgs := append([]any{uid}, filterArgs...)
+		g.Go(func() error {
+			c, err := s.memeCounts(gctx, where, countArgs)
+			if err != nil {
+				return err
+			}
+			counts = c
+			return nil
+		})
+	}
+	g.Go(func() error {
+		// Fetch one extra row to decide HasMore without a second query.
+		rows, err := s.queryMemeRows(gctx, uid, pageWhere, memeSortOrder(q.Sort), limit+1, offset, filterArgs...)
+		if err != nil {
+			return err
+		}
+		memes = rows
+		return nil
+	})
+	if err := g.Wait(); err != nil {
 		return MemeQueryPage{}, err
 	}
 
@@ -788,6 +833,49 @@ func (s *PostgresStore) GetAnyByID(id string) (Meme, error) {
 	}
 	decoratePreviewPath(&meme, s.previewDir)
 	return meme, nil
+}
+
+// MemesByIDs resolves a batch of visible memes in one round trip, keyed by id.
+// Ids that do not match a visible meme are simply absent from the result, the
+// same outcome a per-id GetByID("", id) lookup would produce.
+func (s *PostgresStore) MemesByIDs(ids []string) (map[string]Meme, error) {
+	out := make(map[string]Meme, len(ids))
+	clean := make([]string, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		trimmed := strings.TrimSpace(id)
+		if trimmed == "" {
+			continue
+		}
+		if _, dup := seen[trimmed]; dup {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		clean = append(clean, trimmed)
+	}
+	if len(clean) == 0 {
+		return out, nil
+	}
+
+	rows, err := s.pool.Query(context.Background(), "SELECT"+memeRowSelectColumns+`
+		FROM memes m
+		WHERE m.id = ANY($2::text[])
+		  AND COALESCE(m.hidden_from_app, FALSE) = FALSE
+	`, normalizeFavoriteUserID(""), clean)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		meme, scanErr := scanMemeRow(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		decoratePreviewPath(&meme, s.previewDir)
+		out[meme.ID] = meme
+	}
+	return out, rows.Err()
 }
 
 func (s *PostgresStore) ListSuggestedTags(id string) ([]string, error) {
