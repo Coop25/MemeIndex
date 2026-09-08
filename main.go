@@ -8,6 +8,7 @@ import (
 	"net/http/pprof"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -66,13 +67,23 @@ func main() {
 		},
 		config.TagSuggestions.KnownTagBudget,
 	)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	go runPreviewAssetBackfill(memeManager)
 	memeManager.StartTagHygieneWorker()
 	memeManager.StartTagSuggestionWorker()
 	if queued := memeManager.SeedTagSuggestionQueue(); queued > 0 {
 		log.Printf("tag suggestion worker: queued %d existing untagged meme(s) with no pending suggestions", queued)
 	}
-	go runNightlyReelSessionCleanup(memeManager)
+
+	var bg sync.WaitGroup
+	bg.Add(1)
+	go func() {
+		defer bg.Done()
+		runNightlyReelSessionCleanup(ctx, memeManager)
+	}()
+
 	server := client.NewServer(config, memeManager)
 
 	httpServer := &http.Server{
@@ -91,9 +102,6 @@ func main() {
 			}
 		}()
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	serveErr := make(chan error, 1)
 	go func() {
@@ -125,6 +133,11 @@ func main() {
 		_ = debugServer.Shutdown(shutdownCtx)
 	}
 
+	// Now that no new requests can arrive, stop the background workers and wait
+	// for the goroutines this process owns before closing the store they use.
+	memeManager.StopBackgroundWorkers(10 * time.Second)
+	bg.Wait()
+
 	if closer, ok := store.(interface{ Close() }); ok {
 		closer.Close()
 		log.Printf("storage connections closed")
@@ -155,11 +168,15 @@ func newDebugServer(addr string) *http.Server {
 	}
 }
 
-func runNightlyReelSessionCleanup(memeManager *manager.MemeManager) {
+func runNightlyReelSessionCleanup(ctx context.Context, memeManager *manager.MemeManager) {
 	for {
-		now := time.Now().UTC()
-		nextRun := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, time.UTC)
-		time.Sleep(time.Until(nextRun))
+		timer := time.NewTimer(durationUntilNextUTCMidnight(time.Now()))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
 
 		if err := memeManager.CleanupStaleReelSessions(); err != nil {
 			log.Printf("nightly reel session cleanup failed: %v", err)
@@ -168,6 +185,13 @@ func runNightlyReelSessionCleanup(memeManager *manager.MemeManager) {
 
 		log.Printf("nightly reel session cleanup completed")
 	}
+}
+
+// durationUntilNextUTCMidnight is the wait until 00:00 UTC on the day after now.
+func durationUntilNextUTCMidnight(now time.Time) time.Duration {
+	now = now.UTC()
+	next := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, time.UTC)
+	return next.Sub(now)
 }
 
 func runPreviewAssetBackfill(memeManager *manager.MemeManager) {
