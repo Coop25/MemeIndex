@@ -798,7 +798,7 @@ func (m *MemeManager) AdminDashboard() AdminDashboardStats {
 }
 
 func (m *MemeManager) computeAdminDashboard() AdminDashboardStats {
-	memes := m.store.List("", "", false, "")
+	memes := m.adminDashboardMemes()
 	stats := AdminDashboardStats{
 		Counts:       buildMemeCounts(memes),
 		UploadSeries: make([]AdminDashboardDayStat, 30),
@@ -1030,6 +1030,22 @@ func (m *MemeManager) computeTagHygieneReport() TagHygieneReport {
 		Tags:  items,
 		Pairs: pairs,
 	}
+}
+
+// adminDashboardMemes returns every visible meme for the admin overview scan,
+// using the lean SQL projection (no per-row favourites subquery) where the store
+// offers it and falling back to a full List() otherwise. The admin favourites
+// total is sourced separately from AdminAnalyticsStore, so the dropped per-row
+// flag does not change the rendered dashboard.
+func (m *MemeManager) adminDashboardMemes() []accessor.Meme {
+	if ads, ok := m.store.(accessor.AdminDashboardMemeStore); ok {
+		if memes, err := ads.AdminDashboardMemes(); err == nil {
+			return memes
+		} else {
+			log.Printf("admin dashboard: lean meme scan failed, falling back to List: %v", err)
+		}
+	}
+	return m.store.List("", "", false, "")
 }
 
 // tagUsageCounts returns tag name -> number of visible memes carrying it,

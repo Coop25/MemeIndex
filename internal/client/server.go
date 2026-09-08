@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -457,18 +458,28 @@ func allowsAnonymousLinkPreview(r *http.Request) bool {
 	}
 }
 
+// rewriteAssetPathsInResponses reports whether outbound meme asset paths need to
+// be transformed before serialization (the seam a future signed / expiring URL
+// scheme would hook into). While it is false every protect*ForResponse helper is
+// a pass-through and skips the per-response slice copy and struct duplication
+// entirely - which is the common case on the hot list/dashboard endpoints.
+func (s *Server) rewriteAssetPathsInResponses() bool { return false }
+
 func (s *Server) protectAssetPathForResponse(r *http.Request, assetPath string) string {
 	return assetPath
 }
 
 func (s *Server) protectMemeForResponse(r *http.Request, meme accessor.Meme) accessor.Meme {
+	if !s.rewriteAssetPathsInResponses() {
+		return meme
+	}
 	meme.FilePath = s.protectAssetPathForResponse(r, meme.FilePath)
 	meme.PreviewPath = s.protectAssetPathForResponse(r, meme.PreviewPath)
 	return meme
 }
 
 func (s *Server) protectMemesForResponse(r *http.Request, memes []accessor.Meme) []accessor.Meme {
-	if len(memes) == 0 {
+	if !s.rewriteAssetPathsInResponses() || len(memes) == 0 {
 		return memes
 	}
 
@@ -480,7 +491,7 @@ func (s *Server) protectMemesForResponse(r *http.Request, memes []accessor.Meme)
 }
 
 func (s *Server) protectMemeListForResponse(r *http.Request, result manager.MemeListResult) manager.MemeListResult {
-	if len(result.Memes) == 0 {
+	if !s.rewriteAssetPathsInResponses() || len(result.Memes) == 0 {
 		return result
 	}
 
@@ -490,7 +501,7 @@ func (s *Server) protectMemeListForResponse(r *http.Request, result manager.Meme
 }
 
 func (s *Server) protectPendingDeletesForResponse(r *http.Request, records accessor.PagedPendingDeletes) accessor.PagedPendingDeletes {
-	if len(records.Memes) == 0 {
+	if !s.rewriteAssetPathsInResponses() || len(records.Memes) == 0 {
 		return records
 	}
 
@@ -504,7 +515,7 @@ func (s *Server) protectPendingDeletesForResponse(r *http.Request, records acces
 }
 
 func (s *Server) protectAuditFeedForResponse(r *http.Request, feed accessor.PagedAuditFeed) accessor.PagedAuditFeed {
-	if len(feed.Events) == 0 {
+	if !s.rewriteAssetPathsInResponses() || len(feed.Events) == 0 {
 		return feed
 	}
 
@@ -2573,10 +2584,41 @@ func currentUserID(r *http.Request) string {
 	return session.UserID
 }
 
+// jsonResponseBufferPool recycles the scratch buffers writeJSON marshals into.
+// Serializing into a buffer first (instead of streaming json.Encoder straight
+// down the socket) lets every JSON response carry a Content-Length and go out in
+// a single Write rather than a chunked dribble of ~4 KB flushes.
+var jsonResponseBufferPool = sync.Pool{
+	New: func() any { return new(bytes.Buffer) },
+}
+
+// maxPooledJSONBuffer bounds the capacity of a buffer kept for reuse so a single
+// large response (a long audit feed, a backup manifest) cannot pin megabytes in
+// the pool for the life of the process.
+const maxPooledJSONBuffer = 1 << 20
+
 func writeJSON(w http.ResponseWriter, status int, payload any) {
+	buf := jsonResponseBufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer func() {
+		if buf.Cap() <= maxPooledJSONBuffer {
+			jsonResponseBufferPool.Put(buf)
+		}
+	}()
+
+	// json.Encoder appends a trailing newline; harmless and matches the previous
+	// behaviour. Nothing has been written to w yet, so an encode failure can still
+	// surface as a clean error status.
+	if err := json.NewEncoder(buf).Encode(payload); err != nil {
+		log.Printf("write JSON failed: %v", err)
+		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
 	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(payload); err != nil {
+	if _, err := w.Write(buf.Bytes()); err != nil {
 		log.Printf("write JSON failed: %v", err)
 	}
 }
