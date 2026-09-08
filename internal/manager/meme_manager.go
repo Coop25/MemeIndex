@@ -35,12 +35,22 @@ type MemeManager struct {
 	suggestionQueueCond   *sync.Cond
 	suggestionQueue       []string
 	queuedSuggestionIDs   map[string]struct{}
+	suggestionClosing     bool // set under suggestionQueueMu by StopBackgroundWorkers
 	suggestionWorkerStart sync.Once
 	suggestionWorkerReady bool
 	suggestionWorkerState string
 	suggestionCurrentID   string
 	suggestionLastError   string
 	suggestionLastSuccess time.Time
+
+	// Background-worker lifecycle. workerCtx is cancelled by
+	// StopBackgroundWorkers so the tag-hygiene and tag-suggestion loops exit
+	// their waits promptly during a graceful shutdown; workerWG lets the caller
+	// block until they have actually returned.
+	workerCtx      context.Context
+	workerCancel   context.CancelFunc
+	workerWG       sync.WaitGroup
+	stopWorkersOne sync.Once
 
 	// adminReadMu guards short-lived memoization of the two admin read models
 	// that each require a full store scan. This is a burst coalescer, not a
@@ -153,7 +163,46 @@ func NewMemeManagerWithTagSuggester(store accessor.Store, tagSuggester *tagsugge
 		}(),
 	}
 	manager.suggestionQueueCond = sync.NewCond(&manager.suggestionQueueMu)
+	manager.workerCtx, manager.workerCancel = context.WithCancel(context.Background())
 	return manager
+}
+
+// StopBackgroundWorkers signals the tag-hygiene and tag-suggestion workers to
+// stop and waits up to timeout for them to return. It is safe to call once;
+// further calls are no-ops. A long-running tag-suggestion request in flight is
+// cancelled via the worker context, but if it does not unwind within the
+// timeout this returns anyway so shutdown can proceed.
+func (m *MemeManager) StopBackgroundWorkers(timeout time.Duration) {
+	m.stopWorkersOne.Do(func() {
+		m.workerCancel()
+		m.suggestionQueueMu.Lock()
+		m.suggestionClosing = true
+		m.suggestionQueueMu.Unlock()
+		m.suggestionQueueCond.Broadcast()
+	})
+
+	done := make(chan struct{})
+	go func() {
+		m.workerWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		log.Printf("background workers did not stop within %s; continuing shutdown", timeout)
+	}
+}
+
+// waitOrStop blocks for d, or returns false early if the workers are stopping.
+func (m *MemeManager) waitOrStop(d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-m.workerCtx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 // maxMemePageLimit caps a single browse/search page so a caller-supplied limit
@@ -1140,7 +1189,11 @@ func (m *MemeManager) StartTagHygieneWorker() {
 		m.adminReadMu.Lock()
 		m.tagHygieneRefresh = make(chan struct{}, 1)
 		m.adminReadMu.Unlock()
-		go m.runTagHygieneWorker()
+		m.workerWG.Add(1)
+		go func() {
+			defer m.workerWG.Done()
+			m.runTagHygieneWorker()
+		}()
 	})
 }
 
@@ -1160,6 +1213,8 @@ func (m *MemeManager) runTagHygieneWorker() {
 
 	for {
 		select {
+		case <-m.workerCtx.Done():
+			return
 		case <-refresh:
 			pending = true
 			debounce.Reset(tagHygieneDebounce)
@@ -1554,7 +1609,11 @@ func (m *MemeManager) StartTagSuggestionWorker() {
 	}
 
 	m.suggestionWorkerStart.Do(func() {
-		go m.runTagSuggestionWorker()
+		m.workerWG.Add(1)
+		go func() {
+			defer m.workerWG.Done()
+			m.runTagSuggestionWorker()
+		}()
 	})
 }
 
@@ -1617,7 +1676,10 @@ func (m *MemeManager) runTagSuggestionWorker() {
 	log.Printf("tag suggestion worker: waiting for Ollama model %q", m.tagSuggester.Model())
 	m.setTagSuggestionWorkerState("waiting_for_ollama", false, "", "")
 	for {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if m.workerCtx.Err() != nil {
+			return
+		}
+		ctx, cancel := context.WithTimeout(m.workerCtx, 30*time.Second)
 		err := m.tagSuggester.WaitUntilReady(ctx)
 		cancel()
 		if err == nil {
@@ -1625,21 +1687,30 @@ func (m *MemeManager) runTagSuggestionWorker() {
 		}
 		m.setTagSuggestionWorkerState("waiting_for_ollama", false, "", err.Error())
 		log.Printf("tag suggestion worker: Ollama not ready yet: %v", err)
-		time.Sleep(3 * time.Second)
+		if !m.waitOrStop(3 * time.Second) {
+			return
+		}
 	}
 	m.setTagSuggestionWorkerState("idle", true, "", "")
 	log.Printf("tag suggestion worker: Ollama is ready")
 
 	for {
-		memeID := m.dequeueTagSuggestion()
+		memeID, ok := m.dequeueTagSuggestion()
+		if !ok {
+			return
+		}
 		m.setTagSuggestionWorkerState("processing", true, memeID, "")
 		timeout := 7 * time.Minute
 		if m.tagSuggester != nil {
 			timeout = m.tagSuggester.Timeout() + (2 * time.Minute)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		ctx, cancel := context.WithTimeout(m.workerCtx, timeout)
 		_, err := m.RefreshMemeTagSuggestions(ctx, "", memeID)
 		cancel()
+		if m.workerCtx.Err() != nil {
+			m.requeueTagSuggestion(memeID)
+			return
+		}
 		if err == nil {
 			m.finishTagSuggestion(memeID)
 			m.recordTagSuggestionSuccess()
@@ -1659,12 +1730,16 @@ func (m *MemeManager) runTagSuggestionWorker() {
 			log.Printf("tag suggestion worker: retrying meme %s later after Ollama error: %v", memeID, err)
 			m.requeueTagSuggestion(memeID)
 			m.setTagSuggestionWorkerState("waiting_for_ollama", false, "", err.Error())
-			time.Sleep(3 * time.Second)
+			if !m.waitOrStop(3 * time.Second) {
+				return
+			}
 		default:
 			log.Printf("tag suggestion worker: unexpected error for meme %s, retrying later: %v", memeID, err)
 			m.requeueTagSuggestion(memeID)
 			m.setTagSuggestionWorkerState("retrying", true, "", err.Error())
-			time.Sleep(3 * time.Second)
+			if !m.waitOrStop(3 * time.Second) {
+				return
+			}
 		}
 	}
 }
@@ -1687,17 +1762,23 @@ func (m *MemeManager) enqueueTagSuggestion(id string) bool {
 	return true
 }
 
-func (m *MemeManager) dequeueTagSuggestion() string {
+// dequeueTagSuggestion blocks until a meme id is available and returns it with
+// ok=true. It returns ("", false) once StopBackgroundWorkers has run, so the
+// worker loop can exit instead of blocking on the condition variable forever.
+func (m *MemeManager) dequeueTagSuggestion() (string, bool) {
 	m.suggestionQueueMu.Lock()
 	defer m.suggestionQueueMu.Unlock()
 
 	for len(m.suggestionQueue) == 0 {
+		if m.suggestionClosing {
+			return "", false
+		}
 		m.suggestionQueueCond.Wait()
 	}
 
 	id := m.suggestionQueue[0]
 	m.suggestionQueue = m.suggestionQueue[1:]
-	return id
+	return id, true
 }
 
 func (m *MemeManager) finishTagSuggestion(id string) {
