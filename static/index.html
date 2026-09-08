@@ -343,6 +343,7 @@
                   <button id="admin-tag-merge-submit" class="primary-button" type="submit">Merge Tags</button>
                 </form>
               </div>
+              <p id="admin-tag-hygiene-freshness" class="admin-tag-hygiene-freshness" hidden></p>
               <div class="admin-tag-hygiene-lower">
                 <section class="admin-dashboard-section">
                   <div class="admin-dashboard-section-head">
@@ -350,13 +351,25 @@
                     <h3>Likely Variants</h3>
                   </div>
                   <div id="admin-tag-hygiene-pairs" class="admin-tag-hygiene-pairs"></div>
+                  <div class="admin-tag-hygiene-foot">
+                    <span id="admin-tag-hygiene-pairs-count" class="admin-tag-hygiene-count"></span>
+                    <button id="admin-tag-hygiene-pairs-more" class="ghost-button admin-tag-hygiene-more" type="button" hidden>Load more</button>
+                  </div>
                 </section>
                 <section class="admin-dashboard-section">
                   <div class="admin-dashboard-section-head">
                     <p class="section-kicker">Catalog</p>
                     <h3>Tag Counts</h3>
                   </div>
+                  <label class="field compact-field admin-tag-hygiene-search">
+                    <span>Filter tags</span>
+                    <input id="admin-tag-hygiene-search" type="search" placeholder="Search tag names" autocomplete="off" />
+                  </label>
                   <div id="admin-tag-hygiene-tags" class="admin-tag-hygiene-tags"></div>
+                  <div class="admin-tag-hygiene-foot">
+                    <span id="admin-tag-hygiene-tags-count" class="admin-tag-hygiene-count"></span>
+                    <button id="admin-tag-hygiene-tags-more" class="ghost-button admin-tag-hygiene-more" type="button" hidden>Load more</button>
+                  </div>
                 </section>
               </div>
             </section>

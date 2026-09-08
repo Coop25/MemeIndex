@@ -41,7 +41,19 @@ const state = {
     linkRetryStatus: null,
     backupStatus: null,
     dashboard: null,
-    tagHygiene: null,
+    tagHygiene: {
+      loaded: false,
+      ready: false,
+      computedAt: null,
+      pairs: [],
+      pairTotal: 0,
+      pairHasMore: false,
+      tags: [],
+      tagTotal: 0,
+      tagHasMore: false,
+      query: "",
+      busy: false,
+    },
     shares: [],
   },
   auth: {
@@ -252,6 +264,12 @@ const adminDashboardActivity = document.querySelector("#admin-dashboard-activity
 const adminTagHygienePanel = document.querySelector("#admin-tag-hygiene-panel");
 const adminTagHygienePairs = document.querySelector("#admin-tag-hygiene-pairs");
 const adminTagHygieneTags = document.querySelector("#admin-tag-hygiene-tags");
+const adminTagHygieneFreshness = document.querySelector("#admin-tag-hygiene-freshness");
+const adminTagHygieneSearch = document.querySelector("#admin-tag-hygiene-search");
+const adminTagHygienePairsCount = document.querySelector("#admin-tag-hygiene-pairs-count");
+const adminTagHygienePairsMore = document.querySelector("#admin-tag-hygiene-pairs-more");
+const adminTagHygieneTagsCount = document.querySelector("#admin-tag-hygiene-tags-count");
+const adminTagHygieneTagsMore = document.querySelector("#admin-tag-hygiene-tags-more");
 const adminTagMergeForm = document.querySelector("#admin-tag-merge-form");
 const adminTagMergeSource = document.querySelector("#admin-tag-merge-source");
 const adminTagMergeTarget = document.querySelector("#admin-tag-merge-target");
@@ -458,6 +476,15 @@ let toastSequence = 0;
 let deferredInstallPrompt = null;
 const activeToastTimeouts = new Map();
 const ADMIN_TAG_HYGIENE_DISMISSED_KEY = "memeindex.adminTagHygieneDismissed";
+const ADMIN_TAG_HYGIENE_PAGE_SIZE = 50;
+// Timing for re-polling the tag-hygiene report after a change: the server
+// recomputes it on a debounced background worker, so the first fetch right after
+// a merge can still be a step behind.
+const ADMIN_TAG_HYGIENE_RETRY_MS = 1500;
+const ADMIN_TAG_HYGIENE_MAX_RETRIES = 20;
+const ADMIN_TAG_HYGIENE_SETTLE_MS = [2500, 7000];
+let adminTagHygieneFetchToken = 0;
+let adminTagHygieneSearchTimer = null;
 
 function getActiveAdminPageState() {
   if (state.filters.view !== "admin") return null;
@@ -1312,16 +1339,127 @@ async function importPortableBackup(file) {
   }
 }
 
-async function fetchAdminTagHygiene() {
-  const response = await fetch("/api/admin/tag-hygiene");
-  if (!(await expectAuthorized(response, "Failed to load tag hygiene tools."))) {
-    return null;
+function tagHygieneEndpoint(view, offset, query) {
+  const params = new URLSearchParams({
+    view,
+    offset: String(offset),
+    limit: String(ADMIN_TAG_HYGIENE_PAGE_SIZE),
+  });
+  if (query) {
+    params.set("q", query);
+  }
+  return `/api/admin/tag-hygiene?${params.toString()}`;
+}
+
+let adminTagHygieneSettleTimers = [];
+function scheduleTagHygieneSettleRefresh() {
+  adminTagHygieneSettleTimers.forEach((id) => window.clearTimeout(id));
+  adminTagHygieneSettleTimers = ADMIN_TAG_HYGIENE_SETTLE_MS.map((delay) =>
+    window.setTimeout(() => {
+      if (activeAdminTab() === "tag-hygiene") {
+        fetchAdminTagHygiene().catch((error) => console.error(error));
+      }
+    }, delay),
+  );
+}
+
+// fetchAdminTagHygiene reloads the first page of both the "likely variants" and
+// "tag counts" lists. The report is maintained by a background worker, so when
+// it is not ready yet (or when settle is set, right after a merge) this re-polls
+// until the worker catches up, up to ADMIN_TAG_HYGIENE_MAX_RETRIES times.
+async function fetchAdminTagHygiene({ settle = false, attempt = 0 } = {}) {
+  const token = ++adminTagHygieneFetchToken;
+  const hy = state.admin.tagHygiene;
+  const query = hy.query || "";
+  hy.busy = true;
+
+  let pairsPayload;
+  let tagsPayload;
+  try {
+    const [pairsRes, tagsRes] = await Promise.all([
+      fetch(tagHygieneEndpoint("pairs", 0, query)),
+      fetch(tagHygieneEndpoint("tags", 0, query)),
+    ]);
+    if (!(await expectAuthorized(pairsRes, "Failed to load tag hygiene tools."))) {
+      return null;
+    }
+    if (!(await expectAuthorized(tagsRes, "Failed to load tag hygiene tools."))) {
+      return null;
+    }
+    pairsPayload = await pairsRes.json();
+    tagsPayload = await tagsRes.json();
+  } finally {
+    if (token === adminTagHygieneFetchToken) {
+      hy.busy = false;
+    }
   }
 
-  const payload = await response.json();
-  state.admin.tagHygiene = payload || null;
+  if (token !== adminTagHygieneFetchToken) {
+    return state.admin.tagHygiene;
+  }
+
+  hy.loaded = true;
+  hy.ready = !!(pairsPayload.ready && tagsPayload.ready);
+  hy.computedAt = tagsPayload.computed_at || pairsPayload.computed_at || null;
+  hy.pairs = Array.isArray(pairsPayload.pairs) ? pairsPayload.pairs : [];
+  hy.pairTotal = Number(pairsPayload.pair_total || 0);
+  hy.pairHasMore = !!pairsPayload.has_more;
+  hy.tags = Array.isArray(tagsPayload.tags) ? tagsPayload.tags : [];
+  hy.tagTotal = Number(tagsPayload.tag_total || 0);
+  hy.tagHasMore = !!tagsPayload.has_more;
   renderAdminTagHygiene();
+
+  if (!hy.ready && attempt < ADMIN_TAG_HYGIENE_MAX_RETRIES) {
+    window.setTimeout(() => {
+      if (activeAdminTab() === "tag-hygiene") {
+        fetchAdminTagHygiene({ attempt: attempt + 1 }).catch((error) => console.error(error));
+      }
+    }, ADMIN_TAG_HYGIENE_RETRY_MS);
+  } else if (hy.ready && settle) {
+    scheduleTagHygieneSettleRefresh();
+  }
   return state.admin.tagHygiene;
+}
+
+async function loadMoreTagHygiene(kind) {
+  const hy = state.admin.tagHygiene;
+  const view = kind === "pairs" ? "pairs" : "tags";
+  const offset = kind === "pairs" ? hy.pairs.length : hy.tags.length;
+  const button = kind === "pairs" ? adminTagHygienePairsMore : adminTagHygieneTagsMore;
+  if (button) {
+    button.disabled = true;
+  }
+  try {
+    const response = await fetch(tagHygieneEndpoint(view, offset, hy.query || ""));
+    if (!(await expectAuthorized(response, "Failed to load more tags."))) {
+      return;
+    }
+    const payload = await response.json();
+    if (kind === "pairs") {
+      hy.pairs = hy.pairs.concat(Array.isArray(payload.pairs) ? payload.pairs : []);
+      hy.pairTotal = Number(payload.pair_total || hy.pairTotal);
+      hy.pairHasMore = !!payload.has_more;
+    } else {
+      hy.tags = hy.tags.concat(Array.isArray(payload.tags) ? payload.tags : []);
+      hy.tagTotal = Number(payload.tag_total || hy.tagTotal);
+      hy.tagHasMore = !!payload.has_more;
+    }
+    renderAdminTagHygiene();
+  } finally {
+    if (button) {
+      button.disabled = false;
+    }
+  }
+}
+
+function setTagHygieneSearch(value) {
+  const hy = state.admin.tagHygiene;
+  const next = String(value || "").trim().toLowerCase();
+  if (next === (hy.query || "")) {
+    return;
+  }
+  hy.query = next;
+  fetchAdminTagHygiene().catch((error) => console.error(error));
 }
 
 async function fetchMemeAudit(memeID, limit = 5) {
@@ -2179,9 +2317,31 @@ function renderAdminTagHygiene() {
   }
 
   const report = state.admin.tagHygiene;
-  if (!report) {
+
+  if (adminTagHygieneSearch && document.activeElement !== adminTagHygieneSearch) {
+    adminTagHygieneSearch.value = report.query || "";
+  }
+
+  if (adminTagHygieneFreshness) {
+    let freshness = "";
+    if (!report.loaded || report.busy) {
+      freshness = "Loading the tag hygiene report…";
+    } else if (!report.ready) {
+      freshness = "Building the tag hygiene report in the background — this refreshes automatically.";
+    } else if (report.computedAt && !String(report.computedAt).startsWith("0001")) {
+      freshness = `Report updated ${formatRelativeTime(report.computedAt)}. It recomputes automatically as tags change.`;
+    }
+    adminTagHygieneFreshness.textContent = freshness;
+    adminTagHygieneFreshness.hidden = !freshness;
+  }
+
+  if (!report.loaded) {
     adminTagHygienePairs.innerHTML = `<p class="users-empty">Loading tag hygiene suggestions...</p>`;
     adminTagHygieneTags.innerHTML = "";
+    if (adminTagHygienePairsCount) adminTagHygienePairsCount.textContent = "";
+    if (adminTagHygieneTagsCount) adminTagHygieneTagsCount.textContent = "";
+    if (adminTagHygienePairsMore) adminTagHygienePairsMore.hidden = true;
+    if (adminTagHygieneTagsMore) adminTagHygieneTagsMore.hidden = true;
     return;
   }
 
@@ -2190,7 +2350,9 @@ function renderAdminTagHygiene() {
     return !dismissedPairs.has(tagHygienePairKey(pair.primary || "", pair.candidate || ""));
   });
   if (pairs.length === 0) {
-    adminTagHygienePairs.innerHTML = `<p class="users-empty">No likely spelling or separator variants found right now.</p>`;
+    adminTagHygienePairs.innerHTML = report.ready
+      ? `<p class="users-empty">No likely spelling or separator variants found right now.</p>`
+      : `<p class="users-empty">Checking for likely variants…</p>`;
   } else {
     adminTagHygienePairs.innerHTML = pairs.map((pair) => `
       <article class="admin-tag-hygiene-pair">
@@ -2221,9 +2383,20 @@ function renderAdminTagHygiene() {
     `).join("");
   }
 
+  if (adminTagHygienePairsCount) {
+    adminTagHygienePairsCount.textContent = report.pairTotal
+      ? `Showing ${pairs.length} of ${report.pairTotal}`
+      : "";
+  }
+  if (adminTagHygienePairsMore) {
+    adminTagHygienePairsMore.hidden = !report.pairHasMore;
+  }
+
   const tags = Array.isArray(report.tags) ? report.tags : [];
   if (tags.length === 0) {
-    adminTagHygieneTags.innerHTML = `<p class="users-empty">No tags found yet.</p>`;
+    adminTagHygieneTags.innerHTML = report.query
+      ? `<p class="users-empty">No tags match "${escapeHTML(report.query)}".</p>`
+      : `<p class="users-empty">No tags found yet.</p>`;
   } else {
     adminTagHygieneTags.innerHTML = tags.map((tag) => `
       <article class="admin-tag-hygiene-tag">
@@ -2245,6 +2418,15 @@ function renderAdminTagHygiene() {
         </div>
       </article>
     `).join("");
+  }
+
+  if (adminTagHygieneTagsCount) {
+    adminTagHygieneTagsCount.textContent = report.tagTotal
+      ? `Showing ${tags.length} of ${report.tagTotal}`
+      : "";
+  }
+  if (adminTagHygieneTagsMore) {
+    adminTagHygieneTagsMore.hidden = !report.tagHasMore;
   }
 
   adminTagHygienePanel.querySelectorAll("[data-source-tag][data-target-tag]").forEach((element) => {
@@ -2322,7 +2504,7 @@ async function mergeAdminTags(sourceTag, targetTag) {
   if (adminTagMergeTarget) {
     adminTagMergeTarget.value = "";
   }
-  await fetchAdminTagHygiene();
+  await fetchAdminTagHygiene({ settle: true });
   await fetchAdminDashboard();
   if (adminTagMergeSubmit) {
     adminTagMergeSubmit.disabled = false;
@@ -6603,6 +6785,20 @@ adminTagMergeForm?.addEventListener("submit", (event) => {
       adminTagMergeSubmit.disabled = false;
     }
   });
+});
+
+adminTagHygienePairsMore?.addEventListener("click", () => {
+  loadMoreTagHygiene("pairs").catch((error) => console.error(error));
+});
+
+adminTagHygieneTagsMore?.addEventListener("click", () => {
+  loadMoreTagHygiene("tags").catch((error) => console.error(error));
+});
+
+adminTagHygieneSearch?.addEventListener("input", (event) => {
+  const value = event.target.value || "";
+  window.clearTimeout(adminTagHygieneSearchTimer);
+  adminTagHygieneSearchTimer = window.setTimeout(() => setTagHygieneSearch(value), 250);
 });
 
 document.addEventListener("click", (event) => {

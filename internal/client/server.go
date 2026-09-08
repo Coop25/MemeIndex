@@ -1951,7 +1951,19 @@ func (s *Server) handleAuditLogs(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleTagHygiene(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, s.managers.TagHygieneReport())
+		view := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("view")))
+		switch view {
+		case "", "pairs", "tags":
+		default:
+			http.Error(w, "invalid view (want pairs or tags)", http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, http.StatusOK, s.managers.TagHygienePage(manager.TagHygienePageParams{
+			View:   view,
+			Offset: parseQueryInt(r, "offset", 0),
+			Limit:  parseQueryInt(r, "limit", 0),
+			Search: r.URL.Query().Get("q"),
+		}))
 	case http.MethodPost:
 		var payload struct {
 			SourceTag string `json:"source_tag"`
