@@ -557,6 +557,24 @@ func (s *PostgresStore) ReplaceSuggestedTags(id string, tags []string) error {
 	return nil
 }
 
+// SetSearchText stores the derived search blob for a meme. It deliberately does
+// not touch updated_at: this is background-derived data, and the same
+// tag-suggestion pass already bumped the row via ReplaceSuggestedTags.
+func (s *PostgresStore) SetSearchText(id, text string) error {
+	commandTag, err := s.pool.Exec(context.Background(), `
+		UPDATE memes
+		SET search_text = $2
+		WHERE id = $1
+	`, strings.TrimSpace(id), strings.TrimSpace(text))
+	if err != nil {
+		return err
+	}
+	if commandTag.RowsAffected() == 0 {
+		return os.ErrNotExist
+	}
+	return nil
+}
+
 func (s *PostgresStore) SetAutoSuggestDisabled(id string, disabled bool) error {
 	commandTag, err := s.pool.Exec(context.Background(), `
 		UPDATE memes
@@ -1030,6 +1048,7 @@ func (s *PostgresStore) ensureSchema(ctx context.Context) error {
 		"008_memes_auto_suggest_disabled.sql",
 		"009_meme_shares.sql",
 		"010_meme_query_indexes.sql",
+		"012_meme_search_text.sql",
 	); err != nil {
 		return fmt.Errorf("ensure schema: %w", err)
 	}

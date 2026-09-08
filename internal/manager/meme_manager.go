@@ -657,6 +657,14 @@ func (m *MemeManager) RefreshMemeTagSuggestions(ctx context.Context, userID stri
 		}
 	}
 
+	// Persist the derived search text (on-image text + transcript) so it feeds
+	// meme search. Best-effort: a failure here must not fail the suggestion.
+	if searchTextStore, ok := m.store.(accessor.SearchTextStore); ok {
+		if err := searchTextStore.SetSearchText(meme.ID, result.Text); err != nil {
+			log.Printf("tag suggestion: storing search text for meme %s failed: %v", meme.ID, err)
+		}
+	}
+
 	return output, nil
 }
 
@@ -687,6 +695,7 @@ func (m *MemeManager) ResetTagSuggestionsAndRequeueUntagged(actor accessor.Audit
 	}
 
 	memes := m.store.List("", "", false, "")
+	searchTextStore, hasSearchText := m.store.(accessor.SearchTextStore)
 	result := ResetTagSuggestionQueueResult{}
 	for _, meme := range memes {
 		if len(meme.SuggestedTags) > 0 {
@@ -694,6 +703,13 @@ func (m *MemeManager) ResetTagSuggestionsAndRequeueUntagged(actor accessor.Audit
 				return ResetTagSuggestionQueueResult{}, err
 			}
 			result.ClearedSuggestions += 1
+			// The same pass that produced those suggestions also set the
+			// derived search text; drop it so a re-run regenerates it cleanly.
+			if hasSearchText {
+				if err := searchTextStore.SetSearchText(meme.ID, ""); err != nil {
+					return ResetTagSuggestionQueueResult{}, err
+				}
+			}
 		}
 		if meme.AutoSuggestDisabled {
 			if err := suggestionStore.SetAutoSuggestDisabled(meme.ID, false); err != nil {

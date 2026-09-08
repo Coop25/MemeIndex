@@ -16,3 +16,8 @@ CREATE INDEX IF NOT EXISTS idx_memes_source_url_trgm
     ON memes USING gin (LOWER(source_url) gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_tags_name_trgm
     ON tags USING gin (name gin_trgm_ops);
+
+-- search_text is added in migration 012, which runs in the required batch before
+-- this best-effort one, so the column exists by the time this index is built.
+CREATE INDEX IF NOT EXISTS idx_memes_search_text_trgm
+    ON memes USING gin (LOWER(search_text) gin_trgm_ops);

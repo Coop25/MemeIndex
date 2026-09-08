@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -107,6 +108,77 @@ func TestGenerateEndpointUsesSchemaAndCleansResponse(t *testing.T) {
 	}
 }
 
+func TestExtractTextFromModelText(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "object with text", raw: `{"tags":["work"],"text":"WHEN THE CODE COMPILES"}`, want: "WHEN THE CODE COMPILES"},
+		{name: "prose around json", raw: "sure: {\"tags\":[\"x\"],\"text\":\"one two\"} ok", want: "one two"},
+		{name: "no text key", raw: `{"tags":["x"]}`, want: ""},
+		{name: "empty text", raw: `{"tags":["x"],"text":"   "}`, want: ""},
+		{name: "not json", raw: `here are some tags`, want: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := extractTextFromModelText(tc.raw); got != tc.want {
+				t.Fatalf("extractTextFromModelText(%q) = %q, want %q", tc.raw, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCombineSearchText(t *testing.T) {
+	if got := combineSearchText("  ON  IMAGE\ntext ", ""); got != "ON IMAGE text" {
+		t.Fatalf("whitespace not collapsed: %q", got)
+	}
+	if got := combineSearchText("", "spoken words"); got != "spoken words" {
+		t.Fatalf("transcript-only = %q", got)
+	}
+	if got := combineSearchText("Same Line", "same line"); got != "Same Line" {
+		t.Fatalf("case-insensitive duplicate should collapse, got %q", got)
+	}
+	if got := combineSearchText("caption here", "and the audio"); got != "caption here and the audio" {
+		t.Fatalf("join = %q", got)
+	}
+	long := strings.Repeat("a", maxSearchTextLen+500)
+	if got := combineSearchText(long, ""); len([]rune(got)) > maxSearchTextLen {
+		t.Fatalf("combined text not capped: %d runes", len([]rune(got)))
+	}
+}
+
+func TestGenerateEndpointCapturesModelText(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"response": `{"tags":["exams","panic"],"text":"ME WALKING INTO THE EXAM I DIDN'T STUDY FOR"}`,
+		})
+	}))
+	defer server.Close()
+
+	asset, err := os.CreateTemp(t.TempDir(), "asset-*.jpg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = asset.Write([]byte("fake"))
+	_ = asset.Close()
+
+	service := New(Config{OllamaURL: server.URL, Model: "test-vision", Timeout: 2 * time.Second, MaxTags: 8, GenerateOnly: true})
+	result, err := service.Suggest(context.Background(), Request{
+		AssetPaths:  []string{asset.Name()},
+		Filename:    "exam.jpg",
+		ContentType: "image/jpeg",
+		Transcript:  "background narration here",
+	})
+	if err != nil {
+		t.Fatalf("suggest: %v", err)
+	}
+	if result.Text != "ME WALKING INTO THE EXAM I DIDN'T STUDY FOR background narration here" {
+		t.Fatalf("unexpected search text %q", result.Text)
+	}
+}
+
 func TestPromptKnownTagsIsCapped(t *testing.T) {
 	tags := make([]string, 100)
 	for index := range tags {
@@ -119,7 +191,7 @@ func TestPromptKnownTagsIsCapped(t *testing.T) {
 
 func TestBuildResultDoesNotInventCompanionTags(t *testing.T) {
 	service := &Service{model: "test", maxTags: 8}
-	result := service.buildResult(Request{}, []string{"trans", "video games", "image processing", "image"})
+	result := service.buildResult(Request{}, []string{"trans", "video games", "image processing", "image"}, "")
 	want := []string{"trans", "video games", "image processing"}
 	if len(result.Tags) != len(want) {
 		t.Fatalf("got %v, want %v", result.Tags, want)
