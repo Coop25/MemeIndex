@@ -50,6 +50,23 @@ const (
 	previewAssetUnavailable   previewAssetResult = "unavailable"
 )
 
+// thumbnailPresenceCache remembers video stored-names whose thumbnail file has
+// been seen on disk. A generated thumbnail is permanent for the life of the
+// meme, so a positive result never needs re-checking; only the absence of one
+// is re-stat'd (an upload or the backfill can create it later). The cache is
+// cleared by ResetPreviewPathCache after a portable-backup restore swaps the
+// thumbnails directory. Entries are keyed by previewDir + "\x00" + storedName.
+var thumbnailPresenceCache sync.Map
+
+// ResetPreviewPathCache forgets every remembered thumbnail so the next request
+// re-checks the (possibly just-swapped) thumbnails directory.
+func ResetPreviewPathCache() {
+	thumbnailPresenceCache.Range(func(key, _ any) bool {
+		thumbnailPresenceCache.Delete(key)
+		return true
+	})
+}
+
 func decoratePreviewPath(meme *Meme, previewDir string) {
 	if meme == nil {
 		return
@@ -59,12 +76,19 @@ func decoratePreviewPath(meme *Meme, previewDir string) {
 	case strings.HasPrefix(meme.ContentType, "image/"):
 		meme.PreviewPath = meme.FilePath
 	case strings.HasPrefix(meme.ContentType, "video/"):
-		thumbnailPath := thumbnailWebPath(meme.StoredName)
-		if previewDir != "" {
-			if _, err := os.Stat(filepath.Join(previewDir, thumbnailFileName(meme.StoredName))); err == nil {
-				meme.PreviewPath = thumbnailPath
-				return
-			}
+		if previewDir == "" {
+			meme.PreviewPath = ""
+			return
+		}
+		cacheKey := previewDir + "\x00" + meme.StoredName
+		if _, seen := thumbnailPresenceCache.Load(cacheKey); seen {
+			meme.PreviewPath = thumbnailWebPath(meme.StoredName)
+			return
+		}
+		if _, err := os.Stat(filepath.Join(previewDir, thumbnailFileName(meme.StoredName))); err == nil {
+			thumbnailPresenceCache.Store(cacheKey, struct{}{})
+			meme.PreviewPath = thumbnailWebPath(meme.StoredName)
+			return
 		}
 		meme.PreviewPath = ""
 	default:

@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/sync/errgroup"
 
 	"memeindex/internal/dbschema"
 )
@@ -637,54 +638,64 @@ func scanIDList(ctx context.Context, q queryable, sql string, args ...any) ([]st
 }
 
 // MemeDashboard resolves the user home screen summary in Postgres instead of
-// scanning the whole archive into memory.
+// scanning the whole archive into memory. The seven independent reads are run
+// concurrently on separate pooled connections; the first error cancels the rest.
 func (s *PostgresStore) MemeDashboard(userID string) (MemeDashboardData, error) {
-	ctx := context.Background()
 	uid := normalizeFavoriteUserID(userID)
 	const visible = "COALESCE(m.hidden_from_app, FALSE) = FALSE"
 
-	counts, err := s.memeCounts(ctx, visible, []any{uid})
-	if err != nil {
-		return MemeDashboardData{}, err
-	}
-	data := MemeDashboardData{
-		Counts:     counts,
-		TotalItems: counts.Total,
-		Favorites:  counts.Favorites,
-	}
+	var data MemeDashboardData
+	g, ctx := errgroup.WithContext(context.Background())
 
-	if err := s.pool.QueryRow(ctx,
-		`SELECT COALESCE(SUM(size_bytes), 0)::bigint FROM memes m WHERE `+visible,
-	).Scan(&data.StorageBytes); err != nil {
-		return MemeDashboardData{}, err
-	}
-	if err := s.pool.QueryRow(ctx, `
-		SELECT COUNT(DISTINCT t.id)
-		FROM meme_tags mt
-		JOIN tags t ON t.id = mt.tag_id
-		JOIN memes m ON m.id = mt.meme_id
-		WHERE `+visible,
-	).Scan(&data.TagCount); err != nil {
-		return MemeDashboardData{}, err
-	}
+	g.Go(func() error {
+		counts, err := s.memeCounts(ctx, visible, []any{uid})
+		if err != nil {
+			return err
+		}
+		data.Counts = counts
+		data.TotalItems = counts.Total
+		data.Favorites = counts.Favorites
+		return nil
+	})
+	g.Go(func() error {
+		return s.pool.QueryRow(ctx,
+			`SELECT COALESCE(SUM(size_bytes), 0)::bigint FROM memes m WHERE `+visible,
+		).Scan(&data.StorageBytes)
+	})
+	g.Go(func() error {
+		return s.pool.QueryRow(ctx, `
+			SELECT COUNT(DISTINCT t.id)
+			FROM meme_tags mt
+			JOIN tags t ON t.id = mt.tag_id
+			JOIN memes m ON m.id = mt.meme_id
+			WHERE `+visible,
+		).Scan(&data.TagCount)
+	})
+	g.Go(func() error {
+		rows, err := s.queryMemeRows(ctx, uid, visible, "m.created_at DESC, m.id ASC", 6, 0)
+		data.RecentItems = rows
+		return err
+	})
+	g.Go(func() error {
+		rows, err := s.queryMemeRows(ctx, uid,
+			visible+" AND EXISTS (SELECT 1 FROM user_favorites uf WHERE uf.user_id = $1 AND uf.meme_id = m.id)",
+			"m.created_at DESC, m.id ASC", 6, 0,
+		)
+		data.FavoriteItems = rows
+		return err
+	})
+	g.Go(func() error {
+		rows, err := s.queryMemeRows(ctx, uid, visible, "random()", 6, 0)
+		data.RandomItems = rows
+		return err
+	})
+	g.Go(func() error {
+		tags, err := s.TagCounts(5)
+		data.TopTags = tags
+		return err
+	})
 
-	if data.RecentItems, err = s.queryMemeRows(ctx, uid,
-		visible, "m.created_at DESC, m.id ASC", 6, 0,
-	); err != nil {
-		return MemeDashboardData{}, err
-	}
-	if data.FavoriteItems, err = s.queryMemeRows(ctx, uid,
-		visible+" AND EXISTS (SELECT 1 FROM user_favorites uf WHERE uf.user_id = $1 AND uf.meme_id = m.id)",
-		"m.created_at DESC, m.id ASC", 6, 0,
-	); err != nil {
-		return MemeDashboardData{}, err
-	}
-	if data.RandomItems, err = s.queryMemeRows(ctx, uid,
-		visible, "random()", 6, 0,
-	); err != nil {
-		return MemeDashboardData{}, err
-	}
-	if data.TopTags, err = s.TagCounts(5); err != nil {
+	if err := g.Wait(); err != nil {
 		return MemeDashboardData{}, err
 	}
 	return data, nil

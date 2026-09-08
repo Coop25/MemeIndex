@@ -1261,6 +1261,9 @@ func (m *MemeManager) ReloadAfterRestore() error {
 	m.suggestionQueueMu.Unlock()
 	m.SeedTagSuggestionQueue()
 	m.invalidateAdminReadCache()
+	// The restore swapped the thumbnails directory; forget which thumbnails we
+	// have seen so preview paths are re-derived against the new contents.
+	accessor.ResetPreviewPathCache()
 	return nil
 }
 
