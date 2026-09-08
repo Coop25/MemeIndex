@@ -23,6 +23,12 @@ func newCSPNonce() string {
 
 func LoggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Health probes are polled every few seconds by orchestration; logging
+		// them would drown out real request traffic.
+		if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {
+			next.ServeHTTP(w, r)
+			return
+		}
 		start := time.Now()
 		next.ServeHTTP(w, r)
 		// Sanitize request-derived fields so a client cannot inject newlines and

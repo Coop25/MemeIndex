@@ -79,6 +79,24 @@ func (s *PostgresStore) UploadDir() string {
 	return s.uploadDir
 }
 
+// Ping verifies the connection pool can reach PostgreSQL. It backs the /readyz
+// endpoint so orchestration can tell a database outage apart from a healthy
+// process.
+func (s *PostgresStore) Ping(ctx context.Context) error {
+	if s.pool == nil {
+		return errors.New("postgres pool is not initialised")
+	}
+	return s.pool.Ping(ctx)
+}
+
+// Close releases the connection pool. It is meant to be called once during a
+// graceful shutdown, after the HTTP server has stopped accepting requests.
+func (s *PostgresStore) Close() {
+	if s.pool != nil {
+		s.pool.Close()
+	}
+}
+
 func (s *PostgresStore) ThumbnailDir() string {
 	return s.previewDir
 }

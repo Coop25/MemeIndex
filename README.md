@@ -165,6 +165,17 @@ Then add both callback URLs in the Discord developer portal, for example:
 
 When enabled, MemeIndex will use whichever host you started from in the browser.
 
+## Health checks
+
+MemeIndex exposes two unauthenticated probes for orchestration and load balancers:
+
+- `GET /healthz` — liveness. Returns `200` with `{"status":"ok"}` as long as the process can serve HTTP. It never touches the database.
+- `GET /readyz` — readiness. Returns `200` only when the server is not draining and its backing store answers a ping (`{"checks":{"accepting_traffic":"ok","datastore":"ok"}}`). Returns `503` during shutdown or when Postgres is unreachable. On the legacy JSON store the datastore check reports `"skipped"`.
+
+Neither path is written to the request log. The bundled `Dockerfile` and `docker-compose.yml` wire `/healthz` into their container health checks.
+
+On `SIGINT` or `SIGTERM` the server stops accepting new connections, flips `/readyz` to `503`, drains in-flight requests for up to 30 seconds, then closes the database pool before exiting.
+
 ## Docker Compose
 
 This repo now includes a `docker-compose.yml` that starts:
