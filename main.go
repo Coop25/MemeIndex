@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/signal"
 	"syscall"
@@ -76,9 +77,19 @@ func main() {
 
 	httpServer := &http.Server{
 		Addr:              config.Addr,
-		Handler:           client.LoggingMiddleware(client.AssetCompression(server.Routes())),
+		Handler:           client.LoggingMiddleware(client.MetricsMiddleware(client.AssetCompression(server.Routes()))),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       60 * time.Second,
+	}
+
+	debugServer := newDebugServer(config.DebugAddr)
+	if debugServer != nil {
+		go func() {
+			log.Printf("MemeIndex debug listener on http://%s (/metrics, /debug/pprof/) - keep this bound to a private interface", config.DebugAddr)
+			if err := debugServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Printf("debug listener stopped: %v", err)
+			}
+		}()
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -110,6 +121,9 @@ func main() {
 		log.Printf("graceful shutdown timed out, forcing close: %v", err)
 		_ = httpServer.Close()
 	}
+	if debugServer != nil {
+		_ = debugServer.Shutdown(shutdownCtx)
+	}
 
 	if closer, ok := store.(interface{ Close() }); ok {
 		closer.Close()
@@ -117,6 +131,28 @@ func main() {
 	}
 
 	log.Printf("shutdown complete")
+}
+
+// newDebugServer builds the private diagnostics listener (Prometheus /metrics
+// and net/http/pprof). It returns nil when MEMEINDEX_DEBUG_ADDR is unset, which
+// is the default: nothing extra is exposed unless an operator opts in. Bind it
+// to a loopback or private address only.
+func newDebugServer(addr string) *http.Server {
+	if addr == "" {
+		return nil
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", client.MetricsHandler())
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	return &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
 }
 
 func runNightlyReelSessionCleanup(memeManager *manager.MemeManager) {

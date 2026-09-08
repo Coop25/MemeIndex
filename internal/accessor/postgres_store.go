@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -28,6 +29,17 @@ type PostgresStore struct {
 	uploadDir  string
 	previewDir string
 	dataDir    string
+
+	// searchTrgmReady tracks whether the optional pg_trgm search indexes were
+	// created. When false, filename/notes search falls back to slower scans and
+	// callers surface a "degraded" signal on /readyz and the admin dashboard.
+	searchTrgmReady atomic.Bool
+}
+
+// SearchIndexAvailable reports whether the optional trigram search indexes are
+// in place. It is false only when the database role could not enable pg_trgm.
+func (s *PostgresStore) SearchIndexAvailable() bool {
+	return s.searchTrgmReady.Load()
 }
 
 func NewPostgresStore(ctx context.Context, databaseURL string, dataDir string) (*PostgresStore, error) {
@@ -1473,7 +1485,11 @@ func (s *PostgresStore) ensureSchema(ctx context.Context) error {
 	}
 	// Trigram search indexes are a speed-up, not a correctness requirement, and
 	// need the pg_trgm extension a restricted role may not be able to create.
-	dbschema.ApplyOptional(ctx, s.pool, "011_meme_search_trgm.sql")
+	notApplied := dbschema.ApplyOptional(ctx, s.pool, "011_meme_search_trgm.sql")
+	s.searchTrgmReady.Store(len(notApplied) == 0)
+	if len(notApplied) > 0 {
+		log.Printf("dbschema: search running in degraded mode (pg_trgm indexes unavailable): %v", notApplied)
+	}
 	return nil
 }
 
