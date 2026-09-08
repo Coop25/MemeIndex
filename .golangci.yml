@@ -1,0 +1,37 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  # "standard" is errcheck, govet, ineffassign, staticcheck, unused - the set
+  # that already has to pass. A few extra high-signal linters on top.
+  default: standard
+  enable:
+    - bodyclose
+    - errorlint
+    - misspell
+    - unconvert
+  exclusions:
+    generated: lax
+    presets:
+      - common-false-positives
+      - legacy
+    rules:
+      # Table-driven and helper-heavy tests intentionally ignore some errors.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - bodyclose
+
+formatters:
+  enable:
+    - gofmt
+
+issues:
+  # The codebase predates this config and carries a lint backlog (tracked
+  # separately). Gate CI on regressions only: anything the current change adds
+  # or touches must be clean, existing findings do not block.
+  new-from-merge-base: origin/master
+  max-issues-per-linter: 0
+  max-same-issues: 0
