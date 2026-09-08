@@ -194,3 +194,58 @@ func TestStepPrevIncludesRecentHistoryForPreload(t *testing.T) {
 func testMemeID(index int) string {
 	return fmt.Sprintf("meme-%03d", index)
 }
+
+type countingReelBackend struct {
+	saved       map[string]int
+	deleteCalls int
+	cleanups    int
+}
+
+func (b *countingReelBackend) LoadReelSessions() (map[string]accessor.ReelSessionRecord, error) {
+	return nil, nil
+}
+func (b *countingReelBackend) SaveReelSession(id string, _ accessor.ReelSessionRecord) error {
+	b.saved[id]++
+	return nil
+}
+func (b *countingReelBackend) DeleteReelSession(string) error { b.deleteCalls++; return nil }
+func (b *countingReelBackend) CleanupStaleReelSessions(time.Time) error {
+	b.cleanups++
+	return nil
+}
+
+func TestStepPersistsOnlyTheChangedSession(t *testing.T) {
+	memes := map[string]accessor.Meme{}
+	for i := 0; i < 12; i++ {
+		id := testMemeID(i)
+		memes[id] = accessor.Meme{ID: id, OriginalName: id}
+	}
+
+	backend := &countingReelBackend{saved: map[string]int{}}
+	store := &ReelSessionStore{
+		sessions: map[string]*reelSession{
+			"a": {History: []string{testMemeID(0), testMemeID(1)}, Position: 0, LastActivity: time.Now().UTC()},
+			"b": {History: []string{testMemeID(2), testMemeID(3)}, Position: 0, LastActivity: time.Now().UTC()},
+			"c": {History: []string{testMemeID(4), testMemeID(5)}, Position: 0, LastActivity: time.Now().UTC()},
+		},
+		backend: backend,
+		store: &reelTestStore{
+			memes:         memes,
+			randomPickIDs: []string{testMemeID(6), testMemeID(7), testMemeID(8), testMemeID(9)},
+		},
+	}
+
+	if _, err := store.Step("b", "next"); err != nil {
+		t.Fatalf("Step: %v", err)
+	}
+
+	if backend.saved["b"] == 0 {
+		t.Fatal("the stepped session was not persisted")
+	}
+	if backend.saved["a"] != 0 || backend.saved["c"] != 0 {
+		t.Fatalf("untouched sessions were rewritten on a single step: %+v", backend.saved)
+	}
+	if backend.cleanups != 0 {
+		t.Fatalf("Step issued %d backend cleanup sweeps, want 0 (nightly job only)", backend.cleanups)
+	}
+}

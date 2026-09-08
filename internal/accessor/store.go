@@ -134,6 +134,36 @@ type AdminMemeStore interface {
 	GetAnyByID(id string) (Meme, error)
 }
 
+// TagMaintenanceStore resolves bulk tag housekeeping in the database. The
+// in-memory fallback rewrites every affected meme one transaction at a time,
+// each of which also re-runs a whole-table orphan-tag sweep.
+type TagMaintenanceStore interface {
+	// MergeTag repoints every meme_tags link from sourceTag onto targetTag,
+	// creating targetTag if needed and deleting sourceTag, in one transaction.
+	// It returns the number of memes that carried sourceTag.
+	MergeTag(sourceTag, targetTag string, actor AuditActor) (int, error)
+}
+
+// TagSuggestionQueryStore resolves the tag-suggestion admin panel's counts and
+// its pending-review page in SQL instead of scanning every meme on each poll.
+type TagSuggestionQueryStore interface {
+	// UntaggedWithoutSuggestionsCount counts visible memes with no tags, no
+	// stored suggestions, and auto-suggest still enabled.
+	UntaggedWithoutSuggestionsCount() (int, error)
+	// UntaggedWithoutSuggestionIDs returns the ids of those same memes so the
+	// suggestion queue can be seeded without loading every meme.
+	UntaggedWithoutSuggestionIDs() ([]string, error)
+	// PendingSuggestionMemes returns the total number of visible memes that have
+	// stored suggestions plus one newest-first page of them.
+	PendingSuggestionMemes(offset, limit int) (total int, memes []Meme, err error)
+}
+
+// TagUsageStore returns how many visible memes carry each tag. It backs the
+// admin tag-hygiene report, whose only store input is that map.
+type TagUsageStore interface {
+	TagUsageCounts() (map[string]int, error)
+}
+
 type PreviewAssetStore interface {
 	ThumbnailDir() string
 	EnsurePreviewAssets() error

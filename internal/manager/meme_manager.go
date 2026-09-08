@@ -935,13 +935,7 @@ func (m *MemeManager) TagHygieneReport() TagHygieneReport {
 }
 
 func (m *MemeManager) computeTagHygieneReport() TagHygieneReport {
-	memes := m.store.List("", "", false, "")
-	tagCounts := map[string]int{}
-	for _, meme := range memes {
-		for _, tag := range meme.Tags {
-			tagCounts[tag] += 1
-		}
-	}
+	tagCounts := m.tagUsageCounts()
 
 	tagNames := make([]string, 0, len(tagCounts))
 	for tag := range tagCounts {
@@ -1000,6 +994,26 @@ func (m *MemeManager) computeTagHygieneReport() TagHygieneReport {
 	}
 }
 
+// tagUsageCounts returns tag name -> number of visible memes carrying it,
+// resolved in SQL where the store supports it and by a full scan otherwise.
+func (m *MemeManager) tagUsageCounts() map[string]int {
+	if tu, ok := m.store.(accessor.TagUsageStore); ok {
+		if counts, err := tu.TagUsageCounts(); err == nil {
+			return counts
+		} else {
+			log.Printf("tag usage counts: SQL failed, falling back to scan: %v", err)
+		}
+	}
+
+	counts := map[string]int{}
+	for _, meme := range m.store.List("", "", false, "") {
+		for _, tag := range meme.Tags {
+			counts[tag] += 1
+		}
+	}
+	return counts
+}
+
 // invalidateAdminReadCache drops the memoized admin read models so the next load
 // recomputes. Call after any change that alters their inputs (tag merges, restore).
 func (m *MemeManager) invalidateAdminReadCache() {
@@ -1045,6 +1059,19 @@ func (m *MemeManager) MergeTags(sourceTag string, targetTag string, actor access
 			SourceTag: sourceTag,
 			TargetTag: targetTag,
 		}, nil
+	}
+
+	// Fast path: one transaction that repoints tag links in bulk, instead of
+	// rewriting every affected meme (each of which re-swept the tags table).
+	if tm, ok := m.store.(accessor.TagMaintenanceStore); ok {
+		affected, err := tm.MergeTag(sourceTag, targetTag, actor)
+		if err != nil {
+			return TagMergeResult{}, err
+		}
+		if affected > 0 {
+			m.invalidateAdminReadCache()
+		}
+		return TagMergeResult{SourceTag: sourceTag, TargetTag: targetTag, AffectedMemes: affected}, nil
 	}
 
 	memes := m.store.List("", "", false, "")
@@ -1130,8 +1157,47 @@ func (m *MemeManager) TagSuggestionQueueStatus(reviewOffset int, reviewLimit int
 		}
 	}
 
-	memes := m.store.List("", "", false, "")
-	for _, meme := range memes {
+	if tq, ok := m.store.(accessor.TagSuggestionQueryStore); ok {
+		if filled, ok := m.fillTagSuggestionCountsFromSQL(tq, &status, reviewOffset, reviewLimit); ok {
+			return filled
+		}
+	}
+
+	m.fillTagSuggestionCountsFromScan(&status, reviewOffset, reviewLimit)
+	return status
+}
+
+// fillTagSuggestionCountsFromSQL populates the untagged/pending counters and the
+// pending-review page from the database. It reports false (leaving status
+// untouched) if either query fails so the caller can fall back to a scan.
+func (m *MemeManager) fillTagSuggestionCountsFromSQL(tq accessor.TagSuggestionQueryStore, status *TagSuggestionQueueStatus, reviewOffset, reviewLimit int) (TagSuggestionQueueStatus, bool) {
+	untagged, err := tq.UntaggedWithoutSuggestionsCount()
+	if err != nil {
+		log.Printf("tag suggestion status: untagged count SQL failed, falling back to scan: %v", err)
+		return TagSuggestionQueueStatus{}, false
+	}
+	total, pending, err := tq.PendingSuggestionMemes(reviewOffset, reviewLimit)
+	if err != nil {
+		log.Printf("tag suggestion status: pending-review SQL failed, falling back to scan: %v", err)
+		return TagSuggestionQueueStatus{}, false
+	}
+
+	status.UntaggedWithoutSuggestions = untagged
+	status.PendingSuggestionMemes = total
+	for _, meme := range pending {
+		status.PendingReviewMemes = append(status.PendingReviewMemes, PendingReviewMemeItem{
+			ID:            meme.ID,
+			Name:          meme.OriginalName,
+			SuggestedTags: append([]string(nil), meme.SuggestedTags...),
+		})
+	}
+	status.PendingReviewNextOffset = min(total, reviewOffset+len(status.PendingReviewMemes))
+	status.PendingReviewHasMore = status.PendingReviewNextOffset < total
+	return *status, true
+}
+
+func (m *MemeManager) fillTagSuggestionCountsFromScan(status *TagSuggestionQueueStatus, reviewOffset, reviewLimit int) {
+	for _, meme := range m.store.List("", "", false, "") {
 		if shouldQueueTagSuggestionsForMeme(meme) {
 			status.UntaggedWithoutSuggestions += 1
 		}
@@ -1149,8 +1215,6 @@ func (m *MemeManager) TagSuggestionQueueStatus(reviewOffset int, reviewLimit int
 	}
 	status.PendingReviewNextOffset = min(status.PendingSuggestionMemes, reviewOffset+len(status.PendingReviewMemes))
 	status.PendingReviewHasMore = status.PendingReviewNextOffset < status.PendingSuggestionMemes
-
-	return status
 }
 
 func (m *MemeManager) StartTagSuggestionWorker() {
@@ -1168,13 +1232,28 @@ func (m *MemeManager) SeedTagSuggestionQueue() int {
 		return 0
 	}
 
-	memes := m.store.List("", "", false, "")
-	queued := 0
-	for _, meme := range memes {
-		if !shouldQueueTagSuggestionsForMeme(meme) {
-			continue
+	var (
+		ids      []string
+		resolved bool
+	)
+	if tq, ok := m.store.(accessor.TagSuggestionQueryStore); ok {
+		if got, err := tq.UntaggedWithoutSuggestionIDs(); err == nil {
+			ids, resolved = got, true
+		} else {
+			log.Printf("seed tag suggestion queue: SQL failed, falling back to scan: %v", err)
 		}
-		if m.enqueueTagSuggestion(meme.ID) {
+	}
+	if !resolved {
+		for _, meme := range m.store.List("", "", false, "") {
+			if shouldQueueTagSuggestionsForMeme(meme) {
+				ids = append(ids, meme.ID)
+			}
+		}
+	}
+
+	queued := 0
+	for _, id := range ids {
+		if m.enqueueTagSuggestion(id) {
 			queued += 1
 		}
 	}
@@ -1197,6 +1276,9 @@ func (m *MemeManager) ReloadAfterRestore() error {
 	m.suggestionQueueMu.Unlock()
 	m.SeedTagSuggestionQueue()
 	m.invalidateAdminReadCache()
+	// The restore swapped the thumbnails directory; forget which thumbnails we
+	// have seen so preview paths are re-derived against the new contents.
+	accessor.ResetPreviewPathCache()
 	return nil
 }
 

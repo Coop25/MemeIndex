@@ -14,6 +14,11 @@ CREATE INDEX IF NOT EXISTS idx_memes_notes_trgm
     ON memes USING gin (LOWER(notes) gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_memes_source_url_trgm
     ON memes USING gin (LOWER(source_url) gin_trgm_ops);
+-- content_type is one branch of the bare-term OR. Without this index that one
+-- branch cannot be satisfied from an index, which forces a sequential scan of
+-- memes for every free-text search and defeats the other trigram indexes here.
+CREATE INDEX IF NOT EXISTS idx_memes_content_type_trgm
+    ON memes USING gin (LOWER(content_type) gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_tags_name_trgm
     ON tags USING gin (name gin_trgm_ops);
 

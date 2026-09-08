@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/sync/errgroup"
 
 	"memeindex/internal/dbschema"
 )
@@ -43,7 +44,7 @@ func NewPostgresStore(ctx context.Context, databaseURL string, dataDir string) (
 		return nil, fmt.Errorf("create upload dir: %w", err)
 	}
 
-	pool, err := pgxpool.New(ctx, databaseURL)
+	pool, err := NewPool(ctx, databaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("connect postgres: %w", err)
 	}
@@ -179,7 +180,12 @@ func (s *PostgresStore) List(userID, query string, favoritesOnly bool, tag strin
 			m.file_path,
 			m.content_type,
 			m.size_bytes,
-			COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL), '{}') AS tags,
+			COALESCE((
+				SELECT array_agg(t.name ORDER BY t.name)
+				FROM meme_tags mt
+				JOIN tags t ON t.id = mt.tag_id
+				WHERE mt.meme_id = m.id
+			), '{}') AS tags,
 			COALESCE(m.suggested_tags, '{}') AS suggested_tags,
 			COALESCE(m.auto_suggest_disabled, FALSE) AS auto_suggest_disabled,
 			m.notes,
@@ -192,8 +198,6 @@ func (s *PostgresStore) List(userID, query string, favoritesOnly bool, tag strin
 			m.created_at,
 			m.updated_at
 		FROM memes m
-		LEFT JOIN meme_tags mt ON mt.meme_id = m.id
-		LEFT JOIN tags t ON t.id = mt.tag_id
 		WHERE
 			COALESCE(m.hidden_from_app, FALSE) = FALSE
 			AND
@@ -229,8 +233,7 @@ func (s *PostgresStore) List(userID, query string, favoritesOnly bool, tag strin
 					WHERE uff.user_id = $1 AND uff.meme_id = m.id
 				)
 			)
-		GROUP BY m.id
-		ORDER BY m.created_at DESC
+		ORDER BY m.created_at DESC, m.id ASC
 	`, userID, query, tag, favoritesOnly)
 	if err != nil {
 		return nil
@@ -249,9 +252,9 @@ func (s *PostgresStore) List(userID, query string, favoritesOnly bool, tag strin
 	return memes
 }
 
-// memeRowSelectColumns is the projection consumed by scanMemeRow. Any query
-// using it must expose $1 as the favourites user id and join meme_tags mt /
-// tags t for the array_agg.
+// memeRowSelectColumns is the projection consumed by scanMemeRow. It expects $1
+// to be the favourites user id. The tag array is a correlated subquery rather
+// than a join+GROUP BY so it is evaluated only for the rows actually returned.
 const memeRowSelectColumns = `
 	m.id,
 	m.original_name,
@@ -259,7 +262,12 @@ const memeRowSelectColumns = `
 	m.file_path,
 	m.content_type,
 	m.size_bytes,
-	COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL), '{}') AS tags,
+	COALESCE((
+		SELECT array_agg(t.name ORDER BY t.name)
+		FROM meme_tags mt
+		JOIN tags t ON t.id = mt.tag_id
+		WHERE mt.meme_id = m.id
+	), '{}') AS tags,
 	COALESCE(m.suggested_tags, '{}') AS suggested_tags,
 	COALESCE(m.auto_suggest_disabled, FALSE) AS auto_suggest_disabled,
 	m.notes,
@@ -271,17 +279,31 @@ const memeRowSelectColumns = `
 	m.created_at,
 	m.updated_at`
 
-// queryMemeRows runs a meme projection where clause is everything from the WHERE
-// keyword onward (WHERE ... [GROUP BY] [ORDER BY] [LIMIT ...]). userID becomes
-// $1; extraArgs fill $2, $3, ... in the order the clause references them.
-func (s *PostgresStore) queryMemeRows(ctx context.Context, userID, clause string, extraArgs ...any) ([]Meme, error) {
+// queryMemeRows resolves one page of memes: it filters, sorts, and limits the
+// memes table on its own in a derived table, then builds the tag array for just
+// that page. The previous form joined meme_tags/tags and GROUP BY'd before the
+// LIMIT, forcing the whole filtered set through the aggregate and sort.
+//
+// $1 is the favourites user id; whereArgs fill $2, $3, ... in the order `where`
+// references them; the LIMIT/OFFSET placeholders follow. `where` and `orderBy`
+// may reference only columns of `memes m` (tag filters are EXISTS subqueries).
+func (s *PostgresStore) queryMemeRows(ctx context.Context, userID, where, orderBy string, limit, offset int, whereArgs ...any) ([]Meme, error) {
+	limArg := len(whereArgs) + 2
 	sql := "SELECT" + memeRowSelectColumns + `
-FROM memes m
-LEFT JOIN meme_tags mt ON mt.meme_id = m.id
-LEFT JOIN tags t ON t.id = mt.tag_id
-` + clause
+FROM (
+	SELECT m.*
+	FROM memes m
+	WHERE ` + where + `
+	ORDER BY ` + orderBy + `
+	LIMIT $` + strconv.Itoa(limArg) + ` OFFSET $` + strconv.Itoa(limArg+1) + `
+) m
+ORDER BY ` + orderBy
 
-	args := append([]any{normalizeFavoriteUserID(userID)}, extraArgs...)
+	args := make([]any, 0, len(whereArgs)+3)
+	args = append(args, normalizeFavoriteUserID(userID))
+	args = append(args, whereArgs...)
+	args = append(args, limit, offset)
+
 	rows, err := s.pool.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, err
@@ -346,7 +368,7 @@ func (s *PostgresStore) QueryMemes(q MemeQuery) (MemeQueryPage, error) {
 		limit = 72
 	}
 
-	where, filterArgs, nextArg := buildMemeWhere(search, q.Tag, 2)
+	where, filterArgs, _ := buildMemeWhere(search, q.Tag, 2)
 
 	counts, err := s.memeCounts(ctx, where, append([]any{uid}, filterArgs...))
 	if err != nil {
@@ -361,12 +383,8 @@ func (s *PostgresStore) QueryMemes(q MemeQuery) (MemeQueryPage, error) {
 		pageWhere += "\n  AND EXISTS (SELECT 1 FROM user_favorites uf WHERE uf.user_id = $1 AND uf.meme_id = m.id)"
 	}
 
-	clause := "WHERE " + pageWhere +
-		"\nGROUP BY m.id\nORDER BY " + memeSortOrder(q.Sort) +
-		"\nLIMIT $" + strconv.Itoa(nextArg) + " OFFSET $" + strconv.Itoa(nextArg+1)
-
-	extra := append(append([]any{}, filterArgs...), limit+1, offset)
-	memes, err := s.queryMemeRows(ctx, uid, clause, extra...)
+	// Fetch one extra row to decide HasMore without a second query.
+	memes, err := s.queryMemeRows(ctx, uid, pageWhere, memeSortOrder(q.Sort), limit+1, offset, filterArgs...)
 	if err != nil {
 		return MemeQueryPage{}, err
 	}
@@ -415,55 +433,285 @@ func (s *PostgresStore) TagCounts(limit int) ([]TagCount, error) {
 	return out, nil
 }
 
-// MemeDashboard resolves the user home screen summary in Postgres instead of
-// scanning the whole archive into memory.
-func (s *PostgresStore) MemeDashboard(userID string) (MemeDashboardData, error) {
-	ctx := context.Background()
-	uid := normalizeFavoriteUserID(userID)
-	const visible = "COALESCE(m.hidden_from_app, FALSE) = FALSE"
-
-	counts, err := s.memeCounts(ctx, visible, []any{uid})
-	if err != nil {
-		return MemeDashboardData{}, err
-	}
-	data := MemeDashboardData{
-		Counts:     counts,
-		TotalItems: counts.Total,
-		Favorites:  counts.Favorites,
-	}
-
-	if err := s.pool.QueryRow(ctx,
-		`SELECT COALESCE(SUM(size_bytes), 0)::bigint FROM memes m WHERE `+visible,
-	).Scan(&data.StorageBytes); err != nil {
-		return MemeDashboardData{}, err
-	}
-	if err := s.pool.QueryRow(ctx, `
-		SELECT COUNT(DISTINCT t.id)
+// TagUsageCounts returns, for every tag on a visible meme, how many visible
+// memes carry it. It backs the admin tag-hygiene report.
+func (s *PostgresStore) TagUsageCounts() (map[string]int, error) {
+	rows, err := s.pool.Query(context.Background(), `
+		SELECT t.name, COUNT(*) AS c
 		FROM meme_tags mt
 		JOIN tags t ON t.id = mt.tag_id
 		JOIN memes m ON m.id = mt.meme_id
-		WHERE `+visible,
-	).Scan(&data.TagCount); err != nil {
-		return MemeDashboardData{}, err
+		WHERE COALESCE(m.hidden_from_app, FALSE) = FALSE
+		GROUP BY t.name
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := map[string]int{}
+	for rows.Next() {
+		var name string
+		var count int
+		if err := rows.Scan(&name, &count); err != nil {
+			return nil, err
+		}
+		out[name] = count
+	}
+	return out, rows.Err()
+}
+
+const visibleMemePredicate = "COALESCE(m.hidden_from_app, FALSE) = FALSE"
+
+// UntaggedWithoutSuggestionsCount counts visible memes with no tags, no stored
+// suggestions, and auto-suggest still enabled - the memes the suggestion worker
+// would pick up.
+func (s *PostgresStore) UntaggedWithoutSuggestionsCount() (int, error) {
+	var n int
+	err := s.pool.QueryRow(context.Background(), `
+		SELECT COUNT(*)
+		FROM memes m
+		WHERE `+visibleMemePredicate+`
+		  AND COALESCE(m.auto_suggest_disabled, FALSE) = FALSE
+		  AND COALESCE(cardinality(m.suggested_tags), 0) = 0
+		  AND NOT EXISTS (SELECT 1 FROM meme_tags mt WHERE mt.meme_id = m.id)
+	`).Scan(&n)
+	return n, err
+}
+
+// UntaggedWithoutSuggestionIDs returns the ids of the memes counted by
+// UntaggedWithoutSuggestionsCount, newest first.
+func (s *PostgresStore) UntaggedWithoutSuggestionIDs() ([]string, error) {
+	return scanIDList(context.Background(), s.pool, `
+		SELECT m.id
+		FROM memes m
+		WHERE `+visibleMemePredicate+`
+		  AND COALESCE(m.auto_suggest_disabled, FALSE) = FALSE
+		  AND COALESCE(cardinality(m.suggested_tags), 0) = 0
+		  AND NOT EXISTS (SELECT 1 FROM meme_tags mt WHERE mt.meme_id = m.id)
+		ORDER BY m.created_at DESC, m.id ASC
+	`)
+}
+
+// PendingSuggestionMemes returns the total count of visible memes that carry
+// stored suggestions and one newest-first page of them (id, name, suggestions).
+func (s *PostgresStore) PendingSuggestionMemes(offset, limit int) (int, []Meme, error) {
+	ctx := context.Background()
+	if offset < 0 {
+		offset = 0
+	}
+	if limit < 0 {
+		limit = 0
 	}
 
-	if data.RecentItems, err = s.queryMemeRows(ctx, uid,
-		"WHERE "+visible+"\nGROUP BY m.id\nORDER BY m.created_at DESC, m.id ASC\nLIMIT 6",
-	); err != nil {
-		return MemeDashboardData{}, err
+	const pending = visibleMemePredicate + " AND COALESCE(cardinality(m.suggested_tags), 0) > 0"
+
+	var total int
+	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM memes m WHERE `+pending).Scan(&total); err != nil {
+		return 0, nil, err
 	}
-	if data.FavoriteItems, err = s.queryMemeRows(ctx, uid,
-		"WHERE "+visible+"\n  AND EXISTS (SELECT 1 FROM user_favorites uf WHERE uf.user_id = $1 AND uf.meme_id = m.id)"+
-			"\nGROUP BY m.id\nORDER BY m.created_at DESC, m.id ASC\nLIMIT 6",
-	); err != nil {
-		return MemeDashboardData{}, err
+	if limit == 0 || offset >= total {
+		return total, nil, nil
 	}
-	if data.RandomItems, err = s.queryMemeRows(ctx, uid,
-		"WHERE "+visible+"\nGROUP BY m.id\nORDER BY random()\nLIMIT 6",
-	); err != nil {
-		return MemeDashboardData{}, err
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT m.id, m.original_name, COALESCE(m.suggested_tags, '{}')
+		FROM memes m
+		WHERE `+pending+`
+		ORDER BY m.created_at DESC, m.id ASC
+		LIMIT $1 OFFSET $2
+	`, limit, offset)
+	if err != nil {
+		return 0, nil, err
 	}
-	if data.TopTags, err = s.TagCounts(5); err != nil {
+	defer rows.Close()
+
+	out := make([]Meme, 0, limit)
+	for rows.Next() {
+		var meme Meme
+		var suggested []string
+		if err := rows.Scan(&meme.ID, &meme.OriginalName, &suggested); err != nil {
+			return 0, nil, err
+		}
+		meme.SuggestedTags = normalizeTags(suggested)
+		out = append(out, meme)
+	}
+	return total, out, rows.Err()
+}
+
+// MergeTag repoints every meme_tags link from sourceTag onto targetTag in a
+// single transaction, creating targetTag if needed and deleting sourceTag. It
+// returns the number of memes that carried sourceTag and writes the same
+// tag_removed / tag_added audit trail the per-meme path produced.
+func (s *PostgresStore) MergeTag(sourceTag, targetTag string, actor AuditActor) (int, error) {
+	ctx := context.Background()
+	sourceTag = normalizeTag(sourceTag)
+	targetTag = normalizeTag(targetTag)
+	if sourceTag == "" || targetTag == "" {
+		return 0, errors.New("source and target tags are required")
+	}
+	if sourceTag == targetTag {
+		return 0, nil
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+
+	var sourceID int64
+	if err := tx.QueryRow(ctx, `SELECT id FROM tags WHERE name = $1`, sourceTag).Scan(&sourceID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, nil
+		}
+		return 0, err
+	}
+
+	affected, err := scanIDList(ctx, tx, `SELECT meme_id FROM meme_tags WHERE tag_id = $1 ORDER BY meme_id`, sourceID)
+	if err != nil {
+		return 0, err
+	}
+	if len(affected) == 0 {
+		if _, err := tx.Exec(ctx, `DELETE FROM tags WHERE id = $1`, sourceID); err != nil {
+			return 0, err
+		}
+		return 0, tx.Commit(ctx)
+	}
+
+	var targetID int64
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO tags (name) VALUES ($1)
+		ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+		RETURNING id
+	`, targetTag).Scan(&targetID); err != nil {
+		return 0, err
+	}
+
+	alreadyTagged, err := scanIDList(ctx, tx, `SELECT meme_id FROM meme_tags WHERE tag_id = $1`, targetID)
+	if err != nil {
+		return 0, err
+	}
+	hasTarget := make(map[string]struct{}, len(alreadyTagged))
+	for _, id := range alreadyTagged {
+		hasTarget[id] = struct{}{}
+	}
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE meme_tags
+		SET tag_id = $2
+		WHERE tag_id = $1
+		  AND NOT EXISTS (
+			SELECT 1 FROM meme_tags existing
+			WHERE existing.meme_id = meme_tags.meme_id AND existing.tag_id = $2
+		  )
+	`, sourceID, targetID); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM meme_tags WHERE tag_id = $1`, sourceID); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM tags WHERE id = $1`, sourceID); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE memes SET updated_at = NOW() WHERE id = ANY($1::text[])`, affected); err != nil {
+		return 0, err
+	}
+
+	for _, id := range affected {
+		if err := s.insertAuditLog(ctx, tx, id, "tag_removed", actor, fmt.Sprintf("Removed tag %q", sourceTag)); err != nil {
+			return 0, err
+		}
+		if _, ok := hasTarget[id]; !ok {
+			if err := s.insertAuditLog(ctx, tx, id, "tag_added", actor, fmt.Sprintf("Added tag %q", targetTag)); err != nil {
+				return 0, err
+			}
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return len(affected), nil
+}
+
+func scanIDList(ctx context.Context, q queryable, sql string, args ...any) ([]string, error) {
+	rows, err := q.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// MemeDashboard resolves the user home screen summary in Postgres instead of
+// scanning the whole archive into memory. The seven independent reads are run
+// concurrently on separate pooled connections; the first error cancels the rest.
+func (s *PostgresStore) MemeDashboard(userID string) (MemeDashboardData, error) {
+	uid := normalizeFavoriteUserID(userID)
+	const visible = "COALESCE(m.hidden_from_app, FALSE) = FALSE"
+
+	var data MemeDashboardData
+	g, ctx := errgroup.WithContext(context.Background())
+
+	g.Go(func() error {
+		counts, err := s.memeCounts(ctx, visible, []any{uid})
+		if err != nil {
+			return err
+		}
+		data.Counts = counts
+		data.TotalItems = counts.Total
+		data.Favorites = counts.Favorites
+		return nil
+	})
+	g.Go(func() error {
+		return s.pool.QueryRow(ctx,
+			`SELECT COALESCE(SUM(size_bytes), 0)::bigint FROM memes m WHERE `+visible,
+		).Scan(&data.StorageBytes)
+	})
+	g.Go(func() error {
+		return s.pool.QueryRow(ctx, `
+			SELECT COUNT(DISTINCT t.id)
+			FROM meme_tags mt
+			JOIN tags t ON t.id = mt.tag_id
+			JOIN memes m ON m.id = mt.meme_id
+			WHERE `+visible,
+		).Scan(&data.TagCount)
+	})
+	g.Go(func() error {
+		rows, err := s.queryMemeRows(ctx, uid, visible, "m.created_at DESC, m.id ASC", 6, 0)
+		data.RecentItems = rows
+		return err
+	})
+	g.Go(func() error {
+		rows, err := s.queryMemeRows(ctx, uid,
+			visible+" AND EXISTS (SELECT 1 FROM user_favorites uf WHERE uf.user_id = $1 AND uf.meme_id = m.id)",
+			"m.created_at DESC, m.id ASC", 6, 0,
+		)
+		data.FavoriteItems = rows
+		return err
+	})
+	g.Go(func() error {
+		rows, err := s.queryMemeRows(ctx, uid, visible, "random()", 6, 0)
+		data.RandomItems = rows
+		return err
+	})
+	g.Go(func() error {
+		tags, err := s.TagCounts(5)
+		data.TopTags = tags
+		return err
+	})
+
+	if err := g.Wait(); err != nil {
 		return MemeDashboardData{}, err
 	}
 	return data, nil
@@ -1763,7 +2011,13 @@ func scanMemeRow(row interface{ Scan(dest ...any) error }) (Meme, error) {
 		}
 		return Meme{}, err
 	}
-	meme.Tags = normalizeTags(tags)
+	// Tag names are written through normalizeTags and read back via
+	// "array_agg(... ORDER BY t.name)", so they arrive lowercased, de-duplicated
+	// (tags.name is UNIQUE), and sorted. Re-normalizing every row is wasted work.
+	if tags == nil {
+		tags = []string{}
+	}
+	meme.Tags = tags
 	meme.SuggestedTags = normalizeTags(suggestedTags)
 	meme.AutoSuggestDisabled = autoSuggestDisabled
 	return meme, nil

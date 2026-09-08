@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -69,6 +70,22 @@ type authClaims struct {
 	ExpiresAt      int64  `json:"exp"`
 }
 
+// Per-request auth used to cost three serial database round-trips (a profile
+// upsert, a session-version read, and a permissions read) on every API call and
+// every protected /uploads//thumbnails/ asset fetch. These bound how long a
+// validated token is trusted from an in-process cache and how often the
+// best-effort "last active" profile write actually reaches the database.
+const (
+	sessionCacheTTL      = 30 * time.Second
+	sessionCacheMaxSize  = 8192
+	profileTouchInterval = 60 * time.Second
+)
+
+type sessionCacheEntry struct {
+	session  authSession
+	cachedAt time.Time
+}
+
 type authService struct {
 	config        DiscordAuthConfig
 	secret        []byte
@@ -76,6 +93,11 @@ type authService struct {
 	users         authUserStore
 	pendingStates map[string]time.Time
 	mu            sync.RWMutex
+
+	// sessionMu guards the two per-user maps below.
+	sessionMu        sync.Mutex
+	sessionCache     map[string]sessionCacheEntry
+	lastProfileWrite map[string]time.Time
 }
 
 type discordTokenResponse struct {
@@ -96,11 +118,13 @@ func newAuthService(config DiscordAuthConfig, users authUserStore) *authService 
 	}
 
 	return &authService{
-		config:        config,
-		secret:        []byte(config.SessionSecret),
-		client:        &http.Client{Timeout: 15 * time.Second},
-		users:         users,
-		pendingStates: map[string]time.Time{},
+		config:           config,
+		secret:           []byte(config.SessionSecret),
+		client:           &http.Client{Timeout: 15 * time.Second},
+		users:            users,
+		pendingStates:    map[string]time.Time{},
+		sessionCache:     map[string]sessionCacheEntry{},
+		lastProfileWrite: map[string]time.Time{},
 	}
 }
 
@@ -367,36 +391,158 @@ func (a *authService) sessionFromRequest(r *http.Request) (authSession, bool) {
 		return authSession{}, false
 	}
 
+	// The signature and expiry checks are local and cheap; do them before any
+	// cache or database work so a forged or stale cookie never reaches either.
 	claims, ok := a.parseSessionToken(token)
 	if !ok {
 		return authSession{}, false
 	}
 
-	if a.users != nil {
-		if err := a.users.UpsertSessionProfile(context.Background(), claims); err != nil {
-			return authSession{}, false
-		}
-
-		// Reject tokens whose embedded session version no longer matches the
-		// user's current version: logout and account re-add both advance it, so a
-		// copied or pre-logout token stops validating even before it expires. A
-		// missing row (version 0) means the account was deleted.
-		currentVersion, err := a.users.SessionVersion(context.Background(), claims.Subject)
-		if err != nil || currentVersion <= 0 || currentVersion != claims.SessionVersion {
-			return authSession{}, false
-		}
+	// With no user store, permissions derive purely from configuration and there
+	// is nothing to revoke, so skip the cache entirely.
+	if a.users == nil {
+		return a.sessionFromClaims(claims), true
 	}
 
-	permissions := a.permissionsForUser(claims.Subject)
+	cacheKey := sessionCacheKey(token)
+	if session, ok := a.cachedSession(cacheKey); ok {
+		a.maybeTouchProfile(claims)
+		return session, true
+	}
+
+	// One round-trip resolves both the current session version and the stored
+	// permissions. Reject tokens whose embedded session version no longer matches
+	// the user's current version: logout and account re-add both advance it, so a
+	// copied or pre-logout token stops validating even before it expires. A
+	// missing row (or version <= 0) means the account was deleted.
+	record, found, err := a.users.GetUser(r.Context(), claims.Subject)
+	if err != nil || !found || record.SessionVersion <= 0 || record.SessionVersion != claims.SessionVersion {
+		return authSession{}, false
+	}
+
+	session := authSession{
+		UserID:         claims.Subject,
+		Username:       claims.Username,
+		DisplayName:    claims.DisplayName,
+		AvatarURL:      claims.AvatarURL,
+		Permissions:    a.applyPermissionPolicy(claims.Subject, record.Permissions),
+		SessionVersion: claims.SessionVersion,
+		ExpiresAt:      time.Unix(claims.ExpiresAt, 0),
+	}
+	a.storeSession(cacheKey, session)
+	a.maybeTouchProfile(claims)
+	return session, true
+}
+
+// sessionFromClaims builds a session straight from a verified token for the
+// no-user-store deployment, where the only permission source is configuration.
+func (a *authService) sessionFromClaims(claims authClaims) authSession {
 	return authSession{
 		UserID:         claims.Subject,
 		Username:       claims.Username,
 		DisplayName:    claims.DisplayName,
 		AvatarURL:      claims.AvatarURL,
-		Permissions:    permissions,
+		Permissions:    a.applyPermissionPolicy(claims.Subject, authPermissions{}),
 		SessionVersion: claims.SessionVersion,
 		ExpiresAt:      time.Unix(claims.ExpiresAt, 0),
-	}, true
+	}
+}
+
+func sessionCacheKey(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return string(sum[:])
+}
+
+// cachedSession returns a still-fresh cached session for the token key, evicting
+// it if the TTL has elapsed or the token itself has since expired.
+func (a *authService) cachedSession(key string) (authSession, bool) {
+	now := time.Now()
+
+	a.sessionMu.Lock()
+	defer a.sessionMu.Unlock()
+
+	entry, ok := a.sessionCache[key]
+	if !ok {
+		return authSession{}, false
+	}
+	if now.Sub(entry.cachedAt) >= sessionCacheTTL || now.After(entry.session.ExpiresAt) {
+		delete(a.sessionCache, key)
+		return authSession{}, false
+	}
+	return entry.session, true
+}
+
+func (a *authService) storeSession(key string, session authSession) {
+	now := time.Now()
+
+	a.sessionMu.Lock()
+	defer a.sessionMu.Unlock()
+
+	if len(a.sessionCache) >= sessionCacheMaxSize {
+		cutoff := now.Add(-sessionCacheTTL)
+		for k, entry := range a.sessionCache {
+			if entry.cachedAt.Before(cutoff) {
+				delete(a.sessionCache, k)
+			}
+		}
+		if len(a.sessionCache) >= sessionCacheMaxSize {
+			// Nothing aged out; drop the whole map rather than grow without bound.
+			a.sessionCache = make(map[string]sessionCacheEntry, sessionCacheMaxSize)
+		}
+	}
+	a.sessionCache[key] = sessionCacheEntry{session: session, cachedAt: now}
+}
+
+// invalidateUser drops every cached session for a user and clears their profile
+// write throttle. It is called whenever the user's permissions or session
+// version change so the next request re-reads authoritative state immediately.
+func (a *authService) invalidateUser(userID string) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return
+	}
+
+	a.sessionMu.Lock()
+	defer a.sessionMu.Unlock()
+	for key, entry := range a.sessionCache {
+		if entry.session.UserID == userID {
+			delete(a.sessionCache, key)
+		}
+	}
+	delete(a.lastProfileWrite, userID)
+}
+
+// maybeTouchProfile refreshes the user's "last active" profile row at most once
+// per profileTouchInterval, off the request path. The write is best-effort: it
+// is not an auth gate (the session-version check is), so a failure only clears
+// the throttle so the next request retries.
+func (a *authService) maybeTouchProfile(claims authClaims) {
+	if a.users == nil {
+		return
+	}
+	userID := strings.TrimSpace(claims.Subject)
+	if userID == "" {
+		return
+	}
+
+	a.sessionMu.Lock()
+	if last, ok := a.lastProfileWrite[userID]; ok && time.Since(last) < profileTouchInterval {
+		a.sessionMu.Unlock()
+		return
+	}
+	a.lastProfileWrite[userID] = time.Now()
+	a.sessionMu.Unlock()
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := a.users.UpsertSessionProfile(ctx, claims); err != nil {
+			log.Printf("auth: background profile refresh for %s failed: %v", sanitizeLogField(userID), err)
+			a.sessionMu.Lock()
+			delete(a.lastProfileWrite, userID)
+			a.sessionMu.Unlock()
+		}
+	}()
 }
 
 // currentSessionVersion reads the user's session version for embedding in a
@@ -417,6 +563,7 @@ func (a *authService) currentSessionVersion(userID string) int64 {
 // revokeSessions invalidates every token already issued to a user by advancing
 // their stored session version. Used on logout.
 func (a *authService) revokeSessions(ctx context.Context, userID string) error {
+	a.invalidateUser(userID)
 	if a.users == nil {
 		return nil
 	}
@@ -487,15 +634,21 @@ func (a *authService) permissionsForUser(userID string) authPermissions {
 		return authPermissions{}
 	}
 
-	permissions := authPermissions{}
+	base := authPermissions{}
 	if a.users != nil {
-		record, ok, err := a.users.GetUser(context.Background(), normalizedUserID)
-		if err == nil && ok {
-			permissions = record.Permissions
+		if record, ok, err := a.users.GetUser(context.Background(), normalizedUserID); err == nil && ok {
+			base = record.Permissions
 		}
 	}
+	return a.applyPermissionPolicy(normalizedUserID, base)
+}
 
-	if _, isSuperAdmin := a.config.SuperAdminUserIDs[normalizedUserID]; isSuperAdmin {
+// applyPermissionPolicy layers the configured super-admin override on top of a
+// user's stored permissions and fills in the derived convenience flags. It holds
+// no locks and touches no I/O so it is safe to call from the cached auth path.
+func (a *authService) applyPermissionPolicy(userID string, base authPermissions) authPermissions {
+	permissions := base
+	if _, isSuperAdmin := a.config.SuperAdminUserIDs[strings.TrimSpace(userID)]; isSuperAdmin {
 		permissions = authPermissions{
 			CanView:        true,
 			CanUpload:      true,

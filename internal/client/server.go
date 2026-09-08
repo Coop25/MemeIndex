@@ -19,6 +19,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -653,14 +654,52 @@ func buildAssetURL(path string, refreshToken string) string {
 	query.Set("v", BuildVersion())
 	// Image tags such as "main" and local builds can retain the same version.
 	// Fingerprint the files themselves so frontend edits always get a new URL.
-	if content, err := os.ReadFile(filepath.FromSlash(strings.TrimPrefix(path, "/"))); err == nil {
-		digest := sha256.Sum256(content)
-		query.Set("h", fmt.Sprintf("%x", digest[:8]))
+	if hash := assetContentHash(filepath.FromSlash(strings.TrimPrefix(path, "/"))); hash != "" {
+		query.Set("h", hash)
 	}
 	if refreshToken != "" {
 		query.Set("r", refreshToken)
 	}
 	return path + "?" + query.Encode()
+}
+
+type assetFingerprint struct {
+	modTime time.Time
+	size    int64
+	hash    string
+}
+
+// assetContentCache memoises the short content hash of a static asset keyed by
+// its absolute path. handleIndex builds two asset URLs on every "/" request and
+// every meme deep link; without this each one re-read and re-hashed the file.
+var assetContentCache sync.Map // string -> assetFingerprint
+
+// assetContentHash returns the first-8-bytes hex SHA-256 of a static asset,
+// re-reading it only when its size or modification time has changed.
+func assetContentHash(relPath string) string {
+	key := relPath
+	if abs, err := filepath.Abs(relPath); err == nil {
+		key = abs
+	}
+
+	info, err := os.Stat(key)
+	if err != nil {
+		return ""
+	}
+	if cached, ok := assetContentCache.Load(key); ok {
+		if fp := cached.(assetFingerprint); fp.size == info.Size() && fp.modTime.Equal(info.ModTime()) {
+			return fp.hash
+		}
+	}
+
+	content, err := os.ReadFile(key)
+	if err != nil {
+		return ""
+	}
+	digest := sha256.Sum256(content)
+	hash := fmt.Sprintf("%x", digest[:8])
+	assetContentCache.Store(key, assetFingerprint{modTime: info.ModTime(), size: info.Size(), hash: hash})
+	return hash
 }
 
 func (s *Server) handleOGImage(w http.ResponseWriter, r *http.Request) {
@@ -2128,6 +2167,8 @@ func (s *Server) createManagedUser(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to create user", http.StatusInternalServerError)
 		return
 	}
+	// A previously denied visitor may have a cached zero-permission session.
+	s.auth.invalidateUser(record.UserID)
 	record.Permissions = s.auth.permissionsForUser(record.UserID)
 	writeJSON(w, http.StatusCreated, managedUserPayload(record, false))
 }
@@ -2162,6 +2203,9 @@ func (s *Server) updateManagedUser(w http.ResponseWriter, r *http.Request, userI
 		http.Error(w, "failed to update user", http.StatusInternalServerError)
 		return
 	}
+	// Drop any cached session so the new permissions take effect on the next
+	// request instead of after the cache TTL.
+	s.auth.invalidateUser(record.UserID)
 	record.Permissions = s.auth.permissionsForUser(record.UserID)
 	writeJSON(w, http.StatusOK, managedUserPayload(record, false))
 }
@@ -2172,6 +2216,8 @@ func (s *Server) deleteManagedUser(w http.ResponseWriter, r *http.Request, userI
 		http.Error(w, "failed to delete user", http.StatusInternalServerError)
 		return
 	}
+	// Stop honouring any cached session for the now-deleted account at once.
+	s.auth.invalidateUser(userID)
 
 	w.WriteHeader(http.StatusNoContent)
 }
