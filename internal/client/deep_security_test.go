@@ -232,6 +232,8 @@ type securityUsers struct {
 }
 
 func (u *securityUsers) UpsertSessionProfile(context.Context, authClaims) error { return nil }
+func (u *securityUsers) SessionVersion(context.Context, string) (int64, error)  { return 1, nil }
+func (u *securityUsers) BumpSessionVersion(context.Context, string) error       { return nil }
 func (u *securityUsers) GetUser(_ context.Context, id string) (managedUserRecord, bool, error) {
 	return managedUserRecord{UserID: id, Permissions: u.permissions}, true, nil
 }
@@ -239,7 +241,7 @@ func (u *securityUsers) GetUser(_ context.Context, id string) (managedUserRecord
 func TestActualRoutesDenyViewerAdministrativeActions(t *testing.T) {
 	s, _, meme := newShareTestServer(t)
 	s.auth = newAuthService(DiscordAuthConfig{ClientID: "c", ClientSecret: "s", RedirectURL: "https://example.com/auth/callback", SessionSecret: "test"}, &securityUsers{permissions: authPermissions{CanView: true}})
-	token, err := s.auth.issueSessionToken(authSession{UserID: "viewer", ExpiresAt: time.Now().Add(time.Hour)})
+	token, err := s.auth.issueSessionToken(authSession{UserID: "viewer", SessionVersion: 1, ExpiresAt: time.Now().Add(time.Hour)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +267,7 @@ func TestActualRoutesDenyViewerAdministrativeActions(t *testing.T) {
 func TestSameOriginShareCreationStillWorks(t *testing.T) {
 	s, _, meme := newShareTestServer(t)
 	s.auth = newAuthService(DiscordAuthConfig{ClientID: "c", ClientSecret: "s", RedirectURL: "https://example.com/auth/callback", SessionSecret: "test"}, &securityUsers{permissions: authPermissions{CanView: true}})
-	token, err := s.auth.issueSessionToken(authSession{UserID: "viewer", ExpiresAt: time.Now().Add(time.Hour)})
+	token, err := s.auth.issueSessionToken(authSession{UserID: "viewer", SessionVersion: 1, ExpiresAt: time.Now().Add(time.Hour)})
 	if err != nil {
 		t.Fatal(err)
 	}

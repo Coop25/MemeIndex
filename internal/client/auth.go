@@ -39,12 +39,13 @@ type authContextKey string
 const authSessionContextKey authContextKey = "auth-session"
 
 type authSession struct {
-	UserID      string
-	Username    string
-	DisplayName string
-	AvatarURL   string
-	Permissions authPermissions
-	ExpiresAt   time.Time
+	UserID         string
+	Username       string
+	DisplayName    string
+	AvatarURL      string
+	Permissions    authPermissions
+	SessionVersion int64
+	ExpiresAt      time.Time
 }
 
 type authPermissions struct {
@@ -59,12 +60,13 @@ type authPermissions struct {
 }
 
 type authClaims struct {
-	Subject     string `json:"sub"`
-	Username    string `json:"username"`
-	DisplayName string `json:"display_name"`
-	AvatarURL   string `json:"avatar_url"`
-	IssuedAt    int64  `json:"iat"`
-	ExpiresAt   int64  `json:"exp"`
+	Subject        string `json:"sub"`
+	Username       string `json:"username"`
+	DisplayName    string `json:"display_name"`
+	AvatarURL      string `json:"avatar_url"`
+	SessionVersion int64  `json:"sv"`
+	IssuedAt       int64  `json:"iat"`
+	ExpiresAt      int64  `json:"exp"`
 }
 
 type authService struct {
@@ -309,12 +311,13 @@ func (a *authService) createSession(user discordUser) (authSession, string, erro
 
 	expiresAt := time.Now().Add(a.config.SessionDuration)
 	session := authSession{
-		UserID:      user.ID,
-		Username:    user.Username,
-		DisplayName: displayName,
-		AvatarURL:   discordAvatarURL(user),
-		Permissions: permissions,
-		ExpiresAt:   expiresAt,
+		UserID:         user.ID,
+		Username:       user.Username,
+		DisplayName:    displayName,
+		AvatarURL:      discordAvatarURL(user),
+		Permissions:    permissions,
+		SessionVersion: a.currentSessionVersion(user.ID),
+		ExpiresAt:      expiresAt,
 	}
 
 	token, err := a.issueSessionToken(session)
@@ -339,12 +342,13 @@ func (a *authService) issueSessionToken(session authSession) (string, error) {
 	}
 
 	claimsJSON, err := json.Marshal(authClaims{
-		Subject:     session.UserID,
-		Username:    session.Username,
-		DisplayName: session.DisplayName,
-		AvatarURL:   session.AvatarURL,
-		IssuedAt:    time.Now().Unix(),
-		ExpiresAt:   session.ExpiresAt.Unix(),
+		Subject:        session.UserID,
+		Username:       session.Username,
+		DisplayName:    session.DisplayName,
+		AvatarURL:      session.AvatarURL,
+		SessionVersion: session.SessionVersion,
+		IssuedAt:       time.Now().Unix(),
+		ExpiresAt:      session.ExpiresAt.Unix(),
 	})
 	if err != nil {
 		return "", err
@@ -372,17 +376,51 @@ func (a *authService) sessionFromRequest(r *http.Request) (authSession, bool) {
 		if err := a.users.UpsertSessionProfile(context.Background(), claims); err != nil {
 			return authSession{}, false
 		}
+
+		// Reject tokens whose embedded session version no longer matches the
+		// user's current version: logout and account re-add both advance it, so a
+		// copied or pre-logout token stops validating even before it expires. A
+		// missing row (version 0) means the account was deleted.
+		currentVersion, err := a.users.SessionVersion(context.Background(), claims.Subject)
+		if err != nil || currentVersion <= 0 || currentVersion != claims.SessionVersion {
+			return authSession{}, false
+		}
 	}
 
 	permissions := a.permissionsForUser(claims.Subject)
 	return authSession{
-		UserID:      claims.Subject,
-		Username:    claims.Username,
-		DisplayName: claims.DisplayName,
-		AvatarURL:   claims.AvatarURL,
-		Permissions: permissions,
-		ExpiresAt:   time.Unix(claims.ExpiresAt, 0),
+		UserID:         claims.Subject,
+		Username:       claims.Username,
+		DisplayName:    claims.DisplayName,
+		AvatarURL:      claims.AvatarURL,
+		Permissions:    permissions,
+		SessionVersion: claims.SessionVersion,
+		ExpiresAt:      time.Unix(claims.ExpiresAt, 0),
 	}, true
+}
+
+// currentSessionVersion reads the user's session version for embedding in a
+// freshly minted token. It falls back to 1 (the schema default) when the store
+// is absent or has no row yet so the token is always well-formed; a token that
+// still fails to match on the next request is rejected by sessionFromRequest.
+func (a *authService) currentSessionVersion(userID string) int64 {
+	if a.users == nil {
+		return 1
+	}
+	version, err := a.users.SessionVersion(context.Background(), userID)
+	if err != nil || version <= 0 {
+		return 1
+	}
+	return version
+}
+
+// revokeSessions invalidates every token already issued to a user by advancing
+// their stored session version. Used on logout.
+func (a *authService) revokeSessions(ctx context.Context, userID string) error {
+	if a.users == nil {
+		return nil
+	}
+	return a.users.BumpSessionVersion(ctx, userID)
 }
 
 func (a *authService) parseSessionToken(token string) (authClaims, bool) {
