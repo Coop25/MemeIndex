@@ -2,8 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"memeindex/internal/accessor"
@@ -69,16 +73,49 @@ func main() {
 	go runNightlyReelSessionCleanup(memeManager)
 	server := client.NewServer(config, memeManager)
 
-	log.Printf("MemeIndex listening on http://localhost%s", config.Addr)
 	httpServer := &http.Server{
 		Addr:              config.Addr,
 		Handler:           client.LoggingMiddleware(server.Routes()),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
-	if err := httpServer.ListenAndServe(); err != nil {
-		log.Fatal(err)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	serveErr := make(chan error, 1)
+	go func() {
+		log.Printf("MemeIndex listening on http://localhost%s", config.Addr)
+		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serveErr <- err
+		}
+	}()
+
+	select {
+	case err := <-serveErr:
+		log.Fatalf("http server failed: %v", err)
+	case <-ctx.Done():
+		// Restore default signal handling so a second Ctrl+C/SIGTERM during a
+		// slow drain force-quits instead of hanging.
+		stop()
+		log.Printf("shutdown signal received; draining in-flight requests")
 	}
+
+	server.BeginDraining()
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		log.Printf("graceful shutdown timed out, forcing close: %v", err)
+		_ = httpServer.Close()
+	}
+
+	if closer, ok := store.(interface{ Close() }); ok {
+		closer.Close()
+		log.Printf("storage connections closed")
+	}
+
+	log.Printf("shutdown complete")
 }
 
 func runNightlyReelSessionCleanup(memeManager *manager.MemeManager) {

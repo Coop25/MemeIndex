@@ -19,6 +19,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	mediafetch "github.com/Coop25/mediafetch-go"
@@ -36,6 +37,7 @@ type Server struct {
 	linkRetries *linkRetryQueue
 	backup      *portableBackup
 	shareSecret []byte
+	draining    atomic.Bool
 }
 
 type adminSystemHealth struct {
@@ -97,6 +99,8 @@ func NewServer(config Config, memeManager *manager.MemeManager) *Server {
 
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", s.handleHealthz)
+	mux.HandleFunc("/readyz", s.handleReadyz)
 	mux.HandleFunc("/auth/login", s.handleLogin)
 	mux.HandleFunc("/auth/callback", s.handleOAuthCallback)
 	mux.Handle("/forbidden", s.withPageAuth(http.HandlerFunc(s.handleAccessDeniedPage)))

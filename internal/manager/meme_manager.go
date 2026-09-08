@@ -1425,6 +1425,12 @@ func (m *MemeManager) UploadDir() string {
 	return m.store.UploadDir()
 }
 
+// Store exposes the backing store for read-only introspection such as the
+// /readyz health probe. Callers must not mutate meme state through it.
+func (m *MemeManager) Store() accessor.Store {
+	return m.store
+}
+
 func (m *MemeManager) ThumbnailDir() string {
 	previewStore, ok := m.store.(accessor.PreviewAssetStore)
 	if !ok {
