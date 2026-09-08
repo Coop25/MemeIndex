@@ -7,8 +7,8 @@ require github.com/kelseyhightower/envconfig v1.4.0
 require (
 	github.com/Coop25/mediafetch-go v0.1.10
 	github.com/google/uuid v1.6.0
-	github.com/jackc/pgx/v5 v5.9.2
-	golang.org/x/sync v0.22.0
+	github.com/jackc/pgx/v5 v5.10.0
+	golang.org/x/sync v0.23.0
 )
 
 require (
