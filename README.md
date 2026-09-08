@@ -19,7 +19,7 @@ MemeIndex is a self-hosted meme organizer built with Go and a lightweight fronte
 - Keep the original source link attached to imported link-based memes
 - Preview image and video files inline
 - Create unguessable, Discord-embeddable share links that expire after 30 days and fall back to the authenticated meme view
-- Search by filename, notes, and tags
+- Search by filename, notes, source URL, content type, and tags, resolved in the database with pagination and facet counts pushed down to SQL. Multiple words are AND-matched; `"quoted phrases"`, `-exclusions`, and `tag:`, `type:` (image/video/audio/file), `after:YYYY-MM-DD`, and `before:YYYY-MM-DD` operators narrow further
 - Mark favorites for quick filtering
 - Keep favorites per Discord user
 - Update notes and tags after upload
@@ -238,6 +238,7 @@ Notes:
 - the compose file keeps Ollama models warm with `OLLAMA_KEEP_ALIVE=30m` by default so back-to-back suggestions do not need a fresh cold load every time
 - if Ollama is down, still starting, or missing the configured model, the app stays online and tag suggestions simply return unavailable
 - Postgres also stores random reel sessions when `MEMEINDEX_DATABASE_URL` is enabled
+- on startup MemeIndex tries to create the bundled `pg_trgm` extension and trigram indexes so substring search is index-accelerated; if the database role may not create extensions this step is skipped with a log line and search still works, just with a sequential scan
 - on first Postgres startup, if the database is empty and legacy `data/index.json` or `data/favorites.json` files exist, MemeIndex imports them automatically
 - stale reel sessions are cleaned by the app every night at `00:00 UTC`
 - Postgres is not exposed by the compose file, so the app remains the only service talking to the database

@@ -135,11 +135,51 @@ func NewMemeManagerWithTagSuggester(store accessor.Store, tagSuggester *tagsugge
 	return manager
 }
 
+// maxMemePageLimit caps a single browse/search page so a caller-supplied limit
+// cannot ask the database (or the in-memory fallback) for an unbounded slice.
+const maxMemePageLimit = 500
+
 func (m *MemeManager) ListMemes(userID, query string, favoritesOnly bool, tag string, view string, offset int, limit int) MemeListResult {
 	return m.ListMemesSorted(userID, query, favoritesOnly, tag, view, "newest", offset, limit)
 }
 
 func (m *MemeManager) ListMemesSorted(userID, query string, favoritesOnly bool, tag string, view string, sortBy string, offset int, limit int) MemeListResult {
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 {
+		limit = 72
+	}
+	if limit > maxMemePageLimit {
+		limit = maxMemePageLimit
+	}
+
+	if qs, ok := m.store.(accessor.QueryableMemeStore); ok {
+		page, err := qs.QueryMemes(accessor.MemeQuery{
+			UserID:        strings.TrimSpace(userID),
+			Search:        strings.TrimSpace(query),
+			Tag:           strings.TrimSpace(tag),
+			View:          strings.TrimSpace(view),
+			FavoritesOnly: favoritesOnly,
+			Sort:          sortBy,
+			Offset:        offset,
+			Limit:         limit,
+		})
+		if err == nil {
+			memes := page.Memes
+			if memes == nil {
+				memes = []accessor.Meme{}
+			}
+			return MemeListResult{
+				Memes:      memes,
+				Counts:     memeCountsFromCategory(page.Counts),
+				HasMore:    page.HasMore,
+				NextOffset: page.NextOffset,
+			}
+		}
+		log.Printf("meme list: SQL query failed, falling back to in-memory scan: %v", err)
+	}
+
 	source := m.store.List(strings.TrimSpace(userID), strings.TrimSpace(query), false, strings.TrimSpace(tag))
 	counts := buildMemeCounts(source)
 	visible := filterMemesByView(source, strings.TrimSpace(view))
@@ -147,13 +187,6 @@ func (m *MemeManager) ListMemesSorted(userID, query string, favoritesOnly bool, 
 		visible = filterMemesByView(visible, "favorites")
 	}
 	sortMemes(visible, sortBy)
-
-	if offset < 0 {
-		offset = 0
-	}
-	if limit <= 0 {
-		limit = 72
-	}
 
 	start := min(offset, len(visible))
 	end := min(offset+limit, len(visible))
@@ -167,7 +200,27 @@ func (m *MemeManager) ListMemesSorted(userID, query string, favoritesOnly bool, 
 	}
 }
 
+func memeCountsFromCategory(c accessor.MemeCategoryCounts) MemeCounts {
+	return MemeCounts{
+		Total:     c.Total,
+		Favorites: c.Favorites,
+		Videos:    c.Videos,
+		Images:    c.Images,
+		MP3s:      c.MP3s,
+		Untagged:  c.Untagged,
+		Files:     c.Files,
+	}
+}
+
 func (m *MemeManager) Dashboard(userID string) VaultDashboard {
+	if qs, ok := m.store.(accessor.QueryableMemeStore); ok {
+		data, err := qs.MemeDashboard(strings.TrimSpace(userID))
+		if err == nil {
+			return vaultDashboardFromData(data)
+		}
+		log.Printf("dashboard: SQL query failed, falling back to in-memory scan: %v", err)
+	}
+
 	items := m.store.List(strings.TrimSpace(userID), "", false, "")
 	dashboard := VaultDashboard{
 		Counts:        buildMemeCounts(items),
@@ -203,11 +256,49 @@ func (m *MemeManager) Dashboard(userID string) VaultDashboard {
 	return dashboard
 }
 
+func vaultDashboardFromData(data accessor.MemeDashboardData) VaultDashboard {
+	dashboard := VaultDashboard{
+		TotalItems:    data.TotalItems,
+		Favorites:     data.Favorites,
+		StorageBytes:  data.StorageBytes,
+		TagCount:      data.TagCount,
+		Counts:        memeCountsFromCategory(data.Counts),
+		RecentItems:   nonNilMemes(data.RecentItems),
+		FavoriteItems: nonNilMemes(data.FavoriteItems),
+		RandomItems:   nonNilMemes(data.RandomItems),
+		TopTags:       vaultTagStats(data.TopTags),
+	}
+	return dashboard
+}
+
+func nonNilMemes(memes []accessor.Meme) []accessor.Meme {
+	if memes == nil {
+		return []accessor.Meme{}
+	}
+	return memes
+}
+
+func vaultTagStats(tags []accessor.TagCount) []VaultTagStat {
+	stats := make([]VaultTagStat, 0, len(tags))
+	for _, tag := range tags {
+		stats = append(stats, VaultTagStat{Name: tag.Name, Count: tag.Count})
+	}
+	return stats
+}
+
 func (m *MemeManager) PopularTags(userID string, limit int) []VaultTagStat {
 	if limit <= 0 {
 		limit = 10
 	}
 	limit = min(limit, 50)
+
+	if qs, ok := m.store.(accessor.QueryableMemeStore); ok {
+		tags, err := qs.TagCounts(limit)
+		if err == nil {
+			return vaultTagStats(tags)
+		}
+		log.Printf("popular tags: SQL query failed, falling back to in-memory scan: %v", err)
+	}
 
 	tagCounts := map[string]int{}
 	for _, item := range m.store.List(strings.TrimSpace(userID), "", false, "") {
