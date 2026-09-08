@@ -82,6 +82,11 @@ Example if you copied the exact `memeindex_session` cookie value from the browse
   -Recurse
 ```
 
+Session tokens are bound to a per-user session version. Logging out in the
+browser (or having the account removed and re-added) advances that version and
+immediately invalidates every previously issued token, including one pasted into
+this script. Copy a fresh token if a bulk run starts returning `401`.
+
 Optional flags:
 
 - `-Tags "tag1,tag2"` applies the same comma-separated tags to every uploaded file in the batch

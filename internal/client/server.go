@@ -2263,6 +2263,14 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if s.auth.enabled() {
+		// Advance the user's session version so the signed token being discarded
+		// here (and any copy of it that outlived this browser) stops validating
+		// immediately instead of lingering until its exp claim.
+		if session, ok := s.auth.sessionFromRequest(r); ok {
+			if err := s.auth.revokeSessions(r.Context(), session.UserID); err != nil {
+				log.Printf("revoke sessions on logout failed for user %s: %v", session.UserID, err)
+			}
+		}
 		s.auth.clearCookie(w, r, authSessionCookieName)
 	}
 

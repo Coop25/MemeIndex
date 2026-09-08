@@ -29,6 +29,8 @@ type authUserStore interface {
 	UpsertDiscordProfile(ctx context.Context, user discordUser) error
 	UpsertSessionProfile(ctx context.Context, claims authClaims) error
 	RecordDeniedVisitor(ctx context.Context, claims authClaims) error
+	SessionVersion(ctx context.Context, userID string) (int64, error)
+	BumpSessionVersion(ctx context.Context, userID string) error
 	GetUser(ctx context.Context, userID string) (managedUserRecord, bool, error)
 	ListUsers(ctx context.Context) ([]managedUserRecord, error)
 	CreateUser(ctx context.Context, userID string) (managedUserRecord, error)
@@ -59,7 +61,7 @@ func newAuthUserStore(ctx context.Context, databaseURL string) (authUserStore, e
 }
 
 func (s *postgresAuthUserStore) ensureSchema(ctx context.Context) error {
-	if err := dbschema.Apply(ctx, s.pool, "003_app_users_core.sql", "004_app_users_compat.sql", "005_app_user_readd_required.sql"); err != nil {
+	if err := dbschema.Apply(ctx, s.pool, "003_app_users_core.sql", "004_app_users_compat.sql", "005_app_user_readd_required.sql", "013_app_user_session_version.sql"); err != nil {
 		return fmt.Errorf("ensure app_users schema: %w", err)
 	}
 	return nil
@@ -231,6 +233,45 @@ func (s *postgresAuthUserStore) isReAddRequired(ctx context.Context, userID stri
 	return exists, nil
 }
 
+// SessionVersion returns the current session version for a user, or 0 when the
+// user has no row (deleted or never provisioned). A token whose embedded version
+// does not match is treated as revoked by sessionFromRequest.
+func (s *postgresAuthUserStore) SessionVersion(ctx context.Context, userID string) (int64, error) {
+	normalized := strings.TrimSpace(userID)
+	if normalized == "" {
+		return 0, errors.New("user id is required")
+	}
+	var version int64
+	err := s.pool.QueryRow(ctx, `
+		SELECT session_version FROM app_users WHERE user_id = $1
+	`, normalized).Scan(&version)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("read session version: %w", err)
+	}
+	return version, nil
+}
+
+// BumpSessionVersion invalidates every session token already issued to a user by
+// advancing their session version. It is a no-op when the user has no row.
+func (s *postgresAuthUserStore) BumpSessionVersion(ctx context.Context, userID string) error {
+	normalized := strings.TrimSpace(userID)
+	if normalized == "" {
+		return errors.New("user id is required")
+	}
+	if _, err := s.pool.Exec(ctx, `
+		UPDATE app_users
+		SET session_version = session_version + 1,
+			updated_at = NOW()
+		WHERE user_id = $1
+	`, normalized); err != nil {
+		return fmt.Errorf("bump session version: %w", err)
+	}
+	return nil
+}
+
 func (s *postgresAuthUserStore) GetUser(ctx context.Context, userID string) (managedUserRecord, bool, error) {
 	record, err := s.getUserByID(ctx, strings.TrimSpace(userID))
 	if err != nil {
@@ -347,20 +388,23 @@ func (s *postgresAuthUserStore) CreateUser(ctx context.Context, userID string) (
 	}
 	defer tx.Rollback(ctx)
 
+	// Provision the row before clearing the re-add marker so a resurrected user
+	// starts one past the version captured at delete time, invalidating any token
+	// that outlived the account.
+	_, err = tx.Exec(ctx, `
+		INSERT INTO app_users (user_id, session_version, updated_at)
+		VALUES ($1, COALESCE((SELECT session_version FROM app_user_readd_required WHERE user_id = $1), 0) + 1, NOW())
+		ON CONFLICT (user_id) DO NOTHING
+	`, normalized)
+	if err != nil {
+		return managedUserRecord{}, fmt.Errorf("create user: %w", err)
+	}
+
 	if _, err := tx.Exec(ctx, `
 		DELETE FROM app_user_readd_required
 		WHERE user_id = $1
 	`, normalized); err != nil {
 		return managedUserRecord{}, fmt.Errorf("clear re-add requirement: %w", err)
-	}
-
-	_, err = tx.Exec(ctx, `
-		INSERT INTO app_users (user_id, updated_at)
-		VALUES ($1, NOW())
-		ON CONFLICT (user_id) DO NOTHING
-	`, normalized)
-	if err != nil {
-		return managedUserRecord{}, fmt.Errorf("create user: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -382,17 +426,13 @@ func (s *postgresAuthUserStore) UpdateUserPermissions(ctx context.Context, userI
 	}
 	defer tx.Rollback(ctx)
 
-	if _, err := tx.Exec(ctx, `
-		DELETE FROM app_user_readd_required
-		WHERE user_id = $1
-	`, normalized); err != nil {
-		return managedUserRecord{}, fmt.Errorf("clear re-add requirement: %w", err)
-	}
-
+	// Same ordering as CreateUser: write the row (seeding session_version past the
+	// value captured at delete time when this doubles as a re-add) before the
+	// re-add marker is cleared. An existing row keeps its current version.
 	_, err = tx.Exec(ctx, `
 		INSERT INTO app_users (
-			user_id, can_view, can_upload, can_add_tags, can_remove_tags, can_delete_memes, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, NOW())
+			user_id, can_view, can_upload, can_add_tags, can_remove_tags, can_delete_memes, session_version, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, COALESCE((SELECT session_version FROM app_user_readd_required WHERE user_id = $1), 0) + 1, NOW())
 		ON CONFLICT (user_id) DO UPDATE
 		SET can_view = EXCLUDED.can_view,
 			can_upload = EXCLUDED.can_upload,
@@ -403,6 +443,13 @@ func (s *postgresAuthUserStore) UpdateUserPermissions(ctx context.Context, userI
 	`, normalized, permissions.CanView, permissions.CanUpload, permissions.CanAddTags, permissions.CanRemoveTags, permissions.CanDeleteMemes)
 	if err != nil {
 		return managedUserRecord{}, fmt.Errorf("update user permissions: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM app_user_readd_required
+		WHERE user_id = $1
+	`, normalized); err != nil {
+		return managedUserRecord{}, fmt.Errorf("clear re-add requirement: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -424,20 +471,24 @@ func (s *postgresAuthUserStore) DeleteUser(ctx context.Context, userID string) e
 	}
 	defer tx.Rollback(ctx)
 
+	// Capture the outgoing session version before the row disappears so a later
+	// re-add can resume from a strictly higher number and orphaned tokens issued
+	// before the delete never validate again.
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO app_user_readd_required (user_id, session_version)
+		VALUES ($1, COALESCE((SELECT session_version FROM app_users WHERE user_id = $1), 1))
+		ON CONFLICT (user_id) DO UPDATE
+		SET blocked_at = NOW(),
+			session_version = GREATEST(app_user_readd_required.session_version, EXCLUDED.session_version)
+	`, normalized); err != nil {
+		return fmt.Errorf("mark user for manual re-add: %w", err)
+	}
+
 	if _, err := tx.Exec(ctx, `
 		DELETE FROM app_users
 		WHERE user_id = $1
 	`, normalized); err != nil {
 		return fmt.Errorf("delete user: %w", err)
-	}
-
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO app_user_readd_required (user_id)
-		VALUES ($1)
-		ON CONFLICT (user_id) DO UPDATE
-		SET blocked_at = NOW()
-	`, normalized); err != nil {
-		return fmt.Errorf("mark user for manual re-add: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
