@@ -15,7 +15,7 @@ MemeIndex is a self-hosted meme organizer built with Go and a lightweight fronte
 - Store metadata in Postgres with a dedicated tags table for suggestions
 - Compute content hashes on upload so duplicate files can be skipped
 - Generate video thumbnails for lighter grid previews when `ffmpeg` is installed
-- Suggest reviewable tags for images and videos through an optional local Ollama model
+- Suggest reviewable tags for images and videos through an optional local Ollama model, and index the text the model reads off the image (plus any video transcript) so memes are searchable by their on-image caption
 - Keep the original source link attached to imported link-based memes
 - Preview image and video files inline
 - Create unguessable, Discord-embeddable share links that expire after 30 days and fall back to the authenticated meme view
@@ -234,6 +234,7 @@ Notes:
 - Postgres keeps metadata, favorites, and the dedicated tags table
 - suggested tags come from the original image file for stills, or several sampled video frames for videos
 - if you configure a local transcription command, video audio is extracted to WAV and its transcript is included as extra meme context for tagging
+- the same suggestion pass asks the model for the verbatim on-image text and stores it (joined with the transcript) in a hidden `search_text` column that meme search matches against; it is never shown in the UI and is cleared when tag suggestions are reset
 - the default model is `qwen2.5vl:3b`, which is a smaller vision model and usually a better fit for reading meme text than the earlier default
 - the compose file keeps Ollama models warm with `OLLAMA_KEEP_ALIVE=30m` by default so back-to-back suggestions do not need a fresh cold load every time
 - if Ollama is down, still starting, or missing the configured model, the app stays online and tag suggestions simply return unavailable

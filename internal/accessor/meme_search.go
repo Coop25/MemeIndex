@@ -161,6 +161,7 @@ func memeSearchTextColumns() []string {
 		"LOWER(m.notes)",
 		"LOWER(COALESCE(m.source_url, ''))",
 		"LOWER(m.content_type)",
+		"LOWER(COALESCE(m.search_text, ''))",
 	}
 }
 

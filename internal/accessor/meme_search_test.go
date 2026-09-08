@@ -93,6 +93,7 @@ func TestBuildMemeWhereTermTagAndNegation(t *testing.T) {
 	}
 	for _, frag := range []string{
 		"LOWER(m.original_name) LIKE $2",
+		"LOWER(COALESCE(m.search_text, '')) LIKE $2",
 		"NOT (LOWER(m.original_name) LIKE $3",
 		"tx.name LIKE $4",
 		"tx.name LIKE $5",

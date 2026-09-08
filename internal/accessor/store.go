@@ -145,6 +145,14 @@ type SuggestedTagStore interface {
 	SetAutoSuggestDisabled(id string, disabled bool) error
 }
 
+// SearchTextStore is an optional capability: a store that keeps a per-meme
+// free-text blob (on-image text + audio transcript, produced by the
+// tag-suggestion pass) and folds it into search. Stores without it simply do
+// not index that text.
+type SearchTextStore interface {
+	SetSearchText(id, text string) error
+}
+
 type ReelSessionRecord struct {
 	History      []string
 	Position     int

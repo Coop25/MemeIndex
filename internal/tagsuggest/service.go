@@ -58,7 +58,18 @@ type Result struct {
 	Tags   []string `json:"tags"`
 	Model  string   `json:"model"`
 	Source string   `json:"source"`
+	// Text is searchable free text derived from the same model call: the
+	// on-image text/captions the vision model transcribes, joined with the
+	// audio transcript (for videos) when one was supplied. It is not shown to
+	// the user; it feeds the meme search index. May be empty.
+	Text string `json:"text"`
 }
+
+const (
+	maxOCRTextLen        = 2000
+	maxTranscriptTextLen = 2000
+	maxSearchTextLen     = 4000
+)
 
 func New(config Config) *Service {
 	if !config.Enabled() {
@@ -213,7 +224,7 @@ func (s *Service) suggestWithStructuredChat(ctx context.Context, input Request, 
 		"format": schema,
 		"options": map[string]any{
 			"temperature": 0,
-			"num_predict": 256,
+			"num_predict": 512,
 		},
 		"messages": []map[string]any{
 			{
@@ -273,7 +284,7 @@ func (s *Service) suggestWithStructuredChat(ctx context.Context, input Request, 
 	if err != nil {
 		return Result{}, fmt.Errorf("%w: %v", ErrInvalidResponse, err)
 	}
-	result := s.buildResult(input, tags)
+	result := s.buildResult(input, tags, extractTextFromModelText(chatResponse.Message.Content))
 	if len(result.Tags) == 0 {
 		return Result{}, fmt.Errorf("%w: all returned tags were empty, duplicate, or low-value", ErrInvalidResponse)
 	}
@@ -291,7 +302,7 @@ func (s *Service) suggestWithGenerateFallback(ctx context.Context, input Request
 		"format": tagResponseSchema(s.maxTags),
 		"options": map[string]any{
 			"temperature": 0,
-			"num_predict": 256,
+			"num_predict": 512,
 		},
 	}
 
@@ -354,7 +365,7 @@ func (s *Service) suggestWithGenerateFallback(ctx context.Context, input Request
 		return Result{}, fmt.Errorf("%w: structured path failed (%v); fallback parse failed: %v", ErrInvalidResponse, originalErr, err)
 	}
 
-	result := s.buildResult(input, tags)
+	result := s.buildResult(input, tags, extractTextFromModelText(generateResponse.Response))
 	if len(result.Tags) == 0 {
 		return Result{}, fmt.Errorf("%w: all returned tags were empty, duplicate, or low-value", ErrInvalidResponse)
 	}
@@ -379,6 +390,10 @@ func tagResponseSchema(maxTags int) map[string]any {
 					"maxLength": 48,
 				},
 			},
+			"text": map[string]any{
+				"type":      "string",
+				"maxLength": maxOCRTextLen,
+			},
 		},
 		"required": []string{"tags"},
 	}
@@ -393,7 +408,7 @@ func promptKnownTags(tags []string) []string {
 	return normalized
 }
 
-func (s *Service) buildResult(input Request, rawTags []string) Result {
+func (s *Service) buildResult(input Request, rawTags []string, rawText string) Result {
 	existingTags := normalizeTags(input.ExistingTags)
 	tags := normalizeTags(rawTags)
 	tags = filterLowValueTags(tags, input)
@@ -412,7 +427,63 @@ func (s *Service) buildResult(input Request, rawTags []string) Result {
 		Tags:   filtered,
 		Model:  s.model,
 		Source: strings.TrimSpace(input.Source),
+		Text:   combineSearchText(rawText, input.Transcript),
 	}
+}
+
+// extractTextFromModelText pulls the optional "text" field (verbatim on-image
+// text) out of the model's JSON response. Unlike tag extraction it is lenient:
+// a missing or unparseable field yields "".
+func extractTextFromModelText(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	for index := 0; index < len(trimmed); index++ {
+		if trimmed[index] != '{' {
+			continue
+		}
+		var value json.RawMessage
+		decoder := json.NewDecoder(strings.NewReader(trimmed[index:]))
+		if err := decoder.Decode(&value); err != nil {
+			continue
+		}
+		var object struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(value, &object); err == nil && strings.TrimSpace(object.Text) != "" {
+			return object.Text
+		}
+	}
+	return ""
+}
+
+// combineSearchText normalises the on-image text and the audio transcript and
+// joins them into a single searchable blob, dropping a duplicate and capping
+// the total length.
+func combineSearchText(onImageText, transcript string) string {
+	ocr := sanitizeSearchText(onImageText, maxOCRTextLen)
+	spoken := sanitizeSearchText(transcript, maxTranscriptTextLen)
+	switch {
+	case ocr == "":
+		return sanitizeSearchText(spoken, maxSearchTextLen)
+	case spoken == "" || strings.EqualFold(ocr, spoken):
+		return sanitizeSearchText(ocr, maxSearchTextLen)
+	default:
+		return sanitizeSearchText(ocr+" "+spoken, maxSearchTextLen)
+	}
+}
+
+// sanitizeSearchText collapses all whitespace/control runs to single spaces and
+// truncates to at most max runes.
+func sanitizeSearchText(raw string, max int) string {
+	fields := strings.FieldsFunc(raw, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r)
+	})
+	out := strings.Join(fields, " ")
+	if max > 0 {
+		if runes := []rune(out); len(runes) > max {
+			out = strings.TrimSpace(string(runes[:max]))
+		}
+	}
+	return out
 }
 
 func extractTagsFromModelText(raw string) ([]string, error) {
@@ -486,6 +557,7 @@ func buildPrompt(input Request, knownTags []string, existingTags []string, maxTa
 	builder.WriteString("Choose tags for the joke's actual topic, situation, emotion, cultural reference, or recognizable format. Prefer the meaning of text or speech over literal objects.\n")
 	builder.WriteString("Use short lowercase phrases. Do not include generic media descriptions, camera details, demographic guesses, or anything not supported by the supplied evidence.\n")
 	builder.WriteString("Do not repeat existing tags. Existing archive tags are optional vocabulary hints, not topics you must use.\n")
+	builder.WriteString("Also copy any text, captions, or subtitles visible in the image into a field named text, exactly as written. Use an empty string when there is no readable text.\n")
 	builder.WriteString(fmt.Sprintf("Filename: %s\n", strings.TrimSpace(input.Filename)))
 	builder.WriteString(fmt.Sprintf("Content type: %s\n", strings.TrimSpace(input.ContentType)))
 	builder.WriteString(fmt.Sprintf("Image source: %s\n", strings.TrimSpace(input.Source)))
@@ -507,7 +579,7 @@ func buildPrompt(input Request, knownTags []string, existingTags []string, maxTa
 		builder.WriteString(strings.Join(knownTags, ", "))
 		builder.WriteString("\n")
 	}
-	builder.WriteString("Return only a JSON object with one key named tags and an array of strings. No markdown or explanation.")
+	builder.WriteString("Return only a JSON object with a key named tags (array of strings) and a key named text (string). No markdown or explanation.")
 	return builder.String()
 }
 
