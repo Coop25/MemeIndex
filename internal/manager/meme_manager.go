@@ -1232,13 +1232,28 @@ func (m *MemeManager) SeedTagSuggestionQueue() int {
 		return 0
 	}
 
-	memes := m.store.List("", "", false, "")
-	queued := 0
-	for _, meme := range memes {
-		if !shouldQueueTagSuggestionsForMeme(meme) {
-			continue
+	var (
+		ids      []string
+		resolved bool
+	)
+	if tq, ok := m.store.(accessor.TagSuggestionQueryStore); ok {
+		if got, err := tq.UntaggedWithoutSuggestionIDs(); err == nil {
+			ids, resolved = got, true
+		} else {
+			log.Printf("seed tag suggestion queue: SQL failed, falling back to scan: %v", err)
 		}
-		if m.enqueueTagSuggestion(meme.ID) {
+	}
+	if !resolved {
+		for _, meme := range m.store.List("", "", false, "") {
+			if shouldQueueTagSuggestionsForMeme(meme) {
+				ids = append(ids, meme.ID)
+			}
+		}
+	}
+
+	queued := 0
+	for _, id := range ids {
+		if m.enqueueTagSuggestion(id) {
 			queued += 1
 		}
 	}

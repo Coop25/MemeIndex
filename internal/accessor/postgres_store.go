@@ -180,7 +180,12 @@ func (s *PostgresStore) List(userID, query string, favoritesOnly bool, tag strin
 			m.file_path,
 			m.content_type,
 			m.size_bytes,
-			COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL), '{}') AS tags,
+			COALESCE((
+				SELECT array_agg(t.name ORDER BY t.name)
+				FROM meme_tags mt
+				JOIN tags t ON t.id = mt.tag_id
+				WHERE mt.meme_id = m.id
+			), '{}') AS tags,
 			COALESCE(m.suggested_tags, '{}') AS suggested_tags,
 			COALESCE(m.auto_suggest_disabled, FALSE) AS auto_suggest_disabled,
 			m.notes,
@@ -193,8 +198,6 @@ func (s *PostgresStore) List(userID, query string, favoritesOnly bool, tag strin
 			m.created_at,
 			m.updated_at
 		FROM memes m
-		LEFT JOIN meme_tags mt ON mt.meme_id = m.id
-		LEFT JOIN tags t ON t.id = mt.tag_id
 		WHERE
 			COALESCE(m.hidden_from_app, FALSE) = FALSE
 			AND
@@ -230,8 +233,7 @@ func (s *PostgresStore) List(userID, query string, favoritesOnly bool, tag strin
 					WHERE uff.user_id = $1 AND uff.meme_id = m.id
 				)
 			)
-		GROUP BY m.id
-		ORDER BY m.created_at DESC
+		ORDER BY m.created_at DESC, m.id ASC
 	`, userID, query, tag, favoritesOnly)
 	if err != nil {
 		return nil
@@ -475,6 +477,20 @@ func (s *PostgresStore) UntaggedWithoutSuggestionsCount() (int, error) {
 		  AND NOT EXISTS (SELECT 1 FROM meme_tags mt WHERE mt.meme_id = m.id)
 	`).Scan(&n)
 	return n, err
+}
+
+// UntaggedWithoutSuggestionIDs returns the ids of the memes counted by
+// UntaggedWithoutSuggestionsCount, newest first.
+func (s *PostgresStore) UntaggedWithoutSuggestionIDs() ([]string, error) {
+	return scanIDList(context.Background(), s.pool, `
+		SELECT m.id
+		FROM memes m
+		WHERE `+visibleMemePredicate+`
+		  AND COALESCE(m.auto_suggest_disabled, FALSE) = FALSE
+		  AND COALESCE(cardinality(m.suggested_tags), 0) = 0
+		  AND NOT EXISTS (SELECT 1 FROM meme_tags mt WHERE mt.meme_id = m.id)
+		ORDER BY m.created_at DESC, m.id ASC
+	`)
 }
 
 // PendingSuggestionMemes returns the total count of visible memes that carry

@@ -5,7 +5,14 @@ import (
 	"testing"
 
 	"memeindex/internal/accessor"
+	"memeindex/internal/tagsuggest"
 )
+
+// stubTagSuggester returns an enabled Service that performs no I/O until its
+// worker is started (which these tests never do).
+func stubTagSuggester() *tagsuggest.Service {
+	return tagsuggest.New(tagsuggest.Config{OllamaURL: "http://127.0.0.1:0", Model: "stub"})
+}
 
 // tagOpsFakeStore adds the tag-maintenance / tag-suggestion-query / tag-usage
 // capabilities on top of the in-memory fake so the manager's SQL-delegation
@@ -20,6 +27,7 @@ type tagOpsFakeStore struct {
 	mergeAffected int
 
 	untagged      int
+	untaggedIDs   []string
 	pendingTotal  int
 	pendingMemes  []accessor.Meme
 	pendingOffset int
@@ -36,6 +44,10 @@ func (s *tagOpsFakeStore) MergeTag(sourceTag, targetTag string, _ accessor.Audit
 
 func (s *tagOpsFakeStore) UntaggedWithoutSuggestionsCount() (int, error) {
 	return s.untagged, nil
+}
+
+func (s *tagOpsFakeStore) UntaggedWithoutSuggestionIDs() ([]string, error) {
+	return append([]string(nil), s.untaggedIDs...), nil
 }
 
 func (s *tagOpsFakeStore) PendingSuggestionMemes(offset, limit int) (int, []accessor.Meme, error) {
@@ -117,6 +129,21 @@ func TestTagSuggestionQueueStatusDelegatesToStore(t *testing.T) {
 	}
 	if !status.PendingReviewHasMore || status.PendingReviewNextOffset != 100 {
 		t.Fatalf("pagination = has_more %v next %d, want true and 100", status.PendingReviewHasMore, status.PendingReviewNextOffset)
+	}
+}
+
+func TestSeedTagSuggestionQueueUsesStoreIDs(t *testing.T) {
+	store := newTagOpsFakeStore()
+	store.untaggedIDs = []string{"a", "b", "c"}
+	m := NewMemeManagerWithTagSuggester(store, stubTagSuggester(), nil, TagSuggestionRuntimeConfig{}, 60)
+
+	queued := m.SeedTagSuggestionQueue()
+
+	if store.callCount() != 0 {
+		t.Fatalf("whole-archive scan was used %d times, want 0", store.callCount())
+	}
+	if queued != 3 {
+		t.Fatalf("queued = %d, want 3", queued)
 	}
 }
 

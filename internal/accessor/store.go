@@ -150,6 +150,9 @@ type TagSuggestionQueryStore interface {
 	// UntaggedWithoutSuggestionsCount counts visible memes with no tags, no
 	// stored suggestions, and auto-suggest still enabled.
 	UntaggedWithoutSuggestionsCount() (int, error)
+	// UntaggedWithoutSuggestionIDs returns the ids of those same memes so the
+	// suggestion queue can be seeded without loading every meme.
+	UntaggedWithoutSuggestionIDs() ([]string, error)
 	// PendingSuggestionMemes returns the total number of visible memes that have
 	// stored suggestions plus one newest-first page of them.
 	PendingSuggestionMemes(offset, limit int) (total int, memes []Meme, err error)
