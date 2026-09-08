@@ -18,6 +18,11 @@ services:
     image: ${MEMEINDEX_IMAGE:-ghcr.io/Coop25/memeindex:latest}
     pull_policy: always
     restart: unless-stopped
+    # The image starts as root only to fix ownership of ./data, then drops to a
+    # non-root user (uid 10001) on its own - no host `chown` needed. To pin the
+    # process to a specific uid:gid instead, uncomment and set this (that also
+    # skips the auto-chown, so ./data must already be writable by that uid):
+    # user: "1000:1000"
     depends_on:
       postgres:
         condition: service_healthy

@@ -294,7 +294,7 @@ Notes:
 - the app env vars are declared directly in `docker-compose.yml`, and Docker Compose fills them from your shell or local `.env`
 - `MEMEINDEX_IMAGE` controls which published app image Compose pulls, and defaults to `ghcr.io/your-github-user-or-org/memeindex:latest`
 - if `ffmpeg` is available in the container or host environment, MemeIndex generates JPEG thumbnails for videos and backfills thumbnails for older imported videos in the background on startup
-- the app container now includes `ffmpeg` plus the current upstream `yt-dlp` Linux binary, which the upload modal uses for supported link downloads
+- the app container now includes `ffmpeg` plus a `yt-dlp` Linux binary (per build arch), which the upload modal uses for supported link downloads. The binary is verified against the release `SHA2-256SUMS` at build time; pass `--build-arg YTDLP_VERSION=2025.08.22` (any dated release) to pin it for a reproducible image
 
 To verify the downloader inside the local app image:
 
@@ -306,9 +306,17 @@ task docker-dev-verify-mediafetch
 
 This repo includes [`.github/workflows/docker-publish.yml`](/f:/GitHub/MemeIndex/.github/workflows/docker-publish.yml), which builds the app image in GitHub Actions and pushes it to GitHub Container Registry on:
 
-- pushes to `main`
+- pushes to `master`
 - version tags like `v1.0.0`
 - manual runs from the Actions tab
+
+The image is built for both `linux/amd64` and `linux/arm64`. Its entrypoint
+starts as root only long enough to take ownership of the data directory, then
+drops to a non-root user (`uid 10001`) via `gosu` before running the app — so an
+existing root-owned `./data` bind mount keeps working with **no host `chown`
+needed**, including on hosts where you have no shell access. To pin the process
+to a specific uid instead, set `user: "<uid>:<gid>"` on the `app` service (that
+skips the auto-chown, so `./data` must already be writable by that uid).
 
 The published image path is:
 
@@ -322,7 +330,7 @@ For this repository, that usually means a package name like `ghcr.io/<your-githu
 
 1. Push this repository to GitHub.
 2. Update `.env` so `MEMEINDEX_IMAGE` points at your real package, for example `ghcr.io/example-org/memeindex:latest`.
-3. Run the workflow once by pushing to `main` or using `workflow_dispatch`.
+3. Run the workflow once by pushing to `master` or using `workflow_dispatch`.
 4. In GitHub, make the container package public if you want hosts to pull it without logging in.
 
 If you prefer to keep the package private, log in on the deployment host first:
