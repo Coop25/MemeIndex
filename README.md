@@ -120,6 +120,8 @@ Optional flags:
 - `MEMEINDEX_SHARE_SECRET`: optional dedicated secret used to sign 30-day share URLs. It defaults to `MEMEINDEX_SESSION_SECRET`; without either secret, MemeIndex creates `data/share_secret`. Keep it stable or active links will stop validating
 - `MEMEINDEX_SESSION_DURATION_DAYS`: how long Discord login cookies stay valid, default `30`
 - `MEMEINDEX_COOKIE_SECURE`: set to `true` when serving over HTTPS so auth cookies are marked secure
+- `MEMEINDEX_RATE_LIMIT_ENABLED`: defaults to `true`. Per-identity token-bucket limits on `/auth/login` and `/auth/callback` (by client IP), on uploads and share-link creation, and a tighter limit on link imports (which spawn `yt-dlp`/remote fetches). Authenticated requests are keyed by user ID, anonymous ones by client IP. Set to `false` only for a trusted bulk import that needs the ceiling lifted
+- `MEMEINDEX_CLIENT_IP_HEADER`: header your reverse proxy populates with the real client IP, for example `CF-Connecting-IP`. Leave blank when clients reach the origin directly. A forwarding header is trusted for rate limiting only when named here, so a spoofed `X-Forwarded-For` cannot mint unlimited buckets
 - `MEMEINDEX_SUPER_ADMIN_USER_IDS`: comma-separated Discord user IDs that should always have full access plus user-management access
 - `MEMEINDEX_VIEW_USER_IDS`: comma-separated Discord user IDs allowed to view the app
 - `MEMEINDEX_ADD_USER_IDS`: comma-separated Discord user IDs allowed to view and upload memes

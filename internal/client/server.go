@@ -38,6 +38,10 @@ type Server struct {
 	backup      *portableBackup
 	shareSecret []byte
 	draining    atomic.Bool
+
+	authLimiter       *rateLimiter
+	writeLimiter      *rateLimiter
+	linkImportLimiter *rateLimiter
 }
 
 type adminSystemHealth struct {
@@ -94,6 +98,16 @@ func NewServer(config Config, memeManager *manager.MemeManager) *Server {
 		shareSecret: shareSecret,
 	}
 	server.linkRetries = newLinkRetryQueue(config.MediaFetchRetry.Interval, config.MediaFetchRetry.MaxAttempts, server.processRetriedLinkJob)
+
+	if config.RateLimitEnabled {
+		server.authLimiter = newRateLimiter(authRatePerSecond, authRateBurst)
+		server.writeLimiter = newRateLimiter(writeRatePerSecond, writeRateBurst)
+		server.linkImportLimiter = newRateLimiter(linkImportRatePerSecond, linkImportRateBurst)
+		server.startRateLimiterSweeper()
+	} else {
+		log.Printf("MemeIndex rate limiting: disabled")
+	}
+
 	return server
 }
 
@@ -101,8 +115,8 @@ func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/readyz", s.handleReadyz)
-	mux.HandleFunc("/auth/login", s.handleLogin)
-	mux.HandleFunc("/auth/callback", s.handleOAuthCallback)
+	mux.Handle("/auth/login", s.rateLimitByIP(http.HandlerFunc(s.handleLogin), s.authLimiter, "auth"))
+	mux.Handle("/auth/callback", s.rateLimitByIP(http.HandlerFunc(s.handleOAuthCallback), s.authLimiter, "auth"))
 	mux.Handle("/forbidden", s.withPageAuth(http.HandlerFunc(s.handleAccessDeniedPage)))
 	mux.HandleFunc("/auth/logout", s.handleLogout)
 	mux.HandleFunc("/og-image.svg", s.handleOGImage)
@@ -950,6 +964,9 @@ func (s *Server) handleSaveLink(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if s.enforceRateLimit(w, r, s.linkImportLimiter, "linkimport") {
+		return
+	}
 	var payload struct {
 		URL      string   `json:"url"`
 		Title    string   `json:"title"`
@@ -1015,6 +1032,9 @@ func safeLinkFilename(value string) string {
 }
 
 func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
+	if s.enforceRateLimit(w, r, s.writeLimiter, "upload") {
+		return
+	}
 	limit := s.config.MaxUploadBytes
 	if limit <= 0 {
 		limit = 256 << 20
@@ -1043,6 +1063,9 @@ func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if sourceURL != "" {
+		if s.enforceRateLimit(w, r, s.linkImportLimiter, "linkimport") {
+			return
+		}
 		meme, err := s.createMemeFromSourceURL(r.Context(), currentAuditActor(r), sourceURL, splitTags(r.FormValue("tags")), r.FormValue("notes"))
 		if err != nil {
 			var duplicateErr *accessor.DuplicateMemeError

@@ -50,6 +50,9 @@ func loadOrCreateShareSecret(dataDir, configured string) ([]byte, error) {
 }
 
 func (s *Server) createMemeShare(w http.ResponseWriter, r *http.Request, memeID string) {
+	if s.enforceRateLimit(w, r, s.writeLimiter, "share") {
+		return
+	}
 	now := time.Now().UTC()
 	share, err := s.managers.GetOrCreateMemeShare(memeID, currentUserID(r), now)
 	if err != nil {
