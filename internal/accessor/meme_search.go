@@ -154,15 +154,14 @@ func parseSearchDate(v string) (time.Time, bool) {
 // fixed, code-chosen SQL structure is ever concatenated.
 
 // memeSearchTextColumns are the columns a bare term is matched against, in
-// addition to the meme's tag names.
-func memeSearchTextColumns() []string {
-	return []string{
-		"LOWER(m.original_name)",
-		"LOWER(m.notes)",
-		"LOWER(COALESCE(m.source_url, ''))",
-		"LOWER(m.content_type)",
-		"LOWER(COALESCE(m.search_text, ''))",
-	}
+// addition to the meme's tag names. It is fixed SQL structure, never mutated, so
+// it is a package-level slice rather than a fresh allocation per search term.
+var memeSearchTextColumns = []string{
+	"LOWER(m.original_name)",
+	"LOWER(m.notes)",
+	"LOWER(COALESCE(m.source_url, ''))",
+	"LOWER(m.content_type)",
+	"LOWER(COALESCE(m.search_text, ''))",
 }
 
 // buildMemeWhere renders the WHERE body shared by the counts query and the page
@@ -178,8 +177,8 @@ func buildMemeWhere(search MemeSearch, tag string, startArg int) (where string, 
 		ph := "$" + strconv.Itoa(arg)
 		args = append(args, "%"+value+"%")
 		arg++
-		parts := make([]string, 0, len(memeSearchTextColumns())+1)
-		for _, col := range memeSearchTextColumns() {
+		parts := make([]string, 0, len(memeSearchTextColumns)+1)
+		for _, col := range memeSearchTextColumns {
 			parts = append(parts, col+" LIKE "+ph)
 		}
 		parts = append(parts, "EXISTS (SELECT 1 FROM meme_tags mtx JOIN tags tx ON tx.id = mtx.tag_id WHERE mtx.meme_id = m.id AND tx.name LIKE "+ph+")")

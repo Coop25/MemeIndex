@@ -171,6 +171,15 @@ type TagUsageStore interface {
 	TagUsageCounts() (map[string]int, error)
 }
 
+// AdminDashboardMemeStore returns every visible meme, newest first, in the shape
+// the admin overview aggregates. It is List("", "", false, "") without the
+// per-row favourites subquery: the admin view sources favourite totals from
+// AdminAnalyticsStore, so that lookup is pure overhead across a full-archive
+// scan.
+type AdminDashboardMemeStore interface {
+	AdminDashboardMemes() ([]Meme, error)
+}
+
 type PreviewAssetStore interface {
 	ThumbnailDir() string
 	EnsurePreviewAssets() error

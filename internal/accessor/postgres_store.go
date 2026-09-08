@@ -301,6 +301,59 @@ const memeRowSelectColumns = `
 	m.created_at,
 	m.updated_at`
 
+// adminDashboardMemeColumns mirrors memeRowSelectColumns for scanMemeRow but
+// hard-codes the favourite flag to FALSE. The admin dashboard aggregates
+// favourite totals from user_favorites directly (AdminAnalyticsStore), so the
+// per-row EXISTS subquery that List() runs for the whole archive is dead weight
+// here. It takes no positional args.
+const adminDashboardMemeColumns = `
+	m.id,
+	m.original_name,
+	m.stored_name,
+	m.file_path,
+	m.content_type,
+	m.size_bytes,
+	COALESCE((
+		SELECT array_agg(t.name ORDER BY t.name)
+		FROM meme_tags mt
+		JOIN tags t ON t.id = mt.tag_id
+		WHERE mt.meme_id = m.id
+	), '{}') AS tags,
+	COALESCE(m.suggested_tags, '{}') AS suggested_tags,
+	COALESCE(m.auto_suggest_disabled, FALSE) AS auto_suggest_disabled,
+	m.notes,
+	COALESCE(m.source_url, '') AS source_url,
+	FALSE AS favorite,
+	m.created_at,
+	m.updated_at`
+
+// AdminDashboardMemes returns every visible meme, newest first, in the shape the
+// admin overview aggregates - List() without the search/tag filters and without
+// the per-row favourites lookup.
+func (s *PostgresStore) AdminDashboardMemes() ([]Meme, error) {
+	ctx := context.Background()
+	rows, err := s.pool.Query(ctx, "SELECT"+adminDashboardMemeColumns+`
+		FROM memes m
+		WHERE COALESCE(m.hidden_from_app, FALSE) = FALSE
+		ORDER BY m.created_at DESC, m.id ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	memes := make([]Meme, 0)
+	for rows.Next() {
+		meme, scanErr := scanMemeRow(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		decoratePreviewPath(&meme, s.previewDir)
+		memes = append(memes, meme)
+	}
+	return memes, rows.Err()
+}
+
 // queryMemeRows resolves one page of memes: it filters, sorts, and limits the
 // memes table on its own in a derived table, then builds the tag array for just
 // that page. The previous form joined meme_tags/tags and GROUP BY'd before the
@@ -1234,12 +1287,24 @@ func (s *PostgresStore) Delete(input DeleteInput) (DeleteResult, error) {
 		return DeleteResult{PendingApproval: true}, nil
 	}
 
+	// Capture the meme's tags before the cascade drops its meme_tags rows so any
+	// that are left unreferenced can be pruned (replaceTags no longer sweeps the
+	// whole tags table, so each removal path cleans up after itself).
+	orphanCandidates, err := scanInt64List(ctx, s.pool, `SELECT tag_id FROM meme_tags WHERE meme_id = $1`, id)
+	if err != nil {
+		return DeleteResult{}, err
+	}
+
 	commandTag, err := s.pool.Exec(ctx, `DELETE FROM memes WHERE id = $1`, id)
 	if err != nil {
 		return DeleteResult{}, err
 	}
 	if commandTag.RowsAffected() == 0 {
 		return DeleteResult{}, os.ErrNotExist
+	}
+
+	if err := s.deleteOrphanTags(ctx, s.pool, orphanCandidates); err != nil {
+		return DeleteResult{}, err
 	}
 
 	if err := s.insertAuditLog(ctx, s.pool, id, "deleted", input.Actor, "Deleted meme"); err != nil {
@@ -1673,43 +1738,74 @@ func (s *PostgresStore) getByID(ctx context.Context, db queryable, userID, id st
 	return meme, nil
 }
 
+// replaceTags rewrites the tag set for one meme. It resolves the whole set in a
+// fixed number of round trips - one batched tag upsert and one batched link
+// insert - instead of two statements per tag, and it scopes the orphan-tag
+// cleanup to just the tags this meme used to carry rather than re-sweeping the
+// entire tags table on every upload and every edit.
 func (s *PostgresStore) replaceTags(ctx context.Context, tx pgx.Tx, memeID string, tags []string) error {
+	previousTagIDs, err := scanInt64List(ctx, tx, `SELECT tag_id FROM meme_tags WHERE meme_id = $1`, memeID)
+	if err != nil {
+		return err
+	}
+
 	if _, err := tx.Exec(ctx, `DELETE FROM meme_tags WHERE meme_id = $1`, memeID); err != nil {
 		return err
 	}
 
-	for _, tag := range normalizeTags(tags) {
-		var tagID int64
-		if err := tx.QueryRow(ctx, `
+	names := normalizeTags(tags)
+	if len(names) > 0 {
+		if _, err := tx.Exec(ctx, `
 			INSERT INTO tags (name)
-			VALUES ($1)
-			ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
-			RETURNING id
-		`, tag).Scan(&tagID); err != nil {
+			SELECT unnest($1::text[])
+			ON CONFLICT (name) DO NOTHING
+		`, names); err != nil {
 			return err
 		}
-
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO meme_tags (meme_id, tag_id)
-			VALUES ($1, $2)
+			SELECT $1, t.id FROM tags t WHERE t.name = ANY($2::text[])
 			ON CONFLICT DO NOTHING
-		`, memeID, tagID); err != nil {
+		`, memeID, names); err != nil {
 			return err
 		}
 	}
 
-	if _, err := tx.Exec(ctx, `
-		DELETE FROM tags
-		WHERE NOT EXISTS (
-			SELECT 1
-			FROM meme_tags mt
-			WHERE mt.tag_id = tags.id
-		)
-	`); err != nil {
-		return err
-	}
+	return s.deleteOrphanTags(ctx, tx, previousTagIDs)
+}
 
-	return nil
+// deleteOrphanTags removes any of the given tag ids that no longer have a single
+// meme_tags link. It is the scoped replacement for the old whole-`tags`-table
+// anti-join that ran on every write: callers pass just the ids that a delete or
+// a tag-set rewrite might have orphaned.
+func (s *PostgresStore) deleteOrphanTags(ctx context.Context, db queryable, tagIDs []int64) error {
+	if len(tagIDs) == 0 {
+		return nil
+	}
+	_, err := db.Exec(ctx, `
+		DELETE FROM tags
+		WHERE id = ANY($1::bigint[])
+		  AND NOT EXISTS (SELECT 1 FROM meme_tags mt WHERE mt.tag_id = tags.id)
+	`, tagIDs)
+	return err
+}
+
+func scanInt64List(ctx context.Context, q queryable, sql string, args ...any) ([]int64, error) {
+	rows, err := q.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }
 
 func (s *PostgresStore) setFavoriteInExecutor(ctx context.Context, db queryable, userID, memeID string, favorite bool) error {
@@ -1995,7 +2091,14 @@ func (s *PostgresStore) ApprovePendingDelete(id string, actor AuditActor) error 
 	if err := s.insertAuditLog(ctx, s.pool, id, "delete_approved", actor, "Approved delete request"); err != nil {
 		return err
 	}
+	orphanCandidates, err := scanInt64List(ctx, s.pool, `SELECT tag_id FROM meme_tags WHERE meme_id = $1`, id)
+	if err != nil {
+		return err
+	}
 	if _, err := s.pool.Exec(ctx, `DELETE FROM memes WHERE id = $1`, id); err != nil {
+		return err
+	}
+	if err := s.deleteOrphanTags(ctx, s.pool, orphanCandidates); err != nil {
 		return err
 	}
 
@@ -2101,12 +2204,17 @@ func scanMemeRow(row interface{ Scan(dest ...any) error }) (Meme, error) {
 	}
 	// Tag names are written through normalizeTags and read back via
 	// "array_agg(... ORDER BY t.name)", so they arrive lowercased, de-duplicated
-	// (tags.name is UNIQUE), and sorted. Re-normalizing every row is wasted work.
+	// (tags.name is UNIQUE), and sorted. suggested_tags is likewise only ever
+	// written through normalizeTags. Re-normalizing either on every row is wasted
+	// work; just guarantee a non-nil slice.
 	if tags == nil {
 		tags = []string{}
 	}
+	if suggestedTags == nil {
+		suggestedTags = []string{}
+	}
 	meme.Tags = tags
-	meme.SuggestedTags = normalizeTags(suggestedTags)
+	meme.SuggestedTags = suggestedTags
 	meme.AutoSuggestDisabled = autoSuggestDisabled
 	return meme, nil
 }
