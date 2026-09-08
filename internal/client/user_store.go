@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"memeindex/internal/accessor"
 	"memeindex/internal/dbschema"
 )
 
@@ -48,7 +49,7 @@ func newAuthUserStore(ctx context.Context, databaseURL string) (authUserStore, e
 		return nil, nil
 	}
 
-	pool, err := pgxpool.New(ctx, databaseURL)
+	pool, err := accessor.NewPool(ctx, databaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("connect auth user store: %w", err)
 	}

@@ -43,7 +43,7 @@ func NewPostgresStore(ctx context.Context, databaseURL string, dataDir string) (
 		return nil, fmt.Errorf("create upload dir: %w", err)
 	}
 
-	pool, err := pgxpool.New(ctx, databaseURL)
+	pool, err := NewPool(ctx, databaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("connect postgres: %w", err)
 	}
@@ -249,9 +249,9 @@ func (s *PostgresStore) List(userID, query string, favoritesOnly bool, tag strin
 	return memes
 }
 
-// memeRowSelectColumns is the projection consumed by scanMemeRow. Any query
-// using it must expose $1 as the favourites user id and join meme_tags mt /
-// tags t for the array_agg.
+// memeRowSelectColumns is the projection consumed by scanMemeRow. It expects $1
+// to be the favourites user id. The tag array is a correlated subquery rather
+// than a join+GROUP BY so it is evaluated only for the rows actually returned.
 const memeRowSelectColumns = `
 	m.id,
 	m.original_name,
@@ -259,7 +259,12 @@ const memeRowSelectColumns = `
 	m.file_path,
 	m.content_type,
 	m.size_bytes,
-	COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL), '{}') AS tags,
+	COALESCE((
+		SELECT array_agg(t.name ORDER BY t.name)
+		FROM meme_tags mt
+		JOIN tags t ON t.id = mt.tag_id
+		WHERE mt.meme_id = m.id
+	), '{}') AS tags,
 	COALESCE(m.suggested_tags, '{}') AS suggested_tags,
 	COALESCE(m.auto_suggest_disabled, FALSE) AS auto_suggest_disabled,
 	m.notes,
@@ -271,17 +276,31 @@ const memeRowSelectColumns = `
 	m.created_at,
 	m.updated_at`
 
-// queryMemeRows runs a meme projection where clause is everything from the WHERE
-// keyword onward (WHERE ... [GROUP BY] [ORDER BY] [LIMIT ...]). userID becomes
-// $1; extraArgs fill $2, $3, ... in the order the clause references them.
-func (s *PostgresStore) queryMemeRows(ctx context.Context, userID, clause string, extraArgs ...any) ([]Meme, error) {
+// queryMemeRows resolves one page of memes: it filters, sorts, and limits the
+// memes table on its own in a derived table, then builds the tag array for just
+// that page. The previous form joined meme_tags/tags and GROUP BY'd before the
+// LIMIT, forcing the whole filtered set through the aggregate and sort.
+//
+// $1 is the favourites user id; whereArgs fill $2, $3, ... in the order `where`
+// references them; the LIMIT/OFFSET placeholders follow. `where` and `orderBy`
+// may reference only columns of `memes m` (tag filters are EXISTS subqueries).
+func (s *PostgresStore) queryMemeRows(ctx context.Context, userID, where, orderBy string, limit, offset int, whereArgs ...any) ([]Meme, error) {
+	limArg := len(whereArgs) + 2
 	sql := "SELECT" + memeRowSelectColumns + `
-FROM memes m
-LEFT JOIN meme_tags mt ON mt.meme_id = m.id
-LEFT JOIN tags t ON t.id = mt.tag_id
-` + clause
+FROM (
+	SELECT m.*
+	FROM memes m
+	WHERE ` + where + `
+	ORDER BY ` + orderBy + `
+	LIMIT $` + strconv.Itoa(limArg) + ` OFFSET $` + strconv.Itoa(limArg+1) + `
+) m
+ORDER BY ` + orderBy
 
-	args := append([]any{normalizeFavoriteUserID(userID)}, extraArgs...)
+	args := make([]any, 0, len(whereArgs)+3)
+	args = append(args, normalizeFavoriteUserID(userID))
+	args = append(args, whereArgs...)
+	args = append(args, limit, offset)
+
 	rows, err := s.pool.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, err
@@ -346,7 +365,7 @@ func (s *PostgresStore) QueryMemes(q MemeQuery) (MemeQueryPage, error) {
 		limit = 72
 	}
 
-	where, filterArgs, nextArg := buildMemeWhere(search, q.Tag, 2)
+	where, filterArgs, _ := buildMemeWhere(search, q.Tag, 2)
 
 	counts, err := s.memeCounts(ctx, where, append([]any{uid}, filterArgs...))
 	if err != nil {
@@ -361,12 +380,8 @@ func (s *PostgresStore) QueryMemes(q MemeQuery) (MemeQueryPage, error) {
 		pageWhere += "\n  AND EXISTS (SELECT 1 FROM user_favorites uf WHERE uf.user_id = $1 AND uf.meme_id = m.id)"
 	}
 
-	clause := "WHERE " + pageWhere +
-		"\nGROUP BY m.id\nORDER BY " + memeSortOrder(q.Sort) +
-		"\nLIMIT $" + strconv.Itoa(nextArg) + " OFFSET $" + strconv.Itoa(nextArg+1)
-
-	extra := append(append([]any{}, filterArgs...), limit+1, offset)
-	memes, err := s.queryMemeRows(ctx, uid, clause, extra...)
+	// Fetch one extra row to decide HasMore without a second query.
+	memes, err := s.queryMemeRows(ctx, uid, pageWhere, memeSortOrder(q.Sort), limit+1, offset, filterArgs...)
 	if err != nil {
 		return MemeQueryPage{}, err
 	}
@@ -448,18 +463,18 @@ func (s *PostgresStore) MemeDashboard(userID string) (MemeDashboardData, error) 
 	}
 
 	if data.RecentItems, err = s.queryMemeRows(ctx, uid,
-		"WHERE "+visible+"\nGROUP BY m.id\nORDER BY m.created_at DESC, m.id ASC\nLIMIT 6",
+		visible, "m.created_at DESC, m.id ASC", 6, 0,
 	); err != nil {
 		return MemeDashboardData{}, err
 	}
 	if data.FavoriteItems, err = s.queryMemeRows(ctx, uid,
-		"WHERE "+visible+"\n  AND EXISTS (SELECT 1 FROM user_favorites uf WHERE uf.user_id = $1 AND uf.meme_id = m.id)"+
-			"\nGROUP BY m.id\nORDER BY m.created_at DESC, m.id ASC\nLIMIT 6",
+		visible+" AND EXISTS (SELECT 1 FROM user_favorites uf WHERE uf.user_id = $1 AND uf.meme_id = m.id)",
+		"m.created_at DESC, m.id ASC", 6, 0,
 	); err != nil {
 		return MemeDashboardData{}, err
 	}
 	if data.RandomItems, err = s.queryMemeRows(ctx, uid,
-		"WHERE "+visible+"\nGROUP BY m.id\nORDER BY random()\nLIMIT 6",
+		visible, "random()", 6, 0,
 	); err != nil {
 		return MemeDashboardData{}, err
 	}
@@ -1763,7 +1778,13 @@ func scanMemeRow(row interface{ Scan(dest ...any) error }) (Meme, error) {
 		}
 		return Meme{}, err
 	}
-	meme.Tags = normalizeTags(tags)
+	// Tag names are written through normalizeTags and read back via
+	// "array_agg(... ORDER BY t.name)", so they arrive lowercased, de-duplicated
+	// (tags.name is UNIQUE), and sorted. Re-normalizing every row is wasted work.
+	if tags == nil {
+		tags = []string{}
+	}
+	meme.Tags = tags
 	meme.SuggestedTags = normalizeTags(suggestedTags)
 	meme.AutoSuggestDisabled = autoSuggestDisabled
 	return meme, nil
