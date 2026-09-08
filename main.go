@@ -66,6 +66,7 @@ func main() {
 		config.TagSuggestions.KnownTagBudget,
 	)
 	go runPreviewAssetBackfill(memeManager)
+	memeManager.StartTagHygieneWorker()
 	memeManager.StartTagSuggestionWorker()
 	if queued := memeManager.SeedTagSuggestionQueue(); queued > 0 {
 		log.Printf("tag suggestion worker: queued %d existing untagged meme(s) with no pending suggestions", queued)

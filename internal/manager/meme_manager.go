@@ -52,9 +52,30 @@ type MemeManager struct {
 	adminDashboardCachedAt time.Time
 	tagHygieneCache        *TagHygieneReport
 	tagHygieneCachedAt     time.Time
+	tagHygieneDirty        bool
+	tagHygieneRefresh      chan struct{}
+	tagHygieneWorkerStart  sync.Once
 }
 
 const adminReadCacheTTL = 5 * time.Second
+
+// Recomputing the tag-hygiene report is a full O(n^2) pass over every distinct
+// tag name, so it runs on a background worker rather than the admin request
+// path. A burst of tag edits is coalesced into one recompute after
+// tagHygieneDebounce of quiet; the worker also re-scans every
+// tagHygieneMaxInterval as a backstop in case a dirty signal is ever missed.
+// Both are var (not const) only so tests can shrink them.
+var (
+	tagHygieneDebounce    = 5 * time.Second
+	tagHygieneMaxInterval = 10 * time.Minute
+)
+
+// Paging defaults for the admin tag-hygiene panel. The catalog list in
+// particular can run to thousands of rows, so callers page through it.
+const (
+	tagHygienePageDefaultLimit = 50
+	tagHygienePageMaxLimit     = 200
+)
 
 type TagSuggestionRuntimeConfig struct {
 	VideoFrameCount   int
@@ -369,7 +390,7 @@ func (m *MemeManager) CreateMemeAs(actor accessor.AuditActor, file io.Reader, he
 }
 
 func (m *MemeManager) CreateMemeAsWithSource(actor accessor.AuditActor, file io.Reader, header textproto.MIMEHeader, filename string, tags []string, notes string, sourceURL string) (accessor.Meme, error) {
-	return m.store.Create(accessor.CreateInput{
+	meme, err := m.store.Create(accessor.CreateInput{
 		File:      file,
 		Header:    header,
 		Filename:  filename,
@@ -378,12 +399,20 @@ func (m *MemeManager) CreateMemeAsWithSource(actor accessor.AuditActor, file io.
 		SourceURL: strings.TrimSpace(sourceURL),
 		Actor:     actor,
 	})
+	if err == nil {
+		m.markTagsChanged()
+	}
+	return meme, err
 }
 
 func (m *MemeManager) UpdateMeme(userID, id string, update accessor.MemeUpdate) (accessor.Meme, error) {
 	update.Tags = normalizeTags(update.Tags)
 	update.Notes = strings.TrimSpace(update.Notes)
-	return m.store.Update(strings.TrimSpace(userID), strings.TrimSpace(id), update)
+	meme, err := m.store.Update(strings.TrimSpace(userID), strings.TrimSpace(id), update)
+	if err == nil {
+		m.markTagsChanged()
+	}
+	return meme, err
 }
 
 func (m *MemeManager) SetFavorite(userID, id string, favorite bool) (accessor.Meme, error) {
@@ -509,10 +538,14 @@ func (m *MemeManager) GetAdminMeme(id string) (accessor.Meme, error) {
 }
 
 func (m *MemeManager) DeleteMeme(id string, actor accessor.AuditActor) (accessor.DeleteResult, error) {
-	return m.store.Delete(accessor.DeleteInput{
+	result, err := m.store.Delete(accessor.DeleteInput{
 		ID:    strings.TrimSpace(id),
 		Actor: actor,
 	})
+	if err == nil {
+		m.markTagsChanged()
+	}
+	return result, err
 }
 
 func (m *MemeManager) SuggestTags(prefix string, limit int) []string {
@@ -641,6 +674,32 @@ type TagHygieneTag struct {
 type TagHygienePair struct {
 	Primary   string `json:"primary"`
 	Candidate string `json:"candidate"`
+}
+
+// TagHygienePageParams selects and pages a slice of the tag-hygiene report.
+// View "" returns the first page of both lists (the legacy payload shape);
+// "pairs" or "tags" page a single list and drive HasMore/NextOffset.
+type TagHygienePageParams struct {
+	View   string
+	Offset int
+	Limit  int
+	Search string // case-insensitive tag substring filter
+}
+
+// TagHygienePageResult is a paged view of TagHygieneReport plus snapshot
+// freshness metadata. Ready is false (with empty lists) until the background
+// worker has produced its first snapshot.
+type TagHygienePageResult struct {
+	Tags       []TagHygieneTag  `json:"tags"`
+	Pairs      []TagHygienePair `json:"pairs"`
+	TagTotal   int              `json:"tag_total"`
+	PairTotal  int              `json:"pair_total"`
+	Offset     int              `json:"offset"`
+	Limit      int              `json:"limit"`
+	HasMore    bool             `json:"has_more"`
+	NextOffset int              `json:"next_offset"`
+	Ready      bool             `json:"ready"`
+	ComputedAt time.Time        `json:"computed_at"`
 }
 
 type TagMergeResult struct {
@@ -951,25 +1010,220 @@ func (m *MemeManager) computeAdminDashboard() AdminDashboardStats {
 	return stats
 }
 
-// TagHygieneReport returns the tag-hygiene read model, memoized for
-// adminReadCacheTTL like AdminDashboard. Callers receive an independent deep copy.
+// TagHygieneReport returns the full tag-hygiene read model. It is served from a
+// snapshot kept warm by the background worker (see StartTagHygieneWorker); with
+// no worker running it computes and memoizes the report inline on first use.
+// Callers receive an independent deep copy.
 func (m *MemeManager) TagHygieneReport() TagHygieneReport {
-	m.adminReadMu.Lock()
-	if m.tagHygieneCache != nil && time.Since(m.tagHygieneCachedAt) < adminReadCacheTTL {
-		cached := cloneTagHygieneReport(*m.tagHygieneCache)
-		m.adminReadMu.Unlock()
-		return cached
+	report, _, _ := m.tagHygieneSnapshot()
+	return report
+}
+
+// TagHygienePage returns a paged slice of the tag-hygiene report plus snapshot
+// freshness metadata, without ever running the O(n^2) recompute on the caller's
+// goroutine when the background worker is active.
+func (m *MemeManager) TagHygienePage(params TagHygienePageParams) TagHygienePageResult {
+	report, ready, computedAt := m.tagHygieneSnapshot()
+
+	limit := params.Limit
+	if limit <= 0 {
+		limit = tagHygienePageDefaultLimit
 	}
+	if limit > tagHygienePageMaxLimit {
+		limit = tagHygienePageMaxLimit
+	}
+	offset := params.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	search := strings.ToLower(strings.TrimSpace(params.Search))
+
+	out := TagHygienePageResult{
+		Tags:       []TagHygieneTag{},
+		Pairs:      []TagHygienePair{},
+		Offset:     offset,
+		Limit:      limit,
+		Ready:      ready,
+		ComputedAt: computedAt,
+	}
+
+	wantPairs := params.View == "" || params.View == "pairs"
+	wantTags := params.View == "" || params.View == "tags"
+
+	if wantPairs {
+		matched := report.Pairs
+		if search != "" {
+			matched = make([]TagHygienePair, 0, len(report.Pairs))
+			for _, pair := range report.Pairs {
+				if strings.Contains(strings.ToLower(pair.Primary), search) ||
+					strings.Contains(strings.ToLower(pair.Candidate), search) {
+					matched = append(matched, pair)
+				}
+			}
+		}
+		out.PairTotal = len(matched)
+		lo, hi := pageBounds(len(matched), offset, limit)
+		out.Pairs = append(out.Pairs, matched[lo:hi]...)
+		if params.View == "pairs" {
+			out.HasMore = hi < len(matched)
+			out.NextOffset = hi
+		}
+	}
+
+	if wantTags {
+		matched := report.Tags
+		if search != "" {
+			matched = make([]TagHygieneTag, 0, len(report.Tags))
+			for _, tag := range report.Tags {
+				if strings.Contains(strings.ToLower(tag.Tag), search) {
+					matched = append(matched, tag)
+				}
+			}
+		}
+		out.TagTotal = len(matched)
+		lo, hi := pageBounds(len(matched), offset, limit)
+		out.Tags = append(out.Tags, matched[lo:hi]...)
+		if params.View == "tags" {
+			out.HasMore = hi < len(matched)
+			out.NextOffset = hi
+		}
+	}
+
+	return out
+}
+
+func pageBounds(n, offset, limit int) (int, int) {
+	if offset >= n {
+		return n, n
+	}
+	hi := offset + limit
+	if hi > n {
+		hi = n
+	}
+	return offset, hi
+}
+
+// tagHygieneSnapshot returns the current warm snapshot. With a running worker it
+// never blocks: a nil snapshot means the first computation is still in flight,
+// reported as Ready=false. With no worker it computes and memoizes inline.
+func (m *MemeManager) tagHygieneSnapshot() (report TagHygieneReport, ready bool, computedAt time.Time) {
+	m.adminReadMu.Lock()
+	snap := m.tagHygieneCache
+	at := m.tagHygieneCachedAt
+	workerRunning := m.tagHygieneRefresh != nil
+	m.adminReadMu.Unlock()
+
+	if snap != nil {
+		return cloneTagHygieneReport(*snap), true, at
+	}
+	if workerRunning {
+		m.signalTagHygieneRefresh()
+		return TagHygieneReport{Tags: []TagHygieneTag{}, Pairs: []TagHygienePair{}}, false, time.Time{}
+	}
+
+	fresh := m.computeTagHygieneReport()
+	stored := cloneTagHygieneReport(fresh)
+	m.adminReadMu.Lock()
+	m.tagHygieneCache = &stored
+	m.tagHygieneCachedAt = time.Now()
+	m.tagHygieneDirty = false
+	at = m.tagHygieneCachedAt
+	m.adminReadMu.Unlock()
+	return fresh, true, at
+}
+
+// StartTagHygieneWorker launches the background goroutine that keeps the
+// tag-hygiene snapshot warm so the admin panel never waits on a full recompute.
+// Safe to call repeatedly; only the first call starts the worker.
+func (m *MemeManager) StartTagHygieneWorker() {
+	m.tagHygieneWorkerStart.Do(func() {
+		m.adminReadMu.Lock()
+		m.tagHygieneRefresh = make(chan struct{}, 1)
+		m.adminReadMu.Unlock()
+		go m.runTagHygieneWorker()
+	})
+}
+
+func (m *MemeManager) runTagHygieneWorker() {
+	m.adminReadMu.Lock()
+	refresh := m.tagHygieneRefresh
+	m.adminReadMu.Unlock()
+
+	m.refreshTagHygieneSnapshot() // prime it so the first admin visit is instant
+
+	ticker := time.NewTicker(tagHygieneMaxInterval)
+	defer ticker.Stop()
+
+	debounce := time.NewTimer(time.Hour)
+	debounce.Stop()
+	pending := false
+
+	for {
+		select {
+		case <-refresh:
+			pending = true
+			debounce.Reset(tagHygieneDebounce)
+		case <-debounce.C:
+			if pending {
+				pending = false
+				m.refreshTagHygieneSnapshot()
+			}
+		case <-ticker.C:
+			m.adminReadMu.Lock()
+			stale := m.tagHygieneDirty || time.Since(m.tagHygieneCachedAt) >= tagHygieneMaxInterval
+			m.adminReadMu.Unlock()
+			if stale {
+				pending = false
+				m.refreshTagHygieneSnapshot()
+			}
+		}
+	}
+}
+
+func (m *MemeManager) refreshTagHygieneSnapshot() {
+	m.adminReadMu.Lock()
+	m.tagHygieneDirty = false
 	m.adminReadMu.Unlock()
 
 	report := m.computeTagHygieneReport()
+	stored := cloneTagHygieneReport(report)
 
 	m.adminReadMu.Lock()
-	stored := cloneTagHygieneReport(report)
 	m.tagHygieneCache = &stored
 	m.tagHygieneCachedAt = time.Now()
 	m.adminReadMu.Unlock()
-	return report
+}
+
+// signalTagHygieneRefresh wakes the background worker (no-op if it is not
+// running). The refresh channel is buffered to one, so redundant pokes collapse.
+func (m *MemeManager) signalTagHygieneRefresh() {
+	m.adminReadMu.Lock()
+	ch := m.tagHygieneRefresh
+	m.adminReadMu.Unlock()
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
+
+// markTagsChanged records that the set of tags on some meme changed, so the
+// tag-hygiene snapshot is stale. It only pokes the background worker (or, with
+// no worker, drops the memoized snapshot for the next reader) - it never runs
+// the recompute on the caller's goroutine.
+func (m *MemeManager) markTagsChanged() {
+	m.adminReadMu.Lock()
+	m.tagHygieneDirty = true
+	workerRunning := m.tagHygieneRefresh != nil
+	if !workerRunning {
+		m.tagHygieneCache = nil
+	}
+	m.adminReadMu.Unlock()
+	if workerRunning {
+		m.signalTagHygieneRefresh()
+	}
 }
 
 func (m *MemeManager) computeTagHygieneReport() TagHygieneReport {
@@ -981,11 +1235,20 @@ func (m *MemeManager) computeTagHygieneReport() TagHygieneReport {
 	}
 	slices.Sort(tagNames)
 
+	// Derive each tag's compact key once up front. This loop is O(n^2) over the
+	// tag set, and compactTagKey used to be recomputed twice per pair - each call
+	// building a fresh strings.Replacer - which is what made the panel crawl.
+	compactKeys := make([]string, len(tagNames))
+	for i, tag := range tagNames {
+		compactKeys[i] = compactTagKey(tag)
+	}
+
 	similarMap := map[string][]string{}
 	pairs := make([]TagHygienePair, 0)
 	for index, left := range tagNames {
-		for _, right := range tagNames[index+1:] {
-			if !looksLikeTagVariant(left, right) {
+		leftKey := compactKeys[index]
+		for offset, right := range tagNames[index+1:] {
+			if !tagKeysLookLikeVariant(leftKey, compactKeys[index+1+offset]) {
 				continue
 			}
 			primary := preferredCanonicalTag(left, right, tagCounts)
@@ -1068,13 +1331,24 @@ func (m *MemeManager) tagUsageCounts() map[string]int {
 	return counts
 }
 
-// invalidateAdminReadCache drops the memoized admin read models so the next load
-// recomputes. Call after any change that alters their inputs (tag merges, restore).
+// invalidateAdminReadCache drops the memoized admin dashboard and marks the
+// tag-hygiene snapshot stale so it is refreshed. Call after any change that
+// alters their inputs (tag merges, restore). The dashboard is cheap to rebuild
+// and is dropped outright; the tag-hygiene recompute is expensive, so with the
+// background worker running it is only nudged (the stale snapshot keeps serving
+// until the worker swaps in a fresh one).
 func (m *MemeManager) invalidateAdminReadCache() {
 	m.adminReadMu.Lock()
 	m.adminDashboardCache = nil
-	m.tagHygieneCache = nil
+	m.tagHygieneDirty = true
+	workerRunning := m.tagHygieneRefresh != nil
+	if !workerRunning {
+		m.tagHygieneCache = nil
+	}
 	m.adminReadMu.Unlock()
+	if workerRunning {
+		m.signalTagHygieneRefresh()
+	}
 }
 
 func cloneAdminDashboardStats(in AdminDashboardStats) AdminDashboardStats {
@@ -1525,6 +1799,7 @@ func (m *MemeManager) ApplyMemeTagSuggestion(userID string, id string, tag strin
 	}); err != nil {
 		return accessor.Meme{}, err
 	}
+	m.markTagsChanged()
 
 	suggestionStore, ok := m.store.(accessor.SuggestedTagStore)
 	if ok {
@@ -1895,21 +2170,27 @@ func looksLikeTagVariant(left string, right string) bool {
 	if left == "" || right == "" || left == right {
 		return false
 	}
+	return tagKeysLookLikeVariant(compactTagKey(left), compactTagKey(right))
+}
 
-	leftCanonical := compactTagKey(left)
-	rightCanonical := compactTagKey(right)
-	if leftCanonical == rightCanonical {
+// tagKeysLookLikeVariant is the body of looksLikeTagVariant operating on compact
+// keys the caller already derived (see compactTagKey). computeTagHygieneReport
+// precomputes one key per tag and calls this for every candidate pair, so the
+// per-pair work stays down to a length check and an occasional edit-distance.
+func tagKeysLookLikeVariant(leftKey string, rightKey string) bool {
+	if leftKey == "" || rightKey == "" {
+		return false
+	}
+	if leftKey == rightKey {
 		return true
 	}
-
-	if absInt(len(leftCanonical)-len(rightCanonical)) > 2 {
+	if absInt(len(leftKey)-len(rightKey)) > 2 {
 		return false
 	}
-	if min(len(leftCanonical), len(rightCanonical)) < 4 {
+	if min(len(leftKey), len(rightKey)) < 4 {
 		return false
 	}
-
-	return levenshteinDistance(leftCanonical, rightCanonical) <= 2
+	return levenshteinDistance(leftKey, rightKey) <= 2
 }
 
 func preferredCanonicalTag(left string, right string, counts map[string]int) string {
@@ -1935,10 +2216,16 @@ func preferredCanonicalTag(left string, right string, counts map[string]int) str
 	return right
 }
 
+// tagKeyReplacer strips the separators and quote marks that make two tags read
+// as different while meaning the same thing. Hoisted to package scope: it was
+// being rebuilt on every compactTagKey call, which the O(n^2) hygiene pair-scan
+// hit millions of times per report.
+var tagKeyReplacer = strings.NewReplacer(
+	" ", "", "-", "", "_", "", ".", "", ",", "", "'", "", "\"", "",
+)
+
 func compactTagKey(tag string) string {
-	tag = strings.ToLower(strings.TrimSpace(tag))
-	replacer := strings.NewReplacer(" ", "", "-", "", "_", "", ".", "", ",", "", "'", "", "\"", "")
-	return replacer.Replace(tag)
+	return tagKeyReplacer.Replace(strings.ToLower(strings.TrimSpace(tag)))
 }
 
 func levenshteinDistance(left string, right string) int {

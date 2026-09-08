@@ -3,6 +3,7 @@ package manager
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"memeindex/internal/accessor"
 	"memeindex/internal/tagsuggest"
@@ -56,11 +57,19 @@ func (s *tagOpsFakeStore) PendingSuggestionMemes(offset, limit int) (int, []acce
 }
 
 func (s *tagOpsFakeStore) TagUsageCounts() (map[string]int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	out := map[string]int{}
 	for k, v := range s.usage {
 		out[k] = v
 	}
 	return out, nil
+}
+
+func (s *tagOpsFakeStore) setUsage(usage map[string]int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.usage = usage
 }
 
 var (
@@ -167,4 +176,76 @@ func TestTagHygieneReportUsesTagUsageStore(t *testing.T) {
 	if len(report.Pairs) == 0 {
 		t.Fatal("expected the near-duplicate pair to still be detected")
 	}
+}
+
+func TestTagHygienePagePaginatesAndFilters(t *testing.T) {
+	store := newTagOpsFakeStore()
+	usage := map[string]int{}
+	for i := 0; i < 130; i++ {
+		usage[fmt.Sprintf("tag-%03d", i)] = i + 1
+	}
+	store.usage = usage
+	m := NewMemeManager(store)
+
+	first := m.TagHygienePage(TagHygienePageParams{View: "tags", Offset: 0, Limit: 50})
+	if !first.Ready {
+		t.Fatal("expected the inline-computed snapshot to be ready without a worker")
+	}
+	if first.TagTotal != 130 {
+		t.Fatalf("tag_total = %d, want 130", first.TagTotal)
+	}
+	if len(first.Tags) != 50 {
+		t.Fatalf("page size = %d, want 50", len(first.Tags))
+	}
+	if !first.HasMore || first.NextOffset != 50 {
+		t.Fatalf("pagination = has_more %v next %d, want true and 50", first.HasMore, first.NextOffset)
+	}
+
+	last := m.TagHygienePage(TagHygienePageParams{View: "tags", Offset: 100, Limit: 50})
+	if len(last.Tags) != 30 || last.HasMore {
+		t.Fatalf("tail page = %d rows has_more %v, want 30 and false", len(last.Tags), last.HasMore)
+	}
+
+	filtered := m.TagHygienePage(TagHygienePageParams{View: "tags", Search: "tag-01"})
+	if filtered.TagTotal != 10 {
+		t.Fatalf("search tag_total = %d, want 10 (tag-010..tag-019)", filtered.TagTotal)
+	}
+}
+
+func TestTagHygieneWorkerRefreshesAfterTagChange(t *testing.T) {
+	oldDebounce := tagHygieneDebounce
+	tagHygieneDebounce = 10 * time.Millisecond
+	t.Cleanup(func() { tagHygieneDebounce = oldDebounce })
+
+	store := newTagOpsFakeStore()
+	store.setUsage(map[string]int{"colour": 3})
+	m := NewMemeManager(store)
+	m.StartTagHygieneWorker()
+
+	waitFor(t, "initial snapshot", func() bool {
+		return m.TagHygienePage(TagHygienePageParams{View: "tags"}).Ready
+	})
+	if got := m.TagHygienePage(TagHygienePageParams{View: "pairs"}).PairTotal; got != 0 {
+		t.Fatalf("pair_total = %d before the variant exists, want 0", got)
+	}
+
+	// A tag edit introduces a near-duplicate; the worker should pick it up.
+	store.setUsage(map[string]int{"colour": 3, "color": 1})
+	m.markTagsChanged()
+
+	waitFor(t, "worker refresh", func() bool {
+		return m.TagHygienePage(TagHygienePageParams{View: "pairs"}).PairTotal == 1
+	})
+}
+
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
 }

@@ -652,6 +652,11 @@ body.admin-mode #admin-view-status:not(:empty) { width: fit-content; max-width: 
 .admin-tag-hygiene-pair, .admin-tag-hygiene-tag { min-width: 0; }.admin-tag-hygiene-pair-copy, .admin-tag-hygiene-tag-copy { display: flex; min-width: 0; align-items: center; flex-wrap: wrap; gap: 7px; }.admin-tag-hygiene-pair-copy span, .admin-tag-hygiene-tag-copy span { color: var(--muted); font-size: 9px; }.admin-tag-hygiene-pair-copy strong, .admin-tag-hygiene-tag-copy strong { min-width: 0; overflow-wrap: anywhere; }
 .admin-tag-hygiene-pair-actions, .admin-tag-hygiene-similar { display: flex; flex-wrap: wrap; justify-content: end; gap: 5px; }
 .admin-tag-hygiene-chip { cursor: pointer; }
+.admin-tag-hygiene-freshness { margin: 0 0 12px; color: var(--muted); font-size: 11px; }
+.admin-tag-hygiene-search { display: flex; margin-bottom: 10px; }.admin-tag-hygiene-search input { width: 100%; }
+.admin-tag-hygiene-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; min-height: 20px; }
+.admin-tag-hygiene-count { color: var(--muted); font-size: 11px; }
+.admin-tag-hygiene-more { padding: 5px 12px; }
 .admin-backup-panel { gap: 10px; }.admin-backup-card { display: flex; min-height: 210px; flex-direction: column; justify-content: space-between; gap: 16px; padding: 18px; border-color: rgba(255,255,255,.095); background: linear-gradient(145deg, rgba(24,24,29,.98), rgba(16,16,20,.98)); }.admin-backup-card h3 { margin-bottom: 7px; }.admin-backup-card p:not(.section-kicker) { color: var(--muted); font-size: 11px; line-height: 1.55; }.admin-backup-danger { border-color: rgba(239,102,113,.19); }.admin-backup-panel > .status-text { grid-column: 1 / -1; padding: 11px; border: 1px solid var(--line); border-radius: 9px; background: rgba(255,255,255,.02); }
 
 /* Audit and delete tables */
