@@ -2,6 +2,7 @@ package client
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +18,7 @@ type Config struct {
 	DatabaseURL           string
 	ShareSecret           string
 	MediaFetchYTDLPBinary string
+	MediaFetchProxy       string
 	RateLimitEnabled      bool
 	ClientIPHeader        string
 	MediaFetchRetry       MediaFetchRetryConfig
@@ -73,6 +75,7 @@ type rawConfig struct {
 	DataDir                         string   `envconfig:"DATA_DIR" default:"data"`
 	DatabaseURL                     string   `envconfig:"DATABASE_URL"`
 	MediaFetchYTDLPBinary           string   `envconfig:"MEDIAFETCH_YTDLP_BINARY" default:"yt-dlp"`
+	MediaFetchProxy                 string   `envconfig:"MEDIAFETCH_PROXY"`
 	RateLimitEnabled                bool     `envconfig:"RATE_LIMIT_ENABLED" default:"true"`
 	ClientIPHeader                  string   `envconfig:"CLIENT_IP_HEADER"`
 	MediaFetchRetryIntervalSecs     int      `envconfig:"MEDIAFETCH_RETRY_INTERVAL_SECONDS" default:"300"`
@@ -144,8 +147,14 @@ func LoadConfig() (Config, error) {
 		DatabaseURL:           strings.TrimSpace(raw.DatabaseURL),
 		ShareSecret:           firstNonEmpty(strings.TrimSpace(raw.ShareSecret), strings.TrimSpace(raw.SessionSecret)),
 		MediaFetchYTDLPBinary: strings.TrimSpace(raw.MediaFetchYTDLPBinary),
-		RateLimitEnabled:      raw.RateLimitEnabled,
-		ClientIPHeader:        strings.TrimSpace(raw.ClientIPHeader),
+		MediaFetchProxy: firstNonEmpty(
+			strings.TrimSpace(raw.MediaFetchProxy),
+			os.Getenv("HTTPS_PROXY"), os.Getenv("https_proxy"),
+			os.Getenv("HTTP_PROXY"), os.Getenv("http_proxy"),
+			os.Getenv("ALL_PROXY"), os.Getenv("all_proxy"),
+		),
+		RateLimitEnabled: raw.RateLimitEnabled,
+		ClientIPHeader:   strings.TrimSpace(raw.ClientIPHeader),
 		MediaFetchRetry: MediaFetchRetryConfig{
 			Interval:    time.Duration(max(raw.MediaFetchRetryIntervalSecs, 1)) * time.Second,
 			MaxAttempts: max(raw.MediaFetchRetryMaxAttempts, 1),

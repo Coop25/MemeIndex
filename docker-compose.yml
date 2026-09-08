@@ -26,6 +26,17 @@ services:
       MEMEINDEX_DATA_DIR: ${MEMEINDEX_DATA_DIR:-data}
       MEMEINDEX_DATABASE_URL: postgres://${POSTGRES_USER:-memeindex}:${POSTGRES_PASSWORD:-memeindex}@postgres:5432/${POSTGRES_DB:-memeindex}?sslmode=disable
       MEMEINDEX_MEDIAFETCH_YTDLP_BINARY: ${MEMEINDEX_MEDIAFETCH_YTDLP_BINARY:-yt-dlp}
+      # Downloader egress isolation. When MEMEINDEX_MEDIAFETCH_PROXY is set, both
+      # yt-dlp (--proxy) and the Go media-fetch HTTP client route through that
+      # forward proxy, which should allow ONLY the public media hosts. When it is
+      # blank, outbound downloader connections are pinned to public IP addresses
+      # only (private/reserved/loopback ranges are refused at connect time).
+      # NO_PROXY keeps internal services (Postgres, Ollama) on a direct path.
+      # See "Downloader network isolation" in the README.
+      MEMEINDEX_MEDIAFETCH_PROXY: ${MEMEINDEX_MEDIAFETCH_PROXY:-}
+      HTTP_PROXY: ${MEMEINDEX_MEDIAFETCH_PROXY:-}
+      HTTPS_PROXY: ${MEMEINDEX_MEDIAFETCH_PROXY:-}
+      NO_PROXY: ${MEMEINDEX_NO_PROXY:-postgres,ollama,localhost,127.0.0.1,::1}
       MEMEINDEX_MEDIAFETCH_RETRY_INTERVAL_SECONDS: ${MEMEINDEX_MEDIAFETCH_RETRY_INTERVAL_SECONDS:-300}
       MEMEINDEX_MEDIAFETCH_RETRY_MAX_ATTEMPTS: ${MEMEINDEX_MEDIAFETCH_RETRY_MAX_ATTEMPTS:-3}
       MEMEINDEX_RATE_LIMIT_ENABLED: ${MEMEINDEX_RATE_LIMIT_ENABLED:-true}
@@ -105,6 +116,25 @@ services:
       CLOUDFLARE_TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
     profiles:
       - tunnel
+
+  # Optional forward proxy for downloader egress isolation. Point it at a config
+  # that allows ONLY the public media hosts the downloader needs, for example:
+  #   youtube.com, youtu.be, googlevideo.com, ytimg.com,
+  #   facebook.com, fbcdn.net, fbsbx.com,
+  #   instagram.com, cdninstagram.com,
+  #   tiktok.com, tiktokcdn.com, tiktokv.com,
+  #   twitter.com, x.com, twimg.com,
+  #   reddit.com, redd.it, v.redd.it, redditmedia.com
+  # Then set MEMEINDEX_MEDIAFETCH_PROXY=http://egress-proxy:3128 and start this
+  # profile. Do NOT let this proxy reach postgres, ollama, the container network
+  # gateway, or 169.254.169.254.
+  # egress-proxy:
+  #   image: ubuntu/squid:latest
+  #   restart: unless-stopped
+  #   volumes:
+  #     - ./deploy/squid-allowlist.conf:/etc/squid/conf.d/allowlist.conf:ro
+  #   profiles:
+  #     - egress
 
 volumes:
   postgres_data:
