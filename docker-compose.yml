@@ -18,6 +18,10 @@ services:
     image: ${MEMEINDEX_IMAGE:-ghcr.io/Coop25/memeindex:latest}
     pull_policy: always
     restart: unless-stopped
+    # The image runs as a non-root user. Match this to the owner of ./data on the
+    # host so the bind mount stays writable. Most single-user Linux hosts are
+    # 1000:1000; run `id -u` / `id -g` to check, then `sudo chown -R <uid>:<gid> ./data`.
+    user: "${MEMEINDEX_UID:-1000}:${MEMEINDEX_GID:-1000}"
     depends_on:
       postgres:
         condition: service_healthy
