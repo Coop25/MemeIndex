@@ -26,7 +26,7 @@ ENV MEMEINDEX_VERSION=${APP_VERSION}
 
 RUN set -eux; \
   apt-get update; \
-  apt-get install -y --no-install-recommends ca-certificates curl ffmpeg; \
+  apt-get install -y --no-install-recommends ca-certificates curl ffmpeg gosu; \
   rm -rf /var/lib/apt/lists/*; \
   case "${TARGETARCH:-amd64}" in \
     amd64) ytdlp_asset=yt-dlp_linux ;; \
@@ -56,9 +56,14 @@ RUN set -eux; \
 
 COPY --from=build --chown=memeindex:memeindex /out/memeindex /usr/local/bin/memeindex
 COPY --chown=memeindex:memeindex static ./static
+COPY --chmod=0755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
-USER memeindex
 EXPOSE 8080
+
+# The container starts as root only so the entrypoint can chown the data
+# directory for an existing root-owned bind mount; it then drops to uid 10001
+# (gosu) before running the app. Override with `--user`/`user:` to skip that.
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD curl -fsS http://localhost:8080/healthz || exit 1

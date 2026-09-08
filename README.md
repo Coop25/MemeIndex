@@ -310,11 +310,13 @@ This repo includes [`.github/workflows/docker-publish.yml`](/f:/GitHub/MemeIndex
 - version tags like `v1.0.0`
 - manual runs from the Actions tab
 
-The image is built for both `linux/amd64` and `linux/arm64`, and runs as a
-non-root user (`uid:gid 10001`). `docker-compose.yml` overrides that with
-`user: "${MEMEINDEX_UID:-1000}:${MEMEINDEX_GID:-1000}"` so the `./data` bind
-mount stays writable; set `MEMEINDEX_UID`/`MEMEINDEX_GID` (and
-`sudo chown -R <uid>:<gid> ./data` once) if your host user is not `1000`.
+The image is built for both `linux/amd64` and `linux/arm64`. Its entrypoint
+starts as root only long enough to take ownership of the data directory, then
+drops to a non-root user (`uid 10001`) via `gosu` before running the app — so an
+existing root-owned `./data` bind mount keeps working with **no host `chown`
+needed**, including on hosts where you have no shell access. To pin the process
+to a specific uid instead, set `user: "<uid>:<gid>"` on the `app` service (that
+skips the auto-chown, so `./data` must already be writable by that uid).
 
 The published image path is:
 
