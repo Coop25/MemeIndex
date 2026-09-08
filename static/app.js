@@ -3159,7 +3159,12 @@ async function fetchMemes({ page = 0, append = false } = {}) {
     }
 
     state.library.pageIndex = requestedPage;
-    state.library.counts = payload.counts || state.library.counts;
+    // The server only recomputes facet counts for the first page of a filter
+    // (they are identical for every scroll page); keep the ones we already have
+    // when paging further in.
+    if (requestedPage === 0 && payload.counts && payload.counts.total !== undefined) {
+      state.library.counts = payload.counts;
+    }
     state.library.hasMore = !!payload.has_more;
     const fetchedMemes = Array.isArray(payload.memes) ? payload.memes : [];
     let appendedMemes = [];

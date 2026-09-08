@@ -134,6 +134,13 @@ type AdminMemeStore interface {
 	GetAnyByID(id string) (Meme, error)
 }
 
+// BulkMemeStore resolves many visible memes by id in a single query. It backs
+// the admin panels that would otherwise issue one GetByID per queued or shared
+// meme on every poll.
+type BulkMemeStore interface {
+	MemesByIDs(ids []string) (map[string]Meme, error)
+}
+
 // TagMaintenanceStore resolves bulk tag housekeeping in the database. The
 // in-memory fallback rewrites every affected meme one transaction at a time,
 // each of which also re-runs a whole-table orphan-tag sweep.

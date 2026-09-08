@@ -436,14 +436,52 @@ func (m *MemeManager) ListActiveMemeShares(now time.Time) ([]ActiveMemeShare, er
 	if err != nil {
 		return nil, err
 	}
+
+	ids := make([]string, 0, len(states))
+	for _, state := range states {
+		ids = append(ids, state.MemeID)
+	}
+	memes := m.memesByIDs(ids)
+
 	result := make([]ActiveMemeShare, 0, len(states))
 	for _, state := range states {
-		meme, err := m.store.GetByID("", state.MemeID)
-		if err == nil {
-			result = append(result, ActiveMemeShare{Meme: meme, Share: state})
+		meme, ok := memes[state.MemeID]
+		if !ok {
+			continue
 		}
+		result = append(result, ActiveMemeShare{Meme: meme, Share: state})
 	}
 	return result, nil
+}
+
+// memesByIDs resolves visible memes by id in one batch where the store supports
+// it (BulkMemeStore), falling back to per-id lookups otherwise. Missing ids are
+// simply absent from the map.
+func (m *MemeManager) memesByIDs(ids []string) map[string]accessor.Meme {
+	if bulk, ok := m.store.(accessor.BulkMemeStore); ok {
+		memes, err := bulk.MemesByIDs(ids)
+		if err == nil {
+			return memes
+		}
+		log.Printf("memes by ids: SQL batch failed, falling back to per-id reads: %v", err)
+	}
+	out := make(map[string]accessor.Meme, len(ids))
+	for _, id := range ids {
+		if meme, err := m.store.GetByID("", strings.TrimSpace(id)); err == nil {
+			out[meme.ID] = meme
+		}
+	}
+	return out
+}
+
+// memeNamesByIDs is memesByIDs reduced to just the original display name per id.
+func (m *MemeManager) memeNamesByIDs(ids []string) map[string]string {
+	memes := m.memesByIDs(ids)
+	names := make(map[string]string, len(memes))
+	for id, meme := range memes {
+		names[id] = meme.OriginalName
+	}
+	return names
 }
 
 func (m *MemeManager) RevokeMemeShare(memeID string) error {
@@ -1140,20 +1178,23 @@ func (m *MemeManager) TagSuggestionQueueStatus(reviewOffset int, reviewLimit int
 	queuedIDs := append([]string(nil), m.suggestionQueue...)
 	m.suggestionQueueMu.Unlock()
 
+	// Resolve every display name this poll needs in a single batch instead of
+	// one GetByID (a LEFT JOIN + GROUP BY) per queued meme.
+	nameLookup := make([]string, 0, len(queuedIDs)+1)
 	if status.CurrentMemeID != "" {
-		if meme, err := m.store.GetByID("", status.CurrentMemeID); err == nil {
-			status.CurrentMemeName = meme.OriginalName
-		}
+		nameLookup = append(nameLookup, status.CurrentMemeID)
+	}
+	nameLookup = append(nameLookup, queuedIDs...)
+	names := m.memeNamesByIDs(nameLookup)
+
+	if status.CurrentMemeID != "" {
+		status.CurrentMemeName = names[status.CurrentMemeID]
 	}
 
 	if len(queuedIDs) > 0 {
 		status.QueuedMemes = make([]QueuedTagSuggestionItem, 0, len(queuedIDs))
 		for _, id := range queuedIDs {
-			item := QueuedTagSuggestionItem{ID: id}
-			if meme, err := m.store.GetByID("", id); err == nil {
-				item.Name = meme.OriginalName
-			}
-			status.QueuedMemes = append(status.QueuedMemes, item)
+			status.QueuedMemes = append(status.QueuedMemes, QueuedTagSuggestionItem{ID: id, Name: names[id]})
 		}
 	}
 
