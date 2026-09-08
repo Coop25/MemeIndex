@@ -99,6 +99,7 @@ Optional flags:
 - `MEMEINDEX_DATA_DIR`: data directory, default `data`
 - `MEMEINDEX_DATABASE_URL`: Postgres connection string. When empty, MemeIndex falls back to the legacy JSON store
 - `MEMEINDEX_MEDIAFETCH_YTDLP_BINARY`: path to the `yt-dlp` binary used for social-site link downloads, default `yt-dlp`
+- `MEMEINDEX_MEDIAFETCH_PROXY`: optional forward proxy for downloader egress. When set, `yt-dlp` (`--proxy`) and the Go media-fetch HTTP client both route through it, so it can be an allowlist that only permits the public media hosts. When unset, MemeIndex falls back to `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY`; if none are set it pins outbound downloader connections to public IP addresses only and refuses private, loopback, link-local, and reserved ranges at connect time. See [Downloader network isolation](#downloader-network-isolation)
 - Import Media Link also downloads direct picture and video URLs, including Discord CDN attachments, without `yt-dlp`. Direct downloads are limited to 256 MB, retain the source URL, and use the normal duplicate detection. Paste the complete Discord attachment URL including its query parameters; unavailable or expired attachments require a fresh link.
 - `MEMEINDEX_MEDIAFETCH_RETRY_INTERVAL_SECONDS`: how long failed link imports wait before retrying, default `300`
 - `MEMEINDEX_MEDIAFETCH_RETRY_MAX_ATTEMPTS`: how many retry attempts failed link imports get before moving to the rejected queue, default `3`
@@ -210,6 +211,8 @@ Sign in as a super admin, open **Admin > Backup & Restore**, and select **Create
 - reel sessions, moderation state, and audit history
 
 On the destination Docker instance, open the same admin page and import that archive. Import replaces the destination library and application database, so export the destination first if it contains anything you may need. The destination should run the same or a newer MemeIndex version so its database schema supports every field in the backup.
+
+While an import runs, the destination server holds a process-wide maintenance lock: it truncates and reloads the database and swaps the `uploads`/`thumbnails` directories, so every state-changing request (`POST`/`PUT`/`PATCH`/`DELETE`, including uploads, link imports, tag edits, shares, and a second restore) is answered with `503` and a `Retry-After: 30` header until the restore finishes. Reads keep working. Plan the restore as a short maintenance window and let clients retry.
 
 The browser workflow requires PostgreSQL storage (the default Docker Compose configuration). Environment secrets, Discord OAuth credentials, session signing keys, the Ollama model volume, and other `.env` settings are intentionally not included; copy those deployment settings separately.
 
@@ -347,6 +350,28 @@ Recommended behavior behind Cloudflare Tunnel:
 - keep Postgres internal with no published `5432` port
 
 If you only want Cloudflare access and do not want local host exposure, remove or override the app's `8080:8080` port mapping in Compose for your deployment.
+
+## Downloader network isolation
+
+The Process Link modal and the PWA share target let any upload-capable user hand MemeIndex an arbitrary URL. That URL is fetched by the Go media-fetch client and, for supported social sites, by a `yt-dlp` subprocess. Both then follow redirects and download media from third-party hosts. Treat that path as attacker-influenced outbound traffic and keep it away from everything private.
+
+**Built-in app-side guardrails (always on):**
+
+- Supplied and resolved URLs are matched against the supported public media domains by DNS-label boundary, not substring, so lookalike hosts (`youtube.com.attacker.example`, `youtube.com@attacker.example`, non-standard ports) are rejected before any network I/O.
+- Every URL is re-validated after each redirect, and DNS results are pinned so the address that passed validation is the address dialed.
+- Connections to private, loopback, link-local, carrier-grade-NAT, and other reserved IP ranges are refused at connect time — including for the media-fetch dependency's internal `http.DefaultClient`, because MemeIndex replaces the process `http.DefaultTransport` with the pinned public-only transport at startup when no proxy is configured.
+- The cloud instance-metadata address (`169.254.169.254`) falls inside those blocked ranges.
+
+**Recommended deployment boundary (operator-provided):**
+
+App-side checks cannot fully constrain the `yt-dlp` subprocess or guarantee isolation from co-located services, so also enforce egress at the network layer:
+
+1. Run a forward proxy whose config allows only the public media hosts, for example: `youtube.com`, `youtu.be`, `googlevideo.com`, `ytimg.com`, `facebook.com`, `fbcdn.net`, `fbsbx.com`, `instagram.com`, `cdninstagram.com`, `tiktok.com`, `tiktokcdn.com`, `tiktokv.com`, `twitter.com`, `x.com`, `twimg.com`, `reddit.com`, `redd.it`, `v.redd.it`, `redditmedia.com`. `docker-compose.yml` ships a commented `egress-proxy` service stub for this.
+2. Set `MEMEINDEX_MEDIAFETCH_PROXY=http://egress-proxy:3128`. MemeIndex passes it to `yt-dlp` as `--proxy` and, via `HTTP_PROXY`/`HTTPS_PROXY`, routes the Go media-fetch client through it too. When a proxy is set, the app trusts it as the egress boundary and does not additionally pin to public IPs.
+3. Keep `NO_PROXY` (default `postgres,ollama,localhost,127.0.0.1,::1`) covering internal service names so app-to-Postgres and app-to-Ollama traffic bypasses the proxy.
+4. With a container network policy or firewall, deny the app (and the proxy) egress to the Postgres subnet, the Ollama subnet, the container gateway, and `169.254.169.254`. Postgres is already not published by the Compose file.
+
+Without a proxy the built-in public-IP pin is the fallback: it blocks SSRF into private ranges but does not restrict which public host is reached.
 
 ## GitHub Prep
 

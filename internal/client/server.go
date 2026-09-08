@@ -38,6 +38,11 @@ type Server struct {
 	backup      *portableBackup
 	shareSecret []byte
 	draining    atomic.Bool
+	// restoring is set for the full duration of a portable-backup import, which
+	// truncates the database and swaps the uploads/thumbnails directories under
+	// the running server. While it is set, maintenanceGuard rejects mutating
+	// requests with 503 so nothing reads or writes half-restored state.
+	restoring atomic.Bool
 
 	authLimiter       *rateLimiter
 	writeLimiter      *rateLimiter
@@ -80,9 +85,18 @@ func NewServer(config Config, memeManager *manager.MemeManager) *Server {
 		}
 	}
 
+	// Keep downloader egress on the pinned public-only transport. With no proxy
+	// configured this blocks private/reserved addresses at connection time even
+	// for the mediafetch dependency's un-injectable http.DefaultClient calls;
+	// with a proxy configured that forward proxy is the egress boundary.
+	pinDownloaderDefaultTransport(config.MediaFetchProxy)
+
 	mediaClient, err := mediafetch.NewClient(mediafetch.ClientConfig{
 		DownloadDir: filepath.Join(config.DataDir, "downloads"),
 		YTDLPBinary: config.MediaFetchYTDLPBinary,
+		YTDLPSettings: mediafetch.YTDLPSettings{
+			Proxy: config.MediaFetchProxy,
+		},
 	})
 	if err != nil {
 		log.Fatalf("mediafetch client init failed: %v", err)
@@ -157,7 +171,35 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/api/reel-session", s.withAPIAuth(http.HandlerFunc(s.handleReelSession), permissionView))
 	mux.Handle("/api/tags/popular", s.withAPIAuth(http.HandlerFunc(s.handlePopularTags), permissionView))
 	mux.Handle("/api/tags", s.withAPIAuth(http.HandlerFunc(s.handleTags), permissionView))
-	return securityHeaders(http.NewCrossOriginProtection().Handler(mux))
+	return securityHeaders(http.NewCrossOriginProtection().Handler(s.maintenanceGuard(mux)))
+}
+
+// maintenanceGuard rejects state-changing requests with 503 while a portable
+// backup restore is swapping the database contents and the uploads/thumbnails
+// directories underneath the running server. Reads stay available. The restore
+// endpoint itself is exempt so the in-progress import can complete and so a
+// second import attempt still receives a precise 409 from handleBackupImport.
+func (s *Server) maintenanceGuard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.restoring.Load() && isMutatingMethod(r.Method) && r.URL.Path != "/api/admin/backup/import" {
+			w.Header().Set("Retry-After", "30")
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+				"error": "MemeIndex is temporarily read-only while a backup restore finishes; retry shortly",
+			})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// isMutatingMethod reports whether an HTTP method can change server state.
+func isMutatingMethod(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace:
+		return false
+	default:
+		return true
+	}
 }
 
 func (s *Server) handleWebManifest(w http.ResponseWriter, r *http.Request) {
@@ -1752,6 +1794,15 @@ func (s *Server) handleBackupImport(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "wait for the running backup to finish before importing", http.StatusConflict)
 		return
 	}
+	// Hold the process-wide maintenance lock for the whole restore. importArchive
+	// truncates tables and renames the media directories, so a concurrent write
+	// could land against half-restored state; maintenanceGuard turns those away
+	// with 503 while this flag is set.
+	if !s.restoring.CompareAndSwap(false, true) {
+		http.Error(w, "a restore is already in progress", http.StatusConflict)
+		return
+	}
+	defer s.restoring.Store(false)
 	if err := s.backup.importArchive(r.Context(), r.Body); err != nil {
 		log.Printf("backup import failed: %v", err)
 		http.Error(w, "backup import failed: "+err.Error(), http.StatusBadRequest)

@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -95,4 +96,35 @@ func newPublicRemoteTransport() *http.Transport {
 	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
 	transport.DialContext = (publicRemoteDialer{lookup: net.DefaultResolver.LookupIPAddr, dial: dialer.DialContext}).DialContext
 	return transport
+}
+
+var pinDownloaderTransportOnce sync.Once
+
+// shouldPinDownloaderTransport reports whether outbound downloader HTTP should be
+// forced onto the public-only transport. It is false when a forward proxy is
+// configured: that proxy is then the egress boundary (it is also handed to
+// yt-dlp as --proxy and exported as HTTP(S)_PROXY), and pinning would reject its
+// typically private address.
+func shouldPinDownloaderTransport(proxy string) bool {
+	return strings.TrimSpace(proxy) == ""
+}
+
+// pinDownloaderDefaultTransport hardens outbound HTTP for code that cannot be
+// handed a custom transport — notably the mediafetch dependency, whose internal
+// http.DefaultClient calls (Facebook HTML fallback, direct CDN media downloads,
+// redirect resolution) would otherwise reach any address. With no proxy
+// configured it replaces http.DefaultTransport with one that dials only public,
+// non-reserved IP addresses, so a redirect or media URL pointing at a
+// private/link-local/loopback host fails at connection time. It runs once per
+// process and is a no-op afterward.
+func pinDownloaderDefaultTransport(proxy string) {
+	pinDownloaderTransportOnce.Do(func() {
+		if !shouldPinDownloaderTransport(proxy) {
+			return
+		}
+		if _, ok := http.DefaultTransport.(*http.Transport); !ok {
+			return
+		}
+		http.DefaultTransport = newPublicRemoteTransport()
+	})
 }
