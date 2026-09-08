@@ -14,6 +14,71 @@ type Store interface {
 	UploadDir() string
 }
 
+// MemeQuery describes a single page of a browse/search request. It is resolved
+// entirely in the database by stores that implement QueryableMemeStore, instead
+// of loading the whole archive into the application and filtering in memory.
+type MemeQuery struct {
+	UserID        string
+	Search        string
+	Tag           string
+	View          string
+	FavoritesOnly bool
+	Sort          string
+	Offset        int
+	Limit         int
+}
+
+// MemeCategoryCounts mirrors the facet counts the UI shows above the grid. The
+// seven category fields (Videos/Images/MP3s/Files) are mutually exclusive and
+// sum to Total; Favorites and Untagged are independent overlays. Counts reflect
+// the search and tag filter only, not the view or favorites-only filter, which
+// matches the pre-existing in-memory behaviour.
+type MemeCategoryCounts struct {
+	Total     int
+	Favorites int
+	Videos    int
+	Images    int
+	MP3s      int
+	Untagged  int
+	Files     int
+}
+
+// MemeQueryPage is one resolved page of MemeQuery.
+type MemeQueryPage struct {
+	Memes      []Meme
+	Counts     MemeCategoryCounts
+	HasMore    bool
+	NextOffset int
+}
+
+// TagCount is a tag name paired with how many visible memes carry it.
+type TagCount struct {
+	Name  string
+	Count int
+}
+
+// MemeDashboardData is the SQL-resolved form of the user home screen summary.
+type MemeDashboardData struct {
+	TotalItems    int
+	Favorites     int
+	StorageBytes  int64
+	TagCount      int
+	Counts        MemeCategoryCounts
+	RecentItems   []Meme
+	FavoriteItems []Meme
+	RandomItems   []Meme
+	TopTags       []TagCount
+}
+
+// QueryableMemeStore is an optional capability: a store that can resolve browse,
+// dashboard, and popular-tag reads in the database. The manager falls back to
+// the in-memory Store methods for stores that do not implement it.
+type QueryableMemeStore interface {
+	QueryMemes(q MemeQuery) (MemeQueryPage, error)
+	MemeDashboard(userID string) (MemeDashboardData, error)
+	TagCounts(limit int) ([]TagCount, error)
+}
+
 type MemeShareState struct {
 	MemeID         string    `json:"meme_id"`
 	Generation     int64     `json:"generation"`

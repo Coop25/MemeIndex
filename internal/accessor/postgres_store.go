@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -228,6 +229,226 @@ func (s *PostgresStore) List(userID, query string, favoritesOnly bool, tag strin
 		memes = append(memes, meme)
 	}
 	return memes
+}
+
+// memeRowSelectColumns is the projection consumed by scanMemeRow. Any query
+// using it must expose $1 as the favourites user id and join meme_tags mt /
+// tags t for the array_agg.
+const memeRowSelectColumns = `
+	m.id,
+	m.original_name,
+	m.stored_name,
+	m.file_path,
+	m.content_type,
+	m.size_bytes,
+	COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL), '{}') AS tags,
+	COALESCE(m.suggested_tags, '{}') AS suggested_tags,
+	COALESCE(m.auto_suggest_disabled, FALSE) AS auto_suggest_disabled,
+	m.notes,
+	COALESCE(m.source_url, '') AS source_url,
+	EXISTS (
+		SELECT 1 FROM user_favorites uf
+		WHERE uf.user_id = $1 AND uf.meme_id = m.id
+	) AS favorite,
+	m.created_at,
+	m.updated_at`
+
+// queryMemeRows runs a meme projection where clause is everything from the WHERE
+// keyword onward (WHERE ... [GROUP BY] [ORDER BY] [LIMIT ...]). userID becomes
+// $1; extraArgs fill $2, $3, ... in the order the clause references them.
+func (s *PostgresStore) queryMemeRows(ctx context.Context, userID, clause string, extraArgs ...any) ([]Meme, error) {
+	sql := "SELECT" + memeRowSelectColumns + `
+FROM memes m
+LEFT JOIN meme_tags mt ON mt.meme_id = m.id
+LEFT JOIN tags t ON t.id = mt.tag_id
+` + clause
+
+	args := append([]any{normalizeFavoriteUserID(userID)}, extraArgs...)
+	rows, err := s.pool.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	memes := make([]Meme, 0)
+	for rows.Next() {
+		meme, scanErr := scanMemeRow(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		decoratePreviewPath(&meme, s.previewDir)
+		memes = append(memes, meme)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return memes, nil
+}
+
+// memeCounts resolves the facet counts over the memes matched by where (which
+// references m and expects $1 = favourites user id, plus any positional args in
+// args[1:]). The four media buckets are mutually exclusive and sum to Total,
+// matching the in-memory buildMemeCounts classification exactly.
+func (s *PostgresStore) memeCounts(ctx context.Context, where string, args []any) (MemeCategoryCounts, error) {
+	sql := `
+SELECT
+	COUNT(*),
+	COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM user_favorites uf WHERE uf.user_id = $1 AND uf.meme_id = m.id)),
+	COUNT(*) FILTER (WHERE m.content_type LIKE 'video/%'),
+	COUNT(*) FILTER (WHERE m.content_type NOT LIKE 'video/%' AND m.content_type LIKE 'image/%'),
+	COUNT(*) FILTER (WHERE m.content_type NOT LIKE 'video/%' AND m.content_type NOT LIKE 'image/%' AND (m.content_type = 'audio/mpeg' OR LOWER(m.original_name) LIKE '%.mp3')),
+	COUNT(*) FILTER (WHERE m.content_type NOT LIKE 'video/%' AND m.content_type NOT LIKE 'image/%' AND NOT (m.content_type = 'audio/mpeg' OR LOWER(m.original_name) LIKE '%.mp3')),
+	COUNT(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM meme_tags mtc WHERE mtc.meme_id = m.id))
+FROM memes m
+WHERE ` + where
+
+	var c MemeCategoryCounts
+	if err := s.pool.QueryRow(ctx, sql, args...).Scan(
+		&c.Total, &c.Favorites, &c.Videos, &c.Images, &c.MP3s, &c.Files, &c.Untagged,
+	); err != nil {
+		return MemeCategoryCounts{}, err
+	}
+	return c, nil
+}
+
+// QueryMemes resolves one browse/search page entirely in Postgres: filter, facet
+// counts, media-class view, favourites, sort, and limit/offset. It replaces the
+// previous path of loading every row and paging in the application.
+func (s *PostgresStore) QueryMemes(q MemeQuery) (MemeQueryPage, error) {
+	ctx := context.Background()
+	uid := normalizeFavoriteUserID(q.UserID)
+	search := ParseMemeSearch(q.Search)
+
+	offset := q.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	limit := q.Limit
+	if limit <= 0 {
+		limit = 72
+	}
+
+	where, filterArgs, nextArg := buildMemeWhere(search, q.Tag, 2)
+
+	counts, err := s.memeCounts(ctx, where, append([]any{uid}, filterArgs...))
+	if err != nil {
+		return MemeQueryPage{}, err
+	}
+
+	pageWhere := where
+	if vc := memeViewCondition(q.View, 1); vc != "" {
+		pageWhere += "\n  AND " + vc
+	}
+	if q.FavoritesOnly {
+		pageWhere += "\n  AND EXISTS (SELECT 1 FROM user_favorites uf WHERE uf.user_id = $1 AND uf.meme_id = m.id)"
+	}
+
+	clause := "WHERE " + pageWhere +
+		"\nGROUP BY m.id\nORDER BY " + memeSortOrder(q.Sort) +
+		"\nLIMIT $" + strconv.Itoa(nextArg) + " OFFSET $" + strconv.Itoa(nextArg+1)
+
+	extra := append(append([]any{}, filterArgs...), limit+1, offset)
+	memes, err := s.queryMemeRows(ctx, uid, clause, extra...)
+	if err != nil {
+		return MemeQueryPage{}, err
+	}
+
+	page := MemeQueryPage{Counts: counts, Memes: memes}
+	if len(page.Memes) > limit {
+		page.Memes = page.Memes[:limit]
+		page.HasMore = true
+	}
+	page.NextOffset = offset + len(page.Memes)
+	return page, nil
+}
+
+// TagCounts returns the most-used tags across visible memes, most frequent
+// first, ties broken by name.
+func (s *PostgresStore) TagCounts(limit int) ([]TagCount, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	rows, err := s.pool.Query(context.Background(), `
+		SELECT t.name, COUNT(*) AS c
+		FROM meme_tags mt
+		JOIN tags t ON t.id = mt.tag_id
+		JOIN memes m ON m.id = mt.meme_id
+		WHERE COALESCE(m.hidden_from_app, FALSE) = FALSE
+		GROUP BY t.id, t.name
+		ORDER BY c DESC, t.name ASC
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]TagCount, 0, limit)
+	for rows.Next() {
+		var tc TagCount
+		if err := rows.Scan(&tc.Name, &tc.Count); err != nil {
+			return nil, err
+		}
+		out = append(out, tc)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// MemeDashboard resolves the user home screen summary in Postgres instead of
+// scanning the whole archive into memory.
+func (s *PostgresStore) MemeDashboard(userID string) (MemeDashboardData, error) {
+	ctx := context.Background()
+	uid := normalizeFavoriteUserID(userID)
+	const visible = "COALESCE(m.hidden_from_app, FALSE) = FALSE"
+
+	counts, err := s.memeCounts(ctx, visible, []any{uid})
+	if err != nil {
+		return MemeDashboardData{}, err
+	}
+	data := MemeDashboardData{
+		Counts:     counts,
+		TotalItems: counts.Total,
+		Favorites:  counts.Favorites,
+	}
+
+	if err := s.pool.QueryRow(ctx,
+		`SELECT COALESCE(SUM(size_bytes), 0)::bigint FROM memes m WHERE `+visible,
+	).Scan(&data.StorageBytes); err != nil {
+		return MemeDashboardData{}, err
+	}
+	if err := s.pool.QueryRow(ctx, `
+		SELECT COUNT(DISTINCT t.id)
+		FROM meme_tags mt
+		JOIN tags t ON t.id = mt.tag_id
+		JOIN memes m ON m.id = mt.meme_id
+		WHERE `+visible,
+	).Scan(&data.TagCount); err != nil {
+		return MemeDashboardData{}, err
+	}
+
+	if data.RecentItems, err = s.queryMemeRows(ctx, uid,
+		"WHERE "+visible+"\nGROUP BY m.id\nORDER BY m.created_at DESC, m.id ASC\nLIMIT 6",
+	); err != nil {
+		return MemeDashboardData{}, err
+	}
+	if data.FavoriteItems, err = s.queryMemeRows(ctx, uid,
+		"WHERE "+visible+"\n  AND EXISTS (SELECT 1 FROM user_favorites uf WHERE uf.user_id = $1 AND uf.meme_id = m.id)"+
+			"\nGROUP BY m.id\nORDER BY m.created_at DESC, m.id ASC\nLIMIT 6",
+	); err != nil {
+		return MemeDashboardData{}, err
+	}
+	if data.RandomItems, err = s.queryMemeRows(ctx, uid,
+		"WHERE "+visible+"\nGROUP BY m.id\nORDER BY random()\nLIMIT 6",
+	); err != nil {
+		return MemeDashboardData{}, err
+	}
+	if data.TopTags, err = s.TagCounts(5); err != nil {
+		return MemeDashboardData{}, err
+	}
+	return data, nil
 }
 
 func (s *PostgresStore) SuggestTags(prefix string, limit int) []string {
@@ -808,9 +1029,13 @@ func (s *PostgresStore) ensureSchema(ctx context.Context) error {
 		"007_memes_suggested_tags.sql",
 		"008_memes_auto_suggest_disabled.sql",
 		"009_meme_shares.sql",
+		"010_meme_query_indexes.sql",
 	); err != nil {
 		return fmt.Errorf("ensure schema: %w", err)
 	}
+	// Trigram search indexes are a speed-up, not a correctness requirement, and
+	// need the pg_trgm extension a restricted role may not be able to create.
+	dbschema.ApplyOptional(ctx, s.pool, "011_meme_search_trgm.sql")
 	return nil
 }
 
