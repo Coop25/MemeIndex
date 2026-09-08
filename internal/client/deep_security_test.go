@@ -235,7 +235,7 @@ func (u *securityUsers) UpsertSessionProfile(context.Context, authClaims) error 
 func (u *securityUsers) SessionVersion(context.Context, string) (int64, error)  { return 1, nil }
 func (u *securityUsers) BumpSessionVersion(context.Context, string) error       { return nil }
 func (u *securityUsers) GetUser(_ context.Context, id string) (managedUserRecord, bool, error) {
-	return managedUserRecord{UserID: id, Permissions: u.permissions}, true, nil
+	return managedUserRecord{UserID: id, Permissions: u.permissions, SessionVersion: 1}, true, nil
 }
 
 func TestActualRoutesDenyViewerAdministrativeActions(t *testing.T) {

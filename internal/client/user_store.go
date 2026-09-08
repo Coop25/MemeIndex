@@ -14,14 +14,15 @@ import (
 )
 
 type managedUserRecord struct {
-	UserID       string          `json:"user_id"`
-	Username     string          `json:"username"`
-	DisplayName  string          `json:"display_name"`
-	AvatarURL    string          `json:"avatar_url"`
-	LastActiveAt int64           `json:"last_active_at"`
-	Permissions  authPermissions `json:"permissions"`
-	CreatedAt    time.Time       `json:"created_at"`
-	UpdatedAt    time.Time       `json:"updated_at"`
+	UserID         string          `json:"user_id"`
+	Username       string          `json:"username"`
+	DisplayName    string          `json:"display_name"`
+	AvatarURL      string          `json:"avatar_url"`
+	LastActiveAt   int64           `json:"last_active_at"`
+	Permissions    authPermissions `json:"permissions"`
+	SessionVersion int64           `json:"-"`
+	CreatedAt      time.Time       `json:"created_at"`
+	UpdatedAt      time.Time       `json:"updated_at"`
 }
 
 type authUserStore interface {
@@ -297,6 +298,7 @@ func (s *postgresAuthUserStore) getUserByID(ctx context.Context, userID string) 
 			can_add_tags,
 			can_remove_tags,
 			can_delete_memes,
+			session_version,
 			created_at,
 			updated_at
 		FROM app_users
@@ -312,6 +314,7 @@ func (s *postgresAuthUserStore) getUserByID(ctx context.Context, userID string) 
 		&record.Permissions.CanAddTags,
 		&record.Permissions.CanRemoveTags,
 		&record.Permissions.CanDeleteMemes,
+		&record.SessionVersion,
 		&record.CreatedAt,
 		&record.UpdatedAt,
 	)
@@ -334,6 +337,7 @@ func (s *postgresAuthUserStore) ListUsers(ctx context.Context) ([]managedUserRec
 			can_add_tags,
 			can_remove_tags,
 			can_delete_memes,
+			session_version,
 			created_at,
 			updated_at
 		FROM app_users
@@ -363,6 +367,7 @@ func (s *postgresAuthUserStore) ListUsers(ctx context.Context) ([]managedUserRec
 			&record.Permissions.CanAddTags,
 			&record.Permissions.CanRemoveTags,
 			&record.Permissions.CanDeleteMemes,
+			&record.SessionVersion,
 			&record.CreatedAt,
 			&record.UpdatedAt,
 		); err != nil {

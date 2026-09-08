@@ -2128,6 +2128,8 @@ func (s *Server) createManagedUser(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to create user", http.StatusInternalServerError)
 		return
 	}
+	// A previously denied visitor may have a cached zero-permission session.
+	s.auth.invalidateUser(record.UserID)
 	record.Permissions = s.auth.permissionsForUser(record.UserID)
 	writeJSON(w, http.StatusCreated, managedUserPayload(record, false))
 }
@@ -2162,6 +2164,9 @@ func (s *Server) updateManagedUser(w http.ResponseWriter, r *http.Request, userI
 		http.Error(w, "failed to update user", http.StatusInternalServerError)
 		return
 	}
+	// Drop any cached session so the new permissions take effect on the next
+	// request instead of after the cache TTL.
+	s.auth.invalidateUser(record.UserID)
 	record.Permissions = s.auth.permissionsForUser(record.UserID)
 	writeJSON(w, http.StatusOK, managedUserPayload(record, false))
 }
@@ -2172,6 +2177,8 @@ func (s *Server) deleteManagedUser(w http.ResponseWriter, r *http.Request, userI
 		http.Error(w, "failed to delete user", http.StatusInternalServerError)
 		return
 	}
+	// Stop honouring any cached session for the now-deleted account at once.
+	s.auth.invalidateUser(userID)
 
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -16,15 +16,22 @@ import (
 type fakeSessionStore struct {
 	authUserStore
 
-	mu         sync.Mutex
-	version    int64
-	perms      authPermissions
-	bumpCalls  int
-	lastBumpID string
+	mu           sync.Mutex
+	version      int64
+	perms        authPermissions
+	bumpCalls    int
+	lastBumpID   string
+	getCalls     int
+	profileCalls int
 }
 
 func (f *fakeSessionStore) UpsertDiscordProfile(context.Context, discordUser) error { return nil }
-func (f *fakeSessionStore) UpsertSessionProfile(context.Context, authClaims) error  { return nil }
+func (f *fakeSessionStore) UpsertSessionProfile(context.Context, authClaims) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.profileCalls++
+	return nil
+}
 
 func (f *fakeSessionStore) SessionVersion(context.Context, string) (int64, error) {
 	f.mu.Lock()
@@ -44,7 +51,8 @@ func (f *fakeSessionStore) BumpSessionVersion(_ context.Context, id string) erro
 func (f *fakeSessionStore) GetUser(_ context.Context, id string) (managedUserRecord, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return managedUserRecord{UserID: id, Permissions: f.perms}, true, nil
+	f.getCalls++
+	return managedUserRecord{UserID: id, Permissions: f.perms, SessionVersion: f.version}, true, nil
 }
 
 func newRevocationAuthService(store authUserStore) *authService {
@@ -106,6 +114,68 @@ func TestSessionFromRequestAcceptsMatchingVersion(t *testing.T) {
 	}
 	if !session.Permissions.CanView {
 		t.Fatal("expected permissions to be resolved for accepted session")
+	}
+}
+
+func TestSessionFromRequestCachesValidationAndInvalidatesOnRevoke(t *testing.T) {
+	store := &fakeSessionStore{version: 5, perms: authPermissions{CanView: true}}
+	a := newRevocationAuthService(store)
+
+	_, token, err := a.createSession(discordUser{ID: "u1", Username: "user"})
+	if err != nil {
+		t.Fatalf("createSession: %v", err)
+	}
+
+	store.mu.Lock()
+	baseline := store.getCalls
+	store.mu.Unlock()
+
+	for i := 0; i < 5; i++ {
+		if _, ok := a.sessionFromRequest(requestWithSessionCookie(t, a, token)); !ok {
+			t.Fatalf("request %d: expected valid session", i)
+		}
+	}
+
+	store.mu.Lock()
+	gets := store.getCalls - baseline
+	store.mu.Unlock()
+	if gets != 1 {
+		t.Fatalf("GetUser called %d times across 5 requests, want 1 (rest served from cache)", gets)
+	}
+
+	// Revoking must purge the cache so the very next request re-reads the store
+	// and rejects the now-stale token.
+	if err := a.revokeSessions(context.Background(), "u1"); err != nil {
+		t.Fatalf("revokeSessions: %v", err)
+	}
+	if _, ok := a.sessionFromRequest(requestWithSessionCookie(t, a, token)); ok {
+		t.Fatal("expected the cached session to be dropped and the token rejected after revoke")
+	}
+}
+
+func TestSessionFromRequestThrottlesProfileWrites(t *testing.T) {
+	store := &fakeSessionStore{version: 2, perms: authPermissions{CanView: true}}
+	a := newRevocationAuthService(store)
+
+	_, token, err := a.createSession(discordUser{ID: "u1", Username: "user"})
+	if err != nil {
+		t.Fatalf("createSession: %v", err)
+	}
+
+	for i := 0; i < 10; i++ {
+		if _, ok := a.sessionFromRequest(requestWithSessionCookie(t, a, token)); !ok {
+			t.Fatalf("request %d: expected valid session", i)
+		}
+	}
+
+	// The profile refresh is async and best-effort; give the first one a moment
+	// to land, then confirm the throttle collapsed the rest.
+	time.Sleep(50 * time.Millisecond)
+	store.mu.Lock()
+	profiles := store.profileCalls
+	store.mu.Unlock()
+	if profiles > 1 {
+		t.Fatalf("UpsertSessionProfile called %d times across 10 requests, want at most 1", profiles)
 	}
 }
 
