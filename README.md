@@ -125,6 +125,7 @@ Optional flags:
 - `MEMEINDEX_ALLOW_ANONYMOUS`: defaults to `false`; explicitly enable only when anonymous operation is intended. Partially configured Discord authentication is always rejected
 - `MEMEINDEX_MAX_UPLOAD_BYTES`: maximum total multipart request size, default `268435456` (256 MiB), including all selected files and form overhead
 - `MEMEINDEX_MAX_AUDIOBOOK_BYTES`: maximum size of a single audiobook, default `21474836480` (20 GiB). Audiobooks upload in resumable chunks rather than one multipart request, so this is checked against the declared file size up front instead of against a request body
+- `MEMEINDEX_AUDIOBOOK_UPLOAD_CONCURRENCY`: how many chunk-upload streams the browser runs in parallel for a single audiobook upload, default `4`, clamped to `1`-`16`. Raising it can speed up large uploads over a higher-latency connection; it has little effect on a local network, where one stream is usually already saturating the link
 - `MEMEINDEX_SHARE_SECRET`: optional dedicated secret used to sign 30-day share URLs. It defaults to `MEMEINDEX_SESSION_SECRET`; without either secret, MemeIndex creates `data/share_secret`. Keep it stable or active links will stop validating
 - `MEMEINDEX_SESSION_DURATION_DAYS`: how long Discord login cookies stay valid, default `30`
 - `MEMEINDEX_COOKIE_SECURE`: set to `true` when serving over HTTPS so auth cookies are marked secure
