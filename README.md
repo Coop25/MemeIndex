@@ -124,6 +124,7 @@ Optional flags:
 - `MEMEINDEX_SESSION_SECRET`: random secret of at least 32 characters used to sign auth cookies; example values are rejected
 - `MEMEINDEX_ALLOW_ANONYMOUS`: defaults to `false`; explicitly enable only when anonymous operation is intended. Partially configured Discord authentication is always rejected
 - `MEMEINDEX_MAX_UPLOAD_BYTES`: maximum total multipart request size, default `268435456` (256 MiB), including all selected files and form overhead
+- `MEMEINDEX_MAX_AUDIOBOOK_BYTES`: maximum size of a single audiobook, default `21474836480` (20 GiB). Audiobooks upload in resumable chunks rather than one multipart request, so this is checked against the declared file size up front instead of against a request body
 - `MEMEINDEX_SHARE_SECRET`: optional dedicated secret used to sign 30-day share URLs. It defaults to `MEMEINDEX_SESSION_SECRET`; without either secret, MemeIndex creates `data/share_secret`. Keep it stable or active links will stop validating
 - `MEMEINDEX_SESSION_DURATION_DAYS`: how long Discord login cookies stay valid, default `30`
 - `MEMEINDEX_COOKIE_SECURE`: set to `true` when serving over HTTPS so auth cookies are marked secure
@@ -142,6 +143,8 @@ If the Ollama env vars are not set or the model is offline, MemeIndex still work
 - `ADD TAGS`: add tags to existing memes
 - `REMOVE TAGS`: remove tags from existing memes
 - `DELETE`: delete memes
+- `VIEW AUDIOBOOKS`: browse and play uploaded audiobooks, independent of the meme `VIEW` permission above
+- `UPLOAD AUDIOBOOKS`: everything in `VIEW AUDIOBOOKS`, plus upload new audiobooks
 - `SUPER ADMIN`: full access plus the users modal, where all non-super-admin permissions can be toggled and stored in Postgres
 
 When Postgres is enabled, MemeIndex imports any missing IDs from `VIEW_USER_IDS` and `ADD_USER_IDS` into the users table on startup. Super admins come from env, while all other user permissions are stored in the database and recalculated on every request without rotating auth cookies.

@@ -35,6 +35,7 @@ type Server struct {
 	managers    *manager.MemeManager
 	auth        *authService
 	users       authUserStore
+	audiobooks  audiobookStore
 	mediaClient *mediafetch.Client
 	linkRetries *linkRetryQueue
 	backup      *portableBackup
@@ -86,6 +87,10 @@ func NewServer(config Config, memeManager *manager.MemeManager) *Server {
 			log.Fatalf("auth user bootstrap failed: %v", err)
 		}
 	}
+	audiobookStore, err := newAudiobookStore(context.Background(), config.DatabaseURL, config.DataDir)
+	if err != nil {
+		log.Fatalf("audiobook store init failed: %v", err)
+	}
 
 	// Keep downloader egress on the pinned public-only transport. With no proxy
 	// configured this blocks private/reserved addresses at connection time even
@@ -109,11 +114,13 @@ func NewServer(config Config, memeManager *manager.MemeManager) *Server {
 		managers:    memeManager,
 		auth:        newAuthService(config.DiscordAuth, userStore),
 		users:       userStore,
+		audiobooks:  audiobookStore,
 		mediaClient: mediaClient,
 		backup:      newPortableBackup(config.DatabaseURL, config.DataDir),
 		shareSecret: shareSecret,
 	}
 	server.linkRetries = newLinkRetryQueue(config.MediaFetchRetry.Interval, config.MediaFetchRetry.MaxAttempts, server.processRetriedLinkJob)
+	server.startAudiobookUploadCleanupSweeper()
 
 	// Seed the metrics that are known at startup: the running build, and (for a
 	// Postgres deployment) whether the trigram search indexes came up.
@@ -180,6 +187,11 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/api/reel-session", s.withAPIAuth(http.HandlerFunc(s.handleReelSession), permissionView))
 	mux.Handle("/api/tags/popular", s.withAPIAuth(http.HandlerFunc(s.handlePopularTags), permissionView))
 	mux.Handle("/api/tags", s.withAPIAuth(http.HandlerFunc(s.handleTags), permissionView))
+	mux.Handle("/api/audiobooks", s.withAPIAuth(http.HandlerFunc(s.handleAudiobooks), permissionViewAudiobooks))
+	mux.Handle("/api/audiobooks/uploads", s.withAPIAuth(http.HandlerFunc(s.handleAudiobookUploads), permissionUploadAudiobooks))
+	mux.Handle("/api/audiobooks/uploads/", s.withAPIAuth(http.HandlerFunc(s.handleAudiobookUploadByID), permissionUploadAudiobooks))
+	mux.Handle("/api/audiobooks/", s.withAPIAuth(http.HandlerFunc(s.handleAudiobookByID), permissionViewAudiobooks))
+	mux.Handle("/audiobook-media/", s.withAudiobookMediaAuth(http.HandlerFunc(s.handleAudiobookMedia)))
 	return securityHeaders(http.NewCrossOriginProtection().Handler(s.maintenanceGuard(mux)))
 }
 
@@ -579,6 +591,10 @@ func hasPermission(permissions authPermissions, minimum permissionLevel) bool {
 		return permissions.CanAddTags || permissions.CanRemoveTags || permissions.CanManageUsers
 	case permissionUpload:
 		return permissions.CanUpload || permissions.CanManageUsers
+	case permissionViewAudiobooks:
+		return permissions.CanViewAudiobooks || permissions.CanUploadAudiobooks || permissions.CanManageUsers
+	case permissionUploadAudiobooks:
+		return permissions.CanUploadAudiobooks || permissions.CanManageUsers
 	default:
 		return permissions.CanView || permissions.CanUpload || permissions.CanManage
 	}
@@ -2276,11 +2292,13 @@ func (s *Server) createManagedUser(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) updateManagedUser(w http.ResponseWriter, r *http.Request, userID string) {
 	var payload struct {
-		CanView        bool `json:"canView"`
-		CanUpload      bool `json:"canUpload"`
-		CanAddTags     bool `json:"canAddTags"`
-		CanRemoveTags  bool `json:"canRemoveTags"`
-		CanDeleteMemes bool `json:"canDeleteMemes"`
+		CanView             bool `json:"canView"`
+		CanUpload           bool `json:"canUpload"`
+		CanAddTags          bool `json:"canAddTags"`
+		CanRemoveTags       bool `json:"canRemoveTags"`
+		CanDeleteMemes      bool `json:"canDeleteMemes"`
+		CanViewAudiobooks   bool `json:"canViewAudiobooks"`
+		CanUploadAudiobooks bool `json:"canUploadAudiobooks"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
@@ -2288,14 +2306,19 @@ func (s *Server) updateManagedUser(w http.ResponseWriter, r *http.Request, userI
 	}
 
 	permissions := authPermissions{
-		CanView:        payload.CanView,
-		CanUpload:      payload.CanUpload,
-		CanAddTags:     payload.CanAddTags,
-		CanRemoveTags:  payload.CanRemoveTags,
-		CanDeleteMemes: payload.CanDeleteMemes,
+		CanView:             payload.CanView,
+		CanUpload:           payload.CanUpload,
+		CanAddTags:          payload.CanAddTags,
+		CanRemoveTags:       payload.CanRemoveTags,
+		CanDeleteMemes:      payload.CanDeleteMemes,
+		CanViewAudiobooks:   payload.CanViewAudiobooks,
+		CanUploadAudiobooks: payload.CanUploadAudiobooks,
 	}
 	if permissions.CanUpload || permissions.CanAddTags || permissions.CanRemoveTags || permissions.CanDeleteMemes {
 		permissions.CanView = true
+	}
+	if permissions.CanUploadAudiobooks {
+		permissions.CanViewAudiobooks = true
 	}
 
 	record, err := s.users.UpdateUserPermissions(r.Context(), userID, permissions)
@@ -2486,14 +2509,16 @@ func (s *Server) handleAuthSession(w http.ResponseWriter, r *http.Request) {
 			"enabled": false,
 			"version": BuildVersion(),
 			"permissions": authPermissions{
-				CanView:        true,
-				CanUpload:      true,
-				CanAddTags:     true,
-				CanRemoveTags:  true,
-				CanDeleteMemes: true,
-				CanManageUsers: true,
-				CanAdd:         true,
-				CanManage:      true,
+				CanView:             true,
+				CanUpload:           true,
+				CanAddTags:          true,
+				CanRemoveTags:       true,
+				CanDeleteMemes:      true,
+				CanManageUsers:      true,
+				CanViewAudiobooks:   true,
+				CanUploadAudiobooks: true,
+				CanAdd:              true,
+				CanManage:           true,
 			},
 		})
 		return

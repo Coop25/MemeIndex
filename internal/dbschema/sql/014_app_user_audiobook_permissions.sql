@@ -1,0 +1,2 @@
+ALTER TABLE app_users ADD COLUMN IF NOT EXISTS can_view_audiobooks BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE app_users ADD COLUMN IF NOT EXISTS can_upload_audiobooks BOOLEAN NOT NULL DEFAULT false;

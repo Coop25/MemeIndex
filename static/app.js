@@ -65,6 +65,8 @@ const state = {
       canView: true,
       canAdd: true,
       canManage: true,
+      canViewAudiobooks: true,
+      canUploadAudiobooks: true,
     },
     logoutURL: "/auth/logout",
   },
@@ -72,6 +74,12 @@ const state = {
     tag: "",
 		query: "",
     view: "home",
+  },
+  audiobooks: {
+    items: [],
+    loading: false,
+    upload: null,
+    player: null,
   },
 };
 
@@ -210,6 +218,40 @@ const authVersionValue = document.querySelector("#auth-version-value");
 const authAdmin = document.querySelector("#auth-admin");
 const authInstall = document.querySelector("#auth-install");
 const authLogout = document.querySelector("#auth-logout");
+const navAudiobooksItem = document.querySelector("#nav-audiobooks-item");
+const audiobooksView = document.querySelector("#audiobooks-view");
+const audiobooksStatus = document.querySelector("#audiobooks-status");
+const audiobooksGrid = document.querySelector("#audiobooks-grid");
+const audiobooksEmpty = document.querySelector("#audiobooks-empty");
+const openAudiobookUploadButton = document.querySelector("#open-audiobook-upload");
+const audiobookUploadModal = document.querySelector("#audiobook-upload-modal");
+const audiobookUploadModalClose = document.querySelector("#audiobook-upload-modal-close");
+const audiobookUploadForm = document.querySelector("#audiobook-upload-form");
+const audiobookUploadFileInput = document.querySelector("#audiobook-upload-file-input");
+const audiobookUploadTitleInput = document.querySelector("#audiobook-upload-title");
+const audiobookUploadAuthorInput = document.querySelector("#audiobook-upload-author");
+const audiobookUploadSubmit = document.querySelector("#audiobook-upload-submit");
+const audiobookUploadCancel = document.querySelector("#audiobook-upload-cancel");
+const audiobookUploadStatus = document.querySelector("#audiobook-upload-status");
+const audiobookUploadProgressWrap = document.querySelector("#audiobook-upload-progress-wrap");
+const audiobookUploadProgressBar = document.querySelector("#audiobook-upload-progress-bar");
+const audiobookUploadProgressLabel = document.querySelector("#audiobook-upload-progress-label");
+const audiobookUploadProgressSize = document.querySelector("#audiobook-upload-progress-size");
+const audiobookUploadBusyOverlay = document.querySelector("#audiobook-upload-busy-overlay");
+const audiobookPlayerModal = document.querySelector("#audiobook-player-modal");
+const audiobookPlayerClose = document.querySelector("#audiobook-player-close");
+const audiobookPlayerTitle = document.querySelector("#audiobook-player-title");
+const audiobookPlayerAuthor = document.querySelector("#audiobook-player-author");
+const audiobookPlayerProgress = document.querySelector("#audiobook-player-progress");
+const audiobookPlayerCurrentTime = document.querySelector("#audiobook-player-current-time");
+const audiobookPlayerDuration = document.querySelector("#audiobook-player-duration");
+const audiobookPlayerPlayButton = document.querySelector("#audiobook-player-play");
+const audiobookPlayerPlayIcon = document.querySelector("#audiobook-player-play-icon");
+const audiobookPlayerSkipBack = document.querySelector("#audiobook-player-skip-back");
+const audiobookPlayerSkipForward = document.querySelector("#audiobook-player-skip-forward");
+const audiobookPlayerSpeed = document.querySelector("#audiobook-player-speed");
+const audiobookPlayerVolume = document.querySelector("#audiobook-player-volume");
+const audiobookPlayerStatus = document.querySelector("#audiobook-player-status");
 const uploadModalClose = document.querySelector("#upload-modal-close");
 const usersModal = document.querySelector("#users-modal");
 const usersModalClose = document.querySelector("#users-modal-close");
@@ -964,6 +1006,14 @@ function canManageUsers() {
   return !!state.auth.permissions?.canManageUsers;
 }
 
+function canViewAudiobooks() {
+  return !!state.auth.permissions?.canViewAudiobooks || !!state.auth.permissions?.canUploadAudiobooks || canManageUsers();
+}
+
+function canUploadAudiobooks() {
+  return !!state.auth.permissions?.canUploadAudiobooks || canManageUsers();
+}
+
 function canEditMetadata() {
   return canAddTags() || canRemoveTags() || canManageUsers();
 }
@@ -980,6 +1030,10 @@ function isAdminView() {
   return state.filters.view === "admin";
 }
 
+function isAudiobooksView() {
+  return state.filters.view === "audiobooks";
+}
+
 function permissionLabel() {
   if (canManageUsers()) return "Super Admin";
   const permissions = [];
@@ -988,6 +1042,8 @@ function permissionLabel() {
   if (canAddTags()) permissions.push("Add tags");
   if (canRemoveTags()) permissions.push("Remove tags");
   if (canDeleteMemes()) permissions.push("Delete memes");
+  if (canViewAudiobooks()) permissions.push("View audiobooks");
+  if (canUploadAudiobooks()) permissions.push("Upload audiobooks");
   if (permissions.length > 0) return permissions.join(" • ");
   return "No access";
 }
@@ -1005,6 +1061,8 @@ function renderAuthState() {
   openUploadModalButton.disabled = !canUpload();
   openUploadModalButton.setAttribute("aria-disabled", String(!canUpload()));
   openUploadModalButton.title = canUpload() ? "Add File" : "You do not have permission to upload";
+  navAudiobooksItem?.classList.toggle("hidden", !canViewAudiobooks());
+  openAudiobookUploadButton?.classList.toggle("hidden", !canUploadAudiobooks());
 
   if (state.auth.user?.avatar_url) {
     authAvatar.src = state.auth.user.avatar_url;
@@ -1071,6 +1129,8 @@ async function fetchAuthSession() {
       canRemoveTags: false,
       canDeleteMemes: false,
       canManageUsers: false,
+      canViewAudiobooks: false,
+      canUploadAudiobooks: false,
       canAdd: false,
       canManage: false,
     },
@@ -1483,6 +1543,8 @@ function userPermissionSummary(user) {
   if (user.permissions?.canAddTags) labels.push("Add tags");
   if (user.permissions?.canRemoveTags) labels.push("Remove tags");
   if (user.permissions?.canDeleteMemes) labels.push("Delete");
+  if (user.permissions?.canViewAudiobooks) labels.push("View audiobooks");
+  if (user.permissions?.canUploadAudiobooks) labels.push("Upload audiobooks");
   return labels.length > 0 ? labels.join(" * ") : "No permissions yet";
 }
 
@@ -1497,7 +1559,9 @@ function hasZeroPermissions(user) {
     && !permissions.canAddTags
     && !permissions.canRemoveTags
     && !permissions.canDeleteMemes
-    && !permissions.canManageUsers;
+    && !permissions.canManageUsers
+    && !permissions.canViewAudiobooks
+    && !permissions.canUploadAudiobooks;
 }
 
 function formatLastActive(unixSeconds) {
@@ -1682,6 +1746,8 @@ function renderManagedUsers() {
         <label><input type="checkbox" data-scope="canAddTags" ${checked(user.permissions?.canAddTags)} ${disabledAttr} /> <span>Add tags</span></label>
         <label><input type="checkbox" data-scope="canRemoveTags" ${checked(user.permissions?.canRemoveTags)} ${disabledAttr} /> <span>Remove tags</span></label>
         <label><input type="checkbox" data-scope="canDeleteMemes" ${checked(user.permissions?.canDeleteMemes)} ${disabledAttr} /> <span>Delete memes</span></label>
+        <label><input type="checkbox" data-scope="canViewAudiobooks" ${checked(user.permissions?.canViewAudiobooks)} ${disabledAttr} /> <span>View audiobooks</span></label>
+        <label><input type="checkbox" data-scope="canUploadAudiobooks" ${checked(user.permissions?.canUploadAudiobooks)} ${disabledAttr} /> <span>Upload audiobooks</span></label>
       </div>
       ${user.is_super_admin ? "" : '<div class="users-card-actions"><button class="danger-button users-delete-button" type="button">Remove User</button><button class="primary-button users-save-button" type="button">Save Permissions</button></div>'}
       `;
@@ -1696,12 +1762,21 @@ function renderManagedUsers() {
           canAddTags: !!card.querySelector('input[data-scope="canAddTags"]')?.checked,
           canRemoveTags: !!card.querySelector('input[data-scope="canRemoveTags"]')?.checked,
           canDeleteMemes: !!card.querySelector('input[data-scope="canDeleteMemes"]')?.checked,
+          canViewAudiobooks: !!card.querySelector('input[data-scope="canViewAudiobooks"]')?.checked,
+          canUploadAudiobooks: !!card.querySelector('input[data-scope="canUploadAudiobooks"]')?.checked,
         };
         if (permissions.canUpload || permissions.canAddTags || permissions.canRemoveTags || permissions.canDeleteMemes) {
           permissions.canView = true;
           const viewToggle = card.querySelector('input[data-scope="canView"]');
           if (viewToggle) {
             viewToggle.checked = true;
+          }
+        }
+        if (permissions.canUploadAudiobooks) {
+          permissions.canViewAudiobooks = true;
+          const viewAudiobooksToggle = card.querySelector('input[data-scope="canViewAudiobooks"]');
+          if (viewAudiobooksToggle) {
+            viewAudiobooksToggle.checked = true;
           }
         }
 
@@ -3223,7 +3298,10 @@ function syncMemeGridObserver() {
 function renderContentMode() {
   const adminMode = isAdminView();
 	const homeMode = state.filters.view === "home";
-	const libraryMode = !adminMode && !homeMode;
+	const audiobooksMode = isAudiobooksView();
+	const libraryMode = !adminMode && !homeMode && !audiobooksMode;
+	audiobooksView?.classList.toggle("hidden", !audiobooksMode);
+	document.body.classList.toggle("audiobooks-mode", audiobooksMode);
 	if (libraryMode && libraryTitle) {
 		libraryTitle.textContent = state.filters.tag
 			? `#${state.filters.tag}`
@@ -3403,6 +3481,11 @@ async function loadInitialMemes() {
 		renderContentMode();
 		return;
 	}
+	if (isAudiobooksView()) {
+		await fetchAudiobooks();
+		renderContentMode();
+		return;
+	}
   if (isAdminView() && canManageUsers()) {
     const tab = isValidAdminTab(activeAdminTab()) ? activeAdminTab() : ADMIN_DEFAULT_TAB;
     const config = ADMIN_TABS[tab];
@@ -3443,6 +3526,445 @@ async function applyTagSearch(rawValue) {
 	state.filters.query = String(rawValue || "").trim();
 	if (state.filters.view === "home") state.filters.view = "library";
   await loadInitialMemes();
+}
+
+// ---------------------------------------------------------------------------
+// Audiobooks: library listing, resumable chunked upload, and the player.
+// ---------------------------------------------------------------------------
+
+const AUDIOBOOK_CHUNK_SIZE = 8 * 1024 * 1024; // 8 MiB per chunk request.
+const AUDIOBOOK_UPLOAD_STORAGE_KEY = "memevault.audiobookUpload";
+const AUDIOBOOK_PROGRESS_SAVE_INTERVAL_MS = 15000;
+
+class AudiobookUploadCancelled extends Error {}
+
+function loadSavedAudiobookUpload() {
+  try {
+    const raw = window.localStorage.getItem(AUDIOBOOK_UPLOAD_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+function saveAudiobookUploadMarker(marker) {
+  try {
+    if (marker) {
+      window.localStorage.setItem(AUDIOBOOK_UPLOAD_STORAGE_KEY, JSON.stringify(marker));
+    } else {
+      window.localStorage.removeItem(AUDIOBOOK_UPLOAD_STORAGE_KEY);
+    }
+  } catch (error) {
+    // Best effort only - resuming still works within the tab's lifetime.
+  }
+}
+
+async function fetchAudiobooks() {
+  state.audiobooks.loading = true;
+  if (audiobooksStatus) audiobooksStatus.textContent = "Loading audiobooks...";
+  try {
+    const response = await fetch("/api/audiobooks", { credentials: "same-origin" });
+    if (!(await expectAuthorized(response, "Could not load audiobooks."))) {
+      return;
+    }
+    const payload = await response.json();
+    state.audiobooks.items = payload.audiobooks || [];
+    if (audiobooksStatus) audiobooksStatus.textContent = "";
+  } catch (error) {
+    console.error(error);
+    if (audiobooksStatus) audiobooksStatus.textContent = "Could not load audiobooks.";
+  } finally {
+    state.audiobooks.loading = false;
+    renderAudiobooksGrid();
+  }
+}
+
+function audiobookCardHTML(item) {
+  const canDelete = canManageUsers() || (!!state.auth.user?.id && state.auth.user.id === item.uploaded_by);
+  const progressPct = item.duration_seconds > 0
+    ? Math.min(100, Math.round((item.position_seconds / item.duration_seconds) * 100))
+    : 0;
+  const metaParts = [formatSize(item.size_bytes || 0)];
+  if (item.duration_seconds > 0) metaParts.push(formatMediaTime(item.duration_seconds));
+  return `
+    <article class="audiobook-card" data-audiobook-id="${escapeHTML(item.id)}">
+      <div class="audiobook-card-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M6 5.5h8.5a3.5 3.5 0 0 1 3.5 3.5v9.5H8a2 2 0 0 1-2-2V5.5Z"/><path d="M6 15.5h12"/><path d="M9.5 9.5h5"/></svg>
+      </div>
+      <div class="audiobook-card-body">
+        <strong class="audiobook-card-title">${escapeHTML(item.title || item.filename || "Untitled")}</strong>
+        ${item.author ? `<span class="audiobook-card-author">${escapeHTML(item.author)}</span>` : ""}
+        <span class="audiobook-card-meta">${metaParts.map(escapeHTML).join(" • ")}</span>
+        ${progressPct > 0 ? `<div class="audiobook-card-progress-track" aria-hidden="true"><span style="width:${progressPct}%"></span></div>` : ""}
+      </div>
+      <div class="audiobook-card-actions">
+        <button type="button" class="primary-button" data-audiobook-play>${progressPct > 0 && progressPct < 99 ? "Resume" : "Play"}</button>
+        ${canDelete ? `<button type="button" class="ghost-button" data-audiobook-delete>Delete</button>` : ""}
+      </div>
+    </article>
+  `;
+}
+
+function renderAudiobooksGrid() {
+  if (!audiobooksGrid) return;
+  const items = state.audiobooks.items;
+  audiobooksGrid.innerHTML = items.map(audiobookCardHTML).join("");
+  audiobooksEmpty?.classList.toggle("hidden", items.length !== 0 || state.audiobooks.loading);
+
+  items.forEach((item) => {
+    const card = audiobooksGrid.querySelector(`[data-audiobook-id="${window.CSS?.escape ? CSS.escape(item.id) : item.id}"]`);
+    if (!card) return;
+    card.querySelector("[data-audiobook-play]")?.addEventListener("click", () => {
+      openAudiobookPlayer(item).catch((error) => console.error(error));
+    });
+    card.querySelector("[data-audiobook-delete]")?.addEventListener("click", () => {
+      deleteAudiobookItem(item).catch((error) => console.error(error));
+    });
+  });
+}
+
+async function deleteAudiobookItem(item) {
+  if (!window.confirm(`Delete "${item.title || item.filename}"? This cannot be undone.`)) {
+    return;
+  }
+  try {
+    const response = await fetch(`/api/audiobooks/${encodeURIComponent(item.id)}`, {
+      method: "DELETE",
+      credentials: "same-origin",
+    });
+    if (!(await expectAuthorized(response, "Could not delete this audiobook."))) {
+      return;
+    }
+    state.audiobooks.items = state.audiobooks.items.filter((entry) => entry.id !== item.id);
+    renderAudiobooksGrid();
+    showToast("Audiobook deleted.", "success", { title: "Audiobooks" });
+  } catch (error) {
+    console.error(error);
+    showToast("Could not delete this audiobook.", "error", { title: "Audiobooks" });
+  }
+}
+
+function openAudiobookUploadModal() {
+  if (!canUploadAudiobooks()) return;
+  audiobookUploadForm?.reset();
+  if (audiobookUploadStatus) audiobookUploadStatus.textContent = "";
+  audiobookUploadProgressWrap?.classList.add("hidden");
+  audiobookUploadCancel?.classList.add("hidden");
+  audiobookUploadSubmit?.classList.remove("hidden");
+  if (audiobookUploadSubmit) audiobookUploadSubmit.disabled = false;
+  audiobookUploadModal?.showModal();
+}
+
+function updateAudiobookUploadProgress(receivedBytes, totalBytes) {
+  const pct = totalBytes > 0 ? Math.min(100, Math.round((receivedBytes / totalBytes) * 100)) : 0;
+  if (audiobookUploadProgressBar) audiobookUploadProgressBar.style.width = `${pct}%`;
+  if (audiobookUploadProgressLabel) audiobookUploadProgressLabel.textContent = `${pct}%`;
+  if (audiobookUploadProgressSize) {
+    audiobookUploadProgressSize.textContent = `${formatSize(receivedBytes)} / ${formatSize(totalBytes)}`;
+  }
+  if (audiobookUploadStatus) {
+    audiobookUploadStatus.textContent = pct >= 100 ? "Finishing up..." : "Uploading...";
+  }
+}
+
+function probeAudioDuration(file) {
+  return new Promise((resolve) => {
+    const probe = new Audio();
+    const url = URL.createObjectURL(file);
+    const cleanup = () => URL.revokeObjectURL(url);
+    const finish = (duration) => {
+      cleanup();
+      resolve(Number.isFinite(duration) && duration > 0 ? duration : 0);
+    };
+    probe.preload = "metadata";
+    probe.addEventListener("loadedmetadata", () => finish(probe.duration));
+    probe.addEventListener("error", () => finish(0));
+    probe.src = url;
+  });
+}
+
+class AudiobookUploadForbidden extends Error {}
+
+// uploadAudiobookChunk retries transient failures (network blips, a 429 while
+// another request is mid-flight, a brief 5xx) quietly in the background - a
+// multi-gigabyte upload can run for a long time and hiccups are expected, so
+// this deliberately avoids expectAuthorized's window.alert, which would
+// otherwise pop a blocking dialog on every rate-limited chunk.
+async function uploadAudiobookChunk(uploadId, offset, chunk, attempt = 0) {
+  if (state.audiobooks.upload?.cancelled) {
+    throw new AudiobookUploadCancelled();
+  }
+  try {
+    const response = await fetch(`/api/audiobooks/uploads/${encodeURIComponent(uploadId)}`, {
+      method: "PATCH",
+      credentials: "same-origin",
+      headers: { "Upload-Offset": String(offset) },
+      body: chunk,
+    });
+    if (response.status === 409) {
+      const payload = await response.json().catch(() => null);
+      if (payload && typeof payload.received_bytes === "number") {
+        return payload.received_bytes;
+      }
+      throw new Error("Upload offset conflict");
+    }
+    if (response.status === 401) {
+      window.location.href = "/auth/login";
+      throw new AudiobookUploadCancelled();
+    }
+    if (response.status === 403) {
+      throw new AudiobookUploadForbidden("You do not have permission to upload audiobooks.");
+    }
+    if (!response.ok) {
+      throw new Error(`Chunk upload failed (${response.status})`);
+    }
+    const payload = await response.json();
+    return payload.received_bytes;
+  } catch (error) {
+    if (error instanceof AudiobookUploadCancelled || error instanceof AudiobookUploadForbidden || attempt >= 8) {
+      throw error;
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, Math.min(1000 * 2 ** attempt, 20000)));
+    return uploadAudiobookChunk(uploadId, offset, chunk, attempt + 1);
+  }
+}
+
+async function submitAudiobookUpload(event) {
+  event.preventDefault();
+  const file = audiobookUploadFileInput?.files?.[0];
+  if (!file) {
+    if (audiobookUploadStatus) audiobookUploadStatus.textContent = "Choose a file first.";
+    return;
+  }
+
+  const title = audiobookUploadTitleInput?.value.trim() || file.name;
+  const author = audiobookUploadAuthorInput?.value.trim() || "";
+
+  if (audiobookUploadSubmit) {
+    audiobookUploadSubmit.disabled = true;
+    audiobookUploadSubmit.classList.add("hidden");
+  }
+  audiobookUploadCancel?.classList.remove("hidden");
+  audiobookUploadProgressWrap?.classList.remove("hidden");
+  if (audiobookUploadStatus) audiobookUploadStatus.textContent = "Starting upload...";
+
+  try {
+    let uploadId = "";
+    let receivedBytes = 0;
+
+    const saved = loadSavedAudiobookUpload();
+    if (saved && saved.filename === file.name && saved.totalBytes === file.size) {
+      try {
+        const statusResponse = await fetch(`/api/audiobooks/uploads/${encodeURIComponent(saved.uploadId)}`, {
+          credentials: "same-origin",
+        });
+        if (statusResponse.ok) {
+          const statusPayload = await statusResponse.json();
+          uploadId = saved.uploadId;
+          receivedBytes = statusPayload.received_bytes || 0;
+          if (audiobookUploadStatus) audiobookUploadStatus.textContent = "Resuming previous upload...";
+        }
+      } catch (error) {
+        console.error(error);
+      }
+    }
+
+    if (!uploadId) {
+      const createResponse = await fetch("/api/audiobooks/uploads", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: file.name, mimeType: file.type, totalBytes: file.size, title, author }),
+      });
+      if (!(await expectAuthorized(createResponse, "Could not start the upload."))) {
+        throw new Error("audiobook upload create failed");
+      }
+      const createPayload = await createResponse.json();
+      uploadId = createPayload.upload_id;
+      receivedBytes = createPayload.received_bytes || 0;
+    }
+
+    state.audiobooks.upload = { id: uploadId, cancelled: false };
+    saveAudiobookUploadMarker({ uploadId, filename: file.name, totalBytes: file.size });
+    updateAudiobookUploadProgress(receivedBytes, file.size);
+
+    while (receivedBytes < file.size) {
+      if (state.audiobooks.upload?.cancelled) {
+        throw new AudiobookUploadCancelled();
+      }
+      const chunkEnd = Math.min(receivedBytes + AUDIOBOOK_CHUNK_SIZE, file.size);
+      const chunk = file.slice(receivedBytes, chunkEnd);
+      receivedBytes = await uploadAudiobookChunk(uploadId, receivedBytes, chunk);
+      updateAudiobookUploadProgress(receivedBytes, file.size);
+    }
+
+    if (audiobookUploadStatus) audiobookUploadStatus.textContent = "Finishing up...";
+    const duration = await probeAudioDuration(file);
+    const completeResponse = await fetch(`/api/audiobooks/uploads/${encodeURIComponent(uploadId)}/complete`, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ durationSeconds: duration }),
+    });
+    if (!(await expectAuthorized(completeResponse, "Could not finish the upload."))) {
+      throw new Error("audiobook upload complete failed");
+    }
+
+    saveAudiobookUploadMarker(null);
+    state.audiobooks.upload = null;
+    showToast("Audiobook uploaded.", "success", { title: "Audiobooks" });
+    audiobookUploadModal?.close();
+    await fetchAudiobooks();
+    renderContentMode();
+  } catch (error) {
+    if (error instanceof AudiobookUploadCancelled) {
+      if (audiobookUploadStatus) audiobookUploadStatus.textContent = "Upload cancelled.";
+    } else if (error instanceof AudiobookUploadForbidden) {
+      if (audiobookUploadStatus) audiobookUploadStatus.textContent = error.message;
+    } else {
+      console.error(error);
+      if (audiobookUploadStatus) {
+        audiobookUploadStatus.textContent = "Upload failed. Check your connection and click Upload again to resume.";
+      }
+    }
+    if (audiobookUploadSubmit) {
+      audiobookUploadSubmit.disabled = false;
+      audiobookUploadSubmit.classList.remove("hidden");
+    }
+    audiobookUploadCancel?.classList.add("hidden");
+  }
+}
+
+async function cancelAudiobookUpload() {
+  const upload = state.audiobooks.upload;
+  if (!upload) {
+    audiobookUploadModal?.close();
+    return;
+  }
+  upload.cancelled = true;
+  try {
+    await fetch(`/api/audiobooks/uploads/${encodeURIComponent(upload.id)}`, {
+      method: "DELETE",
+      credentials: "same-origin",
+    });
+  } catch (error) {
+    console.error(error);
+  }
+  saveAudiobookUploadMarker(null);
+  state.audiobooks.upload = null;
+}
+
+// --- Player --------------------------------------------------------------
+
+let audiobookAudioEl = null;
+let audiobookProgressSaveTimer = null;
+let audiobookPlayerProgressDragging = false;
+
+function getAudiobookAudioElement() {
+  if (audiobookAudioEl) return audiobookAudioEl;
+  const audio = new Audio();
+  audio.addEventListener("timeupdate", updateAudiobookPlayerProgressUI);
+  audio.addEventListener("loadedmetadata", updateAudiobookPlayerProgressUI);
+  audio.addEventListener("play", () => setAudiobookPlayIcon(true));
+  audio.addEventListener("pause", () => {
+    setAudiobookPlayIcon(false);
+    saveAudiobookProgressNow();
+  });
+  audio.addEventListener("ended", () => {
+    setAudiobookPlayIcon(false);
+    saveAudiobookProgressNow();
+  });
+  audiobookAudioEl = audio;
+  return audio;
+}
+
+function setAudiobookPlayIcon(playing) {
+  if (audiobookPlayerPlayIcon) audiobookPlayerPlayIcon.innerHTML = playing ? "&#10074;&#10074;" : "&#9654;";
+  audiobookPlayerPlayButton?.setAttribute("aria-label", playing ? "Pause" : "Play");
+}
+
+async function openAudiobookPlayer(item) {
+  const audio = getAudiobookAudioElement();
+  audio.pause();
+  state.audiobooks.player = { id: item.id };
+
+  if (audiobookPlayerTitle) audiobookPlayerTitle.textContent = item.title || item.filename || "Untitled";
+  if (audiobookPlayerAuthor) {
+    audiobookPlayerAuthor.textContent = item.author || "";
+    audiobookPlayerAuthor.classList.toggle("hidden", !item.author);
+  }
+  if (audiobookPlayerStatus) audiobookPlayerStatus.textContent = "";
+  if (audiobookPlayerProgress) audiobookPlayerProgress.value = "0";
+  if (audiobookPlayerCurrentTime) audiobookPlayerCurrentTime.textContent = "0:00";
+  if (audiobookPlayerDuration) audiobookPlayerDuration.textContent = "0:00";
+  if (audiobookPlayerSpeed) audiobookPlayerSpeed.value = "1";
+  audio.playbackRate = 1;
+  audio.volume = (audiobookPlayerVolume ? Number(audiobookPlayerVolume.value) : 100) / 100;
+
+  audiobookPlayerModal?.showModal();
+  audio.src = item.stream_url;
+
+  const resumeAt = item.position_seconds || 0;
+  const onReady = () => {
+    if (resumeAt > 1 && resumeAt < audio.duration - 2) {
+      audio.currentTime = resumeAt;
+    }
+    audio.play().catch(() => {
+      if (audiobookPlayerStatus) audiobookPlayerStatus.textContent = "Tap play to start listening.";
+    });
+    audio.removeEventListener("loadedmetadata", onReady);
+  };
+  audio.addEventListener("loadedmetadata", onReady);
+
+  if (audiobookProgressSaveTimer) window.clearInterval(audiobookProgressSaveTimer);
+  audiobookProgressSaveTimer = window.setInterval(() => {
+    if (!audio.paused) saveAudiobookProgressNow();
+  }, AUDIOBOOK_PROGRESS_SAVE_INTERVAL_MS);
+}
+
+function updateAudiobookPlayerProgressUI() {
+  const audio = audiobookAudioEl;
+  if (!audio || !state.audiobooks.player) return;
+  const duration = Number.isFinite(audio.duration) ? audio.duration : 0;
+  if (audiobookPlayerCurrentTime) audiobookPlayerCurrentTime.textContent = formatMediaTime(audio.currentTime);
+  if (audiobookPlayerDuration) audiobookPlayerDuration.textContent = formatMediaTime(duration);
+  if (duration > 0 && audiobookPlayerProgress && !audiobookPlayerProgressDragging) {
+    audiobookPlayerProgress.value = String(Math.round((audio.currentTime / duration) * 1000));
+  }
+}
+
+function saveAudiobookProgressNow() {
+  const player = state.audiobooks.player;
+  const audio = audiobookAudioEl;
+  if (!player || !audio) return;
+  const position = audio.currentTime || 0;
+  fetch(`/api/audiobooks/${encodeURIComponent(player.id)}/progress`, {
+    method: "PUT",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ positionSeconds: position }),
+    keepalive: true,
+  }).catch((error) => console.error(error));
+
+  const item = state.audiobooks.items.find((entry) => entry.id === player.id);
+  if (item) item.position_seconds = position;
+}
+
+function closeAudiobookPlayer() {
+  const audio = audiobookAudioEl;
+  if (audio) {
+    audio.pause();
+    saveAudiobookProgressNow();
+    audio.removeAttribute("src");
+    audio.load();
+  }
+  if (audiobookProgressSaveTimer) {
+    window.clearInterval(audiobookProgressSaveTimer);
+    audiobookProgressSaveTimer = null;
+  }
+  state.audiobooks.player = null;
+  audiobookPlayerModal?.close();
+  renderAudiobooksGrid();
 }
 
 function syncMobileSearchHeader() {
@@ -6238,6 +6760,65 @@ openRandomReelButton?.addEventListener("click", () => {
   openRandomReel().catch((error) => {
     console.error(error);
   });
+});
+
+openAudiobookUploadButton?.addEventListener("click", openAudiobookUploadModal);
+audiobookUploadModalClose?.addEventListener("click", () => audiobookUploadModal?.close());
+audiobookUploadForm?.addEventListener("submit", (event) => {
+  submitAudiobookUpload(event).catch((error) => console.error(error));
+});
+audiobookUploadCancel?.addEventListener("click", () => {
+  cancelAudiobookUpload().catch((error) => console.error(error));
+});
+
+audiobookPlayerClose?.addEventListener("click", closeAudiobookPlayer);
+audiobookPlayerModal?.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  closeAudiobookPlayer();
+});
+audiobookPlayerPlayButton?.addEventListener("click", () => {
+  const audio = getAudiobookAudioElement();
+  if (audio.paused) {
+    audio.play().catch((error) => console.error(error));
+  } else {
+    audio.pause();
+  }
+});
+audiobookPlayerSkipBack?.addEventListener("click", () => {
+  const audio = getAudiobookAudioElement();
+  audio.currentTime = Math.max(0, audio.currentTime - 30);
+});
+audiobookPlayerSkipForward?.addEventListener("click", () => {
+  const audio = getAudiobookAudioElement();
+  audio.currentTime = Math.min(audio.duration || audio.currentTime + 30, audio.currentTime + 30);
+});
+audiobookPlayerSpeed?.addEventListener("change", () => {
+  const audio = getAudiobookAudioElement();
+  audio.playbackRate = Number(audiobookPlayerSpeed.value) || 1;
+});
+audiobookPlayerVolume?.addEventListener("input", () => {
+  const audio = getAudiobookAudioElement();
+  audio.volume = Number(audiobookPlayerVolume.value) / 100;
+});
+audiobookPlayerProgress?.addEventListener("input", () => {
+  audiobookPlayerProgressDragging = true;
+  const audio = audiobookAudioEl;
+  const duration = audio && Number.isFinite(audio.duration) ? audio.duration : 0;
+  if (audiobookPlayerCurrentTime && duration > 0) {
+    audiobookPlayerCurrentTime.textContent = formatMediaTime((Number(audiobookPlayerProgress.value) / 1000) * duration);
+  }
+});
+audiobookPlayerProgress?.addEventListener("change", () => {
+  const audio = getAudiobookAudioElement();
+  const duration = Number.isFinite(audio.duration) ? audio.duration : 0;
+  if (duration > 0) {
+    audio.currentTime = (Number(audiobookPlayerProgress.value) / 1000) * duration;
+  }
+  audiobookPlayerProgressDragging = false;
+});
+
+window.addEventListener("beforeunload", () => {
+  if (state.audiobooks.player) saveAudiobookProgressNow();
 });
 
 uploadModalClose.addEventListener("click", () => {
