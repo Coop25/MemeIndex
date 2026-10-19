@@ -1,6 +1,6 @@
 module memeindex
 
-go 1.26.6
+go 1.27.1
 
 require github.com/kelseyhightower/envconfig v1.4.0
 
