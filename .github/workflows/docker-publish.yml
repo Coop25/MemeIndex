@@ -20,6 +20,12 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          # Full history + tags, not the default shallow/no-tags clone - the
+          # "Resolve app version" step below runs `git describe --tags` to
+          # find the nearest release for a plain branch push, which needs
+          # the tags actually present locally to find anything.
+          fetch-depth: 0
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -50,12 +56,22 @@ jobs:
         id: app_version
         shell: bash
         run: |
+          # For a plain push to master (not a release, not a tag push),
+          # steps.meta.outputs.version is just the literal branch name
+          # ("master") - docker/metadata-action's default "version" for a
+          # type=ref,event=branch tag. That used to flow straight through
+          # into the binary, so :latest kept reporting "master" as its
+          # version instead of the most recent release. Use the nearest
+          # reachable release tag instead, e.g. "v2.7.0" or "v2.7.0-3-gabc1234"
+          # for commits past it.
+          described="$(git describe --tags --match 'v[0-9]*' --always 2>/dev/null || true)"
+
           if [[ "${{ github.event_name }}" == "release" && -n "${{ github.event.release.tag_name }}" ]]; then
             version="${{ github.event.release.tag_name }}"
           elif [[ "${{ github.ref_type }}" == "tag" && -n "${{ github.ref_name }}" ]]; then
             version="${{ github.ref_name }}"
-          elif [[ -n "${{ steps.meta.outputs.version }}" ]]; then
-            version="${{ steps.meta.outputs.version }}"
+          elif [[ -n "${described}" ]]; then
+            version="${described}"
           else
             version="dev-${GITHUB_SHA::7}"
           fi
