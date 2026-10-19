@@ -4034,6 +4034,29 @@ body.admin-mode .admin-tab.is-active .admin-tab-badge { background: var(--green-
 .audiobook-upload-progress-track { height: 8px; border-radius: 999px; background: var(--panel-3); overflow: hidden; }
 .audiobook-upload-progress-track span { display: block; height: 100%; width: 0%; background: linear-gradient(135deg, var(--green-bright), var(--green)); transition: width .2s ease; }
 .audiobook-upload-progress-meta { display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; }
+
+/* The chunk grid: one sliver per byte range of the file, sized proportional
+   to its length. Already-uploaded slivers (from a resumed upload) render
+   solid on the first paint; the rest turn solid one at a time as their chunk
+   request completes, and pulse with a moving stripe while in flight - the
+   same "which piece is active right now" readout a download manager gives
+   you for its parallel connections. */
+.audiobook-upload-parts-wrap { display: flex; flex-direction: column; gap: 5px; margin-top: 2px; }
+.audiobook-upload-parts { display: flex; height: 20px; overflow: hidden; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-3); }
+.audiobook-upload-part { flex-shrink: 0; flex-basis: 0; height: 100%; border-right: 1px solid rgba(0, 0, 0, .35); background: var(--panel-3); transition: background .2s ease; }
+.audiobook-upload-part:last-child { border-right: 0; }
+.audiobook-upload-part.is-done { background: linear-gradient(135deg, var(--green-bright), var(--green)); }
+.audiobook-upload-part.is-active {
+  background: repeating-linear-gradient(135deg, var(--green-bright) 0 9px, var(--green) 9px 18px);
+  background-size: 26px 26px;
+  animation: audiobook-upload-part-stripes .9s linear infinite;
+}
+@keyframes audiobook-upload-part-stripes {
+  from { background-position: 0 0; }
+  to { background-position: 26px 0; }
+}
+.audiobook-upload-parts-caption { color: var(--faint); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; }
+
 .audiobook-upload-actions { display: flex; gap: 10px; }
 .audiobook-upload-actions .secondary-button { background: var(--panel-2); }
 

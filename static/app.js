@@ -258,6 +258,9 @@ const audiobookUploadProgressWrap = document.querySelector("#audiobook-upload-pr
 const audiobookUploadProgressBar = document.querySelector("#audiobook-upload-progress-bar");
 const audiobookUploadProgressLabel = document.querySelector("#audiobook-upload-progress-label");
 const audiobookUploadProgressSize = document.querySelector("#audiobook-upload-progress-size");
+const audiobookUploadPartsWrap = document.querySelector("#audiobook-upload-parts-wrap");
+const audiobookUploadParts = document.querySelector("#audiobook-upload-parts");
+const audiobookUploadPartsCaption = document.querySelector("#audiobook-upload-parts-caption");
 const audiobookUploadBusyOverlay = document.querySelector("#audiobook-upload-busy-overlay");
 const audiobookPlayerModal = document.querySelector("#audiobook-player-modal");
 const audiobookPlayerClose = document.querySelector("#audiobook-player-close");
@@ -4126,10 +4129,64 @@ function openAudiobookUploadModal() {
   audiobookUploadForm?.reset();
   if (audiobookUploadStatus) audiobookUploadStatus.textContent = "";
   audiobookUploadProgressWrap?.classList.add("hidden");
+  audiobookUploadPartsWrap?.classList.add("hidden");
+  if (audiobookUploadParts) audiobookUploadParts.innerHTML = "";
+  audiobookUploadPartEls = new Map();
   audiobookUploadCancel?.classList.add("hidden");
   audiobookUploadSubmit?.classList.remove("hidden");
   if (audiobookUploadSubmit) audiobookUploadSubmit.disabled = false;
   audiobookUploadModal?.showModal();
+}
+
+// audiobookUploadPartEls tracks the DOM element for each not-yet-uploaded
+// chunk of the file currently in the upload modal, keyed by that chunk's
+// start offset, so runAudiobookUploadWorker can flip a sliver to "active"
+// when it picks the chunk up and "done" when the request completes.
+let audiobookUploadPartEls = new Map();
+
+// renderAudiobookUploadParts draws one sliver per byte range of the file,
+// each sized proportional to its length: already-uploaded ranges (from a
+// resumed upload) start solid, the rest start as plain pending slivers that
+// runAudiobookUploadWorker lights up as chunks are picked up and finished.
+function renderAudiobookUploadParts(receivedRanges, pendingChunks, totalBytes, workerCount) {
+  audiobookUploadPartEls = new Map();
+  if (!audiobookUploadParts || !audiobookUploadPartsWrap) return;
+  audiobookUploadParts.innerHTML = "";
+  if (totalBytes <= 0 || (receivedRanges.length === 0 && pendingChunks.length === 0)) {
+    audiobookUploadPartsWrap.classList.add("hidden");
+    return;
+  }
+
+  const segments = [
+    ...receivedRanges.map((range) => ({ start: range.start, end: range.end, done: true })),
+    ...pendingChunks.map((chunk) => ({ start: chunk.start, end: chunk.end, done: false })),
+  ].sort((a, b) => a.start - b.start);
+
+  const fragment = document.createDocumentFragment();
+  for (const segment of segments) {
+    const el = document.createElement("span");
+    el.className = "audiobook-upload-part" + (segment.done ? " is-done" : "");
+    el.style.flex = `${Math.max(segment.end - segment.start, 1)} 0 0`;
+    fragment.appendChild(el);
+    if (!segment.done) {
+      audiobookUploadPartEls.set(segment.start, el);
+    }
+  }
+  audiobookUploadParts.appendChild(fragment);
+
+  if (audiobookUploadPartsCaption) {
+    audiobookUploadPartsCaption.textContent = pendingChunks.length
+      ? `Uploading in up to ${workerCount} parallel part${workerCount === 1 ? "" : "s"} at once`
+      : "";
+  }
+  audiobookUploadPartsWrap.classList.remove("hidden");
+}
+
+function setAudiobookUploadPartState(start, state) {
+  const el = audiobookUploadPartEls.get(start);
+  if (!el) return;
+  el.classList.remove("is-active", "is-done");
+  el.classList.add(state);
 }
 
 function updateAudiobookUploadProgress(receivedBytes, totalBytes) {
@@ -4303,6 +4360,8 @@ async function submitAudiobookUpload(event) {
     // keep hammering a doomed upload in the background after the UI has
     // already moved on to the failure state.
     let uploadFailed = false;
+    const workerCount = Math.min(AUDIOBOOK_UPLOAD_CONCURRENCY, Math.max(1, chunkQueue.length));
+    renderAudiobookUploadParts(receivedRanges, chunkQueue, file.size, workerCount);
 
     async function runAudiobookUploadWorker() {
       while (nextChunkIndex < chunkQueue.length) {
@@ -4311,18 +4370,19 @@ async function submitAudiobookUpload(event) {
         }
         if (uploadFailed) return;
         const { start, end } = chunkQueue[nextChunkIndex++];
+        setAudiobookUploadPartState(start, "is-active");
         try {
           await uploadAudiobookChunk(uploadId, start, file.slice(start, end));
         } catch (error) {
           uploadFailed = true;
           throw error;
         }
+        setAudiobookUploadPartState(start, "is-done");
         uploadedBytes += end - start;
         updateAudiobookUploadProgress(uploadedBytes, file.size);
       }
     }
 
-    const workerCount = Math.min(AUDIOBOOK_UPLOAD_CONCURRENCY, Math.max(1, chunkQueue.length));
     await Promise.all(Array.from({ length: workerCount }, runAudiobookUploadWorker));
 
     if (audiobookUploadStatus) audiobookUploadStatus.textContent = "Finishing up...";

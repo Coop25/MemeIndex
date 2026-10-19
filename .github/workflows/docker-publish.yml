@@ -62,9 +62,10 @@ jobs:
           # type=ref,event=branch tag. That used to flow straight through
           # into the binary, so :latest kept reporting "master" as its
           # version instead of the most recent release. Use the nearest
-          # reachable release tag instead, e.g. "v2.7.0" or "v2.7.0-3-gabc1234"
-          # for commits past it.
-          described="$(git describe --tags --match 'v[0-9]*' --always 2>/dev/null || true)"
+          # reachable release tag instead - just the tag itself (e.g.
+          # "v2.7.0"), not git describe's usual "-N-gHASH" commit-distance
+          # suffix, since this is meant to read as a plain release number.
+          described="$(git describe --tags --match 'v[0-9]*' --abbrev=0 2>/dev/null || true)"
 
           if [[ "${{ github.event_name }}" == "release" && -n "${{ github.event.release.tag_name }}" ]]; then
             version="${{ github.event.release.tag_name }}"
