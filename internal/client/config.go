@@ -13,6 +13,7 @@ import (
 type Config struct {
 	AllowAnonymous        bool
 	MaxUploadBytes        int64
+	MaxAudiobookBytes     int64
 	Addr                  string
 	DebugAddr             string
 	DataDir               string
@@ -72,6 +73,7 @@ func (c DiscordAuthConfig) Enabled() bool {
 type rawConfig struct {
 	AllowAnonymous                  bool     `envconfig:"ALLOW_ANONYMOUS" default:"false"`
 	MaxUploadBytes                  int64    `envconfig:"MAX_UPLOAD_BYTES" default:"268435456"`
+	MaxAudiobookBytes               int64    `envconfig:"MAX_AUDIOBOOK_BYTES" default:"21474836480"`
 	Addr                            string   `envconfig:"ADDR" default:":8080"`
 	DebugAddr                       string   `envconfig:"DEBUG_ADDR"`
 	DataDir                         string   `envconfig:"DATA_DIR" default:"data"`
@@ -144,6 +146,7 @@ func LoadConfig() (Config, error) {
 	config := Config{
 		AllowAnonymous:        raw.AllowAnonymous,
 		MaxUploadBytes:        raw.MaxUploadBytes,
+		MaxAudiobookBytes:     raw.MaxAudiobookBytes,
 		Addr:                  strings.TrimSpace(raw.Addr),
 		DebugAddr:             strings.TrimSpace(raw.DebugAddr),
 		DataDir:               strings.TrimSpace(raw.DataDir),

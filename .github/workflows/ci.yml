@@ -82,7 +82,7 @@ jobs:
           cache: true
 
       - name: Run golangci-lint
-        run: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2 run ./...
+        run: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 run ./...
 
   govulncheck:
     name: govulncheck

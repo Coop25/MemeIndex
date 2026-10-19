@@ -81,7 +81,21 @@
             </svg>
             <span id="favorite-count" class="nav-count">0</span>
           </button>
-          <p class="nav-section-label">Categories</p>
+          <button id="nav-audiobooks-item" class="nav-item hidden" type="button" data-view="audiobooks">
+            <span class="nav-label">Audiobooks</span>
+            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M6 5.5h8.5a3.5 3.5 0 0 1 3.5 3.5v9.5H8a2 2 0 0 1-2-2V5.5Z" />
+              <path d="M6 15.5h12" />
+              <path d="M9.5 9.5h5" />
+            </svg>
+          </button>
+          <div id="audiobooks-subnav" class="audiobooks-subnav hidden">
+            <button type="button" class="audiobooks-subnav-item" data-audiobook-filter="favorites">Favorites</button>
+            <button type="button" class="audiobooks-subnav-item" data-audiobook-filter="started">Started</button>
+            <button type="button" class="audiobooks-subnav-item" data-audiobook-filter="finished">Finished</button>
+            <button id="audiobooks-subnav-series-button" type="button" class="audiobooks-subnav-item" data-audiobook-view="series">Series</button>
+          </div>
+          <p id="nav-section-categories" class="nav-section-label">Categories</p>
           <button class="nav-item" type="button" data-view="videos">
             <span class="nav-label">Videos</span>
             <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -419,6 +433,26 @@
             </div>
             </div>
           </section>
+          <section id="audiobooks-view" class="audiobooks-view hidden">
+            <div class="audiobooks-view-header">
+              <div>
+                <p class="section-kicker">Library</p>
+                <h2>Audiobooks</h2>
+                <p id="audiobooks-active-filter-label" class="status-text hidden"></p>
+              </div>
+              <div class="audiobooks-view-header-actions">
+                <button id="open-audiobook-series-manager" class="ghost-button hidden" type="button">Manage Series</button>
+                <button id="open-audiobook-upload" class="primary-button hidden" type="button">Upload Audiobook</button>
+              </div>
+            </div>
+            <p id="audiobooks-status" class="status-text"></p>
+            <div id="audiobooks-grid" class="audiobooks-grid"></div>
+            <div id="audiobooks-empty" class="empty-state hidden">
+              <div class="empty-cabinet" aria-hidden="true"><span></span><span></span></div>
+              <h3>No audiobooks yet</h3>
+              <p>Upload one to start building your library.</p>
+            </div>
+          </section>
           <div id="meme-grid-loader" class="loading-indicator loading-indicator-grid hidden" aria-live="polite" aria-hidden="true">
             <span class="loading-spinner" aria-hidden="true"></span>
             <span class="loading-label">Loading memes...</span>
@@ -639,6 +673,221 @@
           <p class="upload-modal-copy">Recent upload, tag, moderation, and delete activity across the app. Only super admins can view this feed.</p>
           <p id="audit-logs-status" class="status-text"></p>
           <div id="audit-logs-list" class="users-list audit-logs-list"></div>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="confirm-modal" class="confirm-modal">
+      <div class="confirm-modal-card">
+        <h3 id="confirm-modal-title" class="confirm-modal-title"></h3>
+        <p id="confirm-modal-message" class="confirm-modal-message"></p>
+        <div class="confirm-modal-actions">
+          <button id="confirm-modal-cancel" type="button" class="secondary-button">Cancel</button>
+          <button id="confirm-modal-confirm" type="button" class="danger-button">Confirm</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="sleep-timer-modal" class="confirm-modal">
+      <div class="confirm-modal-card">
+        <h3 class="confirm-modal-title">Sleep timer</h3>
+        <p class="confirm-modal-message">Pause playback automatically. A bookmark is dropped at the current spot as soon as the timer starts, so it's easy to find where you drifted off.</p>
+        <div id="sleep-timer-options" class="sleep-timer-options">
+          <button type="button" class="sleep-timer-option" data-minutes="5">5 min</button>
+          <button type="button" class="sleep-timer-option" data-minutes="10">10 min</button>
+          <button type="button" class="sleep-timer-option" data-minutes="15">15 min</button>
+          <button type="button" class="sleep-timer-option" data-minutes="30">30 min</button>
+          <button type="button" class="sleep-timer-option" data-minutes="45">45 min</button>
+          <button type="button" class="sleep-timer-option" data-minutes="60">60 min</button>
+        </div>
+        <div class="confirm-modal-actions">
+          <button id="sleep-timer-cancel" type="button" class="secondary-button">Close</button>
+          <button id="sleep-timer-off" type="button" class="danger-button hidden">Turn off timer</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="audiobook-series-modal" class="confirm-modal">
+      <div class="confirm-modal-card audiobook-series-card">
+        <h3 class="confirm-modal-title">Manage Series</h3>
+        <form id="audiobook-series-create-form" class="audiobook-series-create-form">
+          <input id="audiobook-series-name-input" type="text" placeholder="New series name" maxlength="200" required />
+          <button type="submit" class="secondary-button">Create</button>
+        </form>
+        <p id="audiobook-series-status" class="status-text"></p>
+        <div id="audiobook-series-list" class="audiobook-series-list"></div>
+        <div class="audiobook-series-assign">
+          <h4>Assign a book</h4>
+          <div class="audiobook-series-assign-row">
+            <select id="audiobook-series-assign-book" aria-label="Book"></select>
+            <select id="audiobook-series-assign-series" aria-label="Series">
+              <option value="">No series</option>
+            </select>
+            <input id="audiobook-series-assign-sequence" type="number" step="0.5" min="0" placeholder="#" aria-label="Position in series" />
+            <button id="audiobook-series-assign-button" type="button" class="secondary-button">Assign</button>
+          </div>
+        </div>
+        <div class="confirm-modal-actions">
+          <button id="audiobook-series-close" type="button" class="ghost-button">Close</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="audiobook-upload-modal" class="upload-modal vault-upload-modal audiobook-upload-modal">
+      <div class="upload-modal-shell">
+        <div class="upload-modal-body">
+          <div id="audiobook-upload-busy-overlay" class="modal-busy-overlay hidden" aria-hidden="true">
+            <div class="modal-busy-card">
+              <div class="modal-busy-throbber"></div>
+              <p id="audiobook-upload-busy-message" class="modal-busy-message">Uploading...</p>
+            </div>
+          </div>
+          <div class="upload-modal-header">
+            <div>
+              <p class="section-kicker">Upload</p>
+              <h2>Upload Audiobook</h2>
+            </div>
+            <button id="audiobook-upload-modal-close" class="upload-modal-close" type="button" aria-label="Close upload">X</button>
+          </div>
+          <p class="upload-modal-copy">Large files upload in chunks and resume automatically if the connection drops - keep this tab open until it finishes. Title, author, cover art, and duration are read from the file's own tags when you leave these blank.</p>
+          <form id="audiobook-upload-form" class="upload-form">
+            <label class="field upload-file-field">
+              <span>Choose file</span>
+              <input id="audiobook-upload-file-input" type="file" accept="audio/*,.m4b" required />
+              <small>One audiobook file (MP3, M4A/M4B, etc.)</small>
+            </label>
+            <label class="field">
+              <span>Title</span>
+              <input id="audiobook-upload-title" type="text" placeholder="Read from the file's tags, or its file name" autocomplete="off" />
+            </label>
+            <label class="field">
+              <span>Author</span>
+              <input id="audiobook-upload-author" type="text" placeholder="Read from the file's tags" autocomplete="off" />
+            </label>
+            <div id="audiobook-upload-progress-wrap" class="audiobook-upload-progress-wrap hidden">
+              <div class="audiobook-upload-progress-track"><span id="audiobook-upload-progress-bar"></span></div>
+              <div class="audiobook-upload-progress-meta">
+                <span id="audiobook-upload-progress-label">0%</span>
+                <span id="audiobook-upload-progress-size"></span>
+              </div>
+            </div>
+            <div class="audiobook-upload-actions">
+              <button id="audiobook-upload-submit" type="submit" class="primary-button modal-submit-button">Upload</button>
+              <button id="audiobook-upload-cancel" type="button" class="secondary-button hidden">Cancel Upload</button>
+            </div>
+          </form>
+          <p id="audiobook-upload-status" class="status-text"></p>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="audiobook-player-modal" class="audiobook-player-modal">
+      <div class="audiobook-player-shell">
+        <header class="audiobook-player-topbar">
+          <button id="audiobook-player-close" class="audiobook-player-icon-button" type="button" aria-label="Close player">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
+          </button>
+          <p id="audiobook-player-status" class="status-text"></p>
+          <div class="audiobook-player-topbar-toggles">
+            <button id="audiobook-player-bookmarks-toggle" class="audiobook-player-icon-button audiobook-player-panel-toggle" type="button" aria-label="Toggle bookmarks" aria-expanded="false">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5h10a1 1 0 0 1 1 1V20l-6-4-6 4V5.5a1 1 0 0 1 1-1Z" /></svg>
+            </button>
+            <button id="audiobook-player-chapters-toggle" class="audiobook-player-icon-button audiobook-player-panel-toggle hidden" type="button" aria-label="Toggle chapters" aria-expanded="false">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13" /><path d="M3 6h.01M3 12h.01M3 18h.01" /></svg>
+            </button>
+          </div>
+        </header>
+
+        <div class="audiobook-player-main">
+          <div class="audiobook-player-stage">
+            <button id="audiobook-player-flip" class="audiobook-player-flip" type="button" aria-label="Show audiobook details">
+              <div class="audiobook-player-flip-inner">
+                <div class="audiobook-player-flip-front">
+                  <img id="audiobook-player-cover" class="audiobook-player-cover hidden" alt="" />
+                  <svg id="audiobook-player-cover-fallback" class="audiobook-player-cover-fallback" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M6 5.5h8.5a3.5 3.5 0 0 1 3.5 3.5v9.5H8a2 2 0 0 1-2-2V5.5Z"/><path d="M6 15.5h12"/><path d="M9.5 9.5h5"/>
+                  </svg>
+                </div>
+                <div class="audiobook-player-flip-back">
+                  <dl id="audiobook-player-meta" class="audiobook-player-meta"></dl>
+                </div>
+              </div>
+            </button>
+            <h2 id="audiobook-player-title"></h2>
+            <p id="audiobook-player-author" class="audiobook-player-author"></p>
+          </div>
+
+          <aside id="audiobook-player-chapters-panel" class="audiobook-player-chapters-panel hidden">
+            <div class="audiobook-player-chapters-header">
+              <span>Chapters</span>
+            </div>
+            <div class="audiobook-player-mark-row">
+              <button id="audiobook-player-mark-unplayed" type="button" class="ghost-button audiobook-player-mark-button">Mark as not started</button>
+              <button id="audiobook-player-mark-finished" type="button" class="ghost-button audiobook-player-mark-button">Mark as finished</button>
+            </div>
+            <div id="audiobook-player-chapters" class="audiobook-player-chapters"></div>
+          </aside>
+
+          <aside id="audiobook-player-bookmarks-panel" class="audiobook-player-chapters-panel hidden">
+            <div class="audiobook-player-chapters-header">
+              <span>Bookmarks</span>
+            </div>
+            <div id="audiobook-player-bookmarks" class="audiobook-player-chapters"></div>
+            <p id="audiobook-player-bookmarks-empty" class="audiobook-player-bookmarks-empty hidden">No bookmarks yet. Tap "Bookmark" below to drop one at the current spot.</p>
+          </aside>
+        </div>
+
+        <div class="audiobook-player-bottombar">
+          <div class="audiobook-player-progress-wrap">
+            <span id="audiobook-player-current-time" class="modal-time-label">0:00</span>
+            <input id="audiobook-player-progress" class="modal-progress-slider" type="range" min="0" max="1000" value="0" step="1" aria-label="Playback progress" />
+            <span id="audiobook-player-duration" class="modal-time-label">0:00</span>
+          </div>
+          <p id="audiobook-player-remaining" class="audiobook-player-remaining"></p>
+          <div class="audiobook-player-controls">
+            <button id="audiobook-player-prev-chapter" type="button" class="audiobook-player-icon-button audiobook-player-chapter-nav" aria-label="Previous chapter" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5v14" /><path d="M18 5 8 12l10 7V5Z" /></svg>
+            </button>
+            <button id="audiobook-player-skip-back" type="button" class="audiobook-player-icon-button audiobook-player-skip-button" aria-label="Back 30 seconds">
+              <span aria-hidden="true">-30s</span>
+            </button>
+            <button id="audiobook-player-play" type="button" class="audiobook-player-play" aria-label="Play">
+              <span id="audiobook-player-play-icon" aria-hidden="true">&#9654;</span>
+            </button>
+            <button id="audiobook-player-skip-forward" type="button" class="audiobook-player-icon-button audiobook-player-skip-button" aria-label="Forward 30 seconds">
+              <span aria-hidden="true">+30s</span>
+            </button>
+            <button id="audiobook-player-next-chapter" type="button" class="audiobook-player-icon-button audiobook-player-chapter-nav" aria-label="Next chapter" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 5v14" /><path d="M6 5l10 7-10 7V5Z" /></svg>
+            </button>
+          </div>
+          <div class="audiobook-player-bottombar-row">
+            <label class="audiobook-player-speed-field">
+              <span>Speed</span>
+              <select id="audiobook-player-speed">
+                <option value="0.75">0.75x</option>
+                <option value="1" selected>1x</option>
+                <option value="1.25">1.25x</option>
+                <option value="1.5">1.5x</option>
+                <option value="1.75">1.75x</option>
+                <option value="2">2x</option>
+              </select>
+            </label>
+            <div class="audiobook-player-action-group">
+              <button id="audiobook-player-sleep-timer" type="button" class="audiobook-player-action-button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="13" r="8" /><path d="M12 9v4l3 2" /><path d="M9 2h6" /></svg>
+                <span id="audiobook-player-sleep-timer-label">Timer</span>
+              </button>
+              <button id="audiobook-player-add-bookmark" type="button" class="audiobook-player-action-button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5h10a1 1 0 0 1 1 1V20l-6-4-6 4V5.5a1 1 0 0 1 1-1Z" /><path d="M9.5 9h5M12 6.5v5" /></svg>
+                <span>Bookmark</span>
+              </button>
+            </div>
+            <div class="audiobook-player-volume-field">
+              <svg class="audiobook-player-volume-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 13a7 7 0 0 1 14 0" /><path d="M6 13h2a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1Z" /><path d="M16 13h2a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1Z" /></svg>
+              <input id="audiobook-player-volume" type="range" min="0" max="100" value="10" aria-label="Volume" />
+            </div>
+          </div>
         </div>
       </div>
     </dialog>
