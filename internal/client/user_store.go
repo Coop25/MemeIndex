@@ -63,7 +63,7 @@ func newAuthUserStore(ctx context.Context, databaseURL string) (authUserStore, e
 }
 
 func (s *postgresAuthUserStore) ensureSchema(ctx context.Context) error {
-	if err := dbschema.Apply(ctx, s.pool, "003_app_users_core.sql", "004_app_users_compat.sql", "005_app_user_readd_required.sql", "013_app_user_session_version.sql", "014_app_user_audiobook_permissions.sql"); err != nil {
+	if err := dbschema.Apply(ctx, s.pool, "003_app_users_core.sql", "004_app_users_compat.sql", "005_app_user_readd_required.sql", "013_app_user_session_version.sql", "014_app_user_audiobook_permissions.sql", "020_app_user_audiobook_delete_permission.sql", "023_app_user_audiobook_series_permission.sql"); err != nil {
 		return fmt.Errorf("ensure app_users schema: %w", err)
 	}
 	return nil
@@ -301,6 +301,8 @@ func (s *postgresAuthUserStore) getUserByID(ctx context.Context, userID string) 
 			can_delete_memes,
 			can_view_audiobooks,
 			can_upload_audiobooks,
+			can_delete_audiobooks,
+			can_manage_audiobook_series,
 			session_version,
 			created_at,
 			updated_at
@@ -319,6 +321,8 @@ func (s *postgresAuthUserStore) getUserByID(ctx context.Context, userID string) 
 		&record.Permissions.CanDeleteMemes,
 		&record.Permissions.CanViewAudiobooks,
 		&record.Permissions.CanUploadAudiobooks,
+		&record.Permissions.CanDeleteAudiobooks,
+		&record.Permissions.CanManageAudiobookSeries,
 		&record.SessionVersion,
 		&record.CreatedAt,
 		&record.UpdatedAt,
@@ -344,6 +348,8 @@ func (s *postgresAuthUserStore) ListUsers(ctx context.Context) ([]managedUserRec
 			can_delete_memes,
 			can_view_audiobooks,
 			can_upload_audiobooks,
+			can_delete_audiobooks,
+			can_manage_audiobook_series,
 			session_version,
 			created_at,
 			updated_at
@@ -376,6 +382,8 @@ func (s *postgresAuthUserStore) ListUsers(ctx context.Context) ([]managedUserRec
 			&record.Permissions.CanDeleteMemes,
 			&record.Permissions.CanViewAudiobooks,
 			&record.Permissions.CanUploadAudiobooks,
+			&record.Permissions.CanDeleteAudiobooks,
+			&record.Permissions.CanManageAudiobookSeries,
 			&record.SessionVersion,
 			&record.CreatedAt,
 			&record.UpdatedAt,
@@ -446,8 +454,8 @@ func (s *postgresAuthUserStore) UpdateUserPermissions(ctx context.Context, userI
 	_, err = tx.Exec(ctx, `
 		INSERT INTO app_users (
 			user_id, can_view, can_upload, can_add_tags, can_remove_tags, can_delete_memes,
-			can_view_audiobooks, can_upload_audiobooks, session_version, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE((SELECT session_version FROM app_user_readd_required WHERE user_id = $1), 0) + 1, NOW())
+			can_view_audiobooks, can_upload_audiobooks, can_delete_audiobooks, can_manage_audiobook_series, session_version, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE((SELECT session_version FROM app_user_readd_required WHERE user_id = $1), 0) + 1, NOW())
 		ON CONFLICT (user_id) DO UPDATE
 		SET can_view = EXCLUDED.can_view,
 			can_upload = EXCLUDED.can_upload,
@@ -456,9 +464,11 @@ func (s *postgresAuthUserStore) UpdateUserPermissions(ctx context.Context, userI
 			can_delete_memes = EXCLUDED.can_delete_memes,
 			can_view_audiobooks = EXCLUDED.can_view_audiobooks,
 			can_upload_audiobooks = EXCLUDED.can_upload_audiobooks,
+			can_delete_audiobooks = EXCLUDED.can_delete_audiobooks,
+			can_manage_audiobook_series = EXCLUDED.can_manage_audiobook_series,
 			updated_at = NOW()
 	`, normalized, permissions.CanView, permissions.CanUpload, permissions.CanAddTags, permissions.CanRemoveTags, permissions.CanDeleteMemes,
-		permissions.CanViewAudiobooks, permissions.CanUploadAudiobooks)
+		permissions.CanViewAudiobooks, permissions.CanUploadAudiobooks, permissions.CanDeleteAudiobooks, permissions.CanManageAudiobookSeries)
 	if err != nil {
 		return managedUserRecord{}, fmt.Errorf("update user permissions: %w", err)
 	}

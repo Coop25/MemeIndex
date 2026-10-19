@@ -121,6 +121,7 @@ func NewServer(config Config, memeManager *manager.MemeManager) *Server {
 	}
 	server.linkRetries = newLinkRetryQueue(config.MediaFetchRetry.Interval, config.MediaFetchRetry.MaxAttempts, server.processRetriedLinkJob)
 	server.startAudiobookUploadCleanupSweeper()
+	go server.backfillAudiobookMetadata()
 
 	// Seed the metrics that are known at startup: the running build, and (for a
 	// Postgres deployment) whether the trigram search indexes came up.
@@ -191,7 +192,10 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/api/audiobooks/uploads", s.withAPIAuth(http.HandlerFunc(s.handleAudiobookUploads), permissionUploadAudiobooks))
 	mux.Handle("/api/audiobooks/uploads/", s.withAPIAuth(http.HandlerFunc(s.handleAudiobookUploadByID), permissionUploadAudiobooks))
 	mux.Handle("/api/audiobooks/", s.withAPIAuth(http.HandlerFunc(s.handleAudiobookByID), permissionViewAudiobooks))
+	mux.Handle("/api/audiobook-series", s.withAPIAuth(http.HandlerFunc(s.handleAudiobookSeries), permissionViewAudiobooks))
+	mux.Handle("/api/audiobook-series/", s.withAPIAuth(http.HandlerFunc(s.handleAudiobookSeriesByID), permissionViewAudiobooks))
 	mux.Handle("/audiobook-media/", s.withAudiobookMediaAuth(http.HandlerFunc(s.handleAudiobookMedia)))
+	mux.Handle("/audiobook-cover/", s.withAudiobookMediaAuth(http.HandlerFunc(s.handleAudiobookCover)))
 	return securityHeaders(http.NewCrossOriginProtection().Handler(s.maintenanceGuard(mux)))
 }
 
@@ -410,7 +414,7 @@ func (s *Server) withPageAuth(next http.Handler) http.Handler {
 			http.Redirect(w, r, loginURL, http.StatusFound)
 			return
 		}
-		if !session.Permissions.CanView && !allowsAuthenticatedShellOnly(r.URL.Path) {
+		if !session.Permissions.CanView && !session.Permissions.CanViewAudiobooks && !allowsAuthenticatedShellOnly(r.URL.Path) {
 			http.Redirect(w, r, "/forbidden", http.StatusFound)
 			return
 		}
@@ -592,9 +596,13 @@ func hasPermission(permissions authPermissions, minimum permissionLevel) bool {
 	case permissionUpload:
 		return permissions.CanUpload || permissions.CanManageUsers
 	case permissionViewAudiobooks:
-		return permissions.CanViewAudiobooks || permissions.CanUploadAudiobooks || permissions.CanManageUsers
+		return permissions.CanViewAudiobooks || permissions.CanUploadAudiobooks || permissions.CanDeleteAudiobooks || permissions.CanManageUsers
 	case permissionUploadAudiobooks:
 		return permissions.CanUploadAudiobooks || permissions.CanManageUsers
+	case permissionDeleteAudiobooks:
+		return permissions.CanDeleteAudiobooks || permissions.CanManageUsers
+	case permissionManageAudiobookSeries:
+		return permissions.CanManageAudiobookSeries || permissions.CanManageUsers
 	default:
 		return permissions.CanView || permissions.CanUpload || permissions.CanManage
 	}
@@ -2292,13 +2300,15 @@ func (s *Server) createManagedUser(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) updateManagedUser(w http.ResponseWriter, r *http.Request, userID string) {
 	var payload struct {
-		CanView             bool `json:"canView"`
-		CanUpload           bool `json:"canUpload"`
-		CanAddTags          bool `json:"canAddTags"`
-		CanRemoveTags       bool `json:"canRemoveTags"`
-		CanDeleteMemes      bool `json:"canDeleteMemes"`
-		CanViewAudiobooks   bool `json:"canViewAudiobooks"`
-		CanUploadAudiobooks bool `json:"canUploadAudiobooks"`
+		CanView                  bool `json:"canView"`
+		CanUpload                bool `json:"canUpload"`
+		CanAddTags               bool `json:"canAddTags"`
+		CanRemoveTags            bool `json:"canRemoveTags"`
+		CanDeleteMemes           bool `json:"canDeleteMemes"`
+		CanViewAudiobooks        bool `json:"canViewAudiobooks"`
+		CanUploadAudiobooks      bool `json:"canUploadAudiobooks"`
+		CanDeleteAudiobooks      bool `json:"canDeleteAudiobooks"`
+		CanManageAudiobookSeries bool `json:"canManageAudiobookSeries"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
@@ -2306,18 +2316,20 @@ func (s *Server) updateManagedUser(w http.ResponseWriter, r *http.Request, userI
 	}
 
 	permissions := authPermissions{
-		CanView:             payload.CanView,
-		CanUpload:           payload.CanUpload,
-		CanAddTags:          payload.CanAddTags,
-		CanRemoveTags:       payload.CanRemoveTags,
-		CanDeleteMemes:      payload.CanDeleteMemes,
-		CanViewAudiobooks:   payload.CanViewAudiobooks,
-		CanUploadAudiobooks: payload.CanUploadAudiobooks,
+		CanView:                  payload.CanView,
+		CanUpload:                payload.CanUpload,
+		CanAddTags:               payload.CanAddTags,
+		CanRemoveTags:            payload.CanRemoveTags,
+		CanDeleteMemes:           payload.CanDeleteMemes,
+		CanViewAudiobooks:        payload.CanViewAudiobooks,
+		CanUploadAudiobooks:      payload.CanUploadAudiobooks,
+		CanDeleteAudiobooks:      payload.CanDeleteAudiobooks,
+		CanManageAudiobookSeries: payload.CanManageAudiobookSeries,
 	}
 	if permissions.CanUpload || permissions.CanAddTags || permissions.CanRemoveTags || permissions.CanDeleteMemes {
 		permissions.CanView = true
 	}
-	if permissions.CanUploadAudiobooks {
+	if permissions.CanUploadAudiobooks || permissions.CanDeleteAudiobooks || permissions.CanManageAudiobookSeries {
 		permissions.CanViewAudiobooks = true
 	}
 
@@ -2509,16 +2521,18 @@ func (s *Server) handleAuthSession(w http.ResponseWriter, r *http.Request) {
 			"enabled": false,
 			"version": BuildVersion(),
 			"permissions": authPermissions{
-				CanView:             true,
-				CanUpload:           true,
-				CanAddTags:          true,
-				CanRemoveTags:       true,
-				CanDeleteMemes:      true,
-				CanManageUsers:      true,
-				CanViewAudiobooks:   true,
-				CanUploadAudiobooks: true,
-				CanAdd:              true,
-				CanManage:           true,
+				CanView:                  true,
+				CanUpload:                true,
+				CanAddTags:               true,
+				CanRemoveTags:            true,
+				CanDeleteMemes:           true,
+				CanManageUsers:           true,
+				CanViewAudiobooks:        true,
+				CanUploadAudiobooks:      true,
+				CanDeleteAudiobooks:      true,
+				CanManageAudiobookSeries: true,
+				CanAdd:                   true,
+				CanManage:                true,
 			},
 		})
 		return

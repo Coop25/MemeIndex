@@ -1,0 +1,1 @@
+ALTER TABLE app_users ADD COLUMN IF NOT EXISTS can_delete_audiobooks BOOLEAN NOT NULL DEFAULT false;

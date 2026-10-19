@@ -1,0 +1,1 @@
+ALTER TABLE audiobooks ADD COLUMN IF NOT EXISTS chapters JSONB NOT NULL DEFAULT '[]'::jsonb;

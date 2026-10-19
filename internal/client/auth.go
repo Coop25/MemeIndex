@@ -28,13 +28,15 @@ const (
 type permissionLevel string
 
 const (
-	permissionView             permissionLevel = "view"
-	permissionUpload           permissionLevel = "upload"
-	permissionMetadata         permissionLevel = "metadata"
-	permissionDeleteMemes      permissionLevel = "delete_memes"
-	permissionManageUsers      permissionLevel = "manage_users"
-	permissionViewAudiobooks   permissionLevel = "view_audiobooks"
-	permissionUploadAudiobooks permissionLevel = "upload_audiobooks"
+	permissionView                  permissionLevel = "view"
+	permissionUpload                permissionLevel = "upload"
+	permissionMetadata              permissionLevel = "metadata"
+	permissionDeleteMemes           permissionLevel = "delete_memes"
+	permissionManageUsers           permissionLevel = "manage_users"
+	permissionViewAudiobooks        permissionLevel = "view_audiobooks"
+	permissionUploadAudiobooks      permissionLevel = "upload_audiobooks"
+	permissionDeleteAudiobooks      permissionLevel = "delete_audiobooks"
+	permissionManageAudiobookSeries permissionLevel = "manage_audiobook_series"
 )
 
 type authContextKey string
@@ -52,16 +54,18 @@ type authSession struct {
 }
 
 type authPermissions struct {
-	CanView             bool `json:"canView"`
-	CanUpload           bool `json:"canUpload"`
-	CanAddTags          bool `json:"canAddTags"`
-	CanRemoveTags       bool `json:"canRemoveTags"`
-	CanDeleteMemes      bool `json:"canDeleteMemes"`
-	CanManageUsers      bool `json:"canManageUsers"`
-	CanViewAudiobooks   bool `json:"canViewAudiobooks"`
-	CanUploadAudiobooks bool `json:"canUploadAudiobooks"`
-	CanAdd              bool `json:"canAdd"`
-	CanManage           bool `json:"canManage"`
+	CanView                  bool `json:"canView"`
+	CanUpload                bool `json:"canUpload"`
+	CanAddTags               bool `json:"canAddTags"`
+	CanRemoveTags            bool `json:"canRemoveTags"`
+	CanDeleteMemes           bool `json:"canDeleteMemes"`
+	CanManageUsers           bool `json:"canManageUsers"`
+	CanViewAudiobooks        bool `json:"canViewAudiobooks"`
+	CanUploadAudiobooks      bool `json:"canUploadAudiobooks"`
+	CanDeleteAudiobooks      bool `json:"canDeleteAudiobooks"`
+	CanManageAudiobookSeries bool `json:"canManageAudiobookSeries"`
+	CanAdd                   bool `json:"canAdd"`
+	CanManage                bool `json:"canManage"`
 }
 
 type authClaims struct {
@@ -654,14 +658,16 @@ func (a *authService) applyPermissionPolicy(userID string, base authPermissions)
 	permissions := base
 	if _, isSuperAdmin := a.config.SuperAdminUserIDs[strings.TrimSpace(userID)]; isSuperAdmin {
 		permissions = authPermissions{
-			CanView:             true,
-			CanUpload:           true,
-			CanAddTags:          true,
-			CanRemoveTags:       true,
-			CanDeleteMemes:      true,
-			CanManageUsers:      true,
-			CanViewAudiobooks:   true,
-			CanUploadAudiobooks: true,
+			CanView:                  true,
+			CanUpload:                true,
+			CanAddTags:               true,
+			CanRemoveTags:            true,
+			CanDeleteMemes:           true,
+			CanManageUsers:           true,
+			CanViewAudiobooks:        true,
+			CanUploadAudiobooks:      true,
+			CanDeleteAudiobooks:      true,
+			CanManageAudiobookSeries: true,
 		}
 	}
 
@@ -671,7 +677,7 @@ func (a *authService) applyPermissionPolicy(userID string, base authPermissions)
 	if permissions.CanAddTags || permissions.CanRemoveTags || permissions.CanDeleteMemes || permissions.CanManageUsers {
 		permissions.CanView = true
 	}
-	if permissions.CanUploadAudiobooks {
+	if permissions.CanUploadAudiobooks || permissions.CanDeleteAudiobooks || permissions.CanManageAudiobookSeries {
 		permissions.CanViewAudiobooks = true
 	}
 	permissions.CanAdd = permissions.CanUpload
