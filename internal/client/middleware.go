@@ -100,7 +100,7 @@ func securityHeaders(next http.Handler) http.Handler {
 		if strings.HasPrefix(r.URL.Path, "/api/") && r.Body != nil &&
 			!(r.URL.Path == "/api/memes" && r.Method == http.MethodPost) &&
 			r.URL.Path != "/api/admin/backup/import" &&
-			!(strings.HasPrefix(r.URL.Path, "/api/audiobooks/uploads/") && r.Method == http.MethodPatch) {
+			(!strings.HasPrefix(r.URL.Path, "/api/audiobooks/uploads/") || r.Method != http.MethodPatch) {
 			r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		}
 		next.ServeHTTP(w, r)

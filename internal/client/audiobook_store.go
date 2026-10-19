@@ -229,7 +229,7 @@ func (s *postgresAudiobookStore) CreateUpload(ctx context.Context, seed audioboo
 	if err != nil {
 		return audiobookUpload{}, fmt.Errorf("create upload temp file: %w", err)
 	}
-	file.Close()
+	_ = file.Close()
 
 	var upload audiobookUpload
 	err = s.pool.QueryRow(ctx, `
@@ -241,7 +241,7 @@ func (s *postgresAudiobookStore) CreateUpload(ctx context.Context, seed audioboo
 		&upload.TotalBytes, &upload.ReceivedBytes, &upload.TempPath, &upload.CreatedAt, &upload.UpdatedAt,
 	)
 	if err != nil {
-		os.Remove(tempPath)
+		_ = os.Remove(tempPath)
 		return audiobookUpload{}, fmt.Errorf("record audiobook upload: %w", err)
 	}
 	return upload, nil
@@ -359,13 +359,13 @@ func (s *postgresAudiobookStore) CompleteUpload(ctx context.Context, id, userID 
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		os.Remove(finalPath)
+		_ = os.Remove(finalPath)
 		if coverPath != "" {
-			os.Remove(coverPath)
+			_ = os.Remove(coverPath)
 		}
 		return audiobookRecord{}, fmt.Errorf("begin complete upload: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	var record audiobookRecord
 	var recordChaptersJSON []byte
@@ -383,25 +383,25 @@ func (s *postgresAudiobookStore) CompleteUpload(ctx context.Context, id, userID 
 		}
 	}
 	if err != nil {
-		os.Remove(finalPath)
+		_ = os.Remove(finalPath)
 		if coverPath != "" {
-			os.Remove(coverPath)
+			_ = os.Remove(coverPath)
 		}
 		return audiobookRecord{}, fmt.Errorf("record completed audiobook: %w", err)
 	}
 
 	if _, err := tx.Exec(ctx, `DELETE FROM audiobook_uploads WHERE id = $1`, id); err != nil {
-		os.Remove(finalPath)
+		_ = os.Remove(finalPath)
 		if coverPath != "" {
-			os.Remove(coverPath)
+			_ = os.Remove(coverPath)
 		}
 		return audiobookRecord{}, fmt.Errorf("clear audiobook upload: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		os.Remove(finalPath)
+		_ = os.Remove(finalPath)
 		if coverPath != "" {
-			os.Remove(coverPath)
+			_ = os.Remove(coverPath)
 		}
 		return audiobookRecord{}, fmt.Errorf("commit completed audiobook: %w", err)
 	}
@@ -416,7 +416,7 @@ func (s *postgresAudiobookStore) AbortUpload(ctx context.Context, id, userID str
 	if err := s.DiscardUpload(ctx, id); err != nil {
 		return audiobookUpload{}, err
 	}
-	os.Remove(upload.TempPath)
+	_ = os.Remove(upload.TempPath)
 	return upload, nil
 }
 
@@ -485,14 +485,14 @@ func (s *postgresAudiobookStore) ListAudiobooks(ctx context.Context, userID stri
 		query.WriteString(" AND f.audiobook_id IS NOT NULL")
 	}
 	if filter.Started {
-		query.WriteString(fmt.Sprintf(" AND p.position_seconds > 0 AND (a.duration_seconds <= 0 OR p.position_seconds < a.duration_seconds * %v)", audiobookFinishedFraction))
+		_, _ = fmt.Fprintf(&query, " AND p.position_seconds > 0 AND (a.duration_seconds <= 0 OR p.position_seconds < a.duration_seconds * %v)", audiobookFinishedFraction)
 	}
 	if filter.Finished {
-		query.WriteString(fmt.Sprintf(" AND a.duration_seconds > 0 AND p.position_seconds >= a.duration_seconds * %v", audiobookFinishedFraction))
+		_, _ = fmt.Fprintf(&query, " AND a.duration_seconds > 0 AND p.position_seconds >= a.duration_seconds * %v", audiobookFinishedFraction)
 	}
 	if filter.SeriesID != "" {
 		args = append(args, filter.SeriesID)
-		query.WriteString(fmt.Sprintf(" AND a.series_id = $%d", len(args)))
+		_, _ = fmt.Fprintf(&query, " AND a.series_id = $%d", len(args))
 	}
 	query.WriteString(" ORDER BY a.series_id NULLS LAST, a.series_sequence NULLS LAST, a.created_at DESC")
 
@@ -685,7 +685,7 @@ func (s *postgresAudiobookStore) backfillOne(ctx context.Context, id, storagePat
 	if err != nil {
 		log.Printf("audiobooks: backfill metadata for %s failed: %v", id, err)
 		if hasCover {
-			os.Remove(coverPath)
+			_ = os.Remove(coverPath)
 		}
 		return false
 	}
