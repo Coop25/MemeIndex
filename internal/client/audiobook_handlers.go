@@ -25,15 +25,18 @@ const audiobookUploadChunkLimit = 64 << 20 // 64 MiB
 // file.
 const audiobookUploadStaleAfter = 24 * time.Hour
 
-// audiobookUploadLocks serializes writes to a single upload's temp file.
-// Without it, two overlapping requests for the same upload id (a retried
-// request racing the original, for example) could both append to the file at
-// once and interleave their bytes.
-var audiobookUploadLocks sync.Map // id -> *sync.Mutex
+// audiobookUploadLocks guards each upload's temp file against being renamed
+// away (complete) or deleted (abort, the stale-upload sweep) while a chunk is
+// still being written to it. Chunk writes take the shared (read) side so
+// several of them can run at once for the same upload - each writes to its
+// own byte range of the pre-sized temp file, so they don't interfere with
+// each other - while completing/aborting/reclaiming the upload takes the
+// exclusive side and so waits for any in-flight chunk writes to finish first.
+var audiobookUploadLocks sync.Map // id -> *sync.RWMutex
 
-func lockAudiobookUpload(id string) *sync.Mutex {
-	lock, _ := audiobookUploadLocks.LoadOrStore(id, &sync.Mutex{})
-	return lock.(*sync.Mutex)
+func lockAudiobookUpload(id string) *sync.RWMutex {
+	lock, _ := audiobookUploadLocks.LoadOrStore(id, &sync.RWMutex{})
+	return lock.(*sync.RWMutex)
 }
 
 func audiobookMaxBytes(cfg Config) int64 {
@@ -587,8 +590,13 @@ func (s *Server) appendAudiobookUploadChunk(w http.ResponseWriter, r *http.Reque
 
 	userID := currentAudiobookUserID(r)
 	lock := lockAudiobookUpload(id)
-	lock.Lock()
-	defer lock.Unlock()
+	// Shared, not exclusive: several chunks for this same upload can be in
+	// flight at once (the client spreads one file over a few concurrent
+	// connections for speed), each writing to its own offset of the
+	// pre-sized temp file. Only completing/aborting the upload needs to wait
+	// for all of them to finish, via the exclusive side of this lock.
+	lock.RLock()
+	defer lock.RUnlock()
 
 	upload, err := s.audiobooks.GetUpload(r.Context(), id, userID)
 	if errors.Is(err, ErrAudiobookUploadNotFound) {
@@ -600,38 +608,42 @@ func (s *Server) appendAudiobookUploadChunk(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "failed to load upload", http.StatusInternalServerError)
 		return
 	}
-	if offset != upload.ReceivedBytes {
-		writeJSON(w, http.StatusConflict, audiobookUploadJSON(upload))
+	if offset >= upload.TotalBytes {
+		http.Error(w, "upload offset is beyond the file size", http.StatusBadRequest)
 		return
 	}
 
-	remaining := upload.TotalBytes - upload.ReceivedBytes
+	remaining := upload.TotalBytes - offset
 	chunkLimit := remaining
 	if chunkLimit > audiobookUploadChunkLimit {
 		chunkLimit = audiobookUploadChunkLimit
 	}
 
-	file, err := os.OpenFile(upload.TempPath, os.O_WRONLY|os.O_APPEND, 0o644)
+	file, err := os.OpenFile(upload.TempPath, os.O_WRONLY, 0o644)
 	if err != nil {
 		log.Printf("open audiobook upload temp file failed: %v", err)
+		http.Error(w, "failed to write chunk", http.StatusInternalServerError)
+		return
+	}
+	if _, err := file.Seek(offset, io.SeekStart); err != nil {
+		_ = file.Close()
+		log.Printf("seek audiobook upload temp file failed: %v", err)
 		http.Error(w, "failed to write chunk", http.StatusInternalServerError)
 		return
 	}
 	written, copyErr := io.Copy(file, http.MaxBytesReader(w, r.Body, chunkLimit))
 	closeErr := file.Close()
 	if copyErr != nil {
+		// A failed or partial write leaves stale bytes sitting at this
+		// offset in the pre-sized temp file, but since we only record the
+		// range as received below - never reached on this path - they are
+		// simply overwritten by whatever chunk request retries this range.
 		var tooLarge *http.MaxBytesError
 		if errors.As(copyErr, &tooLarge) {
-			if truncErr := os.Truncate(upload.TempPath, upload.ReceivedBytes); truncErr != nil {
-				log.Printf("truncate audiobook upload temp file failed: %v", truncErr)
-			}
 			http.Error(w, "chunk exceeds the remaining upload size", http.StatusRequestEntityTooLarge)
 			return
 		}
 		log.Printf("write audiobook chunk failed: %v", copyErr)
-		if truncErr := os.Truncate(upload.TempPath, upload.ReceivedBytes); truncErr != nil {
-			log.Printf("truncate audiobook upload temp file failed: %v", truncErr)
-		}
 		http.Error(w, "failed to write chunk", http.StatusInternalServerError)
 		return
 	}
@@ -645,28 +657,13 @@ func (s *Server) appendAudiobookUploadChunk(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	updated, err := s.audiobooks.AppendUploadChunk(r.Context(), id, userID, offset, written)
-	if errors.Is(err, ErrAudiobookUploadOffsetConflict) {
-		// Another request already advanced this upload (a racing retry). The
-		// bytes we just appended are now beyond the recorded offset and would
-		// corrupt the file, so drop them back to the last known-good length.
-		if truncErr := os.Truncate(upload.TempPath, upload.ReceivedBytes); truncErr != nil {
-			log.Printf("truncate audiobook upload temp file failed: %v", truncErr)
-		}
-		current, getErr := s.audiobooks.GetUpload(r.Context(), id, userID)
-		if getErr != nil {
-			http.Error(w, "upload offset conflict", http.StatusConflict)
-			return
-		}
-		writeJSON(w, http.StatusConflict, audiobookUploadJSON(current))
-		return
-	}
+	updated, err := s.audiobooks.RecordUploadRange(r.Context(), id, userID, offset, offset+written)
 	if errors.Is(err, ErrAudiobookUploadNotFound) {
 		http.NotFound(w, r)
 		return
 	}
 	if err != nil {
-		log.Printf("advance audiobook upload failed: %v", err)
+		log.Printf("record audiobook upload range failed: %v", err)
 		http.Error(w, "failed to record chunk", http.StatusInternalServerError)
 		return
 	}
@@ -958,12 +955,17 @@ func audiobookBookmarkJSON(bookmark audiobookBookmark) map[string]any {
 }
 
 func audiobookUploadJSON(upload audiobookUpload) map[string]any {
+	ranges := upload.ReceivedRanges
+	if ranges == nil {
+		ranges = []uploadByteRange{}
+	}
 	return map[string]any{
-		"upload_id":      upload.ID,
-		"filename":       upload.Filename,
-		"title":          upload.Title,
-		"author":         upload.Author,
-		"total_bytes":    upload.TotalBytes,
-		"received_bytes": upload.ReceivedBytes,
+		"upload_id":       upload.ID,
+		"filename":        upload.Filename,
+		"title":           upload.Title,
+		"author":          upload.Author,
+		"total_bytes":     upload.TotalBytes,
+		"received_bytes":  upload.ReceivedBytes,
+		"received_ranges": ranges,
 	}
 }

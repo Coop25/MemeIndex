@@ -3655,6 +3655,7 @@ function confirmViaModal({ title, message, confirmLabel = "Confirm", cancelLabel
 // ---------------------------------------------------------------------------
 
 const AUDIOBOOK_CHUNK_SIZE = 8 * 1024 * 1024; // 8 MiB per chunk request.
+const AUDIOBOOK_UPLOAD_CONCURRENCY = 4; // Parallel chunk streams per upload.
 const AUDIOBOOK_UPLOAD_STORAGE_KEY = "memevault.audiobookUpload";
 const AUDIOBOOK_PROGRESS_SAVE_INTERVAL_MS = 15000;
 
@@ -4161,8 +4162,39 @@ function probeAudioDuration(file) {
 
 class AudiobookUploadForbidden extends Error {}
 
+// computeAudiobookUploadGaps turns the server's list of already-received
+// byte ranges into the complement within [0, totalBytes) - the spans that
+// still need uploading. Ranges arrive sorted and non-overlapping (the server
+// merges them as chunks land), but this re-sorts defensively rather than
+// assume that.
+function computeAudiobookUploadGaps(receivedRanges, totalBytes) {
+  const sorted = [...receivedRanges].sort((a, b) => a.start - b.start);
+  const gaps = [];
+  let cursor = 0;
+  for (const range of sorted) {
+    if (range.start > cursor) gaps.push({ start: cursor, end: range.start });
+    cursor = Math.max(cursor, range.end);
+  }
+  if (cursor < totalBytes) gaps.push({ start: cursor, end: totalBytes });
+  return gaps;
+}
+
+// splitAudiobookUploadChunks slices the still-missing spans into
+// AUDIOBOOK_CHUNK_SIZE pieces, each uploaded as its own PATCH request. Several
+// of these run concurrently (see submitAudiobookUpload), which is what lets a
+// large file use multiple streams instead of one.
+function splitAudiobookUploadChunks(gaps) {
+  const chunks = [];
+  for (const gap of gaps) {
+    for (let start = gap.start; start < gap.end; start += AUDIOBOOK_CHUNK_SIZE) {
+      chunks.push({ start, end: Math.min(start + AUDIOBOOK_CHUNK_SIZE, gap.end) });
+    }
+  }
+  return chunks;
+}
+
 // uploadAudiobookChunk retries transient failures (network blips, a 429 while
-// another request is mid-flight, a brief 5xx) quietly in the background - a
+// other chunks are mid-flight, a brief 5xx) quietly in the background - a
 // multi-gigabyte upload can run for a long time and hiccups are expected, so
 // this deliberately avoids expectAuthorized's window.alert, which would
 // otherwise pop a blocking dialog on every rate-limited chunk.
@@ -4177,13 +4209,6 @@ async function uploadAudiobookChunk(uploadId, offset, chunk, attempt = 0) {
       headers: { "Upload-Offset": String(offset) },
       body: chunk,
     });
-    if (response.status === 409) {
-      const payload = await response.json().catch(() => null);
-      if (payload && typeof payload.received_bytes === "number") {
-        return payload.received_bytes;
-      }
-      throw new Error("Upload offset conflict");
-    }
     if (response.status === 401) {
       window.location.href = "/auth/login";
       throw new AudiobookUploadCancelled();
@@ -4194,8 +4219,6 @@ async function uploadAudiobookChunk(uploadId, offset, chunk, attempt = 0) {
     if (!response.ok) {
       throw new Error(`Chunk upload failed (${response.status})`);
     }
-    const payload = await response.json();
-    return payload.received_bytes;
   } catch (error) {
     if (error instanceof AudiobookUploadCancelled || error instanceof AudiobookUploadForbidden || attempt >= 8) {
       throw error;
@@ -4229,7 +4252,7 @@ async function submitAudiobookUpload(event) {
 
   try {
     let uploadId = "";
-    let receivedBytes = 0;
+    let receivedRanges = [];
 
     const saved = loadSavedAudiobookUpload();
     if (saved && saved.filename === file.name && saved.totalBytes === file.size) {
@@ -4240,7 +4263,7 @@ async function submitAudiobookUpload(event) {
         if (statusResponse.ok) {
           const statusPayload = await statusResponse.json();
           uploadId = saved.uploadId;
-          receivedBytes = statusPayload.received_bytes || 0;
+          receivedRanges = statusPayload.received_ranges || [];
           if (audiobookUploadStatus) audiobookUploadStatus.textContent = "Resuming previous upload...";
         }
       } catch (error) {
@@ -4260,22 +4283,47 @@ async function submitAudiobookUpload(event) {
       }
       const createPayload = await createResponse.json();
       uploadId = createPayload.upload_id;
-      receivedBytes = createPayload.received_bytes || 0;
+      receivedRanges = createPayload.received_ranges || [];
     }
 
     state.audiobooks.upload = { id: uploadId, cancelled: false };
     saveAudiobookUploadMarker({ uploadId, filename: file.name, totalBytes: file.size });
-    updateAudiobookUploadProgress(receivedBytes, file.size);
 
-    while (receivedBytes < file.size) {
-      if (state.audiobooks.upload?.cancelled) {
-        throw new AudiobookUploadCancelled();
+    let uploadedBytes = receivedRanges.reduce((sum, range) => sum + (range.end - range.start), 0);
+    updateAudiobookUploadProgress(uploadedBytes, file.size);
+
+    // Upload whatever is still missing as a queue of fixed-size chunks, with
+    // several workers pulling from it concurrently - this is what spreads one
+    // large file over multiple streams instead of a single sequential PATCH
+    // after another.
+    const chunkQueue = splitAudiobookUploadChunks(computeAudiobookUploadGaps(receivedRanges, file.size));
+    let nextChunkIndex = 0;
+    // Once any one stream gives up for good (retries exhausted), the other
+    // concurrent streams should stop picking up new chunks too, rather than
+    // keep hammering a doomed upload in the background after the UI has
+    // already moved on to the failure state.
+    let uploadFailed = false;
+
+    async function runAudiobookUploadWorker() {
+      while (nextChunkIndex < chunkQueue.length) {
+        if (state.audiobooks.upload?.cancelled) {
+          throw new AudiobookUploadCancelled();
+        }
+        if (uploadFailed) return;
+        const { start, end } = chunkQueue[nextChunkIndex++];
+        try {
+          await uploadAudiobookChunk(uploadId, start, file.slice(start, end));
+        } catch (error) {
+          uploadFailed = true;
+          throw error;
+        }
+        uploadedBytes += end - start;
+        updateAudiobookUploadProgress(uploadedBytes, file.size);
       }
-      const chunkEnd = Math.min(receivedBytes + AUDIOBOOK_CHUNK_SIZE, file.size);
-      const chunk = file.slice(receivedBytes, chunkEnd);
-      receivedBytes = await uploadAudiobookChunk(uploadId, receivedBytes, chunk);
-      updateAudiobookUploadProgress(receivedBytes, file.size);
     }
+
+    const workerCount = Math.min(AUDIOBOOK_UPLOAD_CONCURRENCY, Math.max(1, chunkQueue.length));
+    await Promise.all(Array.from({ length: workerCount }, runAudiobookUploadWorker));
 
     if (audiobookUploadStatus) audiobookUploadStatus.textContent = "Finishing up...";
     const duration = await probeAudioDuration(file);

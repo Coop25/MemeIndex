@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -25,12 +26,6 @@ import (
 // ErrAudiobookUploadNotFound is returned when an upload session id does not
 // exist, has already been finalized/aborted, or belongs to a different user.
 var ErrAudiobookUploadNotFound = errors.New("audiobook upload not found")
-
-// ErrAudiobookUploadOffsetConflict is returned when a chunk's declared
-// Upload-Offset does not match how many bytes the server has already
-// received. The client is expected to re-read the upload's status and retry
-// from the server's offset, which is what makes the upload resumable.
-var ErrAudiobookUploadOffsetConflict = errors.New("audiobook upload offset conflict")
 
 // ErrAudiobookNotFound is returned when a finished audiobook id does not exist.
 var ErrAudiobookNotFound = errors.New("audiobook not found")
@@ -127,17 +122,57 @@ type audiobookBookmark struct {
 }
 
 type audiobookUpload struct {
-	ID            string
-	UserID        string
-	Title         string
-	Author        string
-	Filename      string
-	MimeType      string
-	TotalBytes    int64
-	ReceivedBytes int64
-	TempPath      string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	ID             string
+	UserID         string
+	Title          string
+	Author         string
+	Filename       string
+	MimeType       string
+	TotalBytes     int64
+	ReceivedBytes  int64
+	ReceivedRanges []uploadByteRange
+	TempPath       string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+// uploadByteRange is a half-open [Start, End) span of an upload's temp file
+// that has been fully written to disk. Chunked uploads record one of these
+// per successful PATCH; several can land out of order when a client sends
+// multiple chunks over concurrent connections, so progress is tracked as a
+// merged set of ranges rather than a single running offset.
+type uploadByteRange struct {
+	Start int64 `json:"start"`
+	End   int64 `json:"end"`
+}
+
+// mergeUploadRanges inserts [start, end) into ranges and collapses any
+// overlapping or touching spans, returning a sorted, disjoint result. It is
+// idempotent: re-adding a range (a retried chunk, or two concurrent requests
+// racing on the same bytes) never double-counts it.
+func mergeUploadRanges(ranges []uploadByteRange, start, end int64) []uploadByteRange {
+	combined := append(append([]uploadByteRange{}, ranges...), uploadByteRange{Start: start, End: end})
+	sort.Slice(combined, func(i, j int) bool { return combined[i].Start < combined[j].Start })
+
+	merged := make([]uploadByteRange, 0, len(combined))
+	for _, r := range combined {
+		if n := len(merged); n > 0 && r.Start <= merged[n-1].End {
+			if r.End > merged[n-1].End {
+				merged[n-1].End = r.End
+			}
+			continue
+		}
+		merged = append(merged, r)
+	}
+	return merged
+}
+
+func sumUploadRanges(ranges []uploadByteRange) int64 {
+	var total int64
+	for _, r := range ranges {
+		total += r.End - r.Start
+	}
+	return total
 }
 
 // audiobookUploadSeed is the client-supplied metadata for a new upload
@@ -154,7 +189,7 @@ type audiobookUploadSeed struct {
 type audiobookStore interface {
 	CreateUpload(ctx context.Context, seed audiobookUploadSeed) (audiobookUpload, error)
 	GetUpload(ctx context.Context, id, userID string) (audiobookUpload, error)
-	AppendUploadChunk(ctx context.Context, id, userID string, expectedOffset int64, chunkLen int64) (audiobookUpload, error)
+	RecordUploadRange(ctx context.Context, id, userID string, start, end int64) (audiobookUpload, error)
 	CompleteUpload(ctx context.Context, id, userID string, durationSeconds float64) (audiobookRecord, error)
 	AbortUpload(ctx context.Context, id, userID string) (audiobookUpload, error)
 	StaleUploads(ctx context.Context, olderThan time.Time) ([]audiobookUpload, error)
@@ -216,7 +251,7 @@ func newAudiobookStore(ctx context.Context, databaseURL, dataDir string) (audiob
 	}
 
 	store := &postgresAudiobookStore{pool: pool, dir: dir, tmpDir: tmpDir, coversDir: coversDir}
-	if err := dbschema.Apply(ctx, pool, "015_audiobooks.sql", "016_audiobook_cover_art.sql", "017_audiobook_chapters.sql", "018_audiobook_narrator.sql", "019_audiobook_bookmarks.sql", "021_audiobook_series.sql", "022_audiobook_favorites.sql"); err != nil {
+	if err := dbschema.Apply(ctx, pool, "015_audiobooks.sql", "016_audiobook_cover_art.sql", "017_audiobook_chapters.sql", "018_audiobook_narrator.sql", "019_audiobook_bookmarks.sql", "021_audiobook_series.sql", "022_audiobook_favorites.sql", "024_audiobook_upload_ranges.sql"); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("ensure audiobooks schema: %w", err)
 	}
@@ -231,7 +266,20 @@ func (s *postgresAudiobookStore) CreateUpload(ctx context.Context, seed audioboo
 	if err != nil {
 		return audiobookUpload{}, fmt.Errorf("create upload temp file: %w", err)
 	}
-	_ = file.Close()
+	// Pre-size the temp file to its final length up front. Chunks now land at
+	// arbitrary offsets from several concurrent requests instead of only ever
+	// being appended, so every chunk writer needs the file already long enough
+	// to seek into - there is no single "end" to append to anymore.
+	truncErr := file.Truncate(seed.TotalBytes)
+	closeErr := file.Close()
+	if truncErr != nil {
+		_ = os.Remove(tempPath)
+		return audiobookUpload{}, fmt.Errorf("preallocate upload temp file: %w", truncErr)
+	}
+	if closeErr != nil {
+		_ = os.Remove(tempPath)
+		return audiobookUpload{}, fmt.Errorf("create upload temp file: %w", closeErr)
+	}
 
 	var upload audiobookUpload
 	err = s.pool.QueryRow(ctx, `
@@ -246,18 +294,20 @@ func (s *postgresAudiobookStore) CreateUpload(ctx context.Context, seed audioboo
 		_ = os.Remove(tempPath)
 		return audiobookUpload{}, fmt.Errorf("record audiobook upload: %w", err)
 	}
+	upload.ReceivedRanges = []uploadByteRange{}
 	return upload, nil
 }
 
 func (s *postgresAudiobookStore) GetUpload(ctx context.Context, id, userID string) (audiobookUpload, error) {
 	var upload audiobookUpload
+	var rangesJSON []byte
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, user_id, title, author, filename, mime_type, total_bytes, received_bytes, temp_path, created_at, updated_at
+		SELECT id, user_id, title, author, filename, mime_type, total_bytes, received_bytes, received_ranges, temp_path, created_at, updated_at
 		FROM audiobook_uploads
 		WHERE id = $1 AND user_id = $2
 	`, id, userID).Scan(
 		&upload.ID, &upload.UserID, &upload.Title, &upload.Author, &upload.Filename, &upload.MimeType,
-		&upload.TotalBytes, &upload.ReceivedBytes, &upload.TempPath, &upload.CreatedAt, &upload.UpdatedAt,
+		&upload.TotalBytes, &upload.ReceivedBytes, &rangesJSON, &upload.TempPath, &upload.CreatedAt, &upload.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return audiobookUpload{}, ErrAudiobookUploadNotFound
@@ -265,39 +315,69 @@ func (s *postgresAudiobookStore) GetUpload(ctx context.Context, id, userID strin
 	if err != nil {
 		return audiobookUpload{}, fmt.Errorf("get audiobook upload: %w", err)
 	}
+	if err := json.Unmarshal(rangesJSON, &upload.ReceivedRanges); err != nil {
+		return audiobookUpload{}, fmt.Errorf("decode audiobook upload ranges: %w", err)
+	}
 	return upload, nil
 }
 
-// AppendUploadChunk advances the upload's received-bytes counter by chunkLen,
-// but only when expectedOffset matches what the server has already received.
-// The caller is expected to have already written chunkLen bytes to the
-// upload's temp file at exactly that offset before calling this; the
-// atomic compare-and-set here is what keeps the database's notion of
-// progress consistent with the file on disk even if two requests for the
-// same upload somehow overlap.
-func (s *postgresAudiobookStore) AppendUploadChunk(ctx context.Context, id, userID string, expectedOffset int64, chunkLen int64) (audiobookUpload, error) {
+// RecordUploadRange merges [start, end) into the upload's received-ranges
+// set and recomputes received_bytes from the merged result. The caller is
+// expected to have already written those bytes to the upload's temp file at
+// that exact offset before calling this. The read-modify-write happens under
+// a row lock (SELECT ... FOR UPDATE) rather than a single compare-and-set,
+// because chunks can now arrive out of order from several concurrent
+// requests for the same upload - merging is idempotent, so a retried or
+// overlapping range is simply absorbed rather than rejected.
+func (s *postgresAudiobookStore) RecordUploadRange(ctx context.Context, id, userID string, start, end int64) (audiobookUpload, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return audiobookUpload{}, fmt.Errorf("begin audiobook upload range: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var rangesJSON []byte
 	var upload audiobookUpload
-	err := s.pool.QueryRow(ctx, `
-		UPDATE audiobook_uploads
-		SET received_bytes = received_bytes + $3, updated_at = NOW()
-		WHERE id = $1 AND user_id = $2 AND received_bytes = $4
-		RETURNING id, user_id, title, author, filename, mime_type, total_bytes, received_bytes, temp_path, created_at, updated_at
-	`, id, userID, chunkLen, expectedOffset).Scan(
+	err = tx.QueryRow(ctx, `
+		SELECT id, user_id, title, author, filename, mime_type, total_bytes, received_bytes, received_ranges, temp_path, created_at, updated_at
+		FROM audiobook_uploads
+		WHERE id = $1 AND user_id = $2
+		FOR UPDATE
+	`, id, userID).Scan(
 		&upload.ID, &upload.UserID, &upload.Title, &upload.Author, &upload.Filename, &upload.MimeType,
-		&upload.TotalBytes, &upload.ReceivedBytes, &upload.TempPath, &upload.CreatedAt, &upload.UpdatedAt,
+		&upload.TotalBytes, &upload.ReceivedBytes, &rangesJSON, &upload.TempPath, &upload.CreatedAt, &upload.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
-		// Either the upload does not exist/belong to this user, or the offset
-		// the caller wrote at no longer matches. Distinguish the two so the
-		// handler can tell the client what to do next.
-		if _, getErr := s.GetUpload(ctx, id, userID); getErr != nil {
-			return audiobookUpload{}, ErrAudiobookUploadNotFound
-		}
-		return audiobookUpload{}, ErrAudiobookUploadOffsetConflict
+		return audiobookUpload{}, ErrAudiobookUploadNotFound
 	}
 	if err != nil {
-		return audiobookUpload{}, fmt.Errorf("advance audiobook upload: %w", err)
+		return audiobookUpload{}, fmt.Errorf("lock audiobook upload: %w", err)
 	}
+
+	var ranges []uploadByteRange
+	if err := json.Unmarshal(rangesJSON, &ranges); err != nil {
+		return audiobookUpload{}, fmt.Errorf("decode audiobook upload ranges: %w", err)
+	}
+	merged := mergeUploadRanges(ranges, start, end)
+	mergedJSON, err := json.Marshal(merged)
+	if err != nil {
+		return audiobookUpload{}, fmt.Errorf("encode audiobook upload ranges: %w", err)
+	}
+	receivedBytes := sumUploadRanges(merged)
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE audiobook_uploads
+		SET received_ranges = $3, received_bytes = $4, updated_at = NOW()
+		WHERE id = $1 AND user_id = $2
+	`, id, userID, mergedJSON, receivedBytes); err != nil {
+		return audiobookUpload{}, fmt.Errorf("update audiobook upload range: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return audiobookUpload{}, fmt.Errorf("commit audiobook upload range: %w", err)
+	}
+
+	upload.ReceivedRanges = merged
+	upload.ReceivedBytes = receivedBytes
 	return upload, nil
 }
 
