@@ -740,14 +740,22 @@ func (s *Server) startAudiobookUploadCleanupSweeper() {
 				continue
 			}
 			for _, upload := range stale {
+				// Hold the same lock a concurrent chunk append/complete/abort
+				// would hold, so the sweep can't delete the temp file (or the
+				// row) out from under a request that is still writing to it.
+				lock := lockAudiobookUpload(upload.ID)
+				lock.Lock()
 				if err := os.Remove(upload.TempPath); err != nil && !os.IsNotExist(err) {
 					log.Printf("remove stale audiobook upload temp file failed: %v", err)
+					lock.Unlock()
 					continue
 				}
 				if err := s.audiobooks.DiscardUpload(context.Background(), upload.ID); err != nil {
 					log.Printf("discard stale audiobook upload failed: %v", err)
+					lock.Unlock()
 					continue
 				}
+				lock.Unlock()
 				audiobookUploadLocks.Delete(upload.ID)
 				log.Printf("audiobooks: reclaimed stale upload %s (%d/%d bytes)", upload.ID, upload.ReceivedBytes, upload.TotalBytes)
 			}

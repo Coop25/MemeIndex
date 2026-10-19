@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -315,6 +317,14 @@ func (s *postgresAudiobookStore) CompleteUpload(ctx context.Context, id, userID 
 		return audiobookRecord{}, fmt.Errorf("move completed audiobook: %w", err)
 	}
 
+	// The client-supplied mimeType (the browser's File.type, trivially
+	// overridable by anyone calling the API directly) is never trusted as the
+	// Content-Type the media endpoint later serves - that would let an
+	// uploader stage stored XSS against any other viewer by claiming
+	// "text/html" for a file full of markup. Sniff it from the file's actual
+	// bytes instead, the same way direct_media.go does for linked media.
+	mimeType := sniffAudiobookMimeType(finalPath)
+
 	// Prefer whatever the file itself says over a user-typed title/author and
 	// the client's best-effort duration: an audiobook's ID3/MP4 tags are
 	// usually more complete and more accurate than what someone would bother
@@ -373,7 +383,7 @@ func (s *postgresAudiobookStore) CompleteUpload(ctx context.Context, id, userID 
 		INSERT INTO audiobooks (id, title, author, narrator, filename, mime_type, size_bytes, duration_seconds, storage_path, cover_path, chapters, uploaded_by_user_id)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		RETURNING id, title, author, narrator, filename, mime_type, size_bytes, duration_seconds, storage_path, cover_path, chapters, uploaded_by_user_id, created_at
-	`, finalID, title, author, narrator, upload.Filename, upload.MimeType, upload.TotalBytes, duration, finalPath, coverPath, chaptersJSON, userID).Scan(
+	`, finalID, title, author, narrator, upload.Filename, mimeType, upload.TotalBytes, duration, finalPath, coverPath, chaptersJSON, userID).Scan(
 		&record.ID, &record.Title, &record.Author, &record.Narrator, &record.Filename, &record.MimeType,
 		&record.SizeBytes, &record.DurationSeconds, &record.StoragePath, &record.CoverPath, &recordChaptersJSON, &record.UploadedByUserID, &record.CreatedAt,
 	)
@@ -406,6 +416,26 @@ func (s *postgresAudiobookStore) CompleteUpload(ctx context.Context, id, userID 
 		return audiobookRecord{}, fmt.Errorf("commit completed audiobook: %w", err)
 	}
 	return record, nil
+}
+
+// sniffAudiobookMimeType reads the stored file's own leading bytes to
+// determine its Content-Type, rather than trusting whatever the uploading
+// client claimed. Falls back to a generic binary type if the file can't be
+// read, which is safe to serve but never renders as anything interactive.
+func sniffAudiobookMimeType(path string) string {
+	const fallback = "application/octet-stream"
+	file, err := os.Open(path)
+	if err != nil {
+		return fallback
+	}
+	defer func() { _ = file.Close() }()
+
+	prefix := make([]byte, 512)
+	n, err := file.Read(prefix)
+	if err != nil && err != io.EOF {
+		return fallback
+	}
+	return http.DetectContentType(prefix[:n])
 }
 
 func (s *postgresAudiobookStore) AbortUpload(ctx context.Context, id, userID string) (audiobookUpload, error) {
