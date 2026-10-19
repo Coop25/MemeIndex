@@ -61,6 +61,7 @@ const state = {
     authenticated: true,
     user: null,
     version: "dev",
+    audiobookUploadConcurrency: 4,
     permissions: {
       canView: true,
       canAdd: true,
@@ -1200,6 +1201,10 @@ async function fetchAuthSession() {
     authenticated: payload.authenticated !== false,
     user: payload.user || null,
     version: payload.version || "dev",
+    audiobookUploadConcurrency:
+      Number.isFinite(payload.audiobook_upload_concurrency) && payload.audiobook_upload_concurrency > 0
+        ? payload.audiobook_upload_concurrency
+        : AUDIOBOOK_UPLOAD_CONCURRENCY_DEFAULT,
     permissions: payload.permissions || {
       canView: false,
       canUpload: false,
@@ -3658,7 +3663,11 @@ function confirmViaModal({ title, message, confirmLabel = "Confirm", cancelLabel
 // ---------------------------------------------------------------------------
 
 const AUDIOBOOK_CHUNK_SIZE = 8 * 1024 * 1024; // 8 MiB per chunk request.
-const AUDIOBOOK_UPLOAD_CONCURRENCY = 4; // Parallel chunk streams per upload.
+// Used before the auth session response has loaded, or if the server ever
+// omits audiobook_upload_concurrency; the server's own value (admin-tunable
+// via the MEMEINDEX_AUDIOBOOK_UPLOAD_CONCURRENCY env var) takes over once
+// fetchAuthSession() resolves.
+const AUDIOBOOK_UPLOAD_CONCURRENCY_DEFAULT = 4;
 const AUDIOBOOK_UPLOAD_STORAGE_KEY = "memevault.audiobookUpload";
 const AUDIOBOOK_PROGRESS_SAVE_INTERVAL_MS = 15000;
 
@@ -4131,25 +4140,41 @@ function openAudiobookUploadModal() {
   audiobookUploadProgressWrap?.classList.add("hidden");
   audiobookUploadPartsWrap?.classList.add("hidden");
   if (audiobookUploadParts) audiobookUploadParts.innerHTML = "";
-  audiobookUploadPartEls = new Map();
+  audiobookUploadCellEls = [];
+  audiobookUploadCellBytes = 0;
   audiobookUploadCancel?.classList.add("hidden");
   audiobookUploadSubmit?.classList.remove("hidden");
   if (audiobookUploadSubmit) audiobookUploadSubmit.disabled = false;
   audiobookUploadModal?.showModal();
 }
 
-// audiobookUploadPartEls tracks the DOM element for each not-yet-uploaded
-// chunk of the file currently in the upload modal, keyed by that chunk's
-// start offset, so runAudiobookUploadWorker can flip a sliver to "active"
-// when it picks the chunk up and "done" when the request completes.
-let audiobookUploadPartEls = new Map();
+// The upload grid is a fixed-size file-manager-style grid (think Free
+// Download Manager's connection view): the file is sliced into many small,
+// uniform cells - independent of the much larger 8 MiB request chunks - and
+// each cell lights up on its own as soon as the chunk covering it is picked
+// up or finishes, regardless of what any other cell/chunk is doing. That's
+// the point of showing it: several cells going "active" at once, scattered
+// across the grid rather than marching through it in order, is what proves
+// the parallel streams are really running concurrently rather than one at a
+// time.
+const AUDIOBOOK_UPLOAD_GRID_TARGET_CELLS = 400;
+const AUDIOBOOK_UPLOAD_GRID_MIN_CELL_BYTES = 256 * 1024;
 
-// renderAudiobookUploadParts draws one sliver per byte range of the file,
-// each sized proportional to its length: already-uploaded ranges (from a
-// resumed upload) start solid, the rest start as plain pending slivers that
-// runAudiobookUploadWorker lights up as chunks are picked up and finished.
+let audiobookUploadCellEls = [];
+let audiobookUploadCellBytes = 0;
+
+function audiobookUploadCellIndexForByte(byteOffset) {
+  const lastIndex = audiobookUploadCellEls.length - 1;
+  return Math.min(Math.floor(byteOffset / audiobookUploadCellBytes), lastIndex);
+}
+
+// renderAudiobookUploadParts lays out the grid for the file being uploaded
+// and marks whatever's already received (a resumed upload) solid up front;
+// everything else starts pending and is lit up by setAudiobookUploadPartState
+// as chunks are picked up and finished.
 function renderAudiobookUploadParts(receivedRanges, pendingChunks, totalBytes, workerCount) {
-  audiobookUploadPartEls = new Map();
+  audiobookUploadCellEls = [];
+  audiobookUploadCellBytes = 0;
   if (!audiobookUploadParts || !audiobookUploadPartsWrap) return;
   audiobookUploadParts.innerHTML = "";
   if (totalBytes <= 0 || (receivedRanges.length === 0 && pendingChunks.length === 0)) {
@@ -4157,22 +4182,22 @@ function renderAudiobookUploadParts(receivedRanges, pendingChunks, totalBytes, w
     return;
   }
 
-  const segments = [
-    ...receivedRanges.map((range) => ({ start: range.start, end: range.end, done: true })),
-    ...pendingChunks.map((chunk) => ({ start: chunk.start, end: chunk.end, done: false })),
-  ].sort((a, b) => a.start - b.start);
+  const cellBytes = Math.max(AUDIOBOOK_UPLOAD_GRID_MIN_CELL_BYTES, Math.ceil(totalBytes / AUDIOBOOK_UPLOAD_GRID_TARGET_CELLS));
+  const cellCount = Math.max(Math.ceil(totalBytes / cellBytes), 1);
+  audiobookUploadCellBytes = cellBytes;
 
   const fragment = document.createDocumentFragment();
-  for (const segment of segments) {
+  for (let i = 0; i < cellCount; i++) {
     const el = document.createElement("span");
-    el.className = "audiobook-upload-part" + (segment.done ? " is-done" : "");
-    el.style.flex = `${Math.max(segment.end - segment.start, 1)} 0 0`;
+    el.className = "audiobook-upload-part";
     fragment.appendChild(el);
-    if (!segment.done) {
-      audiobookUploadPartEls.set(segment.start, el);
-    }
+    audiobookUploadCellEls.push(el);
   }
   audiobookUploadParts.appendChild(fragment);
+
+  for (const range of receivedRanges) {
+    setAudiobookUploadPartState(range.start, range.end, "is-done");
+  }
 
   if (audiobookUploadPartsCaption) {
     audiobookUploadPartsCaption.textContent = pendingChunks.length
@@ -4182,11 +4207,19 @@ function renderAudiobookUploadParts(receivedRanges, pendingChunks, totalBytes, w
   audiobookUploadPartsWrap.classList.remove("hidden");
 }
 
-function setAudiobookUploadPartState(start, state) {
-  const el = audiobookUploadPartEls.get(start);
-  if (!el) return;
-  el.classList.remove("is-active", "is-done");
-  el.classList.add(state);
+// setAudiobookUploadPartState marks every grid cell overlapping [start, end)
+// with the given state - a byte range the size of one upload chunk (8 MiB)
+// typically spans several of the smaller grid cells at once.
+function setAudiobookUploadPartState(start, end, state) {
+  if (!audiobookUploadCellBytes || !audiobookUploadCellEls.length) return;
+  const firstIndex = audiobookUploadCellIndexForByte(start);
+  const lastIndex = audiobookUploadCellIndexForByte(Math.max(end - 1, start));
+  for (let i = firstIndex; i <= lastIndex; i++) {
+    const el = audiobookUploadCellEls[i];
+    if (!el) continue;
+    el.classList.remove("is-active", "is-done");
+    el.classList.add(state);
+  }
 }
 
 function updateAudiobookUploadProgress(receivedBytes, totalBytes) {
@@ -4360,7 +4393,8 @@ async function submitAudiobookUpload(event) {
     // keep hammering a doomed upload in the background after the UI has
     // already moved on to the failure state.
     let uploadFailed = false;
-    const workerCount = Math.min(AUDIOBOOK_UPLOAD_CONCURRENCY, Math.max(1, chunkQueue.length));
+    const concurrency = state.auth.audiobookUploadConcurrency || AUDIOBOOK_UPLOAD_CONCURRENCY_DEFAULT;
+    const workerCount = Math.min(concurrency, Math.max(1, chunkQueue.length));
     renderAudiobookUploadParts(receivedRanges, chunkQueue, file.size, workerCount);
 
     async function runAudiobookUploadWorker() {
@@ -4370,14 +4404,14 @@ async function submitAudiobookUpload(event) {
         }
         if (uploadFailed) return;
         const { start, end } = chunkQueue[nextChunkIndex++];
-        setAudiobookUploadPartState(start, "is-active");
+        setAudiobookUploadPartState(start, end, "is-active");
         try {
           await uploadAudiobookChunk(uploadId, start, file.slice(start, end));
         } catch (error) {
           uploadFailed = true;
           throw error;
         }
-        setAudiobookUploadPartState(start, "is-done");
+        setAudiobookUploadPartState(start, end, "is-done");
         uploadedBytes += end - start;
         updateAudiobookUploadProgress(uploadedBytes, file.size);
       }

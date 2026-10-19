@@ -2518,8 +2518,9 @@ func (s *Server) handleAuthSession(w http.ResponseWriter, r *http.Request) {
 
 	if !s.auth.enabled() {
 		writeJSON(w, http.StatusOK, map[string]any{
-			"enabled": false,
-			"version": BuildVersion(),
+			"enabled":                      false,
+			"version":                      BuildVersion(),
+			"audiobook_upload_concurrency": s.config.AudiobookUploadConcurrency,
 			"permissions": authPermissions{
 				CanView:                  true,
 				CanUpload:                true,
@@ -2541,10 +2542,11 @@ func (s *Server) handleAuthSession(w http.ResponseWriter, r *http.Request) {
 	session, ok := s.auth.sessionFromRequest(r)
 	if !ok {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{
-			"enabled":       true,
-			"authenticated": false,
-			"login_url":     "/auth/login",
-			"version":       BuildVersion(),
+			"enabled":                      true,
+			"authenticated":                false,
+			"login_url":                    "/auth/login",
+			"version":                      BuildVersion(),
+			"audiobook_upload_concurrency": s.config.AudiobookUploadConcurrency,
 		})
 		return
 	}
@@ -2558,9 +2560,10 @@ func (s *Server) handleAuthSession(w http.ResponseWriter, r *http.Request) {
 			"display_name": session.DisplayName,
 			"avatar_url":   session.AvatarURL,
 		},
-		"permissions": session.Permissions,
-		"logout_url":  "/auth/logout",
-		"version":     BuildVersion(),
+		"permissions":                  session.Permissions,
+		"logout_url":                   "/auth/logout",
+		"version":                      BuildVersion(),
+		"audiobook_upload_concurrency": s.config.AudiobookUploadConcurrency,
 	})
 }
 

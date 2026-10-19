@@ -4035,25 +4035,45 @@ body.admin-mode .admin-tab.is-active .admin-tab-badge { background: var(--green-
 .audiobook-upload-progress-track span { display: block; height: 100%; width: 0%; background: linear-gradient(135deg, var(--green-bright), var(--green)); transition: width .2s ease; }
 .audiobook-upload-progress-meta { display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; }
 
-/* The chunk grid: one sliver per byte range of the file, sized proportional
-   to its length. Already-uploaded slivers (from a resumed upload) render
-   solid on the first paint; the rest turn solid one at a time as their chunk
-   request completes, and pulse with a moving stripe while in flight - the
-   same "which piece is active right now" readout a download manager gives
-   you for its parallel connections. */
+/* The chunk grid: a download-manager-style grid of many small, uniform
+   cells sliced out of the file, independent of the much larger per-request
+   upload chunk size. Already-uploaded cells (from a resumed upload) render
+   solid on the first paint; the rest turn solid one at a time as the chunk
+   covering them completes, and pulse with a moving stripe while in flight -
+   several cells lighting up in different parts of the grid at once is what
+   shows the parallel streams are genuinely running concurrently rather than
+   marching through the file in order. */
 .audiobook-upload-parts-wrap { display: flex; flex-direction: column; gap: 5px; margin-top: 2px; }
-.audiobook-upload-parts { display: flex; height: 20px; overflow: hidden; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-3); }
-.audiobook-upload-part { flex-shrink: 0; flex-basis: 0; height: 100%; border-right: 1px solid rgba(0, 0, 0, .35); background: var(--panel-3); transition: background .2s ease; }
-.audiobook-upload-part:last-child { border-right: 0; }
-.audiobook-upload-part.is-done { background: linear-gradient(135deg, var(--green-bright), var(--green)); }
+.audiobook-upload-parts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  max-height: 108px;
+  padding: 6px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-3);
+}
+.audiobook-upload-part {
+  flex: 0 0 auto;
+  width: 9px;
+  height: 9px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: rgba(255, 255, 255, .05);
+  transition: background .2s ease, border-color .2s ease;
+}
+.audiobook-upload-part.is-done { border-color: transparent; background: linear-gradient(135deg, var(--green-bright), var(--green)); }
 .audiobook-upload-part.is-active {
-  background: repeating-linear-gradient(135deg, var(--green-bright) 0 9px, var(--green) 9px 18px);
-  background-size: 26px 26px;
+  border-color: transparent;
+  background: repeating-linear-gradient(135deg, var(--green-bright) 0 4px, var(--green) 4px 8px);
+  background-size: 12px 12px;
   animation: audiobook-upload-part-stripes .9s linear infinite;
 }
 @keyframes audiobook-upload-part-stripes {
   from { background-position: 0 0; }
-  to { background-position: 26px 0; }
+  to { background-position: 12px 0; }
 }
 .audiobook-upload-parts-caption { color: var(--faint); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; }
 

@@ -11,21 +11,22 @@ import (
 )
 
 type Config struct {
-	AllowAnonymous        bool
-	MaxUploadBytes        int64
-	MaxAudiobookBytes     int64
-	Addr                  string
-	DebugAddr             string
-	DataDir               string
-	DatabaseURL           string
-	ShareSecret           string
-	MediaFetchYTDLPBinary string
-	MediaFetchProxy       string
-	RateLimitEnabled      bool
-	ClientIPHeader        string
-	MediaFetchRetry       MediaFetchRetryConfig
-	TagSuggestions        TagSuggestionsConfig
-	DiscordAuth           DiscordAuthConfig
+	AllowAnonymous             bool
+	MaxUploadBytes             int64
+	MaxAudiobookBytes          int64
+	AudiobookUploadConcurrency int
+	Addr                       string
+	DebugAddr                  string
+	DataDir                    string
+	DatabaseURL                string
+	ShareSecret                string
+	MediaFetchYTDLPBinary      string
+	MediaFetchProxy            string
+	RateLimitEnabled           bool
+	ClientIPHeader             string
+	MediaFetchRetry            MediaFetchRetryConfig
+	TagSuggestions             TagSuggestionsConfig
+	DiscordAuth                DiscordAuthConfig
 }
 
 type MediaFetchRetryConfig struct {
@@ -74,6 +75,7 @@ type rawConfig struct {
 	AllowAnonymous                  bool     `envconfig:"ALLOW_ANONYMOUS" default:"false"`
 	MaxUploadBytes                  int64    `envconfig:"MAX_UPLOAD_BYTES" default:"268435456"`
 	MaxAudiobookBytes               int64    `envconfig:"MAX_AUDIOBOOK_BYTES" default:"21474836480"`
+	AudiobookUploadConcurrency      int      `envconfig:"AUDIOBOOK_UPLOAD_CONCURRENCY" default:"4"`
 	Addr                            string   `envconfig:"ADDR" default:":8080"`
 	DebugAddr                       string   `envconfig:"DEBUG_ADDR"`
 	DataDir                         string   `envconfig:"DATA_DIR" default:"data"`
@@ -144,15 +146,20 @@ func LoadConfig() (Config, error) {
 	generateOnly := raw.TagSuggestGenerateOnly || shouldPreferGenerateOnlyModel(modelName)
 
 	config := Config{
-		AllowAnonymous:        raw.AllowAnonymous,
-		MaxUploadBytes:        raw.MaxUploadBytes,
-		MaxAudiobookBytes:     raw.MaxAudiobookBytes,
-		Addr:                  strings.TrimSpace(raw.Addr),
-		DebugAddr:             strings.TrimSpace(raw.DebugAddr),
-		DataDir:               strings.TrimSpace(raw.DataDir),
-		DatabaseURL:           strings.TrimSpace(raw.DatabaseURL),
-		ShareSecret:           firstNonEmpty(strings.TrimSpace(raw.ShareSecret), strings.TrimSpace(raw.SessionSecret)),
-		MediaFetchYTDLPBinary: strings.TrimSpace(raw.MediaFetchYTDLPBinary),
+		AllowAnonymous:    raw.AllowAnonymous,
+		MaxUploadBytes:    raw.MaxUploadBytes,
+		MaxAudiobookBytes: raw.MaxAudiobookBytes,
+		// Clamped to a sane range rather than trusted outright: too low defeats
+		// the point, and too high just means more concurrent chunk requests
+		// than the rate limiter (5 req/s, burst 40) or a modest server can
+		// comfortably absorb.
+		AudiobookUploadConcurrency: min(max(raw.AudiobookUploadConcurrency, 1), 16),
+		Addr:                       strings.TrimSpace(raw.Addr),
+		DebugAddr:                  strings.TrimSpace(raw.DebugAddr),
+		DataDir:                    strings.TrimSpace(raw.DataDir),
+		DatabaseURL:                strings.TrimSpace(raw.DatabaseURL),
+		ShareSecret:                firstNonEmpty(strings.TrimSpace(raw.ShareSecret), strings.TrimSpace(raw.SessionSecret)),
+		MediaFetchYTDLPBinary:      strings.TrimSpace(raw.MediaFetchYTDLPBinary),
 		MediaFetchProxy: firstNonEmpty(
 			strings.TrimSpace(raw.MediaFetchProxy),
 			os.Getenv("HTTPS_PROXY"), os.Getenv("https_proxy"),
