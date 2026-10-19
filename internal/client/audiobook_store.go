@@ -432,7 +432,7 @@ func sniffAudiobookMimeType(path string) string {
 
 	prefix := make([]byte, 512)
 	n, err := file.Read(prefix)
-	if err != nil && err != io.EOF {
+	if err != nil && !errors.Is(err, io.EOF) {
 		return fallback
 	}
 	return http.DetectContentType(prefix[:n])
