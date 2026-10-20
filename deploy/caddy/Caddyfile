@@ -1,7 +1,0 @@
-{$MEMEINDEX_PUBLIC_HOSTNAME} {
-	tls {
-		dns cloudflare {$CLOUDFLARE_API_TOKEN}
-	}
-
-	reverse_proxy app:8080
-}
