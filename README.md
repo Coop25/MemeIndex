@@ -321,9 +321,10 @@ task docker-dev-verify-mediafetch
 
 This repo includes [`.github/workflows/docker-publish.yml`](/f:/GitHub/MemeIndex/.github/workflows/docker-publish.yml), which builds the app image in GitHub Actions and pushes it to GitHub Container Registry on:
 
-- pushes to `master`
-- version tags like `v1.0.0`
+- publishing a GitHub Release (`gh release create`, or the Releases UI) - this is what moves `:latest` and tags the image with the release version, e.g. `v2.9.0`
 - manual runs from the Actions tab
+
+A plain `git push` to `master` does **not** build or publish an image by itself - cut a release when you want one.
 
 The image is built for both `linux/amd64` and `linux/arm64`. Its entrypoint
 starts as root only long enough to take ownership of the data directory, then

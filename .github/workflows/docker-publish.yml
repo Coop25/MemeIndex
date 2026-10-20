@@ -1,9 +1,6 @@
 name: Publish Docker Image
 
 on:
-  push:
-    branches:
-      - master
   release:
     types:
       - published
@@ -23,8 +20,8 @@ jobs:
         with:
           # Full history + tags, not the default shallow/no-tags clone - the
           # "Resolve app version" step below runs `git describe --tags` to
-          # find the nearest release for a plain branch push, which needs
-          # the tags actually present locally to find anything.
+          # find the nearest release on a manual workflow_dispatch run,
+          # which needs the tags actually present locally to find anything.
           fetch-depth: 0
 
       - name: Set up QEMU
@@ -45,26 +42,29 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository }}
+          # Only two triggers remain (release, workflow_dispatch), so this is
+          # the whole tag set: the release's own version tag (e.g. "v2.9.0"),
+          # a short-sha tag, and "latest" - which must key off event_name
+          # rather than {{is_default_branch}}, since a release's ref is the
+          # tag (refs/tags/vX.Y.Z), not the default branch, so that helper is
+          # always false here and would otherwise leave "latest" stuck on
+          # whatever a previous manual run last pointed it at.
           tags: |
-            type=ref,event=branch
             type=ref,event=tag
-            type=raw,value=${{ github.event.release.tag_name }},enable=${{ github.event_name == 'release' }}
             type=sha
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ github.event_name == 'release' || github.event_name == 'workflow_dispatch' }}
 
       - name: Resolve app version
         id: app_version
         shell: bash
         run: |
-          # For a plain push to master (not a release, not a tag push),
-          # steps.meta.outputs.version is just the literal branch name
-          # ("master") - docker/metadata-action's default "version" for a
-          # type=ref,event=branch tag. That used to flow straight through
-          # into the binary, so :latest kept reporting "master" as its
-          # version instead of the most recent release. Use the nearest
-          # reachable release tag instead - just the tag itself (e.g.
-          # "v2.7.0"), not git describe's usual "-N-gHASH" commit-distance
-          # suffix, since this is meant to read as a plain release number.
+          # For a manual workflow_dispatch run (not a release), there is no
+          # release tag_name to fall back on, and steps.meta.outputs.version
+          # would otherwise just be the literal branch name ("master"). Use
+          # the nearest reachable release tag instead - just the tag itself
+          # (e.g. "v2.7.0"), not git describe's usual "-N-gHASH"
+          # commit-distance suffix, since this is meant to read as a plain
+          # release number.
           described="$(git describe --tags --match 'v[0-9]*' --abbrev=0 2>/dev/null || true)"
 
           if [[ "${{ github.event_name }}" == "release" && -n "${{ github.event.release.tag_name }}" ]]; then
