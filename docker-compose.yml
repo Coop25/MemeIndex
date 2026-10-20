@@ -124,6 +124,33 @@ services:
     profiles:
       - tunnel
 
+  # Terminates real, browser-trusted HTTPS for the SAME public hostname used
+  # behind Cloudflare Tunnel, via a Let's Encrypt cert issued over a DNS-01
+  # challenge (no inbound port 80 needed). Pair this with a local DNS override
+  # that resolves MEMEINDEX_PUBLIC_HOSTNAME to this host's LAN IP for LAN
+  # clients only - public DNS keeps pointing at Cloudflare. This lets the app's
+  # Secure session/OAuth-state cookies work identically on both paths. See
+  # "Local HTTPS (split-horizon LAN access)" in the README. Do NOT port-forward
+  # 443 on your router for this - it is meant for LAN-only reachability.
+  caddy:
+    build:
+      context: ./deploy/caddy
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      MEMEINDEX_PUBLIC_HOSTNAME: ${MEMEINDEX_PUBLIC_HOSTNAME:-}
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:-}
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    ports:
+      - "443:443"
+    profiles:
+      - local-https
+
   # Optional forward proxy for downloader egress isolation. Point it at a config
   # that allows ONLY the public media hosts the downloader needs, for example:
   #   youtube.com, youtu.be, googlevideo.com, ytimg.com,
@@ -146,3 +173,5 @@ services:
 volumes:
   postgres_data:
   ollama_data:
+  caddy_data:
+  caddy_config:

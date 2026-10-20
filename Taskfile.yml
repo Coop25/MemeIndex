@@ -39,6 +39,12 @@ tasks:
       - docker compose --profile tunnel pull
       - docker compose --profile tunnel up -d
 
+  docker-local-https-up:
+    desc: Build and start MemeIndex, PostgreSQL, and the optional local-HTTPS Caddy service
+    cmds:
+      - docker compose --profile local-https build caddy
+      - docker compose --profile local-https up -d
+
   docker-down:
     desc: Stop the Docker Compose stack
     cmds:

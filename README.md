@@ -207,6 +207,7 @@ This repo now includes a `docker-compose.yml` that starts:
 - `ollama`: optional local LLM runtime for tag suggestions
 - `ollama-model`: one-shot helper that pulls the configured local vision model into the shared Ollama volume
 - `cloudflared`: optional Cloudflare Tunnel sidecar for exposing only the app
+- `caddy`: optional local-HTTPS sidecar (profile `local-https`) that terminates real HTTPS for the same public hostname on your LAN, so local clients can bypass the tunnel entirely
 
 Bring it up with:
 
@@ -372,6 +373,32 @@ Recommended behavior behind Cloudflare Tunnel:
 - keep Postgres internal with no published `5432` port
 
 If you only want Cloudflare access and do not want local host exposure, remove or override the app's `8080:8080` port mapping in Compose for your deployment.
+
+### Local HTTPS (split-horizon LAN access)
+
+The optional `caddy` service (profile `local-https`) lets you reach MemeIndex at the exact same public hostname while on your home network, without the request ever leaving the LAN or touching Cloudflare. It terminates real, browser-trusted HTTPS using a Let's Encrypt certificate issued over a DNS-01 challenge against Cloudflare's API, so it needs no inbound port 80/443 exposed to the internet to obtain or renew certs. A real HTTPS connection matters here: the app's session and OAuth-state cookies are issued with the `Secure` attribute (see `MEMEINDEX_COOKIE_SECURE` below), which browsers refuse to send back over plain HTTP, so a direct `http://<lan-ip>:8080` connection cannot complete Discord login.
+
+Set these before starting the `local-https` profile:
+
+- `MEMEINDEX_PUBLIC_HOSTNAME`: the same hostname already in `MEMEINDEX_DISCORD_REDIRECT_URL`, for example `memes.example.com`
+- `CLOUDFLARE_API_TOKEN`: a Cloudflare API token scoped to `Zone:DNS:Edit` on just that domain's zone
+
+Then point your LAN's own DNS (Pi-hole, AdGuard Home, or your router's DNS rewrites) at this Docker host's LAN IP for `MEMEINDEX_PUBLIC_HOSTNAME` only — public DNS keeps resolving to Cloudflare for everyone else. Because both paths resolve the same hostname, no change to `MEMEINDEX_DISCORD_REDIRECT_URL` or Discord's registered redirect URI is needed, and `MEMEINDEX_DISCORD_DYNAMIC_REDIRECT` should stay `false` as recommended above.
+
+Start it with:
+
+```powershell
+task docker-local-https-up
+```
+
+Or directly:
+
+```powershell
+docker compose --profile local-https build caddy
+docker compose --profile local-https up -d
+```
+
+Do not port-forward 443 on your router for this service — it is meant for LAN-only reachability, with Cloudflare Tunnel still handling all public traffic.
 
 ## Downloader network isolation
 
