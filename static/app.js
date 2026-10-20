@@ -265,6 +265,18 @@ const audiobookUploadPartsCaption = document.querySelector("#audiobook-upload-pa
 const audiobookUploadBusyOverlay = document.querySelector("#audiobook-upload-busy-overlay");
 const audiobookPlayerModal = document.querySelector("#audiobook-player-modal");
 const audiobookPlayerClose = document.querySelector("#audiobook-player-close");
+const audiobookPlayerElsewhereBanner = document.querySelector("#audiobook-player-elsewhere-banner");
+const audiobookPlayerElsewhereText = document.querySelector("#audiobook-player-elsewhere-text");
+const audiobookPlayerElsewhereAction = document.querySelector("#audiobook-player-elsewhere-action");
+const audiobookPlayerBottombar = document.querySelector("#audiobook-player-bottombar");
+const audiobookPlayerBottombarRow = document.querySelector("#audiobook-player-bottombar-row");
+const audiobookPlayerProgressWrap = document.querySelector("#audiobook-player-progress-wrap");
+const audiobookPlayerControls = document.querySelector("#audiobook-player-controls");
+const audiobookMiniPlayer = document.querySelector("#audiobook-mini-player");
+const audiobookMiniPlayerProgressSlot = document.querySelector("#audiobook-mini-player-progress-slot");
+const audiobookMiniPlayerControlsSlot = document.querySelector("#audiobook-mini-player-controls-slot");
+const audiobookMiniPlayerClose = document.querySelector("#audiobook-mini-player-close");
+const audiobookMiniPlayerHandle = document.querySelector("#audiobook-mini-player-handle");
 const audiobookPlayerFlip = document.querySelector("#audiobook-player-flip");
 const audiobookPlayerCover = document.querySelector("#audiobook-player-cover");
 const audiobookPlayerCoverFallback = document.querySelector("#audiobook-player-cover-fallback");
@@ -283,6 +295,8 @@ const audiobookPlayerSkipBack = document.querySelector("#audiobook-player-skip-b
 const audiobookPlayerSkipForward = document.querySelector("#audiobook-player-skip-forward");
 const audiobookPlayerSpeed = document.querySelector("#audiobook-player-speed");
 const audiobookPlayerVolume = document.querySelector("#audiobook-player-volume");
+const audiobookPlayerVolumeWrap = document.querySelector("#audiobook-player-volume-wrap");
+const audiobookPlayerVolumeToggle = document.querySelector("#audiobook-player-volume-toggle");
 const audiobookPlayerStatus = document.querySelector("#audiobook-player-status");
 const audiobookPlayerMarkUnplayed = document.querySelector("#audiobook-player-mark-unplayed");
 const audiobookPlayerMarkFinished = document.querySelector("#audiobook-player-mark-finished");
@@ -482,6 +496,10 @@ const randomReelClose = document.querySelector("#random-reel-close");
 
 let activeMemeId = null;
 let modalSnapshot = null;
+// Tracks whether opening the meme modal paused an in-progress audiobook, so
+// closing it only resumes playback it actually interrupted - not an
+// audiobook the listener had already paused themselves before or during.
+let audiobookPausedForMemeModal = false;
 let adminTagReviewSessionActive = false;
 let adminTagReviewAdvancing = false;
 let modalLLMTagSuggestionLoading = false;
@@ -3670,6 +3688,34 @@ const AUDIOBOOK_CHUNK_SIZE = 8 * 1024 * 1024; // 8 MiB per chunk request.
 const AUDIOBOOK_UPLOAD_CONCURRENCY_DEFAULT = 4;
 const AUDIOBOOK_UPLOAD_STORAGE_KEY = "memevault.audiobookUpload";
 const AUDIOBOOK_PROGRESS_SAVE_INTERVAL_MS = 15000;
+// How often this device reports its playback state while actually playing,
+// and how often it polls for another device doing the same - both need to be
+// quick enough that "force pause it" feels responsive, not a bandwidth concern
+// at this scale.
+const AUDIOBOOK_PLAYBACK_HEARTBEAT_INTERVAL_MS = 5000;
+const AUDIOBOOK_PLAYBACK_ELSEWHERE_POLL_INTERVAL_MS = 8000;
+const AUDIOBOOK_DEVICE_ID_STORAGE_KEY = "memeindex.audiobookDeviceId";
+
+let audiobookDeviceIdCache = null;
+
+// getAudiobookDeviceId returns a per-browser random id, persisted in
+// localStorage, used only to tell this browser's own playback heartbeats
+// apart from another device's for the same account - not a real identity.
+function getAudiobookDeviceId() {
+  if (audiobookDeviceIdCache) return audiobookDeviceIdCache;
+  const fallback = () => `dev-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  try {
+    let id = window.localStorage.getItem(AUDIOBOOK_DEVICE_ID_STORAGE_KEY);
+    if (!id) {
+      id = window.crypto?.randomUUID ? window.crypto.randomUUID() : fallback();
+      window.localStorage.setItem(AUDIOBOOK_DEVICE_ID_STORAGE_KEY, id);
+    }
+    audiobookDeviceIdCache = id;
+  } catch (error) {
+    audiobookDeviceIdCache = fallback();
+  }
+  return audiobookDeviceIdCache;
+}
 
 class AudiobookUploadCancelled extends Error {}
 
@@ -4480,6 +4526,121 @@ async function cancelAudiobookUpload() {
 let audiobookAudioEl = null;
 let audiobookProgressSaveTimer = null;
 let audiobookPlayerProgressDragging = false;
+let audiobookPlaybackHeartbeatTimer = null;
+let audiobookPlaybackElsewherePollTimer = null;
+// The other device's last-known position, while the banner is showing it -
+// null whenever nothing is playing elsewhere for the open audiobook.
+let audiobookPlaybackElsewhereState = null;
+
+let audiobookVolumeAutoHideTimer = null;
+const AUDIOBOOK_VOLUME_AUTO_HIDE_MS = 30000;
+
+// The volume popover works the same way as the progress toggle above - tucked
+// behind a button until tapped, and folding itself away after
+// AUDIOBOOK_VOLUME_AUTO_HIDE_MS of no interaction.
+function setAudiobookVolumeExpanded(expanded) {
+  audiobookPlayerVolumeWrap?.classList.toggle("is-expanded", expanded);
+  audiobookPlayerVolumeToggle?.setAttribute("aria-expanded", String(expanded));
+  window.clearTimeout(audiobookVolumeAutoHideTimer);
+  audiobookVolumeAutoHideTimer = null;
+  if (expanded) {
+    audiobookVolumeAutoHideTimer = window.setTimeout(() => setAudiobookVolumeExpanded(false), AUDIOBOOK_VOLUME_AUTO_HIDE_MS);
+  }
+}
+
+// scheduleAudiobookVolumeAutoHide restarts the auto-hide countdown without
+// forcing the popover open - used while the slider is actively being dragged.
+function scheduleAudiobookVolumeAutoHide() {
+  if (!audiobookPlayerVolumeWrap?.classList.contains("is-expanded")) return;
+  window.clearTimeout(audiobookVolumeAutoHideTimer);
+  audiobookVolumeAutoHideTimer = window.setTimeout(() => setAudiobookVolumeExpanded(false), AUDIOBOOK_VOLUME_AUTO_HIDE_MS);
+}
+
+// renderAudiobookPlaybackElsewhere shows or hides the "playing on another
+// device" banner. info is {positionSeconds} from the server, or null once
+// nothing is playing elsewhere (either we never found one, or the listener
+// just took over).
+function renderAudiobookPlaybackElsewhere(info) {
+  audiobookPlaybackElsewhereState = info;
+  if (!audiobookPlayerElsewhereBanner) return;
+  if (!info) {
+    audiobookPlayerElsewhereBanner.classList.add("hidden");
+    return;
+  }
+  if (audiobookPlayerElsewhereText) {
+    audiobookPlayerElsewhereText.textContent = `Playing on another device — ${formatMediaTime(info.positionSeconds)}`;
+  }
+  audiobookPlayerElsewhereBanner.classList.remove("hidden");
+}
+
+async function fetchAudiobookPlaybackElsewhere(audiobookId) {
+  try {
+    const response = await fetch(
+      `/api/audiobooks/${encodeURIComponent(audiobookId)}/playback-elsewhere?deviceId=${encodeURIComponent(getAudiobookDeviceId())}`,
+      { credentials: "same-origin" },
+    );
+    if (!response.ok) return null;
+    const payload = await response.json();
+    return payload.active ? { positionSeconds: payload.position_seconds || 0 } : null;
+  } catch (error) {
+    console.error(error);
+    return null;
+  }
+}
+
+// pollAudiobookPlaybackElsewhere re-checks for another active device while
+// the player is open, so the banner can appear (or disappear) mid-session,
+// not just at open time.
+async function pollAudiobookPlaybackElsewhere() {
+  const player = state.audiobooks.player;
+  if (!player) return;
+  const info = await fetchAudiobookPlaybackElsewhere(player.id);
+  if (state.audiobooks.player?.id !== player.id) return;
+  renderAudiobookPlaybackElsewhere(info);
+}
+
+// sendAudiobookPlaybackHeartbeat reports this device's actual play state and
+// position, and self-pauses if another device just forced this one to stop
+// (the "stopRequested" flag the server clears as it reports it).
+async function sendAudiobookPlaybackHeartbeat() {
+  const player = state.audiobooks.player;
+  const audio = audiobookAudioEl;
+  if (!player || !audio) return;
+  try {
+    const response = await fetch(`/api/audiobooks/${encodeURIComponent(player.id)}/playback-heartbeat`, {
+      method: "PUT",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ deviceId: getAudiobookDeviceId(), positionSeconds: audio.currentTime || 0, isPlaying: !audio.paused }),
+      keepalive: true,
+    });
+    if (!response.ok) return;
+    const payload = await response.json();
+    if (payload.stopRequested && state.audiobooks.player?.id === player.id && !audio.paused) {
+      audio.pause();
+      showToast("Paused here — resumed on another device.", "info", { title: "Audiobooks" });
+    }
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+// sendAudiobookPlaybackStoppedSignal tells the server this device stopped
+// regardless of the audio element's actual paused state at the moment - used
+// on page unload, where the tab is closing out from under an still-playing
+// <audio> and there's no "pause" event to piggyback a heartbeat on.
+function sendAudiobookPlaybackStoppedSignal() {
+  const player = state.audiobooks.player;
+  const audio = audiobookAudioEl;
+  if (!player || !audio) return;
+  fetch(`/api/audiobooks/${encodeURIComponent(player.id)}/playback-heartbeat`, {
+    method: "PUT",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ deviceId: getAudiobookDeviceId(), positionSeconds: audio.currentTime || 0, isPlaying: false }),
+    keepalive: true,
+  }).catch((error) => console.error(error));
+}
 
 function getAudiobookAudioElement() {
   if (audiobookAudioEl) return audiobookAudioEl;
@@ -4493,14 +4654,17 @@ function getAudiobookAudioElement() {
     // soon as the listener presses play again, instead of leaving the old
     // marked-as state showing until the next periodic save.
     saveAudiobookProgressNow();
+    sendAudiobookPlaybackHeartbeat();
   });
   audio.addEventListener("pause", () => {
     setAudiobookPlayIcon(false);
     saveAudiobookProgressNow();
+    sendAudiobookPlaybackHeartbeat();
   });
   audio.addEventListener("ended", () => {
     setAudiobookPlayIcon(false);
     saveAudiobookProgressNow();
+    sendAudiobookPlaybackHeartbeat();
   });
   audiobookAudioEl = audio;
   return audio;
@@ -4511,7 +4675,74 @@ function setAudiobookPlayIcon(playing) {
   audiobookPlayerPlayButton?.setAttribute("aria-label", playing ? "Pause" : "Play");
 }
 
+// setAudiobookMiniPlayerOpen shows/hides the mini bar and keeps a body class
+// in sync so other mobile chrome (the raised "+" nav button, which would
+// otherwise poke up through the bar) can shrink out of its way via CSS.
+function setAudiobookMiniPlayerOpen(open) {
+  audiobookMiniPlayer?.classList.toggle("is-open", open);
+  document.body.classList.toggle("audiobook-mini-player-open", open);
+}
+
+// setAudiobookMiniPlayerCollapsed toggles between the full mini bar (progress
+// + controls visible) and just its handle peeking above the nav - unlike the
+// bar's own close button, playback, the audio element, and every background
+// timer are left completely alone either way. The handle is the one thing
+// that's always on screen while a book is docked, so there's always
+// something to tap to bring the rest back.
+function setAudiobookMiniPlayerCollapsed(collapsed) {
+  audiobookMiniPlayer?.classList.toggle("is-collapsed", collapsed);
+  audiobookMiniPlayerHandle?.setAttribute("aria-label", collapsed ? "Show player" : "Collapse player");
+  audiobookMiniPlayerHandle?.setAttribute("aria-expanded", String(!collapsed));
+}
+
+// restoreAudiobookBottombarNodes moves the seek slider and transport controls
+// back into the full player's bottombar (ahead of the speed/timer/bookmark
+// row they started before) and hides the mini player. Safe to call whether or
+// not they are currently out in the mini player.
+function restoreAudiobookBottombarNodes() {
+  if (audiobookPlayerBottombar && audiobookPlayerBottombarRow) {
+    if (audiobookPlayerProgressWrap) audiobookPlayerBottombar.insertBefore(audiobookPlayerProgressWrap, audiobookPlayerBottombarRow);
+    if (audiobookPlayerControls) audiobookPlayerBottombar.insertBefore(audiobookPlayerControls, audiobookPlayerBottombarRow);
+  }
+  setAudiobookMiniPlayerOpen(false);
+  setAudiobookMiniPlayerCollapsed(false);
+}
+
+// minimizeAudiobookPlayer hides the full player dialog but keeps the audio
+// element, its state, and all the background timers (heartbeat, progress
+// save, elsewhere-poll) running exactly as they were - only the seek slider
+// and transport controls move, into the mini bar docked at the bottom of the
+// screen, so playback is uninterrupted.
+function minimizeAudiobookPlayer() {
+  if (!state.audiobooks.player) return;
+  setAudiobookVolumeExpanded(false);
+  if (audiobookMiniPlayerProgressSlot && audiobookPlayerProgressWrap) audiobookMiniPlayerProgressSlot.appendChild(audiobookPlayerProgressWrap);
+  if (audiobookMiniPlayerControlsSlot && audiobookPlayerControls) audiobookMiniPlayerControlsSlot.appendChild(audiobookPlayerControls);
+  setAudiobookMiniPlayerCollapsed(false);
+  setAudiobookMiniPlayerOpen(true);
+  audiobookPlayerModal?.close();
+}
+
+// expandAudiobookPlayer reopens the full player from the mini bar, picking up
+// the same in-progress playback rather than reloading the audiobook.
+function expandAudiobookPlayer() {
+  if (!state.audiobooks.player) return;
+  restoreAudiobookBottombarNodes();
+  audiobookPlayerModal?.showModal();
+}
+
 async function openAudiobookPlayer(item) {
+  // Re-opening the book that's already loaded (just minimized) should pick up
+  // where it is, not reload the audiobook and restart playback from scratch.
+  if (state.audiobooks.player?.id === item.id && audiobookAudioEl && !audiobookPlayerModal?.open) {
+    expandAudiobookPlayer();
+    return;
+  }
+  // A different book than the one minimized (or none at all) - make sure the
+  // slider/controls are back in the dialog before it shows, instead of stuck
+  // out in a mini player that's about to be hidden.
+  restoreAudiobookBottombarNodes();
+
   const audio = getAudiobookAudioElement();
   audio.pause();
   cancelSleepTimer({ silent: true });
@@ -4541,6 +4772,7 @@ async function openAudiobookPlayer(item) {
   if (audiobookPlayerCurrentTime) audiobookPlayerCurrentTime.textContent = "0:00";
   if (audiobookPlayerDuration) audiobookPlayerDuration.textContent = "0:00";
   if (audiobookPlayerRemaining) audiobookPlayerRemaining.textContent = "";
+  setAudiobookVolumeExpanded(false);
   if (audiobookPlayerSpeed) audiobookPlayerSpeed.value = "1";
   audio.playbackRate = 1;
   applyDefaultMediaVolume(audio);
@@ -4549,23 +4781,59 @@ async function openAudiobookPlayer(item) {
 
   audiobookPlayerModal?.showModal();
   audio.src = item.stream_url;
+  renderAudiobookPlaybackElsewhere(null);
 
+  // Autoplay-on-open has to wait on BOTH the audio metadata and the
+  // elsewhere-check, whichever lands last - jumping straight to play() the
+  // instant metadata is ready would start a second simultaneous playback
+  // before we've had a chance to find out this book is already playing on
+  // another device.
   const resumeAt = item.position_seconds || 0;
-  const onReady = () => {
+  let metadataReady = false;
+  let elsewhereChecked = false;
+  const tryAutoplayDecision = () => {
+    if (!metadataReady || !elsewhereChecked) return;
     if (resumeAt > 1 && resumeAt < audio.duration - 2) {
       audio.currentTime = resumeAt;
+    }
+    if (audiobookPlaybackElsewhereState) {
+      if (audiobookPlayerStatus) audiobookPlayerStatus.textContent = "Playing on another device — tap play to listen here too.";
+      return;
     }
     audio.play().catch(() => {
       if (audiobookPlayerStatus) audiobookPlayerStatus.textContent = "Tap play to start listening.";
     });
+  };
+  const onReady = () => {
+    metadataReady = true;
+    tryAutoplayDecision();
     audio.removeEventListener("loadedmetadata", onReady);
   };
   audio.addEventListener("loadedmetadata", onReady);
+
+  fetchAudiobookPlaybackElsewhere(item.id).then((info) => {
+    elsewhereChecked = true;
+    if (state.audiobooks.player?.id !== item.id) return;
+    renderAudiobookPlaybackElsewhere(info);
+    tryAutoplayDecision();
+  }).catch((error) => {
+    console.error(error);
+    elsewhereChecked = true;
+    tryAutoplayDecision();
+  });
 
   if (audiobookProgressSaveTimer) window.clearInterval(audiobookProgressSaveTimer);
   audiobookProgressSaveTimer = window.setInterval(() => {
     if (!audio.paused) saveAudiobookProgressNow();
   }, AUDIOBOOK_PROGRESS_SAVE_INTERVAL_MS);
+
+  if (audiobookPlaybackHeartbeatTimer) window.clearInterval(audiobookPlaybackHeartbeatTimer);
+  audiobookPlaybackHeartbeatTimer = window.setInterval(() => {
+    if (!audio.paused) sendAudiobookPlaybackHeartbeat();
+  }, AUDIOBOOK_PLAYBACK_HEARTBEAT_INTERVAL_MS);
+
+  if (audiobookPlaybackElsewherePollTimer) window.clearInterval(audiobookPlaybackElsewherePollTimer);
+  audiobookPlaybackElsewherePollTimer = window.setInterval(pollAudiobookPlaybackElsewhere, AUDIOBOOK_PLAYBACK_ELSEWHERE_POLL_INTERVAL_MS);
 
   fetchAudiobookBookmarks(item.id).catch((error) => console.error(error));
 }
@@ -4769,6 +5037,7 @@ function renderAudiobookPlayerBookmarks() {
       <button type="button" class="audiobook-player-bookmark-jump" data-bookmark-start="${bookmark.position_seconds}">
         <span class="audiobook-player-bookmark-label">${escapeHTML(bookmark.label || "Bookmark")}</span>
         <span class="audiobook-player-bookmark-time">${formatMediaTime(bookmark.position_seconds)}</span>
+        <span class="audiobook-player-bookmark-created" title="${escapeHTML(formatDateTimeZoned(bookmark.created_at))}">${escapeHTML(formatRelativeTime(bookmark.created_at))}</span>
       </button>
       <button type="button" class="audiobook-player-bookmark-delete" aria-label="Delete bookmark">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14" /><path d="M8 7V5.5A1.5 1.5 0 0 1 9.5 4h5A1.5 1.5 0 0 1 16 5.5V7" /><path d="M7 7v11.5A1.5 1.5 0 0 0 8.5 20h7a1.5 1.5 0 0 0 1.5-1.5V7" /></svg>
@@ -4824,7 +5093,7 @@ async function createAudiobookBookmark(label) {
     const bookmark = await response.json();
     if (state.audiobooks.player?.id !== player.id) return;
     state.audiobooks.player.bookmarks = [...(state.audiobooks.player.bookmarks || []), bookmark]
-      .sort((a, b) => a.position_seconds - b.position_seconds);
+      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
     renderAudiobookPlayerBookmarks();
     return bookmark;
   } catch (error) {
@@ -4979,6 +5248,10 @@ function closeAudiobookPlayer() {
   if (audio) {
     audio.pause();
     saveAudiobookProgressNow();
+    // The "pause" event (and its heartbeat) fires as a queued task, which can
+    // land after player state below is cleared - send the stopped signal
+    // directly here instead of relying on that event's timing.
+    sendAudiobookPlaybackStoppedSignal();
     audio.removeAttribute("src");
     audio.load();
   }
@@ -4986,6 +5259,17 @@ function closeAudiobookPlayer() {
     window.clearInterval(audiobookProgressSaveTimer);
     audiobookProgressSaveTimer = null;
   }
+  if (audiobookPlaybackHeartbeatTimer) {
+    window.clearInterval(audiobookPlaybackHeartbeatTimer);
+    audiobookPlaybackHeartbeatTimer = null;
+  }
+  if (audiobookPlaybackElsewherePollTimer) {
+    window.clearInterval(audiobookPlaybackElsewherePollTimer);
+    audiobookPlaybackElsewherePollTimer = null;
+  }
+  renderAudiobookPlaybackElsewhere(null);
+  restoreAudiobookBottombarNodes();
+  setAudiobookVolumeExpanded(false);
   cancelSleepTimer({ silent: true });
   state.audiobooks.player = null;
   audiobookPlayerModal?.close();
@@ -6504,8 +6788,29 @@ async function openNextAdminTagReview() {
   }
 }
 
+// pauseAudiobookForMemeModal pauses an actively-playing audiobook when the
+// meme modal opens - attention-grabbing narration competing with whatever the
+// listener just opened is rarely wanted. It's a no-op (and leaves the "did we
+// pause this" flag false) if nothing was playing, so closing the modal later
+// won't start playback the listener hadn't started themselves.
+function pauseAudiobookForMemeModal() {
+  if (audiobookAudioEl && !audiobookAudioEl.paused) {
+    audiobookAudioEl.pause();
+    audiobookPausedForMemeModal = true;
+  }
+}
+
+// resumeAudiobookAfterMemeModal undoes pauseAudiobookForMemeModal once the
+// meme modal actually closes.
+function resumeAudiobookAfterMemeModal() {
+  if (!audiobookPausedForMemeModal) return;
+  audiobookPausedForMemeModal = false;
+  audiobookAudioEl?.play().catch((error) => console.error(error));
+}
+
 function openModalWithMeme(meme) {
   if (!meme) return;
+  pauseAudiobookForMemeModal();
 
   const modalURL = window.location.href;
   const openedFromDeepLink = !memeModal.open && !!deepLinkedMemeID();
@@ -6635,6 +6940,10 @@ function closeModal(options = {}) {
   overlayClose.classList.add("hidden");
   if (!options.continueAdminReview) {
     adminTagReviewSessionActive = false;
+    // The admin tag-review flow closes this modal only to immediately reopen
+    // it on the next meme - resuming here would just mean pausing again a
+    // moment later, an audible blip for no reason.
+    resumeAudiobookAfterMemeModal();
   }
   clearMemeDeepLinkURL();
   if (options.syncHistory !== false && !options.continueAdminReview) {
@@ -7833,10 +8142,28 @@ audiobookSeriesAssignButton?.addEventListener("click", () => {
   assignAudiobookToSeries(audiobookId, seriesId, sequence).catch((error) => console.error(error));
 });
 
-audiobookPlayerClose?.addEventListener("click", closeAudiobookPlayer);
+audiobookPlayerClose?.addEventListener("click", minimizeAudiobookPlayer);
 audiobookPlayerModal?.addEventListener("cancel", (event) => {
   event.preventDefault();
+  minimizeAudiobookPlayer();
+});
+audiobookMiniPlayerClose?.addEventListener("click", (event) => {
+  event.stopPropagation();
   closeAudiobookPlayer();
+});
+audiobookMiniPlayerHandle?.addEventListener("click", (event) => {
+  event.stopPropagation();
+  const collapsed = audiobookMiniPlayer?.classList.contains("is-collapsed") || false;
+  setAudiobookMiniPlayerCollapsed(!collapsed);
+});
+audiobookMiniPlayer?.addEventListener("click", (event) => {
+  if (event.target.closest("input, button")) return;
+  expandAudiobookPlayer();
+});
+audiobookPlayerModal?.addEventListener("click", (event) => {
+  if (audiobookPlayerVolumeWrap?.classList.contains("is-expanded") && !audiobookPlayerVolumeWrap.contains(event.target)) {
+    setAudiobookVolumeExpanded(false);
+  }
 });
 audiobookPlayerFlip?.addEventListener("click", () => {
   audiobookPlayerFlip.classList.toggle("is-flipped");
@@ -7871,6 +8198,32 @@ audiobookPlayerAddBookmarkButton?.addEventListener("click", () => {
     showToast("Bookmark added.", "success", { title: "Audiobooks" });
     flashAudiobookActionButton(audiobookPlayerAddBookmarkButton, audiobookPlayerAddBookmarkButton.querySelector("span"), "Saved!");
   }).catch((error) => console.error(error));
+});
+audiobookPlayerElsewhereAction?.addEventListener("click", async () => {
+  const player = state.audiobooks.player;
+  const audio = audiobookAudioEl;
+  const elsewhere = audiobookPlaybackElsewhereState;
+  if (!player || !audio || !elsewhere) return;
+  try {
+    const response = await fetch(`/api/audiobooks/${encodeURIComponent(player.id)}/playback-elsewhere/pause`, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ deviceId: getAudiobookDeviceId() }),
+    });
+    if (!(await expectAuthorized(response, "Could not pause the other device."))) return;
+  } catch (error) {
+    console.error(error);
+    showToast("Could not pause the other device.", "error", { title: "Audiobooks" });
+    return;
+  }
+  renderAudiobookPlaybackElsewhere(null);
+  const targetPosition = elsewhere.positionSeconds;
+  if (Number.isFinite(targetPosition) && targetPosition > 0 && audio.duration && targetPosition < audio.duration - 1) {
+    audio.currentTime = targetPosition;
+  }
+  audio.play().catch((error) => console.error(error));
+  showToast("Paused on the other device.", "success", { title: "Audiobooks" });
 });
 audiobookPlayerSleepTimerButton?.addEventListener("click", openSleepTimerPicker);
 sleepTimerOptions?.querySelectorAll(".sleep-timer-option").forEach((button) => {
@@ -7916,11 +8269,17 @@ audiobookPlayerMarkFinished?.addEventListener("click", async () => {
   setAudiobookPlayerPosition(duration).catch((error) => console.error(error));
 });
 audiobookPlayerVolume?.addEventListener("input", () => {
+  scheduleAudiobookVolumeAutoHide();
   const audio = getAudiobookAudioElement();
   const volume = Number(audiobookPlayerVolume.value) / 100;
   audio.volume = volume;
   audio.muted = volume === 0;
   syncStoredMediaVolumeFromElement(audio);
+});
+audiobookPlayerVolume?.addEventListener("pointerdown", scheduleAudiobookVolumeAutoHide);
+audiobookPlayerVolumeToggle?.addEventListener("click", () => {
+  const expanded = audiobookPlayerVolumeWrap?.classList.contains("is-expanded") || false;
+  setAudiobookVolumeExpanded(!expanded);
 });
 audiobookPlayerProgress?.addEventListener("input", () => {
   audiobookPlayerProgressDragging = true;
@@ -7955,7 +8314,10 @@ audiobookPlayerProgress?.addEventListener("change", () => {
 });
 
 window.addEventListener("beforeunload", () => {
-  if (state.audiobooks.player) saveAudiobookProgressNow();
+  if (state.audiobooks.player) {
+    saveAudiobookProgressNow();
+    sendAudiobookPlaybackStoppedSignal();
+  }
 });
 
 uploadModalClose.addEventListener("click", () => {

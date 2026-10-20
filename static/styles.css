@@ -356,7 +356,7 @@ body.library-list-view .preview-frame { aspect-ratio: auto; height: 130px; }
   .library-toolbar { margin: 20px auto 0; }
   .admin-view-header { display: block; }.admin-view-copy { text-align: left; }.admin-tabs { margin-inline: -14px; padding-inline: 14px; }.admin-dashboard-grid { grid-template-columns: 1fr 1fr; }.admin-dashboard-card { min-height: 104px; padding: 14px; }.admin-dashboard-lower, .admin-tag-hygiene-lower, .admin-backup-panel { grid-template-columns: 1fr; }.admin-tag-queue-header, .admin-tag-merge-form, .users-add-form { align-items: stretch; flex-direction: column; }.admin-tag-queue-grid { grid-template-columns: 1fr 1fr; }
   .mobile-bottom-nav { position: fixed; right: 0; bottom: 0; left: 0; z-index: 30; display: grid; grid-template-columns: repeat(5,1fr); height: calc(70px + env(safe-area-inset-bottom)); padding: 7px 4px env(safe-area-inset-bottom); border-top: 1px solid var(--line-strong); background: rgba(20,20,24,.97); backdrop-filter: blur(16px); }.mobile-bottom-nav button { display: grid; gap: 2px; place-items: center; padding: 3px; border: 0; background: transparent; color: #aaa49d; font-size: 10px; }.mobile-bottom-nav button span { font-size: 19px; }.mobile-bottom-nav button:first-child { color: var(--green); }.mobile-add-button span { display: grid; width: 48px; height: 48px; place-items: center; margin-top: -30px; border-radius: 50%; background: linear-gradient(135deg,#c9955d,#b27a42); color: white; font-size: 30px !important; box-shadow: 0 8px 25px rgba(158,102,53,.32); transition: width .18s ease, height .18s ease, margin .18s ease, font-size .18s ease, box-shadow .18s ease; }.mobile-add-button { color: var(--text) !important; }
-  body.drawer-open .mobile-add-button span { width: 38px; height: 38px; margin-top: 0; font-size: 24px !important; box-shadow: 0 4px 14px rgba(158,102,53,.25); }
+  body.drawer-open .mobile-add-button span, body.audiobook-mini-player-open .mobile-add-button span { width: 38px; height: 38px; margin-top: 0; font-size: 24px !important; box-shadow: 0 4px 14px rgba(158,102,53,.25); }
   .toast-region { bottom: calc(82px + env(safe-area-inset-bottom)); }
   .choice-modal-card { margin: 5vh auto; }.ingest-choice-grid { grid-template-columns: 1fr; }.upload-modal-shell { display: block; width: 100%; height: 100%; margin: 0; border: 0; border-radius: 0; }.upload-preview-wrap { height: 32vh; padding: 12px; }.upload-modal-body { padding: 19px 16px 90px; border: 0; }.users-modal .upload-modal-shell { width: 100%; max-height: none; }
   .meme-modal { padding: 0; }.modal-shell { position: relative; display: block; border: 0; border-radius: 0; }.modal-preview-wrap { width: 100%; height: 100%; }.modal-body { position: absolute; right: 0; bottom: 0; left: 0; z-index: 5; max-height: 72%; padding: 19px 16px 86px; border: 1px solid var(--line-strong); border-radius: 20px 20px 0 0; background: #1b1b21; transform: translateY(105%); transition: transform .22s; }.meme-modal.details-open .modal-body { transform: translateY(0); }.modal-panel-toggle { position: absolute; right: 14px; bottom: 15px; z-index: 4; display: block; min-height: 40px; padding: 0 14px; border: 1px solid var(--line); border-radius: 10px; background: rgba(20,20,24,.9); color: white; }.modal-drawer-button:first-child { display: block; }.modal-preview { padding: 10px; }
@@ -4095,6 +4095,43 @@ body.admin-mode .admin-tab.is-active .admin-tab-badge { background: var(--green-
 .audiobook-player-topbar-toggles { display: flex; flex-shrink: 0; gap: 8px; }
 .audiobook-player-panel-toggle.is-active { border-color: var(--green); color: var(--green-bright); }
 
+/* A slim strip under the topbar rather than anything inline with the cover
+   art - it needs to be noticed the moment the player opens, but shouldn't
+   shove the centered stage layout around when it appears or disappears. */
+.audiobook-player-elsewhere-banner {
+  display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 20px; border-bottom: 1px solid rgba(232,184,78,.3); background: rgba(232,184,78,.12);
+  color: var(--amber); font-size: 13px;
+}
+.audiobook-player-elsewhere-banner.hidden { display: none; }
+.audiobook-player-elsewhere-action {
+  flex-shrink: 0; padding: 7px 14px; border: 1px solid var(--amber); border-radius: 999px;
+  background: rgba(232,184,78,.18); color: var(--amber); font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap;
+}
+.audiobook-player-elsewhere-action:hover { background: rgba(232,184,78,.28); }
+
+.audiobook-player-volume-wrap { position: relative; }
+/* A vertical popover anchored under its toggle button rather than a row the
+   bottombar always had to make room for - it only exists while open, and
+   closes itself (see the auto-hide timer in app.js) instead of permanently
+   costing a slot in the already-tight transport controls. */
+.audiobook-player-volume-popover {
+  position: absolute; top: calc(100% + 10px); left: 50%; z-index: 20;
+  display: flex; align-items: center; justify-content: center;
+  width: 44px; height: 140px; padding: 16px 0;
+  border: 1px solid var(--line); border-radius: 14px; background: var(--panel); box-shadow: var(--shadow);
+  opacity: 0; visibility: hidden; pointer-events: none;
+  transform: translateX(-50%) translateY(-6px);
+  transition: opacity .15s ease, transform .15s ease, visibility .15s;
+}
+.audiobook-player-volume-wrap.is-expanded .audiobook-player-volume-popover {
+  opacity: 1; visibility: visible; pointer-events: auto; transform: translateX(-50%) translateY(0);
+}
+.audiobook-player-volume-range {
+  writing-mode: vertical-lr; direction: rtl;
+  width: 6px; height: 100%;
+}
+
 .audiobook-player-main { position: relative; display: flex; flex: 1; min-height: 0; overflow: hidden; }
 .audiobook-player-stage { display: flex; flex: 1; min-width: 0; flex-direction: column; align-items: center; justify-content: center; gap: 22px; padding: 16px 24px; overflow-y: auto; }
 
@@ -4116,6 +4153,7 @@ body.admin-mode .admin-tab.is-active .admin-tab-badge { background: var(--green-
 
 .audiobook-player-stage h2 { margin: 0; max-width: 440px; overflow-wrap: anywhere; font-size: 20px; text-align: center; }
 .audiobook-player-author { margin: 0; color: var(--muted); font-size: 14px; text-align: center; }
+.audiobook-player-remaining { margin-top: -14px; color: var(--faint); font-size: 12px; text-align: center; }
 
 .audiobook-player-chapters-panel { display: flex; width: 320px; max-width: 80vw; flex-shrink: 0; flex-direction: column; gap: 10px; padding: 20px; overflow-y: auto; border-left: 1px solid var(--line); background: rgba(10,10,13,.5); }
 .audiobook-player-chapters-panel.hidden { display: none; }
@@ -4141,7 +4179,6 @@ body.admin-mode .admin-tab.is-active .admin-tab-badge { background: var(--green-
 .audiobook-player-chapter-nav:disabled:hover { background: transparent; }
 .audiobook-player-play { display: grid; width: 60px; height: 60px; place-items: center; border: 0; border-radius: 50%; background: linear-gradient(135deg,#b27a42,#8d5e31); color: #fff; font-size: 22px; cursor: pointer; box-shadow: 0 10px 24px rgba(141,94,49,.4); }
 .audiobook-player-play:hover { filter: brightness(1.08); }
-.audiobook-player-remaining { margin: -4px 0 0; color: var(--muted); font-size: 12px; text-align: center; }
 .audiobook-player-speed-field { display: flex; align-items: center; gap: 8px; justify-self: start; color: var(--muted); font-size: 12px; }
 .audiobook-player-speed-field select { padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg-soft); color: var(--text); font-size: 13px; }
 .audiobook-player-action-group { display: flex; justify-content: center; gap: 10px; }
@@ -4165,6 +4202,7 @@ body.admin-mode .admin-tab.is-active .admin-tab-badge { background: var(--green-
 .audiobook-player-bookmark-jump { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 2px; min-width: 0; padding: 10px 12px; border: 0; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
 .audiobook-player-bookmark-label { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .audiobook-player-bookmark-time { color: var(--faint); font-size: 12px; }
+.audiobook-player-bookmark-created { color: var(--faint); font-size: 11px; opacity: .75; }
 .audiobook-player-bookmark-delete { flex-shrink: 0; display: grid; width: 50px; place-items: center; border: 0; border-left: 1px solid var(--line); background: var(--panel-2); color: var(--faint); cursor: pointer; transition: background .15s ease, color .15s ease; }
 .audiobook-player-bookmark-delete:hover, .audiobook-player-bookmark-delete:active {
   background: var(--red) !important; color: #fff !important; animation: audiobookDeleteHoverPop .4s ease forwards;
@@ -4176,9 +4214,6 @@ body.admin-mode .admin-tab.is-active .admin-tab-badge { background: var(--green-
   65% { transform: scale(.92) rotate(8deg); }
   100% { transform: scale(1.12) rotate(0deg); }
 }
-.audiobook-player-volume-field { display: flex; min-width: 140px; align-items: center; gap: 8px; justify-self: end; color: var(--muted); }
-.audiobook-player-volume-icon { width: 18px; height: 18px; flex-shrink: 0; }
-.audiobook-player-volume-field input[type="range"] { flex: 1; }
 
 @media (max-width: 900px) {
   /* A partial overlay sized to match the cover art looked clever but reads as
@@ -4188,13 +4223,12 @@ body.admin-mode .admin-tab.is-active .admin-tab-badge { background: var(--green-
      cap would otherwise still apply on top of inset:0 and leave a gap. */
   .audiobook-player-chapters-panel { position: absolute; inset: 0; z-index: 5; width: auto; max-width: none; height: auto; border-radius: 0; background: rgba(8,8,11,.92); backdrop-filter: blur(14px); box-shadow: none; }
   .audiobook-player-flip { width: min(55vh, 72vw); }
-  /* Below desktop width there isn't room for speed/timer/bookmark/volume
-     across one row - let them wrap as a centered flex row instead of forcing
-     three separate full-width stacked rows, which ate a lot of vertical
-     space for not much content. */
+  /* Below desktop width there isn't room for speed/timer/bookmark across one
+     row - let them wrap as a centered flex row instead of forcing two
+     separate full-width stacked rows, which ate a lot of vertical space for
+     not much content. */
   .audiobook-player-bottombar-row { display: flex; flex-wrap: wrap; justify-content: center; row-gap: 10px; column-gap: 16px; }
   .audiobook-player-speed-field { justify-self: unset; }
-  .audiobook-player-volume-field { justify-self: unset; width: auto; min-width: 150px; max-width: 220px; flex: 1 1 150px; }
 }
 
 @media (max-width: 760px) {
@@ -4202,6 +4236,9 @@ body.admin-mode .admin-tab.is-active .admin-tab-badge { background: var(--green-
   .audiobook-player-topbar { padding: calc(10px + env(safe-area-inset-top)) 12px 8px; }
   .audiobook-player-icon-button { width: 40px; height: 40px; }
   .audiobook-player-topbar .status-text { max-width: 40vw; overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+
+  .audiobook-player-elsewhere-banner { flex-wrap: wrap; padding: 8px 14px; font-size: 12px; }
+  .audiobook-player-elsewhere-action { padding: 6px 12px; font-size: 11px; }
 
   .audiobook-player-stage { gap: 10px; padding: 4px 18px; }
   .audiobook-player-flip { width: min(42vh, 68vw); }
@@ -4211,6 +4248,7 @@ body.admin-mode .admin-tab.is-active .admin-tab-badge { background: var(--green-
   .audiobook-player-meta-row dd { font-size: 15px; }
   .audiobook-player-stage h2 { font-size: 16px; }
   .audiobook-player-author { font-size: 12px; }
+  .audiobook-player-remaining { margin-top: -8px; font-size: 11px; }
 
   .audiobook-player-chapters-panel { padding: 18px; padding-top: calc(18px + env(safe-area-inset-top)); padding-bottom: calc(18px + env(safe-area-inset-bottom)); }
 
@@ -4219,7 +4257,6 @@ body.admin-mode .admin-tab.is-active .admin-tab-badge { background: var(--green-
      one compact row instead of spilling into a tall stack. */
   .audiobook-player-bottombar { gap: 6px; padding: 6px 12px calc(10px + env(safe-area-inset-bottom)); }
   .audiobook-player-progress-wrap { gap: 8px; }
-  .audiobook-player-remaining { margin-top: -2px; font-size: 11px; }
   .audiobook-player-controls { gap: 4px; }
   .audiobook-player-skip-button { min-width: 44px; height: 40px; font-size: 11px; }
   .audiobook-player-chapter-nav { width: 34px; height: 34px; }
@@ -4231,7 +4268,61 @@ body.admin-mode .admin-tab.is-active .admin-tab-badge { background: var(--green-
   .audiobook-player-action-group { gap: 6px; flex-wrap: wrap; justify-content: center; }
   .audiobook-player-action-button { gap: 5px; padding: 6px 10px; font-size: 11px; }
   .audiobook-player-action-button span { font-size: 11px; }
-  .audiobook-player-volume-field { gap: 5px; min-width: 0; max-width: 110px; }
+}
+
+/* Minimized audiobook player: a slim bar docked to the bottom of the screen
+   that slides up into view (and back down on close) rather than just
+   appearing/disappearing. It's not a second copy of the controls -
+   minimizeAudiobookPlayer() in app.js physically moves the real
+   .audiobook-player-progress-wrap and .audiobook-player-controls nodes in
+   here (and back again on expand/close), so there is exactly one seek slider
+   and one set of transport buttons, never two drifting out of sync. Tapping
+   anywhere on the bar besides those controls (or the close button) re-opens
+   the full player. */
+.audiobook-mini-player {
+  position: fixed; right: 0; bottom: 0; left: 0; z-index: 40;
+  display: flex; flex-direction: column;
+  padding: 10px 14px calc(10px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--line-strong); background: rgba(14,14,17,.95);
+  backdrop-filter: blur(14px); box-shadow: 0 -10px 26px rgba(0,0,0,.35);
+  transform: translateY(100%); transition: transform .28s cubic-bezier(.2,.8,.2,1);
+  pointer-events: none;
+}
+.audiobook-mini-player.is-open { transform: translateY(0); pointer-events: auto; }
+/* A drag-handle-style tab, always visible whenever the bar is docked at all -
+   tapping it toggles between the full bar (progress + controls) and just this
+   handle peeking above the nav, so there's always something on screen to tap
+   to bring it back. Its own close button (which stops playback) is separate
+   and lives in the content below. The hit target is the full-width button;
+   the visible pill is just the small span centered inside it. */
+.audiobook-mini-player-handle { display: flex; flex-shrink: 0; align-items: center; justify-content: center; width: 100%; height: 18px; padding: 0; border: 0; background: transparent; cursor: pointer; }
+.audiobook-mini-player-handle span { width: 40px; height: 5px; border-radius: 999px; background: var(--line-strong); transition: background .15s ease; }
+.audiobook-mini-player-handle:hover span { background: var(--muted); }
+/* Collapsing hides this (height/opacity, not display) so the handle above it
+   can animate smoothly instead of popping. */
+.audiobook-mini-player-content { display: flex; flex-direction: column; gap: 6px; overflow: hidden; max-height: 160px; opacity: 1; transition: max-height .22s ease, opacity .18s ease; }
+.audiobook-mini-player.is-collapsed .audiobook-mini-player-content { max-height: 0; opacity: 0; pointer-events: none; }
+.audiobook-mini-player-top { display: flex; align-items: center; gap: 10px; padding-top: 4px; cursor: pointer; }
+.audiobook-mini-player-progress-slot { flex: 1; min-width: 0; }
+.audiobook-mini-player-progress-slot .audiobook-player-progress-wrap { gap: 8px; }
+.audiobook-mini-player-close { flex-shrink: 0; }
+.audiobook-mini-player-controls-slot { display: flex; justify-content: center; cursor: pointer; }
+.audiobook-mini-player-controls-slot .audiobook-player-controls { gap: 6px; }
+.audiobook-mini-player-controls-slot .audiobook-player-play { width: 44px; height: 44px; font-size: 16px; }
+.audiobook-mini-player-controls-slot .audiobook-player-chapter-nav { width: 32px; height: 32px; }
+.audiobook-mini-player-controls-slot .audiobook-player-skip-button { min-width: 42px; height: 36px; font-size: 11px; }
+
+@media (max-width: 760px) {
+  /* Sits just above the mobile bottom nav instead of covering it. The closed
+     transform has to travel that extra "bottom" distance on top of its own
+     height (100%), or it would still overlap the nav by exactly that amount
+     while "hidden" - translateY(100%) alone only ever accounts for the box's
+     own height. .is-open (0,2,0 specificity) still wins over this plain class
+     rule (0,1,0) regardless of viewport width, so no need to repeat it here. */
+  .audiobook-mini-player {
+    bottom: calc(70px + env(safe-area-inset-bottom)); padding: 8px 12px;
+    transform: translateY(calc(100% + 70px + env(safe-area-inset-bottom) + 2px));
+  }
 }
 
 /* Generic confirm modal: a styled stand-in for window.confirm(), currently

@@ -793,6 +793,14 @@
           </button>
           <p id="audiobook-player-status" class="status-text"></p>
           <div class="audiobook-player-topbar-toggles">
+            <div id="audiobook-player-volume-wrap" class="audiobook-player-volume-wrap">
+              <button id="audiobook-player-volume-toggle" class="audiobook-player-icon-button audiobook-player-panel-toggle" type="button" aria-label="Volume" aria-expanded="false" aria-controls="audiobook-player-volume-popover">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 13a7 7 0 0 1 14 0" /><path d="M6 13h2a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1Z" /><path d="M16 13h2a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1Z" /></svg>
+              </button>
+              <div id="audiobook-player-volume-popover" class="audiobook-player-volume-popover">
+                <input id="audiobook-player-volume" class="audiobook-player-volume-range" type="range" min="0" max="100" value="10" aria-label="Volume" />
+              </div>
+            </div>
             <button id="audiobook-player-bookmarks-toggle" class="audiobook-player-icon-button audiobook-player-panel-toggle" type="button" aria-label="Toggle bookmarks" aria-expanded="false">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5h10a1 1 0 0 1 1 1V20l-6-4-6 4V5.5a1 1 0 0 1 1-1Z" /></svg>
             </button>
@@ -801,6 +809,11 @@
             </button>
           </div>
         </header>
+
+        <div id="audiobook-player-elsewhere-banner" class="audiobook-player-elsewhere-banner hidden">
+          <span id="audiobook-player-elsewhere-text"></span>
+          <button id="audiobook-player-elsewhere-action" type="button" class="audiobook-player-elsewhere-action">Pause there, play here</button>
+        </div>
 
         <div class="audiobook-player-main">
           <div class="audiobook-player-stage">
@@ -819,6 +832,7 @@
             </button>
             <h2 id="audiobook-player-title"></h2>
             <p id="audiobook-player-author" class="audiobook-player-author"></p>
+            <p id="audiobook-player-remaining" class="audiobook-player-remaining"></p>
           </div>
 
           <aside id="audiobook-player-chapters-panel" class="audiobook-player-chapters-panel hidden">
@@ -841,14 +855,13 @@
           </aside>
         </div>
 
-        <div class="audiobook-player-bottombar">
-          <div class="audiobook-player-progress-wrap">
+        <div id="audiobook-player-bottombar" class="audiobook-player-bottombar">
+          <div id="audiobook-player-progress-wrap" class="audiobook-player-progress-wrap">
             <span id="audiobook-player-current-time" class="modal-time-label">0:00</span>
             <input id="audiobook-player-progress" class="modal-progress-slider" type="range" min="0" max="1000" value="0" step="1" aria-label="Playback progress" />
             <span id="audiobook-player-duration" class="modal-time-label">0:00</span>
           </div>
-          <p id="audiobook-player-remaining" class="audiobook-player-remaining"></p>
-          <div class="audiobook-player-controls">
+          <div id="audiobook-player-controls" class="audiobook-player-controls">
             <button id="audiobook-player-prev-chapter" type="button" class="audiobook-player-icon-button audiobook-player-chapter-nav" aria-label="Previous chapter" disabled>
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5v14" /><path d="M18 5 8 12l10 7V5Z" /></svg>
             </button>
@@ -865,7 +878,7 @@
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 5v14" /><path d="M6 5l10 7-10 7V5Z" /></svg>
             </button>
           </div>
-          <div class="audiobook-player-bottombar-row">
+          <div id="audiobook-player-bottombar-row" class="audiobook-player-bottombar-row">
             <label class="audiobook-player-speed-field">
               <span>Speed</span>
               <select id="audiobook-player-speed">
@@ -887,14 +900,25 @@
                 <span>Bookmark</span>
               </button>
             </div>
-            <div class="audiobook-player-volume-field">
-              <svg class="audiobook-player-volume-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 13a7 7 0 0 1 14 0" /><path d="M6 13h2a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1Z" /><path d="M16 13h2a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1Z" /></svg>
-              <input id="audiobook-player-volume" type="range" min="0" max="100" value="10" aria-label="Volume" />
-            </div>
           </div>
         </div>
       </div>
     </dialog>
+
+    <div id="audiobook-mini-player" class="audiobook-mini-player">
+      <button id="audiobook-mini-player-handle" type="button" class="audiobook-mini-player-handle" aria-label="Collapse player" aria-expanded="true">
+        <span></span>
+      </button>
+      <div id="audiobook-mini-player-content" class="audiobook-mini-player-content">
+        <div class="audiobook-mini-player-top">
+          <div id="audiobook-mini-player-progress-slot" class="audiobook-mini-player-progress-slot"></div>
+          <button id="audiobook-mini-player-close" type="button" class="audiobook-player-icon-button audiobook-mini-player-close" aria-label="Close player">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
+          </button>
+        </div>
+        <div id="audiobook-mini-player-controls-slot" class="audiobook-mini-player-controls-slot"></div>
+      </div>
+    </div>
 
     <template id="meme-card-template">
       <article class="meme-card">

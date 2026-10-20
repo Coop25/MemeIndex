@@ -121,6 +121,14 @@ type audiobookBookmark struct {
 	CreatedAt       time.Time
 }
 
+// audiobookPlaybackSession is a snapshot of another device's most recent
+// heartbeat for the same audiobook+user - enough to tell the listener "you're
+// also playing this somewhere else right now, at 12:34".
+type audiobookPlaybackSession struct {
+	PositionSeconds float64
+	UpdatedAt       time.Time
+}
+
 type audiobookUpload struct {
 	ID             string
 	UserID         string
@@ -219,6 +227,18 @@ type audiobookStore interface {
 	CreateBookmark(ctx context.Context, audiobookID, userID string, positionSeconds float64, label string) (audiobookBookmark, error)
 	ListBookmarks(ctx context.Context, audiobookID, userID string) ([]audiobookBookmark, error)
 	DeleteBookmark(ctx context.Context, id, userID string) error
+
+	// HeartbeatPlaybackSession records this device's current playback state for
+	// an audiobook and reports whether another device has asked it to stop
+	// (clearing that request as it does so).
+	HeartbeatPlaybackSession(ctx context.Context, audiobookID, userID, deviceID string, positionSeconds float64, isPlaying bool) (stopRequested bool, err error)
+	// OtherActivePlaybackSession returns the most recently updated OTHER
+	// device's playback session for this audiobook+user that is still playing
+	// and newer than activeSince, or ok=false if there is none.
+	OtherActivePlaybackSession(ctx context.Context, audiobookID, userID, deviceID string, activeSince time.Time) (session audiobookPlaybackSession, ok bool, err error)
+	// RequestOtherPlaybackSessionsStop asks every other device's session for
+	// this audiobook+user to pause on its next heartbeat.
+	RequestOtherPlaybackSessionsStop(ctx context.Context, audiobookID, userID, deviceID string) error
 }
 
 type postgresAudiobookStore struct {
@@ -251,7 +271,7 @@ func newAudiobookStore(ctx context.Context, databaseURL, dataDir string) (audiob
 	}
 
 	store := &postgresAudiobookStore{pool: pool, dir: dir, tmpDir: tmpDir, coversDir: coversDir}
-	if err := dbschema.Apply(ctx, pool, "015_audiobooks.sql", "016_audiobook_cover_art.sql", "017_audiobook_chapters.sql", "018_audiobook_narrator.sql", "019_audiobook_bookmarks.sql", "021_audiobook_series.sql", "022_audiobook_favorites.sql", "024_audiobook_upload_ranges.sql"); err != nil {
+	if err := dbschema.Apply(ctx, pool, "015_audiobooks.sql", "016_audiobook_cover_art.sql", "017_audiobook_chapters.sql", "018_audiobook_narrator.sql", "019_audiobook_bookmarks.sql", "021_audiobook_series.sql", "022_audiobook_favorites.sql", "024_audiobook_upload_ranges.sql", "025_audiobook_playback_sessions.sql"); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("ensure audiobooks schema: %w", err)
 	}
@@ -700,6 +720,68 @@ func (s *postgresAudiobookStore) SaveProgress(ctx context.Context, audiobookID, 
 	return nil
 }
 
+func (s *postgresAudiobookStore) HeartbeatPlaybackSession(ctx context.Context, audiobookID, userID, deviceID string, positionSeconds float64, isPlaying bool) (bool, error) {
+	var stopRequested bool
+	// The upsert records this device's heartbeat; "cleared" then checks (and,
+	// in the same statement, clears) stop_requested as it stood BEFORE this
+	// heartbeat - an UPDATE's WHERE clause evaluates against the pre-update
+	// row, so this is an atomic read-and-clear in one round trip rather than a
+	// separate read then write that could race with another heartbeat.
+	err := s.pool.QueryRow(ctx, `
+		WITH upsert AS (
+			INSERT INTO audiobook_playback_sessions (audiobook_id, user_id, device_id, position_seconds, is_playing, updated_at)
+			VALUES ($1, $2, $3, $4, $5, NOW())
+			ON CONFLICT (audiobook_id, user_id, device_id) DO UPDATE
+			SET position_seconds = EXCLUDED.position_seconds,
+				is_playing = EXCLUDED.is_playing,
+				updated_at = NOW()
+			RETURNING audiobook_id
+		),
+		cleared AS (
+			UPDATE audiobook_playback_sessions s
+			SET stop_requested = FALSE
+			FROM upsert
+			WHERE s.audiobook_id = upsert.audiobook_id AND s.user_id = $2 AND s.device_id = $3 AND s.stop_requested = TRUE
+			RETURNING TRUE AS was_set
+		)
+		SELECT COALESCE((SELECT was_set FROM cleared), FALSE)
+	`, audiobookID, userID, deviceID, positionSeconds, isPlaying).Scan(&stopRequested)
+	if err != nil {
+		return false, fmt.Errorf("heartbeat audiobook playback session: %w", err)
+	}
+	return stopRequested, nil
+}
+
+func (s *postgresAudiobookStore) OtherActivePlaybackSession(ctx context.Context, audiobookID, userID, deviceID string, activeSince time.Time) (audiobookPlaybackSession, bool, error) {
+	var session audiobookPlaybackSession
+	err := s.pool.QueryRow(ctx, `
+		SELECT position_seconds, updated_at
+		FROM audiobook_playback_sessions
+		WHERE audiobook_id = $1 AND user_id = $2 AND device_id != $3 AND is_playing = TRUE AND updated_at > $4
+		ORDER BY updated_at DESC
+		LIMIT 1
+	`, audiobookID, userID, deviceID, activeSince).Scan(&session.PositionSeconds, &session.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return audiobookPlaybackSession{}, false, nil
+	}
+	if err != nil {
+		return audiobookPlaybackSession{}, false, fmt.Errorf("get other active audiobook playback session: %w", err)
+	}
+	return session, true, nil
+}
+
+func (s *postgresAudiobookStore) RequestOtherPlaybackSessionsStop(ctx context.Context, audiobookID, userID, deviceID string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE audiobook_playback_sessions
+		SET stop_requested = TRUE, is_playing = FALSE
+		WHERE audiobook_id = $1 AND user_id = $2 AND device_id != $3
+	`, audiobookID, userID, deviceID)
+	if err != nil {
+		return fmt.Errorf("request audiobook playback sessions stop: %w", err)
+	}
+	return nil
+}
+
 func (s *postgresAudiobookStore) BackfillMetadata(ctx context.Context) (int, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, storage_path, filename, title, author, narrator
@@ -822,7 +904,7 @@ func (s *postgresAudiobookStore) ListBookmarks(ctx context.Context, audiobookID,
 		SELECT id, audiobook_id, user_id, position_seconds, label, created_at
 		FROM audiobook_bookmarks
 		WHERE audiobook_id = $1 AND user_id = $2
-		ORDER BY position_seconds ASC
+		ORDER BY created_at DESC
 	`, audiobookID, userID)
 	if err != nil {
 		return nil, fmt.Errorf("list audiobook bookmarks: %w", err)

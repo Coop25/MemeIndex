@@ -106,6 +106,12 @@ func (s *Server) handleAudiobookByID(w http.ResponseWriter, r *http.Request) {
 		s.deleteAudiobook(w, r, id)
 	case action == "progress" && r.Method == http.MethodPut:
 		s.saveAudiobookProgress(w, r, id)
+	case action == "playback-heartbeat" && r.Method == http.MethodPut:
+		s.saveAudiobookPlaybackHeartbeat(w, r, id)
+	case action == "playback-elsewhere" && r.Method == http.MethodGet:
+		s.getAudiobookPlaybackElsewhere(w, r, id)
+	case action == "playback-elsewhere/pause" && r.Method == http.MethodPost:
+		s.pauseAudiobookPlaybackElsewhere(w, r, id)
 	case action == "bookmarks" && r.Method == http.MethodGet:
 		s.listAudiobookBookmarks(w, r, id)
 	case action == "bookmarks" && r.Method == http.MethodPost:
@@ -189,6 +195,91 @@ func (s *Server) saveAudiobookProgress(w http.ResponseWriter, r *http.Request, i
 	if err := s.audiobooks.SaveProgress(r.Context(), id, userID, payload.PositionSeconds); err != nil {
 		log.Printf("save audiobook progress failed: %v", err)
 		http.Error(w, "failed to save progress", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// audiobookPlaybackActiveWindow is how recently another device's heartbeat
+// must have landed for that device to still count as "playing right now"
+// rather than a stale session left over from a tab that was closed without a
+// clean pause.
+const audiobookPlaybackActiveWindow = 20 * time.Second
+
+// audiobookDeviceIDMaxLen bounds the client-supplied device id. It's just an
+// opaque label a browser invents for itself to tell its own heartbeats apart
+// from another device's, not anything that needs to carry real identity.
+const audiobookDeviceIDMaxLen = 128
+
+func (s *Server) saveAudiobookPlaybackHeartbeat(w http.ResponseWriter, r *http.Request, id string) {
+	var payload struct {
+		DeviceID        string  `json:"deviceId"`
+		PositionSeconds float64 `json:"positionSeconds"`
+		IsPlaying       bool    `json:"isPlaying"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&payload); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	deviceID := strings.TrimSpace(payload.DeviceID)
+	if deviceID == "" || len(deviceID) > audiobookDeviceIDMaxLen {
+		http.Error(w, "deviceId is required", http.StatusBadRequest)
+		return
+	}
+	if payload.PositionSeconds < 0 {
+		payload.PositionSeconds = 0
+	}
+
+	stopRequested, err := s.audiobooks.HeartbeatPlaybackSession(r.Context(), id, currentAudiobookUserID(r), deviceID, payload.PositionSeconds, payload.IsPlaying)
+	if err != nil {
+		log.Printf("audiobook playback heartbeat failed: %v", err)
+		http.Error(w, "failed to record playback heartbeat", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"stopRequested": stopRequested})
+}
+
+func (s *Server) getAudiobookPlaybackElsewhere(w http.ResponseWriter, r *http.Request, id string) {
+	deviceID := strings.TrimSpace(r.URL.Query().Get("deviceId"))
+	if deviceID == "" || len(deviceID) > audiobookDeviceIDMaxLen {
+		http.Error(w, "deviceId is required", http.StatusBadRequest)
+		return
+	}
+
+	session, ok, err := s.audiobooks.OtherActivePlaybackSession(r.Context(), id, currentAudiobookUserID(r), deviceID, time.Now().Add(-audiobookPlaybackActiveWindow))
+	if err != nil {
+		log.Printf("get other audiobook playback session failed: %v", err)
+		http.Error(w, "failed to check other devices", http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		writeJSON(w, http.StatusOK, map[string]any{"active": false})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"active":           true,
+		"position_seconds": session.PositionSeconds,
+		"updated_at":       session.UpdatedAt,
+	})
+}
+
+func (s *Server) pauseAudiobookPlaybackElsewhere(w http.ResponseWriter, r *http.Request, id string) {
+	var payload struct {
+		DeviceID string `json:"deviceId"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&payload); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	deviceID := strings.TrimSpace(payload.DeviceID)
+	if deviceID == "" || len(deviceID) > audiobookDeviceIDMaxLen {
+		http.Error(w, "deviceId is required", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.audiobooks.RequestOtherPlaybackSessionsStop(r.Context(), id, currentAudiobookUserID(r), deviceID); err != nil {
+		log.Printf("request audiobook playback stop failed: %v", err)
+		http.Error(w, "failed to pause other devices", http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
