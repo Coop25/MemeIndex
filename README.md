@@ -377,6 +377,21 @@ Recommended behavior behind Cloudflare Tunnel:
 
 If you only want Cloudflare access and do not want local host exposure, remove or override the app's `8080:8080` port mapping in Compose for your deployment.
 
+### Local-network access
+
+`MEMEINDEX_LOCAL_ADDR` turns on a second listener that runs alongside the primary one (`MEMEINDEX_ADDR`) rather than replacing it: the public domain through Cloudflare Tunnel keeps working exactly as configured, while this second port gives LAN clients a direct path to the app that never touches Cloudflare at all. It is off (unset) by default.
+
+This exists because of a real constraint: in production `MEMEINDEX_COOKIE_SECURE=true` marks the session and OAuth-state cookies `Secure`, which browsers refuse to send back over plain HTTP - so a direct `http://<lan-ip>:8080` connection could never complete Discord login, even though the data itself was reachable. Rather than weaken that setting globally (which would also affect the public, Cloudflare-fronted path), `MEMEINDEX_LOCAL_ADDR` opens a second, independent listener where only requests arriving on *that specific port* skip the Secure requirement and get their OAuth redirect computed from whatever LAN address the browser used. Nothing about this is driven by a request header (`X-Forwarded-*` or otherwise), so it cannot be triggered or spoofed by traffic arriving through the primary listener or through Cloudflare - only by a connection landing on the local port itself.
+
+To enable it:
+
+- `MEMEINDEX_LOCAL_ADDR=:8081` (or any port you prefer) - the app listens on it
+- the compose file already publishes host port `8081` to match (override with `MEMEINDEX_LOCAL_HOST_PORT` if that collides with something else on your host); this mapping is harmless when `MEMEINDEX_LOCAL_ADDR` is unset, since nothing is listening behind it
+- in the Discord Developer Portal, add a second OAuth2 redirect URI for this exact address, e.g. `http://192.168.1.10:8081/auth/callback` - keep your existing production redirect URI too, both can coexist
+- restart the `app` container
+
+**Never port-forward this port on your router.** It is meant purely for LAN reachability; Cloudflare Tunnel remains the only sanctioned path in from the internet. A local DNS override (Pi-hole, AdGuard Home, your router's DNS rewrites) pointing your public hostname at this port on your LAN IP is a reasonable way to use the same domain name from both places, if you want that - but the port itself is what matters here, not the hostname.
+
 ## Downloader network isolation
 
 The Process Link modal and the PWA share target let any upload-capable user hand MemeIndex an arbitrary URL. That URL is fetched by the Go media-fetch client and, for supported social sites, by a `yt-dlp` subprocess. Both then follow redirects and download media from third-party hosts. Treat that path as attacker-influenced outbound traffic and keep it away from everything private.

@@ -28,6 +28,13 @@ services:
         condition: service_healthy
     environment:
       MEMEINDEX_ADDR: ${MEMEINDEX_ADDR:-:8080}
+      # Optional second listener for direct LAN access that bypasses
+      # Cloudflare Tunnel entirely, while the tunnel keeps serving the public
+      # domain unchanged on MEMEINDEX_ADDR. Leave blank to disable (the
+      # default) - set to a port (e.g. :8081, matching the host-side mapping
+      # below) to enable. See "Local-network access" in the README before
+      # turning this on.
+      MEMEINDEX_LOCAL_ADDR: ${MEMEINDEX_LOCAL_ADDR:-}
       MEMEINDEX_DATA_DIR: ${MEMEINDEX_DATA_DIR:-data}
       MEMEINDEX_DATABASE_URL: postgres://${POSTGRES_USER:-memeindex}:${POSTGRES_PASSWORD:-memeindex}@postgres:5432/${POSTGRES_DB:-memeindex}?sslmode=disable
       MEMEINDEX_MEDIAFETCH_YTDLP_BINARY: ${MEMEINDEX_MEDIAFETCH_YTDLP_BINARY:-yt-dlp}
@@ -76,6 +83,9 @@ services:
       MEMEINDEX_ADD_USER_IDS: ${MEMEINDEX_ADD_USER_IDS:-}
     ports:
       - "${MEMEINDEX_HOST_PORT:-8080}:8080"
+      # Always published, but inert unless MEMEINDEX_LOCAL_ADDR above is also
+      # set to a matching port - nothing listens behind it otherwise.
+      - "${MEMEINDEX_LOCAL_HOST_PORT:-8081}:8081"
     volumes:
       - ./data:/app/data
     healthcheck:

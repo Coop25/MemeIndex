@@ -17,6 +17,7 @@ type Config struct {
 	AudiobookUploadConcurrency int
 	Addr                       string
 	DebugAddr                  string
+	LocalAddr                  string
 	DataDir                    string
 	DatabaseURL                string
 	ShareSecret                string
@@ -78,6 +79,7 @@ type rawConfig struct {
 	AudiobookUploadConcurrency      int      `envconfig:"AUDIOBOOK_UPLOAD_CONCURRENCY" default:"4"`
 	Addr                            string   `envconfig:"ADDR" default:":8080"`
 	DebugAddr                       string   `envconfig:"DEBUG_ADDR"`
+	LocalAddr                       string   `envconfig:"LOCAL_ADDR"`
 	DataDir                         string   `envconfig:"DATA_DIR" default:"data"`
 	DatabaseURL                     string   `envconfig:"DATABASE_URL"`
 	MediaFetchYTDLPBinary           string   `envconfig:"MEDIAFETCH_YTDLP_BINARY" default:"yt-dlp"`
@@ -156,6 +158,7 @@ func LoadConfig() (Config, error) {
 		AudiobookUploadConcurrency: min(max(raw.AudiobookUploadConcurrency, 1), 16),
 		Addr:                       strings.TrimSpace(raw.Addr),
 		DebugAddr:                  strings.TrimSpace(raw.DebugAddr),
+		LocalAddr:                  strings.TrimSpace(raw.LocalAddr),
 		DataDir:                    strings.TrimSpace(raw.DataDir),
 		DatabaseURL:                strings.TrimSpace(raw.DatabaseURL),
 		ShareSecret:                firstNonEmpty(strings.TrimSpace(raw.ShareSecret), strings.TrimSpace(raw.SessionSecret)),

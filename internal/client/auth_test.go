@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -8,6 +9,48 @@ import (
 
 	"memeindex/internal/accessor"
 )
+
+func TestLocalTrustedRequestsGetInsecureCookiesAndOwnRedirectURI(t *testing.T) {
+	a := newAuthService(DiscordAuthConfig{
+		ClientID:        "client",
+		ClientSecret:    "secret",
+		RedirectURL:     "https://memes.example.com/auth/callback",
+		CookieSecure:    true,
+		SessionSecret:   "test-session-secret",
+		SessionDuration: 24 * time.Hour,
+	}, nil)
+
+	plain := httptest.NewRequest(http.MethodGet, "http://192.168.1.10:8081/auth/login", nil)
+	if !a.cookieSecureForRequest(plain) {
+		t.Fatal("expected MEMEINDEX_COOKIE_SECURE=true to still require Secure cookies on an untrusted request")
+	}
+	if got := a.redirectURLForRequest(plain); got != "https://memes.example.com/auth/callback" {
+		t.Fatalf("expected the fixed production redirect URI on an untrusted request, got %q", got)
+	}
+
+	local := httptest.NewRequest(http.MethodGet, "http://192.168.1.10:8081/auth/login", nil)
+	local = local.WithContext(context.WithValue(local.Context(), localTrustedContextKey{}, true))
+	if a.cookieSecureForRequest(local) {
+		t.Fatal("expected a local-trusted request to allow a non-Secure cookie")
+	}
+	if got, want := a.redirectURLForRequest(local), "http://192.168.1.10:8081/auth/callback"; got != want {
+		t.Fatalf("expected the local-trusted redirect URI to track the request's own host, got %q want %q", got, want)
+	}
+}
+
+func TestMarkLocalTrustedFlagsRequestsForDownstreamHandler(t *testing.T) {
+	var sawTrusted bool
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawTrusted = isLocalTrusted(r)
+	})
+	MarkLocalTrusted(inner).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+	if !sawTrusted {
+		t.Fatal("expected MarkLocalTrusted to flag the request as local-trusted for the wrapped handler")
+	}
+	if isLocalTrusted(httptest.NewRequest(http.MethodGet, "/", nil)) {
+		t.Fatal("expected a request never passed through MarkLocalTrusted to not be local-trusted")
+	}
+}
 
 func TestAuthorizeAssetRequestRequiresViewPermissionAndProtectedPath(t *testing.T) {
 	authority := newAuthService(DiscordAuthConfig{

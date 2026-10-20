@@ -103,6 +103,16 @@ func main() {
 		}()
 	}
 
+	localServer := newLocalServer(config.LocalAddr, server)
+	if localServer != nil {
+		go func() {
+			log.Printf("MemeIndex local-network listener on http://%s - do not port-forward this; it accepts plain HTTP and is meant for direct LAN access only", config.LocalAddr)
+			if err := localServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Printf("local listener stopped: %v", err)
+			}
+		}()
+	}
+
 	serveErr := make(chan error, 1)
 	go func() {
 		log.Printf("MemeIndex listening on http://localhost%s", config.Addr)
@@ -131,6 +141,9 @@ func main() {
 	}
 	if debugServer != nil {
 		_ = debugServer.Shutdown(shutdownCtx)
+	}
+	if localServer != nil {
+		_ = localServer.Shutdown(shutdownCtx)
 	}
 
 	// Now that no new requests can arrive, stop the background workers and wait
@@ -165,6 +178,28 @@ func newDebugServer(addr string) *http.Server {
 		Addr:              addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
+	}
+}
+
+// newLocalServer builds the optional local-network listener: the same app
+// routes as the primary listener, but with every request marked trusted (see
+// client.MarkLocalTrusted) so Discord login works over plain HTTP at
+// whatever LAN address reaches it, without weakening the primary listener's
+// Secure-cookie requirement at all - that is still governed by
+// MEMEINDEX_COOKIE_SECURE exactly as before. Returns nil when
+// MEMEINDEX_LOCAL_ADDR is unset, which is the default: this is strictly
+// opt-in. Never put this behind Cloudflare Tunnel or any other reverse
+// proxy - it must only ever be reachable by a direct connection.
+func newLocalServer(addr string, server *client.Server) *http.Server {
+	if addr == "" {
+		return nil
+	}
+	handler := client.LoggingMiddleware(client.MetricsMiddleware(client.AssetCompression(client.MarkLocalTrusted(server.Routes()))))
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 }
 

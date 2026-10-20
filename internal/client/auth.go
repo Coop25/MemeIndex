@@ -25,6 +25,28 @@ const (
 	authReturnCookieName  = "memeindex_oauth_return"
 )
 
+type localTrustedContextKey struct{}
+
+// MarkLocalTrusted wraps a handler so every request it serves is treated as
+// arriving over the optional local-network listener (MEMEINDEX_LOCAL_ADDR):
+// cookies are allowed without the Secure attribute, and the Discord OAuth
+// redirect_uri is computed from the request's own Host, regardless of
+// MEMEINDEX_COOKIE_SECURE or MEMEINDEX_DISCORD_DYNAMIC_REDIRECT - those keep
+// governing the primary listener exactly as before. Only wire this up for a
+// listener that is never reachable except by connecting directly to its own
+// port: never behind Cloudflare Tunnel or any other reverse proxy, since this
+// trusts the connection itself, not any header on it.
+func MarkLocalTrusted(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), localTrustedContextKey{}, true)))
+	})
+}
+
+func isLocalTrusted(r *http.Request) bool {
+	trusted, _ := r.Context().Value(localTrustedContextKey{}).(bool)
+	return trusted
+}
+
 type permissionLevel string
 
 const (
@@ -161,6 +183,12 @@ func (a *authService) buildLoginURLForRequest(r *http.Request, state string) str
 }
 
 func (a *authService) redirectURLForRequest(r *http.Request) string {
+	if isLocalTrusted(r) {
+		// Never a reverse proxy in front of this listener, so there is no
+		// forwarded header to (or need to) trust - just the request's own
+		// Host, which is whatever LAN address the browser actually used.
+		return (&url.URL{Scheme: "http", Host: strings.TrimSpace(r.Host), Path: "/auth/callback"}).String()
+	}
 	if !a.config.DynamicRedirect {
 		return a.config.RedirectURL
 	}
@@ -228,6 +256,9 @@ func (a *authService) verifySignedValue(signed string) (string, bool) {
 }
 
 func (a *authService) cookieSecureForRequest(r *http.Request) bool {
+	if isLocalTrusted(r) {
+		return false
+	}
 	return a.config.CookieSecure || r.TLS != nil
 }
 
