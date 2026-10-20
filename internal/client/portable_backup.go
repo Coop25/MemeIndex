@@ -21,7 +21,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const portableBackupFormatVersion = 1
+// Bumped from 1 to 2 when audiobooks (files, metadata, bookmarks, series,
+// favorites, progress) were added to the backup. An older format-1 archive
+// has no audiobooks.csv or audiobooks/ directory at all, so it is rejected
+// by format-version mismatch below rather than failing confusingly partway
+// through restore.
+const portableBackupFormatVersion = 2
 
 type portableBackup struct {
 	databaseURL string
@@ -57,12 +62,38 @@ type backupTable struct {
 var portableBackupTables = []backupTable{
 	{name: "memes", columns: "id, original_name, stored_name, file_path, content_type, content_hash, size_bytes, notes, source_url, hidden_from_app, pending_delete, delete_requested_by_user_id, delete_requested_at, created_at, updated_at, suggested_tags, auto_suggest_disabled"},
 	{name: "tags", columns: "id, name"},
-	{name: "app_users", columns: "user_id, username, display_name, avatar_url, last_active_at, can_view, can_upload, can_add_tags, can_remove_tags, can_delete_memes, created_at, updated_at"},
+	{name: "app_users", columns: "user_id, username, display_name, avatar_url, last_active_at, can_view, can_upload, can_add_tags, can_remove_tags, can_delete_memes, created_at, updated_at, can_view_audiobooks, can_upload_audiobooks, can_delete_audiobooks, can_manage_audiobook_series"},
 	{name: "app_user_readd_required", columns: "user_id, blocked_at"},
 	{name: "meme_tags", columns: "meme_id, tag_id"},
 	{name: "user_favorites", columns: "user_id, meme_id"},
 	{name: "reel_sessions", columns: "id, history, position, last_activity"},
 	{name: "meme_audit_logs", columns: "id, meme_id, action, actor_user_id, actor_username, actor_display_name, actor_avatar_url, description, created_at"},
+	// audiobook_series must precede audiobooks (series_id FK), and audiobooks
+	// must precede its own dependents (audiobook_id FK, ON DELETE CASCADE) -
+	// restore applies this list in order via COPY FROM, so the order here is
+	// load-bearing, not cosmetic. audiobook_uploads (in-progress/resumable
+	// upload tracking) is deliberately excluded: its rows reference a
+	// temp_path scratch file that is never part of the backup, the same way
+	// data/downloads link-import staging never is - an in-progress upload is
+	// just lost, same as it would be across a restart today.
+	{name: "audiobook_series", columns: "id, name, created_by_user_id, created_at"},
+	{name: "audiobooks", columns: "id, title, author, narrator, filename, mime_type, size_bytes, duration_seconds, storage_path, cover_path, chapters, uploaded_by_user_id, created_at, series_id, series_sequence"},
+	{name: "audiobook_bookmarks", columns: "id, audiobook_id, user_id, position_seconds, label, created_at"},
+	{name: "audiobook_favorites", columns: "audiobook_id, user_id, created_at"},
+	{name: "audiobook_progress", columns: "audiobook_id, user_id, position_seconds, updated_at"},
+	{name: "audiobook_playback_sessions", columns: "audiobook_id, user_id, device_id, position_seconds, is_playing, stop_requested, updated_at"},
+}
+
+// backupTableColumns looks up a table's export/import column list by name,
+// for callers (like validateRestoredAudiobooks) that need it without relying
+// on a fixed index into portableBackupTables.
+func backupTableColumns(name string) string {
+	for _, table := range portableBackupTables {
+		if table.name == name {
+			return table.columns
+		}
+	}
+	return ""
 }
 
 func newPortableBackup(databaseURL, dataDir string) *portableBackup {
@@ -356,10 +387,50 @@ func (b *portableBackup) export(ctx context.Context) (string, error) {
 	}
 	rows.Close()
 
+	// Unlike memes.stored_name (a bare file name resolved against dataDir at
+	// read time), audiobooks.storage_path/cover_path are stored as absolute
+	// filesystem paths (see audiobook_store.go), so verify both that the file
+	// exists and that it still lives under this server's own audiobooks
+	// directory before it goes in the archive.
+	audiobooksDir := filepath.Join(b.dataDir, "audiobooks")
+	abRows, err := conn.Query(ctx, "SELECT storage_path, cover_path FROM audiobooks")
+	if err != nil {
+		return "", fmt.Errorf("verify snapshot audiobooks: %w", err)
+	}
+	for abRows.Next() {
+		var storagePath, coverPath string
+		if err := abRows.Scan(&storagePath, &coverPath); err != nil {
+			abRows.Close()
+			return "", err
+		}
+		if err := requireAudiobookFileUnder(audiobooksDir, storagePath); err != nil {
+			abRows.Close()
+			return "", err
+		}
+		if coverPath != "" {
+			if err := requireAudiobookFileUnder(audiobooksDir, coverPath); err != nil {
+				abRows.Close()
+				return "", err
+			}
+		}
+	}
+	if err := abRows.Err(); err != nil {
+		abRows.Close()
+		return "", err
+	}
+	abRows.Close()
+
 	for _, dir := range []string{"uploads", "thumbnails"} {
 		if err := addDirectoryToTar(tw, filepath.Join(b.dataDir, dir), dir); err != nil {
 			return "", err
 		}
+	}
+	// audiobooks/tmp holds in-progress/resumable upload scratch files, which
+	// are excluded from the backup for the same reason audiobook_uploads rows
+	// are (see portableBackupTables above) - exclude it here too so a backup
+	// never carries half-written uploads.
+	if err := addDirectoryToTar(tw, audiobooksDir, "audiobooks", "tmp"); err != nil {
+		return "", err
 	}
 	if _, err := conn.Exec(ctx, "COMMIT"); err != nil {
 		return "", fmt.Errorf("finish database snapshot: %w", err)
@@ -467,12 +538,15 @@ func (b *portableBackup) importArchive(ctx context.Context, source io.Reader) er
 			return fmt.Errorf("backup is missing database/%s.csv", table.name)
 		}
 	}
-	for _, dir := range []string{"uploads", "thumbnails"} {
+	for _, dir := range []string{"uploads", "thumbnails", "audiobooks"} {
 		if info, err := os.Stat(filepath.Join(staging, dir)); err != nil || !info.IsDir() {
 			return fmt.Errorf("backup is missing %s directory", dir)
 		}
 	}
 	if err := validateRestoredMemes(staging); err != nil {
+		return err
+	}
+	if err := validateRestoredAudiobooks(staging, b.dataDir); err != nil {
 		return err
 	}
 
@@ -496,7 +570,7 @@ func (b *portableBackup) importArchive(ctx context.Context, source io.Reader) er
 		}
 	}()
 
-	if _, err := conn.Exec(ctx, "TRUNCATE TABLE meme_tags, user_favorites, reel_sessions, meme_audit_logs, tags, memes, app_user_readd_required, app_users RESTART IDENTITY CASCADE"); err != nil {
+	if _, err := conn.Exec(ctx, "TRUNCATE TABLE meme_tags, user_favorites, reel_sessions, meme_audit_logs, tags, memes, app_user_readd_required, app_users, audiobook_bookmarks, audiobook_favorites, audiobook_progress, audiobook_playback_sessions, audiobooks, audiobook_series RESTART IDENTITY CASCADE"); err != nil {
 		return fmt.Errorf("clear current database: %w", err)
 	}
 	for _, table := range portableBackupTables {
@@ -591,6 +665,100 @@ func validateRestoredMemes(staging string) error {
 	return nil
 }
 
+// validateRestoredAudiobooks confirms every audiobook (and cover, if set)
+// referenced by the restored database has a matching file in the backup, and
+// that its recorded absolute path still falls under this server's own
+// audiobooks directory. Audiobooks store an absolute filesystem path rather
+// than a bare file name the way memes do (see audiobook_store.go), so a
+// backup taken under a different MEMEINDEX_DATA_DIR would otherwise restore
+// database rows pointing at files that can never exist here.
+func validateRestoredAudiobooks(staging, dataDir string) error {
+	file, err := os.Open(filepath.Join(staging, "database", "audiobooks.csv"))
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	reader := csv.NewReader(file)
+	header, err := reader.Read()
+	if err != nil {
+		return fmt.Errorf("read audiobooks CSV header: %w", err)
+	}
+	expected := strings.Split(backupTableColumns("audiobooks"), ", ")
+	if len(header) != len(expected) {
+		return errors.New("audiobooks CSV schema does not match backup format")
+	}
+	for i := range expected {
+		if header[i] != expected[i] {
+			return errors.New("audiobooks CSV column order does not match backup format")
+		}
+	}
+	storagePathColumn, coverPathColumn := -1, -1
+	for index, name := range header {
+		switch name {
+		case "storage_path":
+			storagePathColumn = index
+		case "cover_path":
+			coverPathColumn = index
+		}
+	}
+	if storagePathColumn < 0 || coverPathColumn < 0 {
+		return errors.New("audiobooks CSV is missing storage_path or cover_path column")
+	}
+	audiobooksDir := filepath.Join(dataDir, "audiobooks")
+	stagedAudiobooksDir := filepath.Join(staging, "audiobooks")
+	for {
+		record, err := reader.Read()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("read audiobooks CSV: %w", err)
+		}
+		if storagePathColumn >= len(record) {
+			return errors.New("audiobooks CSV row is missing storage_path")
+		}
+		if err := requireStagedAudiobookFile(audiobooksDir, stagedAudiobooksDir, record[storagePathColumn]); err != nil {
+			return err
+		}
+		if coverPath := strings.TrimSpace(record[coverPathColumn]); coverPath != "" {
+			if err := requireStagedAudiobookFile(audiobooksDir, stagedAudiobooksDir, coverPath); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// requireAudiobookFileUnder confirms path is a regular, existing file located
+// under dir - used before a row goes into the archive on export.
+func requireAudiobookFileUnder(dir, path string) error {
+	rel, err := filepath.Rel(dir, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
+		return fmt.Errorf("audiobook file %q is not under the audiobooks directory", path)
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return fmt.Errorf("audiobook file %q is missing", path)
+	}
+	return nil
+}
+
+// requireStagedAudiobookFile is requireAudiobookFileUnder's restore-side
+// counterpart: storagePath is this server's own (not yet applied) absolute
+// path from the restored CSV, which it maps onto the equivalent path inside
+// the extracted backup to confirm the file actually came along.
+func requireStagedAudiobookFile(audiobooksDir, stagedAudiobooksDir, storagePath string) error {
+	rel, err := filepath.Rel(audiobooksDir, storagePath)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
+		return fmt.Errorf("audiobook file %q does not belong under this server's data directory - the backup may be from a server with a different MEMEINDEX_DATA_DIR", storagePath)
+	}
+	info, err := os.Stat(filepath.Join(stagedAudiobooksDir, rel))
+	if err != nil || !info.Mode().IsRegular() {
+		return fmt.Errorf("backup is missing audiobook file audiobooks/%s", filepath.ToSlash(rel))
+	}
+	return nil
+}
+
 func validStoredName(name string) bool {
 	name = strings.TrimSpace(name)
 	return name != "" && name != "." && name != ".." && filepath.Base(name) == name && !strings.ContainsAny(name, `/\\`)
@@ -615,7 +783,7 @@ func (b *portableBackup) swapMediaDirectories(staging string) (rollback func(), 
 		}
 	}
 
-	for _, dir := range []string{"uploads", "thumbnails"} {
+	for _, dir := range []string{"uploads", "thumbnails", "audiobooks"} {
 		current := filepath.Join(b.dataDir, dir)
 		incoming := filepath.Join(staging, dir)
 		old := ""
@@ -638,6 +806,15 @@ func (b *portableBackup) swapMediaDirectories(staging string) (rollback func(), 
 		}
 		swaps = append(swaps, swap{current: current, old: old})
 	}
+	// The backup never includes audiobooks/tmp (in-progress upload scratch
+	// space, excluded as ephemeral - see export()), so recreate it now. The
+	// already-running audiobook store holds this exact path from startup and
+	// has no reason to re-create it later, so without this, every upload
+	// would fail with ENOENT until the app restarts.
+	if err = os.MkdirAll(filepath.Join(b.dataDir, "audiobooks", "tmp"), 0o755); err != nil {
+		rollback()
+		return nil, nil, fmt.Errorf("recreate audiobooks tmp directory: %w", err)
+	}
 	return rollback, finish, nil
 }
 
@@ -649,7 +826,7 @@ func writeTarBytes(tw *tar.Writer, name string, payload []byte) error {
 	return err
 }
 
-func addDirectoryToTar(tw *tar.Writer, root, archiveRoot string) error {
+func addDirectoryToTar(tw *tar.Writer, root, archiveRoot string, exclude ...string) error {
 	if err := tw.WriteHeader(&tar.Header{Name: archiveRoot + "/", Mode: 0o755, ModTime: time.Now().UTC(), Typeflag: tar.TypeDir}); err != nil {
 		return err
 	}
@@ -667,14 +844,23 @@ func addDirectoryToTar(tw *tar.Writer, root, archiveRoot string) error {
 		if path == root {
 			return nil
 		}
-		if !info.Mode().IsRegular() && !info.IsDir() {
-			return fmt.Errorf("cannot back up non-regular file %s", path)
-		}
 		rel, err := filepath.Rel(root, path)
 		if err != nil {
 			return err
 		}
-		name := archiveRoot + "/" + filepath.ToSlash(rel)
+		relSlash := filepath.ToSlash(rel)
+		for _, skip := range exclude {
+			if relSlash == skip || strings.HasPrefix(relSlash, skip+"/") {
+				if info.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+		}
+		if !info.Mode().IsRegular() && !info.IsDir() {
+			return fmt.Errorf("cannot back up non-regular file %s", path)
+		}
+		name := archiveRoot + "/" + relSlash
 		header, err := tar.FileInfoHeader(info, "")
 		if err != nil {
 			return err
@@ -730,7 +916,7 @@ func extractPortableArchiveWithLimits(source io.Reader, destination string, maxB
 		expanded += header.Size
 		name := strings.TrimPrefix(filepath.ToSlash(header.Name), "./")
 		clean := filepath.ToSlash(filepath.Clean(name))
-		allowed := clean == "manifest.json" || strings.HasPrefix(clean, "database/") || clean == "uploads" || strings.HasPrefix(clean, "uploads/") || clean == "thumbnails" || strings.HasPrefix(clean, "thumbnails/")
+		allowed := clean == "manifest.json" || strings.HasPrefix(clean, "database/") || clean == "uploads" || strings.HasPrefix(clean, "uploads/") || clean == "thumbnails" || strings.HasPrefix(clean, "thumbnails/") || clean == "audiobooks" || strings.HasPrefix(clean, "audiobooks/")
 		if name == "" || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || filepath.IsAbs(name) || !allowed {
 			return fmt.Errorf("backup contains invalid path %q", header.Name)
 		}

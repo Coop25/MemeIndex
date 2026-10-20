@@ -145,9 +145,10 @@ func TestExtractPortableArchiveRejectsPathTraversal(t *testing.T) {
 
 func TestExtractPortableArchiveAllowsExpectedContents(t *testing.T) {
 	archive := makeTestArchive(t, map[string]string{
-		"manifest.json":        `{"format_version":1}`,
-		"database/memes.csv":   "id,name\n",
-		"uploads/example.webp": "meme",
+		"manifest.json":          `{"format_version":1}`,
+		"database/memes.csv":     "id,name\n",
+		"uploads/example.webp":   "meme",
+		"audiobooks/example.mp3": "audiobook",
 	})
 	destination := t.TempDir()
 	if err := extractPortableArchive(bytes.NewReader(archive), destination); err != nil {
@@ -160,12 +161,19 @@ func TestExtractPortableArchiveAllowsExpectedContents(t *testing.T) {
 	if string(payload) != "meme" {
 		t.Fatalf("unexpected extracted payload %q", payload)
 	}
+	payload, err = os.ReadFile(filepath.Join(destination, "audiobooks", "example.mp3"))
+	if err != nil {
+		t.Fatalf("read extracted audiobook: %v", err)
+	}
+	if string(payload) != "audiobook" {
+		t.Fatalf("unexpected extracted payload %q", payload)
+	}
 }
 
 func TestSwapMediaDirectoriesCanRollback(t *testing.T) {
 	dataDir := t.TempDir()
 	staging := t.TempDir()
-	for _, dir := range []string{"uploads", "thumbnails"} {
+	for _, dir := range []string{"uploads", "thumbnails", "audiobooks"} {
 		if err := os.MkdirAll(filepath.Join(dataDir, dir), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -186,13 +194,34 @@ func TestSwapMediaDirectoriesCanRollback(t *testing.T) {
 		t.Fatalf("swap media: %v", err)
 	}
 	rollback()
-	for _, dir := range []string{"uploads", "thumbnails"} {
+	for _, dir := range []string{"uploads", "thumbnails", "audiobooks"} {
 		if _, err := os.Stat(filepath.Join(dataDir, dir, "old")); err != nil {
 			t.Fatalf("old %s was not restored: %v", dir, err)
 		}
 		if _, err := os.Stat(filepath.Join(dataDir, dir, "new")); !os.IsNotExist(err) {
 			t.Fatalf("new %s remained after rollback: %v", dir, err)
 		}
+	}
+}
+
+func TestSwapMediaDirectoriesRecreatesAudiobooksTmp(t *testing.T) {
+	dataDir := t.TempDir()
+	staging := t.TempDir()
+	for _, dir := range []string{"uploads", "thumbnails", "audiobooks"} {
+		if err := os.MkdirAll(filepath.Join(staging, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	backup := &portableBackup{dataDir: dataDir}
+	_, finish, err := backup.swapMediaDirectories(staging)
+	if err != nil {
+		t.Fatalf("swap media: %v", err)
+	}
+	finish()
+	info, err := os.Stat(filepath.Join(dataDir, "audiobooks", "tmp"))
+	if err != nil || !info.IsDir() {
+		t.Fatalf("expected audiobooks/tmp to be recreated after restore: %v", err)
 	}
 }
 
@@ -220,6 +249,59 @@ func TestValidateRestoredMemesRequiresEveryUpload(t *testing.T) {
 	}
 	if err := validateRestoredMemes(staging); err != nil {
 		t.Fatalf("expected complete backup to validate: %v", err)
+	}
+}
+
+func TestValidateRestoredAudiobooksRequiresEveryFile(t *testing.T) {
+	dataDir := t.TempDir()
+	staging := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(staging, "database"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(staging, "audiobooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	columns := strings.Split(backupTableColumns("audiobooks"), ", ")
+	storagePathColumn, coverPathColumn := -1, -1
+	for i, name := range columns {
+		switch name {
+		case "storage_path":
+			storagePathColumn = i
+		case "cover_path":
+			coverPathColumn = i
+		}
+	}
+	storagePath := filepath.Join(dataDir, "audiobooks", "book1.mp3")
+	values := make([]string, len(columns))
+	values[storagePathColumn] = storagePath
+	values[coverPathColumn] = ""
+	writeAudiobooksCSV := func() {
+		csv := strings.Join(columns, ",") + "\n" + strings.Join(values, ",") + "\n"
+		if err := os.WriteFile(filepath.Join(staging, "database", "audiobooks.csv"), []byte(csv), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeAudiobooksCSV()
+
+	if err := validateRestoredAudiobooks(staging, dataDir); err == nil {
+		t.Fatal("expected a missing audiobook file to reject the backup")
+	}
+	if err := os.WriteFile(filepath.Join(staging, "audiobooks", "book1.mp3"), []byte("audio"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateRestoredAudiobooks(staging, dataDir); err != nil {
+		t.Fatalf("expected complete backup to validate: %v", err)
+	}
+
+	// A backup made under a different MEMEINDEX_DATA_DIR stores an absolute
+	// storage_path that cannot possibly fall under this server's own
+	// audiobooks directory - must be rejected with a clear error instead of
+	// restoring a dangling reference.
+	values[storagePathColumn] = filepath.Join(t.TempDir(), "audiobooks", "book1.mp3")
+	writeAudiobooksCSV()
+	if err := validateRestoredAudiobooks(staging, dataDir); err == nil {
+		t.Fatal("expected a storage_path outside this server's data directory to be rejected")
 	}
 }
 

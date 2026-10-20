@@ -223,10 +223,13 @@ Sign in as a super admin, open **Admin > Backup & Restore**, and select **Create
 - all meme metadata and tags
 - per-user favorites and permissions
 - reel sessions, moderation state, and audit history
+- all audiobook files, cover art, metadata, chapters, series, bookmarks, favorites, and per-user playback progress
 
-On the destination Docker instance, open the same admin page and import that archive. Import replaces the destination library and application database, so export the destination first if it contains anything you may need. The destination should run the same or a newer MemeIndex version so its database schema supports every field in the backup.
+Not included: an audiobook upload that is still in progress when the backup runs. That upload's tracking row and partial file are scratch state tied to the running server, the same way a staged link-import download under `data/downloads` never persists - restart the upload after a restore.
 
-While an import runs, the destination server holds a process-wide maintenance lock: it truncates and reloads the database and swaps the `uploads`/`thumbnails` directories, so every state-changing request (`POST`/`PUT`/`PATCH`/`DELETE`, including uploads, link imports, tag edits, shares, and a second restore) is answered with `503` and a `Retry-After: 30` header until the restore finishes. Reads keep working. Plan the restore as a short maintenance window and let clients retry.
+On the destination Docker instance, open the same admin page and import that archive. Import replaces the destination library and application database, so export the destination first if it contains anything you may need. The destination should run the same or a newer MemeIndex version so its database schema supports every field in the backup, and should resolve `MEMEINDEX_DATA_DIR` to the same absolute path as the source server - audiobook files are referenced by absolute path rather than by a relative name the way meme files are, so a restore is rejected if the paths cannot match up. This is a non-issue for the default Docker Compose deployment, where that path is always `/app/data` regardless of host, only something to watch for in a customized setup.
+
+While an import runs, the destination server holds a process-wide maintenance lock: it truncates and reloads the database and swaps the `uploads`/`thumbnails`/`audiobooks` directories, so every state-changing request (`POST`/`PUT`/`PATCH`/`DELETE`, including uploads, link imports, tag edits, shares, and a second restore) is answered with `503` and a `Retry-After: 30` header until the restore finishes. Reads keep working. Plan the restore as a short maintenance window and let clients retry.
 
 The browser workflow requires PostgreSQL storage (the default Docker Compose configuration). Environment secrets, Discord OAuth credentials, session signing keys, the Ollama model volume, and other `.env` settings are intentionally not included; copy those deployment settings separately.
 
