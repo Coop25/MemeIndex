@@ -796,17 +796,82 @@ function syncAdminURL({ push = false } = {}) {
   }
 }
 
-// A "Share series" link looks like /?view=audiobooks&series=<id> - read once at
-// startup so opening the link lands straight on that series instead of the
-// vault. Unlike the admin workspace, this view does not keep the URL synced
-// as the user navigates around afterward.
-function applyAudiobooksStateFromURL() {
+// ----- Audiobooks URL state -------------------------------------------------
+// The audiobooks section lives at /?view=audiobooks, with the sub-view and
+// whatever it's scoped to layered on: &sub=series for the series gallery,
+// &sub=manage&series=<id> for the drag-and-drop book manager, &series=<id>
+// alone for a series's book list (the pre-existing "Share series" link
+// shape - kept exactly as is for links already shared), and &filter=<name>
+// for Favorites/Started/Finished. Mirrors the admin workspace's URL state
+// just above: readAudiobooksStateFromURL/applyAudiobooksStateFromURL for
+// startup and Back/Forward, syncAudiobooksURL for keeping the address bar
+// honest as the user navigates around.
+
+function readAudiobooksStateFromURL() {
   const params = new URLSearchParams(window.location.search);
-  if (params.get("view") !== "audiobooks") return false;
+  if (params.get("view") !== "audiobooks") return null;
   const seriesId = params.get("series") || "";
+  const sub = params.get("sub") || "";
+  if (sub === "manage" && seriesId) {
+    return { view: "manage-books", seriesId, filter: "" };
+  }
+  if (sub === "series") {
+    return { view: "series", seriesId: "", filter: "" };
+  }
+  if (seriesId) {
+    return { view: "books", seriesId, filter: "" };
+  }
+  const filter = params.get("filter") || "";
+  return { view: "books", seriesId: "", filter: ["favorites", "started", "finished"].includes(filter) ? filter : "" };
+}
+
+function applyAudiobooksStateFromURL() {
+  const parsed = readAudiobooksStateFromURL();
+  if (!parsed) return false;
+  if (!canViewAudiobooks()) {
+    // URL asked for audiobooks but this session cannot view them: clean it up.
+    window.history.replaceState(window.history.state || {}, "", "/");
+    return false;
+  }
+  if (parsed.view === "manage-books" && !canManageAudiobookSeries()) {
+    parsed.view = "series";
+    parsed.seriesId = "";
+  }
   state.filters.view = "audiobooks";
-  state.audiobooks.seriesId = seriesId;
+  state.audiobooks.view = parsed.view;
+  state.audiobooks.seriesId = parsed.seriesId;
+  state.audiobooks.filter = parsed.filter;
+  state.audiobooks.manageSeriesId = parsed.view === "manage-books" ? parsed.seriesId : "";
   return true;
+}
+
+function syncAudiobooksURL({ push = false } = {}) {
+  const inAudiobooks = isAudiobooksView() && canViewAudiobooks();
+  const params = new URLSearchParams(window.location.search);
+  const currentlyAudiobooksURL = params.get("view") === "audiobooks";
+  if (inAudiobooks) {
+    const qs = new URLSearchParams({ view: "audiobooks" });
+    if (state.audiobooks.view === "manage-books" && state.audiobooks.manageSeriesId) {
+      qs.set("sub", "manage");
+      qs.set("series", state.audiobooks.manageSeriesId);
+    } else if (state.audiobooks.view === "series") {
+      qs.set("sub", "series");
+    } else if (state.audiobooks.seriesId) {
+      qs.set("series", state.audiobooks.seriesId);
+    } else if (state.audiobooks.filter) {
+      qs.set("filter", state.audiobooks.filter);
+    }
+    const desired = `/?${qs.toString()}`;
+    if (window.location.pathname + window.location.search === desired) return;
+    const nextState = { ...(window.history.state || {}) };
+    if (push) {
+      window.history.pushState(nextState, "", desired);
+    } else {
+      window.history.replaceState(nextState, "", desired);
+    }
+  } else if (currentlyAudiobooksURL) {
+    window.history.replaceState({ ...(window.history.state || {}) }, "", "/");
+  }
 }
 
 function navigateAdminTab(tab, { push = true } = {}) {
@@ -840,14 +905,38 @@ function renderAdminTabCrosslink() {
   });
 }
 
-function handleAdminHistoryPop() {
+// Admin and audiobooks state are resolved together, in one function, rather
+// than as two independent popstate listeners: a Back/Forward move between
+// those two sections would otherwise have each listener kick off its own
+// loadInitialMemes() call against stale state the other is about to
+// overwrite, racing two concurrent fetches against whichever view actually
+// ends up rendered.
+function handleSectionHistoryPop() {
   const tab = readAdminTabFromURL();
   if (tab && canManageUsers()) {
     if (isAdminView() && activeAdminTab() === tab) return;
     state.filters.view = "admin";
     state.admin.tab = tab;
     loadInitialMemes().catch((error) => console.error(error));
-  } else if (isAdminView()) {
+    return;
+  }
+
+  const audiobooks = readAudiobooksStateFromURL();
+  if (audiobooks && canViewAudiobooks()) {
+    if (audiobooks.view === "manage-books" && !canManageAudiobookSeries()) {
+      audiobooks.view = "series";
+      audiobooks.seriesId = "";
+    }
+    state.filters.view = "audiobooks";
+    state.audiobooks.view = audiobooks.view;
+    state.audiobooks.seriesId = audiobooks.seriesId;
+    state.audiobooks.filter = audiobooks.filter;
+    state.audiobooks.manageSeriesId = audiobooks.view === "manage-books" ? audiobooks.seriesId : "";
+    loadInitialMemes().catch((error) => console.error(error));
+    return;
+  }
+
+  if (isAdminView() || isAudiobooksView()) {
     state.filters.view = "home";
     loadInitialMemes().catch((error) => console.error(error));
   }
@@ -3592,6 +3681,7 @@ async function loadInitialMemes() {
   renderSidebarViewState();
   renderContentMode();
   syncAdminURL();
+  syncAudiobooksURL();
   if (canView()) {
     fetchSidebarPopularTags().catch((error) => console.error(error));
   }
@@ -3602,6 +3692,10 @@ async function loadInitialMemes() {
 	}
 	if (isAudiobooksView()) {
 		await Promise.all([fetchAudiobooks(), fetchAudiobookSeries()]);
+		if (state.audiobooks.view === "manage-books") {
+			await fetchAudiobookSeriesManagerBooks();
+			renderAudiobookSeriesManagePage();
+		}
 		renderContentMode();
 		return;
 	}
@@ -3853,6 +3947,11 @@ function renderAudiobookSeriesGallery() {
       state.audiobooks.filter = "";
       state.audiobooks.seriesId = entry.id;
       state.audiobooks.view = "books";
+      // Pushed before navigateToView (which calls loadInitialMemes, and that
+      // always does its own replace-only sync) - otherwise that replace runs
+      // first, the URL already matches what this push would set, and the
+      // push's own "already there" short-circuit silently skips it.
+      syncAudiobooksURL({ push: true });
       navigateToView("audiobooks");
     };
     card.querySelector("[data-series-open]")?.addEventListener("click", openThisSeries);
@@ -4006,6 +4105,7 @@ async function openAudiobookSeriesManagePage(seriesId) {
   audiobookSeriesManagePageQuery = "";
   if (audiobookSeriesManageSearch) audiobookSeriesManageSearch.value = "";
   state.audiobooks.view = "manage-books";
+  syncAudiobooksURL({ push: true });
   renderContentMode();
   await fetchAudiobookSeriesManagerBooks();
   renderAudiobookSeriesManagePage();
@@ -4014,6 +4114,7 @@ async function openAudiobookSeriesManagePage(seriesId) {
 function closeAudiobookSeriesManagePage() {
   state.audiobooks.manageSeriesId = "";
   state.audiobooks.view = "series";
+  syncAudiobooksURL({ push: true });
   renderContentMode();
   renderAudiobooksGrid();
 }
@@ -4274,6 +4375,7 @@ async function deleteAudiobookSeriesEntry(series) {
     }
     if (state.audiobooks.seriesId === series.id) {
       state.audiobooks.seriesId = "";
+      syncAudiobooksURL();
     }
     await fetchAudiobookSeries();
     await fetchAudiobooks();
@@ -8459,6 +8561,7 @@ audiobooksSubnavFilterItems.forEach((item) => {
     state.audiobooks.filter = item.dataset.audiobookFilter || "";
     state.audiobooks.seriesId = "";
     state.audiobooks.view = "books";
+    syncAudiobooksURL({ push: true });
     navigateToView("audiobooks");
   });
 });
@@ -8466,6 +8569,7 @@ audiobooksSubnavSeriesButton?.addEventListener("click", () => {
   state.audiobooks.filter = "";
   state.audiobooks.seriesId = "";
   state.audiobooks.view = "series";
+  syncAudiobooksURL({ push: true });
   navigateToView("audiobooks");
 });
 
@@ -9834,7 +9938,7 @@ window.addEventListener("appinstalled", () => {
 });
 
 window.addEventListener("popstate", handleModalHistoryPop);
-window.addEventListener("popstate", handleAdminHistoryPop);
+window.addEventListener("popstate", handleSectionHistoryPop);
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
