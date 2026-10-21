@@ -254,6 +254,9 @@ const audiobookUploadModal = document.querySelector("#audiobook-upload-modal");
 const audiobookUploadModalClose = document.querySelector("#audiobook-upload-modal-close");
 const audiobookUploadForm = document.querySelector("#audiobook-upload-form");
 const audiobookUploadFileInput = document.querySelector("#audiobook-upload-file-input");
+const audiobookUploadQueueList = document.querySelector("#audiobook-upload-queue");
+const audiobookUploadMetadataFields = document.querySelector("#audiobook-upload-metadata-fields");
+const audiobookUploadMetadataNote = document.querySelector("#audiobook-upload-metadata-note");
 const audiobookUploadTitleInput = document.querySelector("#audiobook-upload-title");
 const audiobookUploadAuthorInput = document.querySelector("#audiobook-upload-author");
 const audiobookUploadSubmit = document.querySelector("#audiobook-upload-submit");
@@ -4632,9 +4635,83 @@ function openAudiobookUploadModal() {
   audiobookUploadCellEls = [];
   audiobookUploadCellBytes = 0;
   audiobookUploadCancel?.classList.add("hidden");
-  audiobookUploadSubmit?.classList.remove("hidden");
-  if (audiobookUploadSubmit) audiobookUploadSubmit.disabled = false;
+  setAudiobookUploadFormBusy(false);
+  setAudiobookUploadQueue([]);
   audiobookUploadModal?.showModal();
+}
+
+// ---------------------------------------------------------------------------
+// Audiobook upload queue: selecting several files queues them up to upload
+// one at a time (each still spread over several concurrent chunk streams,
+// same as before) rather than forcing one trip through this modal per file.
+// ---------------------------------------------------------------------------
+
+// { file, status: "queued"|"uploading"|"done"|"error"|"cancelled", message }
+let audiobookUploadQueue = [];
+// Checked at the top of every queue iteration, not just mid-file (where
+// state.audiobooks.upload.cancelled is): Cancel can land in the brief gap
+// between one file finishing and the next one's upload session being
+// created, when there is no in-flight upload for that flag to interrupt.
+let audiobookUploadQueueCancelled = false;
+
+// Toggling the file input along with the submit button keeps someone from
+// reselecting files - which replaces the whole queue - mid-upload and
+// silently wiping out in-progress/finished entries.
+function setAudiobookUploadFormBusy(busy) {
+  if (audiobookUploadSubmit) {
+    audiobookUploadSubmit.disabled = busy;
+    audiobookUploadSubmit.classList.toggle("hidden", busy);
+  }
+  if (audiobookUploadFileInput) audiobookUploadFileInput.disabled = busy;
+}
+
+function setAudiobookUploadQueue(files) {
+  audiobookUploadQueueCancelled = false;
+  audiobookUploadQueue = Array.from(files).map((file) => ({ file, status: "queued", message: "" }));
+  renderAudiobookUploadQueue();
+}
+
+function removeAudiobookUploadQueueEntry(index) {
+  if (audiobookUploadQueue[index]?.status !== "queued") return;
+  audiobookUploadQueue.splice(index, 1);
+  renderAudiobookUploadQueue();
+}
+
+function audiobookUploadQueueStatusLabel(entry) {
+  switch (entry.status) {
+    case "uploading": return "Uploading...";
+    case "done": return "Uploaded";
+    case "error": return entry.message || "Failed";
+    case "cancelled": return "Cancelled";
+    default: return "Queued";
+  }
+}
+
+function renderAudiobookUploadQueue() {
+  const multiple = audiobookUploadQueue.length > 1;
+  audiobookUploadMetadataFields?.classList.toggle("hidden", multiple);
+  audiobookUploadMetadataNote?.classList.toggle("hidden", !multiple);
+
+  if (!audiobookUploadQueueList) return;
+  if (audiobookUploadQueue.length <= 1) {
+    audiobookUploadQueueList.classList.add("hidden");
+    audiobookUploadQueueList.innerHTML = "";
+    return;
+  }
+  audiobookUploadQueueList.classList.remove("hidden");
+  audiobookUploadQueueList.innerHTML = audiobookUploadQueue.map((entry, index) => `
+    <div class="audiobook-upload-queue-item is-${entry.status}">
+      <span class="audiobook-upload-queue-name">${escapeHTML(entry.file.name)}</span>
+      <span class="audiobook-upload-queue-size">${escapeHTML(formatSize(entry.file.size))}</span>
+      <span class="audiobook-upload-queue-status">${escapeHTML(audiobookUploadQueueStatusLabel(entry))}</span>
+      ${entry.status === "queued"
+        ? `<button type="button" class="audiobook-upload-queue-remove" data-queue-remove="${index}" aria-label="Remove ${escapeHTML(entry.file.name)} from the queue">&#10005;</button>`
+        : "<span></span>"}
+    </div>
+  `).join("");
+  audiobookUploadQueueList.querySelectorAll("[data-queue-remove]").forEach((button) => {
+    button.addEventListener("click", () => removeAudiobookUploadQueueEntry(Number(button.dataset.queueRemove)));
+  });
 }
 
 // The upload grid is a fixed-size file-manager-style grid (think Free
@@ -4807,153 +4884,207 @@ async function uploadAudiobookChunk(uploadId, offset, chunk, attempt = 0) {
   }
 }
 
+class AudiobookUploadDuplicate extends Error {}
+
 async function submitAudiobookUpload(event) {
   event.preventDefault();
-  const file = audiobookUploadFileInput?.files?.[0];
-  if (!file) {
+  if (!audiobookUploadQueue.length) {
     if (audiobookUploadStatus) audiobookUploadStatus.textContent = "Choose a file first.";
     return;
   }
+  // Reset in case a previous Cancel on this same queue left it set - this
+  // click is what "resume the rest of the queue" means, including right
+  // after a cancel.
+  audiobookUploadQueueCancelled = false;
 
-  // Leave title/author blank when the user didn't type one: the server reads
-  // them from the file's own tags once the upload finishes, falling back to
-  // the file name only if neither the user nor the file supplied a title.
-  const title = audiobookUploadTitleInput?.value.trim() || "";
-  const author = audiobookUploadAuthorInput?.value.trim() || "";
-
-  if (audiobookUploadSubmit) {
-    audiobookUploadSubmit.disabled = true;
-    audiobookUploadSubmit.classList.add("hidden");
-  }
+  setAudiobookUploadFormBusy(true);
   audiobookUploadCancel?.classList.remove("hidden");
   audiobookUploadProgressWrap?.classList.remove("hidden");
-  if (audiobookUploadStatus) audiobookUploadStatus.textContent = "Starting upload...";
 
-  try {
-    let uploadId = "";
-    let receivedRanges = [];
+  // Leave title/author blank when the user didn't type one, or when queuing
+  // several files at once (each then reads its own tags) - the server falls
+  // back to the file name only if neither the user nor the file's own tags
+  // supplied a title.
+  const single = audiobookUploadQueue.length === 1;
+  const title = single ? (audiobookUploadTitleInput?.value.trim() || "") : "";
+  const author = single ? (audiobookUploadAuthorInput?.value.trim() || "") : "";
 
-    const saved = loadSavedAudiobookUpload();
-    if (saved && saved.filename === file.name && saved.totalBytes === file.size) {
-      try {
-        const statusResponse = await fetch(`/api/audiobooks/uploads/${encodeURIComponent(saved.uploadId)}`, {
-          credentials: "same-origin",
-        });
-        if (statusResponse.ok) {
-          const statusPayload = await statusResponse.json();
-          uploadId = saved.uploadId;
-          receivedRanges = statusPayload.received_ranges || [];
-          if (audiobookUploadStatus) audiobookUploadStatus.textContent = "Resuming previous upload...";
-        }
-      } catch (error) {
+  for (let index = 0; index < audiobookUploadQueue.length; index++) {
+    if (audiobookUploadQueueCancelled) {
+      if (audiobookUploadStatus) audiobookUploadStatus.textContent = "Upload cancelled.";
+      setAudiobookUploadFormBusy(false);
+      audiobookUploadCancel?.classList.add("hidden");
+      return;
+    }
+    const entry = audiobookUploadQueue[index];
+    if (entry.status !== "queued") continue;
+
+    entry.status = "uploading";
+    renderAudiobookUploadQueue();
+    if (audiobookUploadStatus) {
+      audiobookUploadStatus.textContent = single
+        ? "Starting upload..."
+        : `Uploading ${index + 1} of ${audiobookUploadQueue.length}: ${entry.file.name}`;
+    }
+
+    try {
+      await uploadOneAudiobookFile(entry.file, title, author);
+      entry.status = "done";
+      renderAudiobookUploadQueue();
+    } catch (error) {
+      if (error instanceof AudiobookUploadDuplicate) {
+        entry.status = "error";
+        entry.message = "An audiobook with this title already exists.";
+        renderAudiobookUploadQueue();
+        showToast(`"${entry.file.name}": an audiobook with this title already exists.`, "error", { title: "Audiobooks" });
+        continue;
+      }
+
+      entry.status = error instanceof AudiobookUploadCancelled ? "cancelled" : "error";
+      if (error instanceof AudiobookUploadCancelled) {
+        entry.message = "Cancelled";
+        if (audiobookUploadStatus) audiobookUploadStatus.textContent = "Upload cancelled.";
+      } else if (error instanceof AudiobookUploadForbidden) {
+        entry.message = error.message;
+        if (audiobookUploadStatus) audiobookUploadStatus.textContent = error.message;
+      } else {
         console.error(error);
+        entry.message = "Failed";
+        if (audiobookUploadStatus) {
+          audiobookUploadStatus.textContent = "Upload failed. Check your connection and click Upload again to resume.";
+        }
       }
+      renderAudiobookUploadQueue();
+      setAudiobookUploadFormBusy(false);
+      audiobookUploadCancel?.classList.add("hidden");
+      return;
     }
+  }
 
-    if (!uploadId) {
-      const createResponse = await fetch("/api/audiobooks/uploads", {
-        method: "POST",
+  const doneCount = audiobookUploadQueue.filter((entry) => entry.status === "done").length;
+  const failedCount = audiobookUploadQueue.length - doneCount;
+  if (failedCount === 0) {
+    showToast(single ? "Audiobook uploaded." : `${doneCount} audiobooks uploaded.`, "success", { title: "Audiobooks" });
+    audiobookUploadModal?.close();
+  } else {
+    if (audiobookUploadStatus) {
+      audiobookUploadStatus.textContent = `Uploaded ${doneCount} of ${audiobookUploadQueue.length} - see the list above for what failed.`;
+    }
+    setAudiobookUploadFormBusy(false);
+    audiobookUploadCancel?.classList.add("hidden");
+  }
+  await fetchAudiobooks();
+  renderContentMode();
+}
+
+// uploadOneAudiobookFile runs the resumable-chunked-upload dance for a single
+// file: create or resume the upload session, stream whatever's missing over
+// several concurrent chunk workers, then finalize it server-side. Throws
+// AudiobookUploadDuplicate for a 409 (caller skips to the next queued file),
+// AudiobookUploadCancelled/AudiobookUploadForbidden to stop the whole queue,
+// or any other Error for a hard failure that also stops the queue.
+async function uploadOneAudiobookFile(file, title, author) {
+  let uploadId = "";
+  let receivedRanges = [];
+
+  const saved = loadSavedAudiobookUpload();
+  if (saved && saved.filename === file.name && saved.totalBytes === file.size) {
+    try {
+      const statusResponse = await fetch(`/api/audiobooks/uploads/${encodeURIComponent(saved.uploadId)}`, {
         credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ filename: file.name, mimeType: file.type, totalBytes: file.size, title, author }),
       });
-      if (!(await expectAuthorized(createResponse, "Could not start the upload."))) {
-        throw new Error("audiobook upload create failed");
+      if (statusResponse.ok) {
+        const statusPayload = await statusResponse.json();
+        uploadId = saved.uploadId;
+        receivedRanges = statusPayload.received_ranges || [];
+        if (audiobookUploadStatus) audiobookUploadStatus.textContent = "Resuming previous upload...";
       }
-      const createPayload = await createResponse.json();
-      uploadId = createPayload.upload_id;
-      receivedRanges = createPayload.received_ranges || [];
+    } catch (error) {
+      console.error(error);
     }
+  }
 
-    state.audiobooks.upload = { id: uploadId, cancelled: false };
-    saveAudiobookUploadMarker({ uploadId, filename: file.name, totalBytes: file.size });
-
-    let uploadedBytes = receivedRanges.reduce((sum, range) => sum + (range.end - range.start), 0);
-    updateAudiobookUploadProgress(uploadedBytes, file.size);
-
-    // Upload whatever is still missing as a queue of fixed-size chunks, with
-    // several workers pulling from it concurrently - this is what spreads one
-    // large file over multiple streams instead of a single sequential PATCH
-    // after another.
-    const chunkQueue = splitAudiobookUploadChunks(computeAudiobookUploadGaps(receivedRanges, file.size));
-    let nextChunkIndex = 0;
-    // Once any one stream gives up for good (retries exhausted), the other
-    // concurrent streams should stop picking up new chunks too, rather than
-    // keep hammering a doomed upload in the background after the UI has
-    // already moved on to the failure state.
-    let uploadFailed = false;
-    const concurrency = state.auth.audiobookUploadConcurrency || AUDIOBOOK_UPLOAD_CONCURRENCY_DEFAULT;
-    const workerCount = Math.min(concurrency, Math.max(1, chunkQueue.length));
-    renderAudiobookUploadParts(receivedRanges, chunkQueue, file.size, workerCount);
-
-    async function runAudiobookUploadWorker() {
-      while (nextChunkIndex < chunkQueue.length) {
-        if (state.audiobooks.upload?.cancelled) {
-          throw new AudiobookUploadCancelled();
-        }
-        if (uploadFailed) return;
-        const { start, end } = chunkQueue[nextChunkIndex++];
-        setAudiobookUploadPartState(start, end, "is-active");
-        try {
-          await uploadAudiobookChunk(uploadId, start, file.slice(start, end));
-        } catch (error) {
-          uploadFailed = true;
-          throw error;
-        }
-        setAudiobookUploadPartState(start, end, "is-done");
-        uploadedBytes += end - start;
-        updateAudiobookUploadProgress(uploadedBytes, file.size);
-      }
-    }
-
-    await Promise.all(Array.from({ length: workerCount }, runAudiobookUploadWorker));
-
-    if (audiobookUploadStatus) audiobookUploadStatus.textContent = "Finishing up...";
-    const duration = await probeAudioDuration(file);
-    const completeResponse = await fetch(`/api/audiobooks/uploads/${encodeURIComponent(uploadId)}/complete`, {
+  if (!uploadId) {
+    const createResponse = await fetch("/api/audiobooks/uploads", {
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ durationSeconds: duration }),
+      body: JSON.stringify({ filename: file.name, mimeType: file.type, totalBytes: file.size, title, author }),
     });
-    if (completeResponse.status === 409) {
-      saveAudiobookUploadMarker(null);
-      state.audiobooks.upload = null;
-      if (audiobookUploadStatus) audiobookUploadStatus.textContent = "An audiobook with this title already exists.";
-      showToast("An audiobook with this title already exists.", "error", { title: "Audiobooks" });
-      audiobookUploadModal?.close();
-      return;
+    if (!(await expectAuthorized(createResponse, "Could not start the upload."))) {
+      throw new Error("audiobook upload create failed");
     }
-    if (!(await expectAuthorized(completeResponse, "Could not finish the upload."))) {
-      throw new Error("audiobook upload complete failed");
-    }
+    const createPayload = await createResponse.json();
+    uploadId = createPayload.upload_id;
+    receivedRanges = createPayload.received_ranges || [];
+  }
 
+  state.audiobooks.upload = { id: uploadId, cancelled: false };
+  saveAudiobookUploadMarker({ uploadId, filename: file.name, totalBytes: file.size });
+
+  let uploadedBytes = receivedRanges.reduce((sum, range) => sum + (range.end - range.start), 0);
+  updateAudiobookUploadProgress(uploadedBytes, file.size);
+
+  // Upload whatever is still missing as a queue of fixed-size chunks, with
+  // several workers pulling from it concurrently - this is what spreads one
+  // large file over multiple streams instead of a single sequential PATCH
+  // after another.
+  const chunkQueue = splitAudiobookUploadChunks(computeAudiobookUploadGaps(receivedRanges, file.size));
+  let nextChunkIndex = 0;
+  // Once any one stream gives up for good (retries exhausted), the other
+  // concurrent streams should stop picking up new chunks too, rather than
+  // keep hammering a doomed upload in the background after the UI has
+  // already moved on to the failure state.
+  let uploadFailed = false;
+  const concurrency = state.auth.audiobookUploadConcurrency || AUDIOBOOK_UPLOAD_CONCURRENCY_DEFAULT;
+  const workerCount = Math.min(concurrency, Math.max(1, chunkQueue.length));
+  renderAudiobookUploadParts(receivedRanges, chunkQueue, file.size, workerCount);
+
+  async function runAudiobookUploadWorker() {
+    while (nextChunkIndex < chunkQueue.length) {
+      if (state.audiobooks.upload?.cancelled) {
+        throw new AudiobookUploadCancelled();
+      }
+      if (uploadFailed) return;
+      const { start, end } = chunkQueue[nextChunkIndex++];
+      setAudiobookUploadPartState(start, end, "is-active");
+      try {
+        await uploadAudiobookChunk(uploadId, start, file.slice(start, end));
+      } catch (error) {
+        uploadFailed = true;
+        throw error;
+      }
+      setAudiobookUploadPartState(start, end, "is-done");
+      uploadedBytes += end - start;
+      updateAudiobookUploadProgress(uploadedBytes, file.size);
+    }
+  }
+
+  await Promise.all(Array.from({ length: workerCount }, runAudiobookUploadWorker));
+
+  if (audiobookUploadStatus) audiobookUploadStatus.textContent = "Finishing up...";
+  const duration = await probeAudioDuration(file);
+  const completeResponse = await fetch(`/api/audiobooks/uploads/${encodeURIComponent(uploadId)}/complete`, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ durationSeconds: duration }),
+  });
+  if (completeResponse.status === 409) {
     saveAudiobookUploadMarker(null);
     state.audiobooks.upload = null;
-    showToast("Audiobook uploaded.", "success", { title: "Audiobooks" });
-    audiobookUploadModal?.close();
-    await fetchAudiobooks();
-    renderContentMode();
-  } catch (error) {
-    if (error instanceof AudiobookUploadCancelled) {
-      if (audiobookUploadStatus) audiobookUploadStatus.textContent = "Upload cancelled.";
-    } else if (error instanceof AudiobookUploadForbidden) {
-      if (audiobookUploadStatus) audiobookUploadStatus.textContent = error.message;
-    } else {
-      console.error(error);
-      if (audiobookUploadStatus) {
-        audiobookUploadStatus.textContent = "Upload failed. Check your connection and click Upload again to resume.";
-      }
-    }
-    if (audiobookUploadSubmit) {
-      audiobookUploadSubmit.disabled = false;
-      audiobookUploadSubmit.classList.remove("hidden");
-    }
-    audiobookUploadCancel?.classList.add("hidden");
+    throw new AudiobookUploadDuplicate();
   }
+  if (!(await expectAuthorized(completeResponse, "Could not finish the upload."))) {
+    throw new Error("audiobook upload complete failed");
+  }
+
+  saveAudiobookUploadMarker(null);
+  state.audiobooks.upload = null;
 }
 
 async function cancelAudiobookUpload() {
+  audiobookUploadQueueCancelled = true;
   const upload = state.audiobooks.upload;
   if (!upload) {
     audiobookUploadModal?.close();
@@ -8549,6 +8680,9 @@ openRandomReelButton?.addEventListener("click", () => {
 
 openAudiobookUploadButton?.addEventListener("click", openAudiobookUploadModal);
 audiobookUploadModalClose?.addEventListener("click", () => audiobookUploadModal?.close());
+audiobookUploadFileInput?.addEventListener("change", () => {
+  setAudiobookUploadQueue(audiobookUploadFileInput.files || []);
+});
 audiobookUploadForm?.addEventListener("submit", (event) => {
   submitAudiobookUpload(event).catch((error) => console.error(error));
 });

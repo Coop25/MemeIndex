@@ -4076,6 +4076,20 @@ body.admin-mode .admin-tab.is-active .admin-tab-badge { background: var(--green-
 }
 .audiobook-upload-parts-caption { color: var(--faint); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; }
 
+#audiobook-upload-metadata-fields { display: grid; gap: 15px; }
+.audiobook-upload-queue { display: flex; flex-direction: column; gap: 6px; max-height: 220px; padding: 2px; overflow-y: auto; }
+.audiobook-upload-queue-item { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel-2); font-size: 12px; }
+.audiobook-upload-queue-item.is-uploading { border-color: rgba(201,149,93,.35); }
+.audiobook-upload-queue-item.is-done { border-color: rgba(122,201,149,.3); }
+.audiobook-upload-queue-item.is-error, .audiobook-upload-queue-item.is-cancelled { border-color: rgba(239,109,109,.3); }
+.audiobook-upload-queue-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.audiobook-upload-queue-size { flex-shrink: 0; color: var(--faint); }
+.audiobook-upload-queue-status { flex-shrink: 0; min-width: 70px; color: var(--muted); text-align: right; }
+.audiobook-upload-queue-item.is-done .audiobook-upload-queue-status { color: var(--green-bright); }
+.audiobook-upload-queue-item.is-error .audiobook-upload-queue-status, .audiobook-upload-queue-item.is-cancelled .audiobook-upload-queue-status { color: #ffabab; }
+.audiobook-upload-queue-remove { flex-shrink: 0; display: grid; width: 22px; height: 22px; padding: 0; place-items: center; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--muted); font-size: 10px; cursor: pointer; }
+.audiobook-upload-queue-remove:hover { border-color: rgba(239,109,109,.35); color: #ffabab; }
+
 .audiobook-upload-actions { display: flex; gap: 10px; }
 .audiobook-upload-actions .secondary-button { background: var(--panel-2); }
 

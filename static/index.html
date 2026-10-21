@@ -759,21 +759,25 @@
             </div>
             <button id="audiobook-upload-modal-close" class="upload-modal-close" type="button" aria-label="Close upload">X</button>
           </div>
-          <p class="upload-modal-copy">Large files upload in chunks and resume automatically if the connection drops - keep this tab open until it finishes. Title, author, cover art, and duration are read from the file's own tags when you leave these blank.</p>
+          <p class="upload-modal-copy">Select one or more files to queue them up - they upload one at a time, in chunks that resume automatically if the connection drops, so keep this tab open until the queue finishes. Title, author, cover art, and duration are read from each file's own tags when you leave these blank.</p>
           <form id="audiobook-upload-form" class="upload-form">
             <label class="field upload-file-field">
-              <span>Choose file</span>
-              <input id="audiobook-upload-file-input" type="file" accept="audio/*,.m4b" required />
-              <small>One audiobook file (MP3, M4A/M4B, etc.)</small>
+              <span>Choose file(s)</span>
+              <input id="audiobook-upload-file-input" type="file" accept="audio/*,.m4b" multiple required />
+              <small>One or more audiobook files (MP3, M4A/M4B, etc.)</small>
             </label>
-            <label class="field">
-              <span>Title</span>
-              <input id="audiobook-upload-title" type="text" placeholder="Read from the file's tags, or its file name" autocomplete="off" />
-            </label>
-            <label class="field">
-              <span>Author</span>
-              <input id="audiobook-upload-author" type="text" placeholder="Read from the file's tags" autocomplete="off" />
-            </label>
+            <div id="audiobook-upload-queue" class="audiobook-upload-queue hidden"></div>
+            <div id="audiobook-upload-metadata-fields">
+              <label class="field">
+                <span>Title</span>
+                <input id="audiobook-upload-title" type="text" placeholder="Read from the file's tags, or its file name" autocomplete="off" />
+              </label>
+              <label class="field">
+                <span>Author</span>
+                <input id="audiobook-upload-author" type="text" placeholder="Read from the file's tags" autocomplete="off" />
+              </label>
+            </div>
+            <p id="audiobook-upload-metadata-note" class="status-text hidden">Title and author are read from each file's own tags, since they're uploading together.</p>
             <div id="audiobook-upload-progress-wrap" class="audiobook-upload-progress-wrap hidden">
               <div class="audiobook-upload-progress-track"><span id="audiobook-upload-progress-bar"></span></div>
               <div class="audiobook-upload-progress-meta">
