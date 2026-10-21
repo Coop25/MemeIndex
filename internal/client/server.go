@@ -2241,7 +2241,9 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 		if normalized == "" {
 			continue
 		}
-		record.Permissions = s.auth.permissionsForUser(normalized)
+		if s.auth.enabled() {
+			record.Permissions = s.auth.permissionsForUser(normalized)
+		}
 		byID[normalized] = record
 	}
 
@@ -2293,8 +2295,12 @@ func (s *Server) createManagedUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A previously denied visitor may have a cached zero-permission session.
-	s.auth.invalidateUser(record.UserID)
-	record.Permissions = s.auth.permissionsForUser(record.UserID)
+	// Anonymous deployments have no auth service (and no sessions to drop or
+	// policy to apply) at all - s.auth is nil there, per s.auth.enabled().
+	if s.auth.enabled() {
+		s.auth.invalidateUser(record.UserID)
+		record.Permissions = s.auth.permissionsForUser(record.UserID)
+	}
 	writeJSON(w, http.StatusCreated, managedUserPayload(record, false))
 }
 
@@ -2340,9 +2346,12 @@ func (s *Server) updateManagedUser(w http.ResponseWriter, r *http.Request, userI
 		return
 	}
 	// Drop any cached session so the new permissions take effect on the next
-	// request instead of after the cache TTL.
-	s.auth.invalidateUser(record.UserID)
-	record.Permissions = s.auth.permissionsForUser(record.UserID)
+	// request instead of after the cache TTL. Anonymous deployments have no
+	// auth service at all - s.auth is nil there, per s.auth.enabled().
+	if s.auth.enabled() {
+		s.auth.invalidateUser(record.UserID)
+		record.Permissions = s.auth.permissionsForUser(record.UserID)
+	}
 	writeJSON(w, http.StatusOK, managedUserPayload(record, false))
 }
 
@@ -2353,7 +2362,9 @@ func (s *Server) deleteManagedUser(w http.ResponseWriter, r *http.Request, userI
 		return
 	}
 	// Stop honouring any cached session for the now-deleted account at once.
-	s.auth.invalidateUser(userID)
+	if s.auth.enabled() {
+		s.auth.invalidateUser(userID)
+	}
 
 	w.WriteHeader(http.StatusNoContent)
 }
