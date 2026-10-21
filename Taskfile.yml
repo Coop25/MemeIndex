@@ -24,6 +24,10 @@ tasks:
     desc: Build and start MemeIndex locally in Docker Compose using the local source tree
     env:
       MEMEINDEX_HOST_PORT: "8081"
+      # Without this, it defaults to 8081 too (see docker-compose.yml) and
+      # collides with MEMEINDEX_HOST_PORT above - the app container then
+      # fails to start with "port is already allocated".
+      MEMEINDEX_LOCAL_HOST_PORT: "8082"
     cmds:
       - docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 
@@ -48,5 +52,6 @@ tasks:
     desc: Stop the local Docker Compose dev stack
     env:
       MEMEINDEX_HOST_PORT: "8081"
+      MEMEINDEX_LOCAL_HOST_PORT: "8082"
     cmds:
       - docker compose -f docker-compose.yml -f docker-compose.dev.yml down
