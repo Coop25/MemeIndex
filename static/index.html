@@ -453,6 +453,27 @@
               <p>Upload one to start building your library.</p>
             </div>
           </section>
+
+          <section id="audiobook-series-manage-view" class="audiobook-series-manage-view hidden">
+            <div class="audiobooks-view-header">
+              <div>
+                <button id="audiobook-series-manage-back" type="button" class="ghost-button audiobook-series-manage-back">&larr; Back to series</button>
+                <h2 id="audiobook-series-manage-title">Manage books</h2>
+                <p id="audiobook-series-manage-count" class="status-text"></p>
+              </div>
+            </div>
+            <div class="audiobook-series-manage-layout">
+              <div class="audiobook-series-manage-pane">
+                <h3>Library</h3>
+                <input id="audiobook-series-manage-search" type="search" class="audiobook-series-manage-search" placeholder="Search your library..." aria-label="Search your library" />
+                <div id="audiobook-series-manage-library-list" class="audiobook-series-manage-list"></div>
+              </div>
+              <div class="audiobook-series-manage-pane">
+                <h3>In this series</h3>
+                <div id="audiobook-series-manage-books-list" class="audiobook-series-manage-list"></div>
+              </div>
+            </div>
+          </section>
           <div id="meme-grid-loader" class="loading-indicator loading-indicator-grid hidden" aria-live="polite" aria-hidden="true">
             <span class="loading-spinner" aria-hidden="true"></span>
             <span class="loading-label">Loading memes...</span>

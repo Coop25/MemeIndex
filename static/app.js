@@ -87,6 +87,7 @@ const state = {
     seriesId: "",
     series: [],
     view: "books",
+    manageSeriesId: "",
   },
 };
 
@@ -242,6 +243,13 @@ const audiobookSeriesCreateForm = document.querySelector("#audiobook-series-crea
 const audiobookSeriesNameInput = document.querySelector("#audiobook-series-name-input");
 const audiobookSeriesStatus = document.querySelector("#audiobook-series-status");
 const audiobookSeriesList = document.querySelector("#audiobook-series-list");
+const audiobookSeriesManageView = document.querySelector("#audiobook-series-manage-view");
+const audiobookSeriesManageBackButton = document.querySelector("#audiobook-series-manage-back");
+const audiobookSeriesManageTitle = document.querySelector("#audiobook-series-manage-title");
+const audiobookSeriesManageCount = document.querySelector("#audiobook-series-manage-count");
+const audiobookSeriesManageSearch = document.querySelector("#audiobook-series-manage-search");
+const audiobookSeriesManageLibraryList = document.querySelector("#audiobook-series-manage-library-list");
+const audiobookSeriesManageBooksList = document.querySelector("#audiobook-series-manage-books-list");
 const audiobookUploadModal = document.querySelector("#audiobook-upload-modal");
 const audiobookUploadModalClose = document.querySelector("#audiobook-upload-modal-close");
 const audiobookUploadForm = document.querySelector("#audiobook-upload-form");
@@ -3406,8 +3414,10 @@ function renderContentMode() {
   const adminMode = isAdminView();
 	const homeMode = state.filters.view === "home";
 	const audiobooksMode = isAudiobooksView();
+	const manageSeriesBooksMode = audiobooksMode && state.audiobooks.view === "manage-books";
 	const libraryMode = !adminMode && !homeMode && !audiobooksMode;
-	audiobooksView?.classList.toggle("hidden", !audiobooksMode);
+	audiobooksView?.classList.toggle("hidden", !audiobooksMode || manageSeriesBooksMode);
+	audiobookSeriesManageView?.classList.toggle("hidden", !manageSeriesBooksMode);
 	document.body.classList.toggle("audiobooks-mode", audiobooksMode);
 	if (libraryMode && libraryTitle) {
 		libraryTitle.textContent = state.filters.tag
@@ -3858,7 +3868,6 @@ function renderAudiobookSeriesGallery() {
 // currently active in the main grid - state.audiobooks.items is scoped to
 // that view and would otherwise silently hide books from the picker.
 let audiobookSeriesManagerBooks = [];
-const audiobookSeriesManagerExpanded = new Set();
 let audiobookSeriesManagerRenamingId = null;
 
 async function fetchAudiobookSeriesManagerBooks() {
@@ -3870,14 +3879,6 @@ async function fetchAudiobookSeriesManagerBooks() {
   } catch (error) {
     console.error(error);
   }
-}
-
-// Books are fetched before series so that fetchAudiobookSeries()'s own
-// render (it always re-renders the manager in its finally block) already
-// sees fresh book data, instead of racing it and flashing a stale list.
-async function refreshAudiobookSeriesManager() {
-  await fetchAudiobookSeriesManagerBooks();
-  await fetchAudiobookSeries();
 }
 
 // seriesManagerBooksFor relies on audiobookSeriesManagerBooks already being
@@ -3895,13 +3896,10 @@ function renderAudiobookSeriesManager() {
     ? series.map((s) => audiobookSeriesManagerItemHTML(s)).join("")
     : `<p class="status-text">No series yet. Create one above.</p>`;
 
-  audiobookSeriesList.querySelectorAll("[data-series-toggle]").forEach((button) => {
+  audiobookSeriesList.querySelectorAll("[data-series-manage]").forEach((button) => {
     button.addEventListener("click", () => {
       const seriesId = button.closest("[data-series-id]")?.dataset.seriesId;
-      if (!seriesId) return;
-      if (audiobookSeriesManagerExpanded.has(seriesId)) audiobookSeriesManagerExpanded.delete(seriesId);
-      else audiobookSeriesManagerExpanded.add(seriesId);
-      renderAudiobookSeriesManager();
+      if (seriesId) openAudiobookSeriesManagePage(seriesId).catch((error) => console.error(error));
     });
   });
   audiobookSeriesList.querySelectorAll("[data-series-share]").forEach((button) => {
@@ -3948,44 +3946,6 @@ function renderAudiobookSeriesManager() {
       if (current) deleteAudiobookSeriesEntry(current);
     });
   });
-  audiobookSeriesList.querySelectorAll("[data-series-book-up]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const seriesId = button.closest("[data-series-id]")?.dataset.seriesId;
-      const bookId = button.closest("[data-book-id]")?.dataset.bookId;
-      if (seriesId && bookId) moveAudiobookInSeries(seriesId, bookId, -1).catch((error) => console.error(error));
-    });
-  });
-  audiobookSeriesList.querySelectorAll("[data-series-book-down]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const seriesId = button.closest("[data-series-id]")?.dataset.seriesId;
-      const bookId = button.closest("[data-book-id]")?.dataset.bookId;
-      if (seriesId && bookId) moveAudiobookInSeries(seriesId, bookId, 1).catch((error) => console.error(error));
-    });
-  });
-  audiobookSeriesList.querySelectorAll("[data-series-book-remove]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const bookId = button.closest("[data-book-id]")?.dataset.bookId;
-      if (bookId) removeAudiobookFromSeries(bookId).catch((error) => console.error(error));
-    });
-  });
-  audiobookSeriesList.querySelectorAll("[data-series-add-form]").forEach((form) => {
-    form.addEventListener("submit", (event) => {
-      event.preventDefault();
-      const seriesId = form.closest("[data-series-id]")?.dataset.seriesId;
-      const select = form.querySelector("[data-series-add-select]");
-      const bookId = select?.value;
-      // Guards against implicit submission (Enter in the filter field) still
-      // going through when the current filter hides the selected option.
-      if (select?.selectedOptions[0]?.hidden) return;
-      if (seriesId && bookId) addAudiobookToSeries(seriesId, bookId).catch((error) => console.error(error));
-    });
-  });
-  audiobookSeriesList.querySelectorAll("[data-series-add-filter]").forEach((input) => {
-    input.addEventListener("input", () => {
-      const form = input.closest("form");
-      filterAudiobookSeriesAddSelect(form?.querySelector("[data-series-add-select]"), form?.querySelector("[data-series-add-submit]"), input.value);
-    });
-  });
 
   const renamingInput = audiobookSeriesList.querySelector("[data-series-rename-input]");
   if (renamingInput) {
@@ -3995,7 +3955,6 @@ function renderAudiobookSeriesManager() {
 }
 
 function audiobookSeriesManagerItemHTML(s) {
-  const expanded = audiobookSeriesManagerExpanded.has(s.id);
   const renaming = audiobookSeriesManagerRenamingId === s.id;
 
   const nameArea = renaming
@@ -4007,17 +3966,17 @@ function audiobookSeriesManagerItemHTML(s) {
       </form>
     `
     : `
-      <button type="button" class="audiobook-series-toggle" data-series-toggle aria-expanded="${expanded}">
-        <span class="audiobook-series-toggle-chevron${expanded ? " is-expanded" : ""}" aria-hidden="true">&#9656;</span>
+      <div class="audiobook-series-row-name-area">
         <span class="audiobook-series-row-name">${escapeHTML(s.name)}</span>
         <span class="audiobook-series-row-count">${s.book_count} book${s.book_count === 1 ? "" : "s"}</span>
-      </button>
+      </div>
     `;
 
   const actions = renaming
     ? ""
     : `
       <div class="audiobook-series-row-actions">
+        <button type="button" class="secondary-button" data-series-manage>Manage books</button>
         <button type="button" class="ghost-button" data-series-share title="Copy a link to this series">Share</button>
         <button type="button" class="ghost-button" data-series-rename>Rename</button>
         <button type="button" class="danger-button" data-series-delete>Delete</button>
@@ -4025,71 +3984,218 @@ function audiobookSeriesManagerItemHTML(s) {
     `;
 
   return `
-    <div class="audiobook-series-item${expanded ? " is-expanded" : ""}" data-series-id="${escapeHTML(s.id)}">
+    <div class="audiobook-series-item" data-series-id="${escapeHTML(s.id)}">
       <div class="audiobook-series-item-header">${nameArea}${actions}</div>
-      ${expanded ? audiobookSeriesManagerBooksHTML(s) : ""}
     </div>
   `;
 }
 
-function audiobookSeriesManagerBooksHTML(s) {
-  const books = seriesManagerBooksFor(s.id);
-  const rows = books.length
-    ? books.map((book, index) => `
-        <div class="audiobook-series-book-row" data-book-id="${escapeHTML(book.id)}">
-          ${book.cover_url
-            ? `<img class="audiobook-series-book-cover" src="${escapeHTML(book.cover_url)}" alt="" loading="lazy" />`
-            : `<div class="audiobook-series-book-cover audiobook-series-book-cover-empty" aria-hidden="true"></div>`}
-          <div class="audiobook-series-book-info">
-            <span class="audiobook-series-book-title">${escapeHTML(audiobookDisplayTitle(book))}</span>
-            ${book.author ? `<span class="audiobook-series-book-author">${escapeHTML(book.author)}</span>` : ""}
-          </div>
-          <div class="audiobook-series-book-order">
-            <button type="button" class="audiobook-series-icon-button" data-series-book-up ${index === 0 ? "disabled" : ""} title="Move up" aria-label="Move up">&#9650;</button>
-            <button type="button" class="audiobook-series-icon-button" data-series-book-down ${index === books.length - 1 ? "disabled" : ""} title="Move down" aria-label="Move down">&#9660;</button>
-          </div>
-          <button type="button" class="audiobook-series-icon-button audiobook-series-book-remove" data-series-book-remove title="Remove from series" aria-label="Remove from series">&#10005;</button>
-        </div>
-      `).join("")
-    : `<p class="status-text">No books in this series yet.</p>`;
+// ---------------------------------------------------------------------------
+// Audiobook series "manage books" page: a full-width two-pane view (your
+// whole library on the left, this series's ordered books on the right) that
+// replaces the old cramped in-modal book list, which got unwieldy past a
+// handful of books. Supports drag-and-drop between/within the panes, with
+// click-based add/remove/reorder controls as a non-drag fallback.
+// ---------------------------------------------------------------------------
 
-  const available = audiobookSeriesManagerBooks.filter((book) => book.series_id !== s.id);
-  const addControl = available.length
+let audiobookSeriesManagePageQuery = "";
+
+async function openAudiobookSeriesManagePage(seriesId) {
+  audiobookSeriesModal?.close();
+  state.audiobooks.manageSeriesId = seriesId;
+  audiobookSeriesManagePageQuery = "";
+  if (audiobookSeriesManageSearch) audiobookSeriesManageSearch.value = "";
+  state.audiobooks.view = "manage-books";
+  renderContentMode();
+  await fetchAudiobookSeriesManagerBooks();
+  renderAudiobookSeriesManagePage();
+}
+
+function closeAudiobookSeriesManagePage() {
+  state.audiobooks.manageSeriesId = "";
+  state.audiobooks.view = "series";
+  renderContentMode();
+  renderAudiobooksGrid();
+}
+
+async function refreshAudiobookSeriesManagePageData() {
+  await fetchAudiobookSeriesManagerBooks();
+  await fetchAudiobookSeries();
+  renderAudiobookSeriesManagePage();
+}
+
+function renderAudiobookSeriesManagePage() {
+  if (!audiobookSeriesManageView) return;
+  const series = state.audiobooks.series.find((s) => s.id === state.audiobooks.manageSeriesId);
+  if (!series) {
+    closeAudiobookSeriesManagePage();
+    return;
+  }
+
+  if (audiobookSeriesManageTitle) audiobookSeriesManageTitle.textContent = series.name;
+  const books = seriesManagerBooksFor(series.id);
+  if (audiobookSeriesManageCount) {
+    audiobookSeriesManageCount.textContent = `${books.length} book${books.length === 1 ? "" : "s"}`;
+  }
+
+  if (audiobookSeriesManageBooksList) {
+    audiobookSeriesManageBooksList.innerHTML = books.length
+      ? books.map((book, index) => audiobookSeriesManageItemHTML(book, { removable: true, index, total: books.length })).join("")
+      : `<p class="status-text audiobook-series-manage-empty">Drag books here from the library, or use the + button.</p>`;
+  }
+
+  const query = audiobookSeriesManagePageQuery.trim().toLowerCase();
+  const library = audiobookSeriesManagerBooks
+    .filter((book) => book.series_id !== series.id)
+    .filter((book) => !query
+      || audiobookDisplayTitle(book).toLowerCase().includes(query)
+      || (book.author || "").toLowerCase().includes(query));
+  if (audiobookSeriesManageLibraryList) {
+    audiobookSeriesManageLibraryList.innerHTML = library.length
+      ? library.map((book) => audiobookSeriesManageItemHTML(book, { removable: false })).join("")
+      : `<p class="status-text">${audiobookSeriesManagerBooks.length ? "No matching books." : "Upload an audiobook first."}</p>`;
+  }
+
+  wireAudiobookSeriesManagePageInteractions(series.id);
+}
+
+function audiobookSeriesManageItemHTML(book, { removable, index, total }) {
+  const otherSeries = !removable && book.series_id
+    ? state.audiobooks.series.find((s) => s.id === book.series_id)
+    : null;
+  const cover = book.cover_url
+    ? `<img class="audiobook-manage-item-cover" src="${escapeHTML(book.cover_url)}" alt="" loading="lazy" />`
+    : `<div class="audiobook-manage-item-cover audiobook-manage-item-cover-empty" aria-hidden="true"></div>`;
+  const controls = removable
     ? `
-      <form class="audiobook-series-add-form" data-series-add-form>
-        <input type="search" class="audiobook-series-add-filter" placeholder="Filter books..." data-series-add-filter aria-label="Filter books to add" />
-        <select data-series-add-select aria-label="Book to add">
-          ${available.map((book) => `<option value="${escapeHTML(book.id)}" data-title="${escapeHTML(audiobookDisplayTitle(book).toLowerCase())}">${escapeHTML(audiobookDisplayTitle(book))}</option>`).join("")}
-        </select>
-        <button type="submit" class="secondary-button" data-series-add-submit>Add</button>
-      </form>
+      <div class="audiobook-series-book-order">
+        <button type="button" class="audiobook-series-icon-button" data-manage-up ${index === 0 ? "disabled" : ""} title="Move up" aria-label="Move up">&#9650;</button>
+        <button type="button" class="audiobook-series-icon-button" data-manage-down ${index === total - 1 ? "disabled" : ""} title="Move down" aria-label="Move down">&#9660;</button>
+      </div>
+      <button type="button" class="audiobook-series-icon-button audiobook-series-book-remove" data-manage-remove title="Remove from series" aria-label="Remove from series">&#10005;</button>
     `
-    : `<p class="status-text">${audiobookSeriesManagerBooks.length ? "Every other book is already in a series." : "Upload an audiobook first."}</p>`;
+    : `<button type="button" class="audiobook-series-icon-button" data-manage-add title="Add to series" aria-label="Add to series">+</button>`;
 
   return `
-    <div class="audiobook-series-books" data-series-books>
-      ${rows}
-      <div class="audiobook-series-add">${addControl}</div>
+    <div class="audiobook-manage-item" draggable="true" data-book-id="${escapeHTML(book.id)}">
+      ${cover}
+      <div class="audiobook-manage-item-info">
+        <span class="audiobook-manage-item-title">${escapeHTML(audiobookDisplayTitle(book))}</span>
+        ${book.author ? `<span class="audiobook-manage-item-author">${escapeHTML(book.author)}</span>` : ""}
+        ${otherSeries ? `<span class="audiobook-manage-item-badge">In ${escapeHTML(otherSeries.name)}</span>` : ""}
+      </div>
+      ${controls}
     </div>
   `;
 }
 
-// Disables the Add button rather than leaving a hidden, non-matching option
-// as the select's value - otherwise submitting with a filter that matches
-// nothing would silently add whatever book happened to be selected before.
-function filterAudiobookSeriesAddSelect(select, submitButton, query) {
-  if (!select) return;
-  const needle = query.trim().toLowerCase();
-  let firstVisible = null;
-  Array.from(select.options).forEach((option) => {
-    const match = !needle || (option.dataset.title || "").includes(needle);
-    option.hidden = !match;
-    if (match && !firstVisible) firstVisible = option;
+// Only wires the per-row controls and drag sources here: those rows are
+// rebuilt via innerHTML on every render, so re-attaching their listeners each
+// time is fine (the old nodes, and their listeners, are discarded with them).
+// The two pane containers are NOT rebuilt, so their drop-zone listeners are
+// wired once, separately (see setUpAudiobookSeriesManageDropZones below) -
+// doing it here too would stack a new copy on every single mutation.
+function wireAudiobookSeriesManagePageInteractions(seriesId) {
+  audiobookSeriesManageBooksList?.querySelectorAll("[data-manage-up]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const bookId = button.closest("[data-book-id]")?.dataset.bookId;
+      if (bookId) moveAudiobookInSeries(seriesId, bookId, -1).catch((error) => console.error(error));
+    });
   });
-  if (submitButton) submitButton.disabled = !firstVisible;
-  if (firstVisible && select.selectedOptions[0]?.hidden) {
-    select.value = firstVisible.value;
+  audiobookSeriesManageBooksList?.querySelectorAll("[data-manage-down]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const bookId = button.closest("[data-book-id]")?.dataset.bookId;
+      if (bookId) moveAudiobookInSeries(seriesId, bookId, 1).catch((error) => console.error(error));
+    });
+  });
+  audiobookSeriesManageBooksList?.querySelectorAll("[data-manage-remove]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const bookId = button.closest("[data-book-id]")?.dataset.bookId;
+      if (bookId) removeAudiobookFromSeries(bookId).catch((error) => console.error(error));
+    });
+  });
+  audiobookSeriesManageLibraryList?.querySelectorAll("[data-manage-add]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const bookId = button.closest("[data-book-id]")?.dataset.bookId;
+      if (bookId) addAudiobookToSeries(seriesId, bookId).catch((error) => console.error(error));
+    });
+  });
+
+  [audiobookSeriesManageLibraryList, audiobookSeriesManageBooksList].forEach((list) => {
+    list?.querySelectorAll("[data-book-id]").forEach((row) => {
+      row.addEventListener("dragstart", (event) => {
+        event.dataTransfer.setData("text/plain", row.dataset.bookId || "");
+        event.dataTransfer.effectAllowed = "move";
+        row.classList.add("is-dragging");
+      });
+      row.addEventListener("dragend", () => row.classList.remove("is-dragging"));
+    });
+  });
+}
+
+// Wired once at startup (not per-render, unlike wireAudiobookSeriesManagePageInteractions
+// above) since these two pane elements persist across renders - only their
+// contents are replaced. Reads state.audiobooks.manageSeriesId at drop time
+// rather than closing over a seriesId, since that's the only way to stay
+// correct across renders for a page whose series can change.
+function setUpAudiobookSeriesManageDropZones() {
+  if (audiobookSeriesManageBooksList) {
+    audiobookSeriesManageBooksList.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      audiobookSeriesManageBooksList.classList.add("is-dragover");
+    });
+    audiobookSeriesManageBooksList.addEventListener("dragleave", (event) => {
+      if (!audiobookSeriesManageBooksList.contains(event.relatedTarget)) {
+        audiobookSeriesManageBooksList.classList.remove("is-dragover");
+      }
+    });
+    audiobookSeriesManageBooksList.addEventListener("drop", (event) => {
+      event.preventDefault();
+      audiobookSeriesManageBooksList.classList.remove("is-dragover");
+      const seriesId = state.audiobooks.manageSeriesId;
+      const bookId = event.dataTransfer.getData("text/plain");
+      if (!seriesId || !bookId) return;
+      const atIndex = audiobookSeriesManageDropIndex(audiobookSeriesManageBooksList, event.clientY, bookId);
+      placeAudiobookInSeries(seriesId, bookId, atIndex).catch((error) => console.error(error));
+    });
   }
+
+  if (audiobookSeriesManageLibraryList) {
+    audiobookSeriesManageLibraryList.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      audiobookSeriesManageLibraryList.classList.add("is-dragover");
+    });
+    audiobookSeriesManageLibraryList.addEventListener("dragleave", (event) => {
+      if (!audiobookSeriesManageLibraryList.contains(event.relatedTarget)) {
+        audiobookSeriesManageLibraryList.classList.remove("is-dragover");
+      }
+    });
+    audiobookSeriesManageLibraryList.addEventListener("drop", (event) => {
+      event.preventDefault();
+      audiobookSeriesManageLibraryList.classList.remove("is-dragover");
+      const seriesId = state.audiobooks.manageSeriesId;
+      const bookId = event.dataTransfer.getData("text/plain");
+      const book = bookId ? audiobookSeriesManagerBooks.find((b) => b.id === bookId) : null;
+      // Dragging a library book onto the library pane is a no-op; dragging a
+      // series book here means "take it out of the series".
+      if (seriesId && book?.series_id === seriesId) removeAudiobookFromSeries(bookId).catch((error) => console.error(error));
+    });
+  }
+}
+setUpAudiobookSeriesManageDropZones();
+
+// Finds where a dropped book should land among the OTHER rows in a list
+// (the dragged book's own row, if present, is excluded) by comparing the
+// pointer's Y position against each row's vertical midpoint.
+function audiobookSeriesManageDropIndex(container, clientY, draggedBookId) {
+  const rows = Array.from(container.querySelectorAll("[data-book-id]")).filter((row) => row.dataset.bookId !== draggedBookId);
+  for (let i = 0; i < rows.length; i++) {
+    const rect = rows[i].getBoundingClientRect();
+    if (clientY < rect.top + rect.height / 2) return i;
+  }
+  return rows.length;
 }
 
 async function shareAudiobookSeries(series) {
@@ -4195,7 +4301,7 @@ async function addAudiobookToSeries(seriesId, bookId) {
     .reduce((max, book) => Math.max(max, Number(book.series_sequence) || 0), 0) + 1;
   try {
     await setAudiobookSeriesRaw(bookId, seriesId, nextSequence);
-    await refreshAudiobookSeriesManager();
+    await refreshAudiobookSeriesManagePageData();
     await fetchAudiobooks();
   } catch (error) {
     console.error(error);
@@ -4206,7 +4312,7 @@ async function addAudiobookToSeries(seriesId, bookId) {
 async function removeAudiobookFromSeries(bookId) {
   try {
     await setAudiobookSeriesRaw(bookId, "", null);
-    await refreshAudiobookSeriesManager();
+    await refreshAudiobookSeriesManagePageData();
     await fetchAudiobooks();
   } catch (error) {
     console.error(error);
@@ -4214,34 +4320,46 @@ async function removeAudiobookFromSeries(bookId) {
   }
 }
 
-// Reordering swaps positions in the series's current book list, then
-// renumbers every book 1..N so later moves have clean integer sequences to
-// work with - cheap given how small a series's book list typically is.
+// moveAudiobookInSeries is a thin wrapper over placeAudiobookInSeries: moving
+// an item by delta positions, then re-splicing it back in at that same index
+// into the array with itself removed, lands it at the right final position
+// either direction - the standard array-move identity.
 async function moveAudiobookInSeries(seriesId, bookId, delta) {
   const books = seriesManagerBooksFor(seriesId);
   const fromIndex = books.findIndex((book) => book.id === bookId);
   const toIndex = fromIndex + delta;
   if (fromIndex === -1 || toIndex < 0 || toIndex >= books.length) return;
+  await placeAudiobookInSeries(seriesId, bookId, toIndex);
+}
 
-  const reordered = books.slice();
-  const [moved] = reordered.splice(fromIndex, 1);
-  reordered.splice(toIndex, 0, moved);
+// Adds (if not already in the series) or repositions a book at an exact
+// index within the series's ordered list - used by both drag-and-drop and
+// the up/down buttons - then renumbers every book 1..N so later moves have
+// clean integer sequences to work with.
+async function placeAudiobookInSeries(seriesId, bookId, atIndex) {
+  const current = seriesManagerBooksFor(seriesId).filter((book) => book.id !== bookId);
+  const moved = audiobookSeriesManagerBooks.find((book) => book.id === bookId);
+  if (!moved) return;
+  const clampedIndex = Math.max(0, Math.min(atIndex, current.length));
+  const next = current.slice();
+  next.splice(clampedIndex, 0, moved);
 
   try {
-    await Promise.all(reordered.map((book, index) => {
+    await Promise.all(next.map((book, index) => {
       const sequence = index + 1;
-      if (Number(book.series_sequence) === sequence) return Promise.resolve();
+      if (book.id !== bookId && book.series_id === seriesId && Number(book.series_sequence) === sequence) {
+        return Promise.resolve();
+      }
       return setAudiobookSeriesRaw(book.id, seriesId, sequence);
     }));
   } catch (error) {
     console.error(error);
     // Some of the requests above may have already landed even though this
     // one failed - refresh in the finally block below either way so the UI
-    // never keeps showing a pre-reorder order that the server has moved on
-    // from.
-    showToast("Could not fully reorder the series - reopen it to check the order.", "error", { title: "Audiobook Series" });
+    // never keeps showing a pre-move order that the server has moved on from.
+    showToast("Could not fully update the series - reopen it to check the order.", "error", { title: "Audiobook Series" });
   } finally {
-    await refreshAudiobookSeriesManager();
+    await refreshAudiobookSeriesManagePageData();
     await fetchAudiobooks();
   }
 }
@@ -8353,11 +8471,8 @@ audiobooksSubnavSeriesButton?.addEventListener("click", () => {
 
 openAudiobookSeriesManagerButton?.addEventListener("click", () => {
   audiobookSeriesManagerRenamingId = null;
-  (async () => {
-    await fetchAudiobookSeriesManagerBooks();
-    renderAudiobookSeriesManager();
-    audiobookSeriesModal?.showModal();
-  })().catch((error) => console.error(error));
+  renderAudiobookSeriesManager();
+  audiobookSeriesModal?.showModal();
 });
 audiobookSeriesCloseButton?.addEventListener("click", () => audiobookSeriesModal?.close());
 audiobookSeriesCreateForm?.addEventListener("submit", (event) => {
@@ -8367,6 +8482,11 @@ audiobookSeriesCreateForm?.addEventListener("submit", (event) => {
   createAudiobookSeriesEntry(name).then(() => {
     if (audiobookSeriesNameInput) audiobookSeriesNameInput.value = "";
   }).catch((error) => console.error(error));
+});
+audiobookSeriesManageBackButton?.addEventListener("click", closeAudiobookSeriesManagePage);
+audiobookSeriesManageSearch?.addEventListener("input", () => {
+  audiobookSeriesManagePageQuery = audiobookSeriesManageSearch.value;
+  renderAudiobookSeriesManagePage();
 });
 
 audiobookPlayerClose?.addEventListener("click", minimizeAudiobookPlayer);

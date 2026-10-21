@@ -4349,37 +4349,49 @@ body.admin-mode .admin-tab.is-active .admin-tab-badge { background: var(--green-
 .audiobook-series-list { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; max-height: min(60vh, 520px); overflow-y: auto; }
 
 .audiobook-series-item { border: 1px solid var(--line); border-radius: 11px; background: var(--panel-2); overflow: hidden; }
-.audiobook-series-item.is-expanded { background: var(--panel-3); }
 .audiobook-series-item-header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 11px; }
-.audiobook-series-toggle { display: flex; flex: 1 1 140px; min-width: 0; align-items: center; gap: 8px; padding: 2px 0; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
-.audiobook-series-toggle-chevron { flex-shrink: 0; display: inline-block; color: var(--faint); font-size: 11px; transition: transform .15s ease; }
-.audiobook-series-toggle-chevron.is-expanded { transform: rotate(90deg); }
+.audiobook-series-row-name-area { display: flex; flex: 1 1 140px; min-width: 0; align-items: baseline; gap: 8px; }
 .audiobook-series-row-name { flex: 1 1 100px; min-width: 0; overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .audiobook-series-row-count { flex-shrink: 0; color: var(--faint); font-size: 11px; }
-.audiobook-series-row-actions { display: flex; flex-shrink: 0; gap: 6px; }
+.audiobook-series-row-actions { display: flex; flex-shrink: 0; flex-wrap: wrap; gap: 6px; }
 .audiobook-series-row-actions button { flex-shrink: 0; min-height: 30px; padding: 0 10px; font-size: 12px; }
 .audiobook-series-rename-form { display: flex; flex: 1 1 auto; gap: 6px; }
 .audiobook-series-rename-form input { flex: 1; min-width: 0; min-height: 32px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: rgba(11,11,14,.72); color: var(--text); font-size: 13px; }
 .audiobook-series-rename-form button { flex-shrink: 0; min-height: 32px; padding: 0 10px; font-size: 12px; }
 
-.audiobook-series-books { display: flex; flex-direction: column; gap: 6px; padding: 2px 11px 11px; }
-.audiobook-series-book-row { display: flex; align-items: center; gap: 9px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); }
-.audiobook-series-book-cover { flex-shrink: 0; width: 34px; height: 34px; border-radius: 6px; object-fit: cover; background: var(--panel-3); }
-.audiobook-series-book-cover-empty { border: 1px dashed var(--line-strong); }
-.audiobook-series-book-info { display: flex; flex: 1 1 auto; flex-direction: column; min-width: 0; gap: 1px; }
-.audiobook-series-book-title { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
-.audiobook-series-book-author { overflow: hidden; color: var(--faint); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.audiobook-series-book-order { display: flex; flex-shrink: 0; gap: 3px; }
 .audiobook-series-icon-button { display: grid; flex-shrink: 0; width: 26px; height: 26px; padding: 0; place-items: center; border: 1px solid var(--line); border-radius: 7px; background: var(--panel-2); color: var(--muted); font-size: 10px; cursor: pointer; }
 .audiobook-series-icon-button:hover:not(:disabled) { background: var(--panel-3); color: var(--text); }
 .audiobook-series-icon-button:disabled { opacity: .35; cursor: default; }
+.audiobook-series-book-order { display: flex; flex-shrink: 0; gap: 3px; }
 .audiobook-series-book-remove:hover { border-color: rgba(239,109,109,.35); color: #ffabab; }
 
-.audiobook-series-add { margin-top: 2px; }
-.audiobook-series-add-form { display: flex; flex-wrap: wrap; gap: 6px; }
-.audiobook-series-add-filter { flex: 1 1 120px; min-width: 0; min-height: 32px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg-soft); color: var(--text); font-size: 12px; }
-.audiobook-series-add-form select { flex: 2 1 160px; min-width: 0; min-height: 32px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg-soft); color: var(--text); font-size: 12px; }
-.audiobook-series-add-form button { flex-shrink: 0; min-height: 32px; padding: 0 12px; font-size: 12px; }
+/* The "manage books" page: a full-width two-pane view (library | this
+   series) that replaces the old in-modal book list once it had more than a
+   handful of books. */
+.audiobook-series-manage-view { display: flex; flex-direction: column; gap: 16px; padding: 4px 0 28px; }
+.audiobook-series-manage-back { margin-bottom: 8px; }
+.audiobook-series-manage-layout { display: flex; align-items: flex-start; gap: 18px; }
+.audiobook-series-manage-pane { display: flex; flex: 1 1 0; min-width: 0; flex-direction: column; gap: 10px; padding: 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
+.audiobook-series-manage-pane h3 { margin: 0; font-size: 14px; color: var(--muted); }
+.audiobook-series-manage-search { min-height: 38px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 9px; background: rgba(11,11,14,.72); color: var(--text); font-size: 13px; }
+.audiobook-series-manage-list { display: flex; flex-direction: column; gap: 8px; min-height: 120px; max-height: 65vh; padding: 4px; border-radius: 9px; overflow-y: auto; transition: background .12s ease; }
+.audiobook-series-manage-list.is-dragover { background: rgba(201,149,93,.1); outline: 2px dashed rgba(201,149,93,.45); outline-offset: -2px; }
+.audiobook-series-manage-empty { padding: 18px 10px; border: 1px dashed var(--line-strong); border-radius: 9px; text-align: center; }
+
+.audiobook-manage-item { display: flex; align-items: center; gap: 10px; padding: 8px 9px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel-2); cursor: grab; }
+.audiobook-manage-item:active { cursor: grabbing; }
+.audiobook-manage-item.is-dragging { opacity: .4; }
+.audiobook-manage-item-cover { flex-shrink: 0; width: 38px; height: 38px; border-radius: 6px; object-fit: cover; background: var(--panel-3); }
+.audiobook-manage-item-cover-empty { border: 1px dashed var(--line-strong); }
+.audiobook-manage-item-info { display: flex; flex: 1 1 auto; flex-direction: column; min-width: 0; gap: 1px; }
+.audiobook-manage-item-title { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.audiobook-manage-item-author { overflow: hidden; color: var(--faint); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.audiobook-manage-item-badge { align-self: flex-start; margin-top: 2px; padding: 1px 7px; border-radius: 999px; background: var(--panel-3); color: var(--muted); font-size: 10px; }
+
+@media (max-width: 760px) {
+  .audiobook-series-manage-layout { flex-direction: column; }
+  .audiobook-series-manage-list { max-height: 40vh; }
+}
 
 /* A user with only view-audiobooks access (no meme view) gets into the app
    shell now instead of being blocked, but the meme-only chrome around it
