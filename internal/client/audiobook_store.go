@@ -41,6 +41,10 @@ var ErrAudiobookSeriesNotFound = errors.New("audiobook series not found")
 // to a name (case-insensitive) that another series already has.
 var ErrAudiobookSeriesNameTaken = errors.New("audiobook series name already in use")
 
+// ErrAudiobookDuplicateTitle is returned by CompleteUpload when the library
+// already has an audiobook with the same title (case-insensitive).
+var ErrAudiobookDuplicateTitle = errors.New("an audiobook with this title already exists")
+
 type audiobookRecord struct {
 	ID               string
 	Title            string
@@ -455,6 +459,18 @@ func (s *postgresAudiobookStore) CompleteUpload(ctx context.Context, id, userID 
 	if title == "" {
 		title = upload.Filename
 	}
+
+	// Reject (and discard) a file that duplicates an audiobook already in the
+	// library, rather than silently stacking two copies of the same title.
+	if duplicate, err := s.audiobookTitleExists(ctx, title); err != nil {
+		_ = os.Remove(finalPath)
+		return audiobookRecord{}, fmt.Errorf("check for duplicate audiobook: %w", err)
+	} else if duplicate {
+		_ = os.Remove(finalPath)
+		_ = s.DiscardUpload(ctx, id)
+		return audiobookRecord{}, ErrAudiobookDuplicateTitle
+	}
+
 	chaptersJSON, err := json.Marshal(chapters)
 	if err != nil {
 		return audiobookRecord{}, fmt.Errorf("encode audiobook chapters: %w", err)
@@ -516,6 +532,16 @@ func (s *postgresAudiobookStore) CompleteUpload(ctx context.Context, id, userID 
 		return audiobookRecord{}, fmt.Errorf("commit completed audiobook: %w", err)
 	}
 	return record, nil
+}
+
+// audiobookTitleExists reports whether the library already has an audiobook
+// with the given title, compared case-insensitively.
+func (s *postgresAudiobookStore) audiobookTitleExists(ctx context.Context, title string) (bool, error) {
+	var exists bool
+	if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM audiobooks WHERE lower(title) = lower($1))`, title).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check duplicate audiobook title: %w", err)
+	}
+	return exists, nil
 }
 
 // sniffAudiobookMimeType reads the stored file's own leading bytes to

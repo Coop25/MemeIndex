@@ -4473,6 +4473,14 @@ async function submitAudiobookUpload(event) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ durationSeconds: duration }),
     });
+    if (completeResponse.status === 409) {
+      saveAudiobookUploadMarker(null);
+      state.audiobooks.upload = null;
+      if (audiobookUploadStatus) audiobookUploadStatus.textContent = "An audiobook with this title already exists.";
+      showToast("An audiobook with this title already exists.", "error", { title: "Audiobooks" });
+      audiobookUploadModal?.close();
+      return;
+    }
     if (!(await expectAuthorized(completeResponse, "Could not finish the upload."))) {
       throw new Error("audiobook upload complete failed");
     }
