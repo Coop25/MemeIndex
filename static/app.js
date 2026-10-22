@@ -3796,7 +3796,7 @@ const AUDIOBOOK_PROGRESS_SAVE_INTERVAL_MS = 15000;
 // quick enough that "force pause it" feels responsive, not a bandwidth concern
 // at this scale.
 const AUDIOBOOK_PLAYBACK_HEARTBEAT_INTERVAL_MS = 5000;
-const AUDIOBOOK_PLAYBACK_ELSEWHERE_POLL_INTERVAL_MS = 8000;
+const AUDIOBOOK_PLAYBACK_ELSEWHERE_POLL_INTERVAL_MS = 5000;
 const AUDIOBOOK_DEVICE_ID_STORAGE_KEY = "memeindex.audiobookDeviceId";
 
 let audiobookDeviceIdCache = null;
@@ -5106,13 +5106,43 @@ async function cancelAudiobookUpload() {
 // --- Player --------------------------------------------------------------
 
 let audiobookAudioEl = null;
-let audiobookProgressSaveTimer = null;
 let audiobookPlayerProgressDragging = false;
-let audiobookPlaybackHeartbeatTimer = null;
-let audiobookPlaybackElsewherePollTimer = null;
 // The other device's last-known position, while the banner is showing it -
 // null whenever nothing is playing elsewhere for the open audiobook.
 let audiobookPlaybackElsewhereState = null;
+
+// Progress save, heartbeat, and "playing elsewhere" poll are all driven off
+// one shared Worker tick (see getAudiobookSyncWorker) rather than their own
+// window.setInterval, so they stay on schedule even while this tab is
+// backgrounded. audiobookSyncActive is just "is a player open right now" -
+// the worker itself runs for the page's whole lifetime once created, same as
+// audiobookAudioEl, since a tick with nothing open to act on is a no-op.
+let audiobookSyncWorker = null;
+let audiobookSyncTickCount = 0;
+let audiobookSyncActive = false;
+const AUDIOBOOK_SYNC_TICK_MS = 1000;
+
+function getAudiobookSyncWorker() {
+  if (audiobookSyncWorker) return audiobookSyncWorker;
+  const worker = new Worker("/static/audiobook-sync-worker.js");
+  worker.onmessage = () => {
+    audiobookSyncTickCount++;
+    if (!audiobookSyncActive || !state.audiobooks.player) return;
+    if (audiobookSyncTickCount % (AUDIOBOOK_PLAYBACK_ELSEWHERE_POLL_INTERVAL_MS / AUDIOBOOK_SYNC_TICK_MS) === 0) {
+      pollAudiobookPlaybackElsewhere();
+    }
+    const audio = audiobookAudioEl;
+    if (!audio || audio.paused) return;
+    if (audiobookSyncTickCount % (AUDIOBOOK_PLAYBACK_HEARTBEAT_INTERVAL_MS / AUDIOBOOK_SYNC_TICK_MS) === 0) {
+      sendAudiobookPlaybackHeartbeat();
+    }
+    if (audiobookSyncTickCount % (AUDIOBOOK_PROGRESS_SAVE_INTERVAL_MS / AUDIOBOOK_SYNC_TICK_MS) === 0) {
+      saveAudiobookProgressNow();
+    }
+  };
+  audiobookSyncWorker = worker;
+  return worker;
+}
 
 let audiobookVolumeAutoHideTimer = null;
 const AUDIOBOOK_VOLUME_AUTO_HIDE_MS = 30000;
@@ -5229,6 +5259,12 @@ function getAudiobookAudioElement() {
   const audio = new Audio();
   audio.addEventListener("timeupdate", updateAudiobookPlayerProgressUI);
   audio.addEventListener("loadedmetadata", updateAudiobookPlayerProgressUI);
+  // durationchange covers files whose real length isn't known yet at
+  // loadedmetadata (e.g. an M4B with its moov atom at the end of the file,
+  // needing an extra range request the browser hasn't made yet) - once it
+  // resolves, the progress bar and time labels (which depend on duration)
+  // need to be recomputed instead of staying wrong for the rest of playback.
+  audio.addEventListener("durationchange", updateAudiobookPlayerProgressUI);
   audio.addEventListener("play", () => {
     setAudiobookPlayIcon(true);
     // Save the position the instant playback starts, not just on the 15s
@@ -5247,6 +5283,27 @@ function getAudiobookAudioElement() {
     setAudiobookPlayIcon(false);
     saveAudiobookProgressNow();
     sendAudiobookPlaybackHeartbeat();
+  });
+  // seeked fires for every way currentTime can change - the scrub bar,
+  // chapter/bookmark jumps, the +/-30s buttons - so hooking it here instead
+  // of each seek source is what makes a seek immediately persist and show up
+  // on another open instance, rather than waiting on the next 15s save or 5s
+  // heartbeat (or being lost entirely if the tab closes before either fires).
+  audio.addEventListener("seeked", () => {
+    saveAudiobookProgressNow();
+    sendAudiobookPlaybackHeartbeat();
+  });
+  audio.addEventListener("waiting", () => {
+    if (audiobookPlayerStatus) audiobookPlayerStatus.textContent = "Buffering...";
+  });
+  audio.addEventListener("playing", () => {
+    if (audiobookPlayerStatus) audiobookPlayerStatus.textContent = "";
+  });
+  audio.addEventListener("error", () => {
+    setAudiobookPlayIcon(false);
+    if (audiobookPlayerStatus) {
+      audiobookPlayerStatus.textContent = "Playback error - check your connection, then press play to retry.";
+    }
   });
   audiobookAudioEl = audio;
   return audio;
@@ -5375,7 +5432,15 @@ async function openAudiobookPlayer(item) {
   let elsewhereChecked = false;
   const tryAutoplayDecision = () => {
     if (!metadataReady || !elsewhereChecked) return;
-    if (resumeAt > 1 && resumeAt < audio.duration - 2) {
+    // audio.duration can still be NaN here for some files even after
+    // loadedmetadata (e.g. an M4B whose real length needs another range
+    // request the browser hasn't made yet) - falling back to the server's
+    // own stored duration keeps a resume from silently being skipped just
+    // because the upper-bound check had nothing finite to compare against.
+    const knownDuration = Number.isFinite(audio.duration) && audio.duration > 0
+      ? audio.duration
+      : state.audiobooks.player?.durationSeconds || 0;
+    if (resumeAt > 1 && (!knownDuration || resumeAt < knownDuration - 2)) {
       audio.currentTime = resumeAt;
     }
     if (audiobookPlaybackElsewhereState) {
@@ -5404,18 +5469,9 @@ async function openAudiobookPlayer(item) {
     tryAutoplayDecision();
   });
 
-  if (audiobookProgressSaveTimer) window.clearInterval(audiobookProgressSaveTimer);
-  audiobookProgressSaveTimer = window.setInterval(() => {
-    if (!audio.paused) saveAudiobookProgressNow();
-  }, AUDIOBOOK_PROGRESS_SAVE_INTERVAL_MS);
-
-  if (audiobookPlaybackHeartbeatTimer) window.clearInterval(audiobookPlaybackHeartbeatTimer);
-  audiobookPlaybackHeartbeatTimer = window.setInterval(() => {
-    if (!audio.paused) sendAudiobookPlaybackHeartbeat();
-  }, AUDIOBOOK_PLAYBACK_HEARTBEAT_INTERVAL_MS);
-
-  if (audiobookPlaybackElsewherePollTimer) window.clearInterval(audiobookPlaybackElsewherePollTimer);
-  audiobookPlaybackElsewherePollTimer = window.setInterval(pollAudiobookPlaybackElsewhere, AUDIOBOOK_PLAYBACK_ELSEWHERE_POLL_INTERVAL_MS);
+  audiobookSyncTickCount = 0;
+  audiobookSyncActive = true;
+  getAudiobookSyncWorker();
 
   fetchAudiobookBookmarks(item.id).catch((error) => console.error(error));
 }
@@ -5837,18 +5893,7 @@ function closeAudiobookPlayer() {
     audio.removeAttribute("src");
     audio.load();
   }
-  if (audiobookProgressSaveTimer) {
-    window.clearInterval(audiobookProgressSaveTimer);
-    audiobookProgressSaveTimer = null;
-  }
-  if (audiobookPlaybackHeartbeatTimer) {
-    window.clearInterval(audiobookPlaybackHeartbeatTimer);
-    audiobookPlaybackHeartbeatTimer = null;
-  }
-  if (audiobookPlaybackElsewherePollTimer) {
-    window.clearInterval(audiobookPlaybackElsewherePollTimer);
-    audiobookPlaybackElsewherePollTimer = null;
-  }
+  audiobookSyncActive = false;
   renderAudiobookPlaybackElsewhere(null);
   restoreAudiobookBottombarNodes();
   setAudiobookVolumeExpanded(false);
@@ -8866,12 +8911,23 @@ audiobookPlayerVolumeToggle?.addEventListener("click", () => {
   const expanded = audiobookPlayerVolumeWrap?.classList.contains("is-expanded") || false;
   setAudiobookVolumeExpanded(!expanded);
 });
+// Which chapter a scrub applies to is frozen on the first "input" of a drag
+// gesture and reused through to "change", rather than re-derived from
+// audio.currentTime each time - that live position keeps moving if playback
+// is still going during the drag, so recomputing it could silently retarget
+// the whole gesture at a different, wrong chapter by the time the user lets
+// go (especially right near a chapter boundary on a slow drag).
+let audiobookPlayerDragChapterBounds = null;
+
 audiobookPlayerProgress?.addEventListener("input", () => {
-  audiobookPlayerProgressDragging = true;
   const audio = audiobookAudioEl;
   if (!audio) return;
+  if (!audiobookPlayerProgressDragging) {
+    audiobookPlayerDragChapterBounds = getCurrentAudiobookChapterBounds(audio.currentTime);
+  }
+  audiobookPlayerProgressDragging = true;
   const fraction = Number(audiobookPlayerProgress.value) / 1000;
-  const chapterBounds = getCurrentAudiobookChapterBounds(audio.currentTime);
+  const chapterBounds = audiobookPlayerDragChapterBounds;
   if (chapterBounds) {
     const chapterLength = chapterBounds.end - chapterBounds.start;
     const elapsedInChapter = fraction * chapterLength;
@@ -8887,7 +8943,7 @@ audiobookPlayerProgress?.addEventListener("input", () => {
 audiobookPlayerProgress?.addEventListener("change", () => {
   const audio = getAudiobookAudioElement();
   const fraction = Number(audiobookPlayerProgress.value) / 1000;
-  const chapterBounds = getCurrentAudiobookChapterBounds(audio.currentTime);
+  const chapterBounds = audiobookPlayerDragChapterBounds;
   if (chapterBounds) {
     audio.currentTime = chapterBounds.start + fraction * (chapterBounds.end - chapterBounds.start);
   } else {
@@ -8895,6 +8951,7 @@ audiobookPlayerProgress?.addEventListener("change", () => {
     if (duration > 0) audio.currentTime = fraction * duration;
   }
   audiobookPlayerProgressDragging = false;
+  audiobookPlayerDragChapterBounds = null;
   updateAudiobookPlayerProgressUI();
 });
 
@@ -8902,6 +8959,25 @@ window.addEventListener("beforeunload", () => {
   if (state.audiobooks.player) {
     saveAudiobookProgressNow();
     sendAudiobookPlaybackStoppedSignal();
+  }
+});
+// beforeunload is not reliable on mobile - iOS Safari in particular often
+// skips it entirely when a tab is backgrounded or the app is swiped away, so
+// a listener there alone can lose whatever position wasn't already caught by
+// the 15s save timer. pagehide fires in those cases too (including bfcache
+// navigation) and visibilitychange catches the more common "locked the
+// screen/switched apps while still playing" case even earlier, before the
+// page is at any risk of being torn down.
+window.addEventListener("pagehide", () => {
+  if (state.audiobooks.player) {
+    saveAudiobookProgressNow();
+    sendAudiobookPlaybackStoppedSignal();
+  }
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden && state.audiobooks.player) {
+    saveAudiobookProgressNow();
+    sendAudiobookPlaybackHeartbeat();
   }
 });
 
