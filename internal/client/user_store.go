@@ -37,6 +37,9 @@ type authUserStore interface {
 	ListUsers(ctx context.Context) ([]managedUserRecord, error)
 	CreateUser(ctx context.Context, userID string) (managedUserRecord, error)
 	UpdateUserPermissions(ctx context.Context, userID string, permissions authPermissions) (managedUserRecord, error)
+	// SetUserAudiobookTagRestriction replaces a user's whole audiobook tag
+	// allow-list; an empty slice clears it back to unrestricted.
+	SetUserAudiobookTagRestriction(ctx context.Context, userID string, tags []string) (managedUserRecord, error)
 	DeleteUser(ctx context.Context, userID string) error
 }
 
@@ -63,7 +66,7 @@ func newAuthUserStore(ctx context.Context, databaseURL string) (authUserStore, e
 }
 
 func (s *postgresAuthUserStore) ensureSchema(ctx context.Context) error {
-	if err := dbschema.Apply(ctx, s.pool, "003_app_users_core.sql", "004_app_users_compat.sql", "005_app_user_readd_required.sql", "013_app_user_session_version.sql", "014_app_user_audiobook_permissions.sql", "020_app_user_audiobook_delete_permission.sql", "023_app_user_audiobook_series_permission.sql"); err != nil {
+	if err := dbschema.Apply(ctx, s.pool, "003_app_users_core.sql", "004_app_users_compat.sql", "005_app_user_readd_required.sql", "013_app_user_session_version.sql", "014_app_user_audiobook_permissions.sql", "020_app_user_audiobook_delete_permission.sql", "023_app_user_audiobook_series_permission.sql", "027_app_user_audiobook_tag_restrictions.sql"); err != nil {
 		return fmt.Errorf("ensure app_users schema: %w", err)
 	}
 	return nil
@@ -330,7 +333,56 @@ func (s *postgresAuthUserStore) getUserByID(ctx context.Context, userID string) 
 	if err != nil {
 		return managedUserRecord{}, err
 	}
+	if record.Permissions.AudiobookTagRestriction, err = s.tagRestrictionNames(ctx, record.UserID); err != nil {
+		return managedUserRecord{}, err
+	}
 	return record, nil
+}
+
+// tagRestrictionNames returns one user's audiobook tag allow-list.
+func (s *postgresAuthUserStore) tagRestrictionNames(ctx context.Context, userID string) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT t.name FROM app_user_audiobook_tag_restrictions r JOIN tags t ON t.id = r.tag_id
+		WHERE r.user_id = $1 ORDER BY t.name
+	`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list audiobook tag restriction: %w", err)
+	}
+	defer rows.Close()
+
+	names := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("scan audiobook tag restriction: %w", err)
+		}
+		names = append(names, name)
+	}
+	return names, rows.Err()
+}
+
+// allTagRestrictionsByUser returns every user's audiobook tag allow-list in
+// one query, keyed by user id - used by ListUsers so the admin page doesn't
+// run one extra query per row.
+func (s *postgresAuthUserStore) allTagRestrictionsByUser(ctx context.Context) (map[string][]string, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT r.user_id, t.name FROM app_user_audiobook_tag_restrictions r JOIN tags t ON t.id = r.tag_id
+		ORDER BY r.user_id, t.name
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list audiobook tag restrictions: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[string][]string{}
+	for rows.Next() {
+		var userID, name string
+		if err := rows.Scan(&userID, &name); err != nil {
+			return nil, fmt.Errorf("scan audiobook tag restriction: %w", err)
+		}
+		out[userID] = append(out[userID], name)
+	}
+	return out, rows.Err()
 }
 
 func (s *postgresAuthUserStore) ListUsers(ctx context.Context) ([]managedUserRecord, error) {
@@ -394,6 +446,14 @@ func (s *postgresAuthUserStore) ListUsers(ctx context.Context) ([]managedUserRec
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate users: %w", err)
+	}
+
+	restrictions, err := s.allTagRestrictionsByUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].Permissions.AudiobookTagRestriction = restrictions[out[i].UserID]
 	}
 	return out, nil
 }
@@ -482,6 +542,68 @@ func (s *postgresAuthUserStore) UpdateUserPermissions(ctx context.Context, userI
 
 	if err := tx.Commit(ctx); err != nil {
 		return managedUserRecord{}, fmt.Errorf("commit update user permissions: %w", err)
+	}
+
+	return s.getUserByID(ctx, normalized)
+}
+
+// SetUserAudiobookTagRestriction overwrites a user's whole audiobook tag
+// allow-list, reusing the same shared `tags` table audiobook_tags and
+// meme_tags tag into (get-or-create by name, then drop any tag row the
+// change leaves with no remaining reference anywhere).
+func (s *postgresAuthUserStore) SetUserAudiobookTagRestriction(ctx context.Context, userID string, tags []string) (managedUserRecord, error) {
+	normalized := strings.TrimSpace(userID)
+	if normalized == "" {
+		return managedUserRecord{}, errors.New("user id is required")
+	}
+	names := normalizeAudiobookTags(tags)
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return managedUserRecord{}, fmt.Errorf("begin set audiobook tag restriction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	previousTagIDs, err := scanAudiobookInt64List(ctx, tx, `SELECT tag_id FROM app_user_audiobook_tag_restrictions WHERE user_id = $1`, normalized)
+	if err != nil {
+		return managedUserRecord{}, fmt.Errorf("list previous audiobook tag restriction ids: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx, `DELETE FROM app_user_audiobook_tag_restrictions WHERE user_id = $1`, normalized); err != nil {
+		return managedUserRecord{}, fmt.Errorf("clear audiobook tag restriction: %w", err)
+	}
+
+	if len(names) > 0 {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO tags (name)
+			SELECT unnest($1::text[])
+			ON CONFLICT (name) DO NOTHING
+		`, names); err != nil {
+			return managedUserRecord{}, fmt.Errorf("ensure audiobook tag restriction tags exist: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO app_user_audiobook_tag_restrictions (user_id, tag_id)
+			SELECT $1, t.id FROM tags t WHERE t.name = ANY($2::text[])
+			ON CONFLICT DO NOTHING
+		`, normalized, names); err != nil {
+			return managedUserRecord{}, fmt.Errorf("set audiobook tag restriction: %w", err)
+		}
+	}
+
+	if len(previousTagIDs) > 0 {
+		if _, err := tx.Exec(ctx, `
+			DELETE FROM tags
+			WHERE id = ANY($1::bigint[])
+			  AND NOT EXISTS (SELECT 1 FROM audiobook_tags at WHERE at.tag_id = tags.id)
+			  AND NOT EXISTS (SELECT 1 FROM meme_tags mt WHERE mt.tag_id = tags.id)
+			  AND NOT EXISTS (SELECT 1 FROM app_user_audiobook_tag_restrictions r WHERE r.tag_id = tags.id)
+		`, previousTagIDs); err != nil {
+			return managedUserRecord{}, fmt.Errorf("delete orphaned audiobook tag restriction tags: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return managedUserRecord{}, fmt.Errorf("commit set audiobook tag restriction: %w", err)
 	}
 
 	return s.getUserByID(ctx, normalized)

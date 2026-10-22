@@ -457,20 +457,45 @@
           <section id="audiobook-series-manage-view" class="audiobook-series-manage-view hidden">
             <div class="audiobooks-view-header">
               <div>
-                <button id="audiobook-series-manage-back" type="button" class="ghost-button audiobook-series-manage-back">&larr; Back to series</button>
-                <h2 id="audiobook-series-manage-title">Manage books</h2>
-                <p id="audiobook-series-manage-count" class="status-text"></p>
+                <button id="audiobook-series-manage-back" type="button" class="ghost-button audiobook-series-manage-back">&larr; Back to audiobooks</button>
+                <h2>Manage Series</h2>
               </div>
             </div>
-            <div class="audiobook-series-manage-layout">
-              <div class="audiobook-series-manage-pane">
-                <h3>Library</h3>
-                <input id="audiobook-series-manage-search" type="search" class="audiobook-series-manage-search" placeholder="Search your library..." aria-label="Search your library" />
-                <div id="audiobook-series-manage-library-list" class="audiobook-series-manage-list"></div>
+            <div class="audiobook-series-manager-layout">
+              <div class="audiobook-series-manager-rail">
+                <form id="audiobook-series-manager-create-form" class="audiobook-series-create-form">
+                  <input id="audiobook-series-manager-name-input" type="text" placeholder="New series name" maxlength="200" required />
+                  <button type="submit" class="secondary-button">Create</button>
+                </form>
+                <p id="audiobook-series-manager-status" class="status-text"></p>
+                <div id="audiobook-series-manager-rail-list" class="audiobook-series-manager-rail-list"></div>
               </div>
-              <div class="audiobook-series-manage-pane">
-                <h3>In this series</h3>
-                <div id="audiobook-series-manage-books-list" class="audiobook-series-manage-list"></div>
+              <div class="audiobook-series-manager-detail">
+                <div id="audiobook-series-manager-empty" class="audiobook-series-manager-empty">
+                  <p>Select a series on the left, or create one, to manage its books.</p>
+                </div>
+                <div id="audiobook-series-manager-selected" class="audiobook-series-manager-selected hidden">
+                  <div class="audiobook-series-manager-selected-header">
+                    <div>
+                      <h3 id="audiobook-series-manager-selected-name"></h3>
+                      <p id="audiobook-series-manager-selected-count" class="status-text"></p>
+                    </div>
+                    <button id="audiobook-series-manager-share" type="button" class="ghost-button" title="Copy a link to this series">Share</button>
+                  </div>
+                  <div class="audiobook-series-manager-columns">
+                    <div class="audiobook-series-manager-column">
+                      <h4 class="audiobook-series-manager-section-heading">Add books</h4>
+                      <div class="audiobook-series-add-box">
+                        <input id="audiobook-series-add-input" type="text" placeholder="Filter your library..." aria-label="Filter your library to add a book" autocomplete="off" />
+                        <div id="audiobook-series-add-list" class="audiobook-series-add-list"></div>
+                      </div>
+                    </div>
+                    <div class="audiobook-series-manager-column">
+                      <h4 class="audiobook-series-manager-section-heading">In this series</h4>
+                      <div id="audiobook-series-manager-books" class="audiobook-series-manager-books"></div>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           </section>
@@ -728,18 +753,51 @@
       </div>
     </dialog>
 
-    <dialog id="audiobook-series-modal" class="confirm-modal">
-      <div class="confirm-modal-card audiobook-series-card">
-        <h3 class="confirm-modal-title">Manage Series</h3>
-        <form id="audiobook-series-create-form" class="audiobook-series-create-form">
-          <input id="audiobook-series-name-input" type="text" placeholder="New series name" maxlength="200" required />
-          <button type="submit" class="secondary-button">Create</button>
+    <dialog id="audiobook-edit-modal" class="confirm-modal">
+      <div class="confirm-modal-card audiobook-edit-card">
+        <h3 class="confirm-modal-title">Edit Audiobook</h3>
+        <form id="audiobook-edit-form" class="audiobook-edit-form">
+          <div class="audiobook-edit-cover-row">
+            <div class="audiobook-edit-cover-preview">
+              <img id="audiobook-edit-cover-preview-img" class="audiobook-edit-cover-preview-img hidden" alt="" />
+              <svg id="audiobook-edit-cover-preview-fallback" class="audiobook-card-cover-fallback" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5.5h8.5a3.5 3.5 0 0 1 3.5 3.5v9.5H8a2 2 0 0 1-2-2V5.5Z"/><path d="M6 15.5h12"/><path d="M9.5 9.5h5"/></svg>
+            </div>
+            <div class="audiobook-edit-cover-actions">
+              <label class="secondary-button audiobook-edit-cover-upload-button">
+                Change cover
+                <input id="audiobook-edit-cover-input" type="file" accept="image/*" class="hidden" />
+              </label>
+              <button id="audiobook-edit-cover-remove" type="button" class="ghost-button hidden">Remove cover</button>
+            </div>
+          </div>
+          <label class="field">
+            <span>Title</span>
+            <input id="audiobook-edit-title" type="text" maxlength="500" required />
+          </label>
+          <label class="field">
+            <span>Author</span>
+            <input id="audiobook-edit-author" type="text" maxlength="300" autocomplete="off" />
+          </label>
+          <label class="field">
+            <span>Narrator</span>
+            <input id="audiobook-edit-narrator" type="text" maxlength="300" autocomplete="off" />
+          </label>
+          <label class="field compact-field">
+            <span>Tags</span>
+            <div class="tag-editor shared-tag-box">
+              <div class="tag-control">
+                <input id="audiobook-edit-tags-input" type="text" placeholder="Add a tag..." aria-label="Add audiobook tags" autocomplete="off" />
+                <div id="audiobook-edit-tag-chips" class="tag-token-list"></div>
+              </div>
+              <div id="audiobook-edit-tag-suggestions" class="tag-suggestions hidden"></div>
+            </div>
+          </label>
+          <p id="audiobook-edit-status" class="status-text"></p>
+          <div class="confirm-modal-actions">
+            <button id="audiobook-edit-cancel" type="button" class="ghost-button">Cancel</button>
+            <button id="audiobook-edit-save" type="submit" class="primary-button">Save</button>
+          </div>
         </form>
-        <p id="audiobook-series-status" class="status-text"></p>
-        <div id="audiobook-series-list" class="audiobook-series-list"></div>
-        <div class="confirm-modal-actions">
-          <button id="audiobook-series-close" type="button" class="ghost-button">Close</button>
-        </div>
       </div>
     </dialog>
 
@@ -820,6 +878,9 @@
             </button>
             <button id="audiobook-player-chapters-toggle" class="audiobook-player-icon-button audiobook-player-panel-toggle hidden" type="button" aria-label="Toggle chapters" aria-expanded="false">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13" /><path d="M3 6h.01M3 12h.01M3 18h.01" /></svg>
+            </button>
+            <button id="audiobook-player-edit" class="audiobook-player-icon-button hidden" type="button" aria-label="Edit audiobook">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4.5L19 9.5a2.1 2.1 0 0 0-3-3L5.5 17v3Z" /><path d="M14.5 8 17 10.5" /></svg>
             </button>
           </div>
         </header>

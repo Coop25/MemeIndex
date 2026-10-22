@@ -86,6 +86,11 @@ type authPermissions struct {
 	CanUploadAudiobooks      bool `json:"canUploadAudiobooks"`
 	CanDeleteAudiobooks      bool `json:"canDeleteAudiobooks"`
 	CanManageAudiobookSeries bool `json:"canManageAudiobookSeries"`
+	// AudiobookTagRestriction, when non-empty, locks this account to only the
+	// audiobooks carrying at least one of these tag names - e.g. a kids'
+	// account restricted to a "kids" tag. Empty means unrestricted (the
+	// default for every existing account).
+	AudiobookTagRestriction []string `json:"audiobookTagRestriction"`
 	CanAdd                   bool `json:"canAdd"`
 	CanManage                bool `json:"canManage"`
 }

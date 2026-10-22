@@ -62,6 +62,7 @@ type audiobookRecord struct {
 	SeriesID         string
 	SeriesName       string
 	SeriesSequence   *float64
+	Tags             []string
 }
 
 // audiobookSeries is a named grouping of audiobooks (e.g. "Bobiverse"), with
@@ -93,6 +94,21 @@ type audiobookListFilter struct {
 	Started  bool
 	Finished bool
 	SeriesID string
+	// Author narrows the list to an exact (case-insensitive, trimmed) match on
+	// the author field - how clicking an author's name in the UI turns into
+	// "every book by this author", without author being a separate entity.
+	Author string
+	// Tag narrows the list to audiobooks carrying this tag name.
+	Tag string
+	// Search narrows the list to audiobooks whose title, author, narrator, or
+	// any tag name contains this text (case-insensitive) - what the top
+	// search bar uses while on the audiobooks view.
+	Search string
+	// RestrictToTags, when non-empty, narrows the list to audiobooks carrying
+	// at least one of these tag names - the server-side enforcement of a
+	// tag-restricted account (see authPermissions.AudiobookTagRestriction),
+	// applied in addition to whatever the caller is browsing by.
+	RestrictToTags []string
 }
 
 // audiobookChapter is one chapter marker read from the file's own chapter
@@ -212,11 +228,26 @@ type audiobookStore interface {
 	DeleteAudiobook(ctx context.Context, id string) (audiobookRecord, error)
 	SaveProgress(ctx context.Context, audiobookID, userID string, positionSeconds float64) error
 
+	// UpdateAudiobookMetadata overwrites title/author/narrator with whichever of
+	// the three pointers are non-nil (a nil pointer leaves that column as is),
+	// so this fixes metadata that a file's own tags got wrong or never had.
+	UpdateAudiobookMetadata(ctx context.Context, id string, title, author, narrator *string) (audiobookRecord, error)
+	// SetAudiobookCover replaces the audiobook's cover image with imageBytes
+	// (already validated as a real image by the caller), deleting whatever
+	// cover file - embedded or previously user-supplied - it had before.
+	SetAudiobookCover(ctx context.Context, id string, imageBytes []byte) (audiobookRecord, error)
+	RemoveAudiobookCover(ctx context.Context, id string) (audiobookRecord, error)
+
+	ListAudiobookTags(ctx context.Context, audiobookID string) ([]string, error)
+	// ReplaceAudiobookTags overwrites an audiobook's whole tag set and returns
+	// the normalized result.
+	ReplaceAudiobookTags(ctx context.Context, audiobookID string, tags []string) ([]string, error)
+
 	AddFavorite(ctx context.Context, audiobookID, userID string) error
 	RemoveFavorite(ctx context.Context, audiobookID, userID string) error
 
 	CreateSeries(ctx context.Context, name, createdByUserID string) (audiobookSeries, error)
-	ListSeries(ctx context.Context) ([]audiobookSeries, error)
+	ListSeries(ctx context.Context, restrictToTags []string) ([]audiobookSeries, error)
 	RenameSeries(ctx context.Context, id, name string) (audiobookSeries, error)
 	DeleteSeries(ctx context.Context, id string) error
 	SetAudiobookSeries(ctx context.Context, audiobookID string, seriesID *string, sequence *float64) (audiobookRecord, error)
@@ -275,7 +306,7 @@ func newAudiobookStore(ctx context.Context, databaseURL, dataDir string) (audiob
 	}
 
 	store := &postgresAudiobookStore{pool: pool, dir: dir, tmpDir: tmpDir, coversDir: coversDir}
-	if err := dbschema.Apply(ctx, pool, "015_audiobooks.sql", "016_audiobook_cover_art.sql", "017_audiobook_chapters.sql", "018_audiobook_narrator.sql", "019_audiobook_bookmarks.sql", "021_audiobook_series.sql", "022_audiobook_favorites.sql", "024_audiobook_upload_ranges.sql", "025_audiobook_playback_sessions.sql"); err != nil {
+	if err := dbschema.Apply(ctx, pool, "015_audiobooks.sql", "016_audiobook_cover_art.sql", "017_audiobook_chapters.sql", "018_audiobook_narrator.sql", "019_audiobook_bookmarks.sql", "021_audiobook_series.sql", "022_audiobook_favorites.sql", "024_audiobook_upload_ranges.sql", "025_audiobook_playback_sessions.sql", "026_audiobook_tags.sql"); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("ensure audiobooks schema: %w", err)
 	}
@@ -628,6 +659,7 @@ func (s *postgresAudiobookStore) ListAudiobooks(ctx context.Context, userID stri
 			a.id, a.title, a.author, a.narrator, a.filename, a.mime_type, a.size_bytes, a.duration_seconds,
 			a.storage_path, a.cover_path, a.chapters, a.uploaded_by_user_id, a.created_at,
 			a.series_id, COALESCE(s.name, ''), a.series_sequence,
+			COALESCE((SELECT array_agg(t.name ORDER BY t.name) FROM audiobook_tags at JOIN tags t ON t.id = at.tag_id WHERE at.audiobook_id = a.id), '{}'),
 			COALESCE(p.position_seconds, 0), p.updated_at,
 			(f.audiobook_id IS NOT NULL)
 		FROM audiobooks a
@@ -650,6 +682,26 @@ func (s *postgresAudiobookStore) ListAudiobooks(ctx context.Context, userID stri
 		args = append(args, filter.SeriesID)
 		_, _ = fmt.Fprintf(&query, " AND a.series_id = $%d", len(args))
 	}
+	if filter.Author != "" {
+		args = append(args, filter.Author)
+		_, _ = fmt.Fprintf(&query, " AND lower(a.author) = lower($%d)", len(args))
+	}
+	if filter.Tag != "" {
+		args = append(args, filter.Tag)
+		_, _ = fmt.Fprintf(&query, " AND EXISTS (SELECT 1 FROM audiobook_tags at2 JOIN tags t2 ON t2.id = at2.tag_id WHERE at2.audiobook_id = a.id AND t2.name = $%d)", len(args))
+	}
+	if filter.Search != "" {
+		args = append(args, "%"+filter.Search+"%")
+		n := len(args)
+		_, _ = fmt.Fprintf(&query, ` AND (
+			a.title ILIKE $%d OR a.author ILIKE $%d OR a.narrator ILIKE $%d
+			OR EXISTS (SELECT 1 FROM audiobook_tags at3 JOIN tags t3 ON t3.id = at3.tag_id WHERE at3.audiobook_id = a.id AND t3.name ILIKE $%d)
+		)`, n, n, n, n)
+	}
+	if len(filter.RestrictToTags) > 0 {
+		args = append(args, filter.RestrictToTags)
+		_, _ = fmt.Fprintf(&query, " AND EXISTS (SELECT 1 FROM audiobook_tags at4 JOIN tags t4 ON t4.id = at4.tag_id WHERE at4.audiobook_id = a.id AND t4.name = ANY($%d::text[]))", len(args))
+	}
 	query.WriteString(" ORDER BY a.series_id NULLS LAST, a.series_sequence NULLS LAST, a.created_at DESC")
 
 	rows, err := s.pool.Query(ctx, query.String(), args...)
@@ -668,6 +720,7 @@ func (s *postgresAudiobookStore) ListAudiobooks(ctx context.Context, userID stri
 			&item.ID, &item.Title, &item.Author, &item.Narrator, &item.Filename, &item.MimeType, &item.SizeBytes, &item.DurationSeconds,
 			&item.StoragePath, &item.CoverPath, &chaptersJSON, &item.UploadedByUserID, &item.CreatedAt,
 			&seriesID, &item.SeriesName, &item.SeriesSequence,
+			&item.Tags,
 			&item.PositionSeconds, &progressAt,
 			&item.IsFavorite,
 		); err != nil {
@@ -697,7 +750,8 @@ func (s *postgresAudiobookStore) GetAudiobook(ctx context.Context, id string) (a
 	err := s.pool.QueryRow(ctx, `
 		SELECT a.id, a.title, a.author, a.narrator, a.filename, a.mime_type, a.size_bytes, a.duration_seconds,
 			a.storage_path, a.cover_path, a.chapters, a.uploaded_by_user_id, a.created_at,
-			a.series_id, COALESCE(s.name, ''), a.series_sequence
+			a.series_id, COALESCE(s.name, ''), a.series_sequence,
+			COALESCE((SELECT array_agg(t.name ORDER BY t.name) FROM audiobook_tags at JOIN tags t ON t.id = at.tag_id WHERE at.audiobook_id = a.id), '{}')
 		FROM audiobooks a
 		LEFT JOIN audiobook_series s ON s.id = a.series_id
 		WHERE a.id = $1
@@ -705,6 +759,7 @@ func (s *postgresAudiobookStore) GetAudiobook(ctx context.Context, id string) (a
 		&record.ID, &record.Title, &record.Author, &record.Narrator, &record.Filename, &record.MimeType,
 		&record.SizeBytes, &record.DurationSeconds, &record.StoragePath, &record.CoverPath, &chaptersJSON, &record.UploadedByUserID, &record.CreatedAt,
 		&seriesID, &record.SeriesName, &record.SeriesSequence,
+		&record.Tags,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return audiobookRecord{}, ErrAudiobookNotFound
@@ -1002,24 +1057,47 @@ func (s *postgresAudiobookStore) CreateSeries(ctx context.Context, name, created
 	return series, nil
 }
 
-func (s *postgresAudiobookStore) ListSeries(ctx context.Context) ([]audiobookSeries, error) {
+// ListSeries lists every series along with a visible-only book count and
+// cover preview. restrictToTags, when non-empty, is the same tag allow-list
+// as audiobookListFilter.RestrictToTags: books outside it are excluded from
+// both the count and the preview, and a series left with zero visible books
+// is dropped entirely, so a tag-restricted account never sees a series
+// gallery entry hinting at books it isn't allowed to open.
+func (s *postgresAudiobookStore) ListSeries(ctx context.Context, restrictToTags []string) ([]audiobookSeries, error) {
+	var tagsArg []string
+	if len(restrictToTags) > 0 {
+		tagsArg = restrictToTags
+	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT s.id, s.name, s.created_by_user_id, s.created_at, COUNT(a.id), COALESCE(top.books, '[]'::jsonb)
+		SELECT s.id, s.name, s.created_by_user_id, s.created_at, COUNT(vis.id), COALESCE(top.books, '[]'::jsonb)
 		FROM audiobook_series s
-		LEFT JOIN audiobooks a ON a.series_id = s.id
+		LEFT JOIN LATERAL (
+			SELECT a.id
+			FROM audiobooks a
+			WHERE a.series_id = s.id
+			  AND ($1::text[] IS NULL OR EXISTS (
+					SELECT 1 FROM audiobook_tags at1 JOIN tags tg1 ON tg1.id = at1.tag_id
+					WHERE at1.audiobook_id = a.id AND tg1.name = ANY($1::text[])
+			  ))
+		) vis ON true
 		LEFT JOIN LATERAL (
 			SELECT jsonb_agg(jsonb_build_object('id', t.id, 'cover_path', t.cover_path) ORDER BY t.series_sequence NULLS LAST, t.created_at) AS books
 			FROM (
 				SELECT id, cover_path, series_sequence, created_at
-				FROM audiobooks
-				WHERE series_id = s.id
+				FROM audiobooks a2
+				WHERE a2.series_id = s.id
+				  AND ($1::text[] IS NULL OR EXISTS (
+						SELECT 1 FROM audiobook_tags at2 JOIN tags tg2 ON tg2.id = at2.tag_id
+						WHERE at2.audiobook_id = a2.id AND tg2.name = ANY($1::text[])
+				  ))
 				ORDER BY series_sequence NULLS LAST, created_at
 				LIMIT 4
 			) t
 		) top ON true
 		GROUP BY s.id, top.books
+		HAVING $1::text[] IS NULL OR COUNT(vis.id) > 0
 		ORDER BY lower(s.name) ASC
-	`)
+	`, tagsArg)
 	if err != nil {
 		return nil, fmt.Errorf("list audiobook series: %w", err)
 	}
@@ -1086,4 +1164,206 @@ func (s *postgresAudiobookStore) SetAudiobookSeries(ctx context.Context, audiobo
 		return audiobookRecord{}, ErrAudiobookNotFound
 	}
 	return s.GetAudiobook(ctx, audiobookID)
+}
+
+// UpdateAudiobookMetadata overwrites title/author/narrator with whichever of
+// the three pointers are non-nil; pgx binds a nil *string as SQL NULL, and
+// COALESCE(NULL, column) leaves that column untouched, so this is a true
+// partial update - a caller can fix just the author without resending title.
+func (s *postgresAudiobookStore) UpdateAudiobookMetadata(ctx context.Context, id string, title, author, narrator *string) (audiobookRecord, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE audiobooks SET
+			title = COALESCE($2, title),
+			author = COALESCE($3, author),
+			narrator = COALESCE($4, narrator)
+		WHERE id = $1
+	`, id, title, author, narrator)
+	if err != nil {
+		return audiobookRecord{}, fmt.Errorf("update audiobook metadata: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return audiobookRecord{}, ErrAudiobookNotFound
+	}
+	return s.GetAudiobook(ctx, id)
+}
+
+// coverExtensionForBytes sniffs the real image format from a cover's bytes
+// rather than trusting a client-supplied filename, mirroring how
+// sniffAudiobookMimeType treats the audio file itself.
+func coverExtensionForBytes(data []byte) string {
+	prefix := data
+	if len(prefix) > 512 {
+		prefix = prefix[:512]
+	}
+	switch http.DetectContentType(prefix) {
+	case "image/png":
+		return ".png"
+	case "image/webp":
+		return ".webp"
+	case "image/gif":
+		return ".gif"
+	default:
+		return ".jpg"
+	}
+}
+
+// SetAudiobookCover replaces an audiobook's cover image on disk and updates
+// cover_path, then removes whatever cover file - embedded at upload time or
+// set by an earlier call to this method - it had before.
+func (s *postgresAudiobookStore) SetAudiobookCover(ctx context.Context, id string, imageBytes []byte) (audiobookRecord, error) {
+	existing, err := s.GetAudiobook(ctx, id)
+	if err != nil {
+		return audiobookRecord{}, err
+	}
+
+	coverPath := filepath.Join(s.coversDir, id+coverExtensionForBytes(imageBytes))
+	if err := os.WriteFile(coverPath, imageBytes, 0o644); err != nil {
+		return audiobookRecord{}, fmt.Errorf("write audiobook cover: %w", err)
+	}
+
+	if _, err := s.pool.Exec(ctx, `UPDATE audiobooks SET cover_path = $2 WHERE id = $1`, id, coverPath); err != nil {
+		_ = os.Remove(coverPath)
+		return audiobookRecord{}, fmt.Errorf("update audiobook cover path: %w", err)
+	}
+
+	if existing.CoverPath != "" && existing.CoverPath != coverPath {
+		if err := os.Remove(existing.CoverPath); err != nil && !os.IsNotExist(err) {
+			log.Printf("audiobooks: remove old cover failed: %v", err)
+		}
+	}
+	return s.GetAudiobook(ctx, id)
+}
+
+// RemoveAudiobookCover clears an audiobook's cover, falling back to the
+// default placeholder art in the UI.
+func (s *postgresAudiobookStore) RemoveAudiobookCover(ctx context.Context, id string) (audiobookRecord, error) {
+	existing, err := s.GetAudiobook(ctx, id)
+	if err != nil {
+		return audiobookRecord{}, err
+	}
+	if _, err := s.pool.Exec(ctx, `UPDATE audiobooks SET cover_path = '' WHERE id = $1`, id); err != nil {
+		return audiobookRecord{}, fmt.Errorf("clear audiobook cover path: %w", err)
+	}
+	if existing.CoverPath != "" {
+		if err := os.Remove(existing.CoverPath); err != nil && !os.IsNotExist(err) {
+			log.Printf("audiobooks: remove cover failed: %v", err)
+		}
+	}
+	return s.GetAudiobook(ctx, id)
+}
+
+func (s *postgresAudiobookStore) ListAudiobookTags(ctx context.Context, audiobookID string) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT t.name FROM audiobook_tags at JOIN tags t ON t.id = at.tag_id WHERE at.audiobook_id = $1 ORDER BY t.name
+	`, audiobookID)
+	if err != nil {
+		return nil, fmt.Errorf("list audiobook tags: %w", err)
+	}
+	defer rows.Close()
+
+	tags := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("scan audiobook tag: %w", err)
+		}
+		tags = append(tags, name)
+	}
+	return tags, rows.Err()
+}
+
+// normalizeAudiobookTags lowercases, trims, de-duplicates and sorts tag
+// names - the same normalization meme tags use (see normalizeTags in
+// internal/accessor/meme_store.go), reimplemented here since it is an
+// unexported helper in a different package.
+func normalizeAudiobookTags(tags []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		normalized := strings.ToLower(strings.TrimSpace(tag))
+		if normalized == "" {
+			continue
+		}
+		if _, exists := seen[normalized]; exists {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ReplaceAudiobookTags overwrites an audiobook's whole tag set, reusing the
+// same shared `tags` table memes tag into, and drops any tag row left with no
+// remaining links (to either a meme or an audiobook).
+func (s *postgresAudiobookStore) ReplaceAudiobookTags(ctx context.Context, audiobookID string, tags []string) ([]string, error) {
+	names := normalizeAudiobookTags(tags)
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin replace audiobook tags: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	previousTagIDs, err := scanAudiobookInt64List(ctx, tx, `SELECT tag_id FROM audiobook_tags WHERE audiobook_id = $1`, audiobookID)
+	if err != nil {
+		return nil, fmt.Errorf("list previous audiobook tag ids: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx, `DELETE FROM audiobook_tags WHERE audiobook_id = $1`, audiobookID); err != nil {
+		return nil, fmt.Errorf("clear audiobook tags: %w", err)
+	}
+
+	if len(names) > 0 {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO tags (name)
+			SELECT unnest($1::text[])
+			ON CONFLICT (name) DO NOTHING
+		`, names); err != nil {
+			return nil, fmt.Errorf("ensure audiobook tags exist: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO audiobook_tags (audiobook_id, tag_id)
+			SELECT $1, t.id FROM tags t WHERE t.name = ANY($2::text[])
+			ON CONFLICT DO NOTHING
+		`, audiobookID, names); err != nil {
+			return nil, fmt.Errorf("link audiobook tags: %w", err)
+		}
+	}
+
+	if len(previousTagIDs) > 0 {
+		if _, err := tx.Exec(ctx, `
+			DELETE FROM tags
+			WHERE id = ANY($1::bigint[])
+			  AND NOT EXISTS (SELECT 1 FROM audiobook_tags at WHERE at.tag_id = tags.id)
+			  AND NOT EXISTS (SELECT 1 FROM meme_tags mt WHERE mt.tag_id = tags.id)
+			  AND NOT EXISTS (SELECT 1 FROM app_user_audiobook_tag_restrictions r WHERE r.tag_id = tags.id)
+		`, previousTagIDs); err != nil {
+			return nil, fmt.Errorf("delete orphaned audiobook tags: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit replace audiobook tags: %w", err)
+	}
+	return names, nil
+}
+
+func scanAudiobookInt64List(ctx context.Context, tx pgx.Tx, sql string, args ...any) ([]int64, error) {
+	rows, err := tx.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }

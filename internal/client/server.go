@@ -2306,18 +2306,27 @@ func (s *Server) createManagedUser(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) updateManagedUser(w http.ResponseWriter, r *http.Request, userID string) {
 	var payload struct {
-		CanView                  bool `json:"canView"`
-		CanUpload                bool `json:"canUpload"`
-		CanAddTags               bool `json:"canAddTags"`
-		CanRemoveTags            bool `json:"canRemoveTags"`
-		CanDeleteMemes           bool `json:"canDeleteMemes"`
-		CanViewAudiobooks        bool `json:"canViewAudiobooks"`
-		CanUploadAudiobooks      bool `json:"canUploadAudiobooks"`
-		CanDeleteAudiobooks      bool `json:"canDeleteAudiobooks"`
-		CanManageAudiobookSeries bool `json:"canManageAudiobookSeries"`
+		CanView                  bool     `json:"canView"`
+		CanUpload                bool     `json:"canUpload"`
+		CanAddTags               bool     `json:"canAddTags"`
+		CanRemoveTags            bool     `json:"canRemoveTags"`
+		CanDeleteMemes           bool     `json:"canDeleteMemes"`
+		CanViewAudiobooks        bool     `json:"canViewAudiobooks"`
+		CanUploadAudiobooks      bool     `json:"canUploadAudiobooks"`
+		CanDeleteAudiobooks      bool     `json:"canDeleteAudiobooks"`
+		CanManageAudiobookSeries bool     `json:"canManageAudiobookSeries"`
+		// AudiobookTagRestriction locks this account to only the audiobooks
+		// carrying at least one of these tags; empty (including omitted)
+		// means unrestricted. Always sent in full by the admin UI, same as
+		// every CanXxx field above, so there's no partial-update ambiguity.
+		AudiobookTagRestriction []string `json:"audiobookTagRestriction"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	if len(payload.AudiobookTagRestriction) > 50 {
+		http.Error(w, "too many tags", http.StatusBadRequest)
 		return
 	}
 
@@ -2342,6 +2351,12 @@ func (s *Server) updateManagedUser(w http.ResponseWriter, r *http.Request, userI
 	record, err := s.users.UpdateUserPermissions(r.Context(), userID, permissions)
 	if err != nil {
 		log.Printf("update user failed: %v", err)
+		http.Error(w, "failed to update user", http.StatusInternalServerError)
+		return
+	}
+	record, err = s.users.SetUserAudiobookTagRestriction(r.Context(), userID, payload.AudiobookTagRestriction)
+	if err != nil {
+		log.Printf("set audiobook tag restriction failed: %v", err)
 		http.Error(w, "failed to update user", http.StatusInternalServerError)
 		return
 	}

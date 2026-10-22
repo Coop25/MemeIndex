@@ -85,6 +85,8 @@ const state = {
     player: null,
     filter: "",
     seriesId: "",
+    author: "",
+    tag: "",
     series: [],
     view: "books",
     manageSeriesId: "",
@@ -237,19 +239,35 @@ const audiobooksSubnavFilterItems = document.querySelectorAll("#audiobooks-subna
 const audiobooksSubnavSeriesButton = document.querySelector("#audiobooks-subnav-series-button");
 const audiobooksActiveFilterLabel = document.querySelector("#audiobooks-active-filter-label");
 const openAudiobookSeriesManagerButton = document.querySelector("#open-audiobook-series-manager");
-const audiobookSeriesModal = document.querySelector("#audiobook-series-modal");
-const audiobookSeriesCloseButton = document.querySelector("#audiobook-series-close");
-const audiobookSeriesCreateForm = document.querySelector("#audiobook-series-create-form");
-const audiobookSeriesNameInput = document.querySelector("#audiobook-series-name-input");
-const audiobookSeriesStatus = document.querySelector("#audiobook-series-status");
-const audiobookSeriesList = document.querySelector("#audiobook-series-list");
 const audiobookSeriesManageView = document.querySelector("#audiobook-series-manage-view");
 const audiobookSeriesManageBackButton = document.querySelector("#audiobook-series-manage-back");
-const audiobookSeriesManageTitle = document.querySelector("#audiobook-series-manage-title");
-const audiobookSeriesManageCount = document.querySelector("#audiobook-series-manage-count");
-const audiobookSeriesManageSearch = document.querySelector("#audiobook-series-manage-search");
-const audiobookSeriesManageLibraryList = document.querySelector("#audiobook-series-manage-library-list");
-const audiobookSeriesManageBooksList = document.querySelector("#audiobook-series-manage-books-list");
+const audiobookSeriesManagerCreateForm = document.querySelector("#audiobook-series-manager-create-form");
+const audiobookSeriesManagerNameInput = document.querySelector("#audiobook-series-manager-name-input");
+const audiobookSeriesManagerStatus = document.querySelector("#audiobook-series-manager-status");
+const audiobookSeriesManagerRailList = document.querySelector("#audiobook-series-manager-rail-list");
+const audiobookSeriesManagerEmpty = document.querySelector("#audiobook-series-manager-empty");
+const audiobookSeriesManagerSelected = document.querySelector("#audiobook-series-manager-selected");
+const audiobookSeriesManagerSelectedName = document.querySelector("#audiobook-series-manager-selected-name");
+const audiobookSeriesManagerSelectedCount = document.querySelector("#audiobook-series-manager-selected-count");
+const audiobookSeriesManagerShareButton = document.querySelector("#audiobook-series-manager-share");
+const audiobookSeriesAddInput = document.querySelector("#audiobook-series-add-input");
+const audiobookSeriesAddList = document.querySelector("#audiobook-series-add-list");
+const audiobookSeriesManagerBooksList = document.querySelector("#audiobook-series-manager-books");
+const audiobookEditModal = document.querySelector("#audiobook-edit-modal");
+const audiobookEditForm = document.querySelector("#audiobook-edit-form");
+const audiobookEditCoverPreviewImg = document.querySelector("#audiobook-edit-cover-preview-img");
+const audiobookEditCoverPreviewFallback = document.querySelector("#audiobook-edit-cover-preview-fallback");
+const audiobookEditCoverInput = document.querySelector("#audiobook-edit-cover-input");
+const audiobookEditCoverRemoveButton = document.querySelector("#audiobook-edit-cover-remove");
+const audiobookEditTitleInput = document.querySelector("#audiobook-edit-title");
+const audiobookEditAuthorInput = document.querySelector("#audiobook-edit-author");
+const audiobookEditNarratorInput = document.querySelector("#audiobook-edit-narrator");
+const audiobookEditTagsInput = document.querySelector("#audiobook-edit-tags-input");
+const audiobookEditTagChips = document.querySelector("#audiobook-edit-tag-chips");
+const audiobookEditTagSuggestions = document.querySelector("#audiobook-edit-tag-suggestions");
+const audiobookEditStatus = document.querySelector("#audiobook-edit-status");
+const audiobookEditCancelButton = document.querySelector("#audiobook-edit-cancel");
+const audiobookEditSaveButton = document.querySelector("#audiobook-edit-save");
 const audiobookUploadModal = document.querySelector("#audiobook-upload-modal");
 const audiobookUploadModalClose = document.querySelector("#audiobook-upload-modal-close");
 const audiobookUploadForm = document.querySelector("#audiobook-upload-form");
@@ -289,6 +307,7 @@ const audiobookPlayerCover = document.querySelector("#audiobook-player-cover");
 const audiobookPlayerCoverFallback = document.querySelector("#audiobook-player-cover-fallback");
 const audiobookPlayerMeta = document.querySelector("#audiobook-player-meta");
 const audiobookPlayerChaptersToggle = document.querySelector("#audiobook-player-chapters-toggle");
+const audiobookPlayerEditButton = document.querySelector("#audiobook-player-edit");
 const audiobookPlayerChaptersPanel = document.querySelector("#audiobook-player-chapters-panel");
 const audiobookPlayerChapters = document.querySelector("#audiobook-player-chapters");
 const audiobookPlayerTitle = document.querySelector("#audiobook-player-title");
@@ -815,17 +834,25 @@ function readAudiobooksStateFromURL() {
   if (params.get("view") !== "audiobooks") return null;
   const seriesId = params.get("series") || "";
   const sub = params.get("sub") || "";
-  if (sub === "manage" && seriesId) {
-    return { view: "manage-books", seriesId, filter: "" };
+  if (sub === "manage") {
+    return { view: "manage-books", seriesId, filter: "", author: "", tag: "" };
   }
   if (sub === "series") {
-    return { view: "series", seriesId: "", filter: "" };
+    return { view: "series", seriesId: "", filter: "", author: "", tag: "" };
   }
   if (seriesId) {
-    return { view: "books", seriesId, filter: "" };
+    return { view: "books", seriesId, filter: "", author: "", tag: "" };
+  }
+  const author = params.get("author") || "";
+  if (author) {
+    return { view: "books", seriesId: "", filter: "", author, tag: "" };
+  }
+  const tag = params.get("tag") || "";
+  if (tag) {
+    return { view: "books", seriesId: "", filter: "", author: "", tag };
   }
   const filter = params.get("filter") || "";
-  return { view: "books", seriesId: "", filter: ["favorites", "started", "finished"].includes(filter) ? filter : "" };
+  return { view: "books", seriesId: "", filter: ["favorites", "started", "finished"].includes(filter) ? filter : "", author: "", tag: "" };
 }
 
 function applyAudiobooksStateFromURL() {
@@ -844,6 +871,8 @@ function applyAudiobooksStateFromURL() {
   state.audiobooks.view = parsed.view;
   state.audiobooks.seriesId = parsed.seriesId;
   state.audiobooks.filter = parsed.filter;
+  state.audiobooks.author = parsed.author || "";
+  state.audiobooks.tag = parsed.tag || "";
   state.audiobooks.manageSeriesId = parsed.view === "manage-books" ? parsed.seriesId : "";
   return true;
 }
@@ -854,13 +883,17 @@ function syncAudiobooksURL({ push = false } = {}) {
   const currentlyAudiobooksURL = params.get("view") === "audiobooks";
   if (inAudiobooks) {
     const qs = new URLSearchParams({ view: "audiobooks" });
-    if (state.audiobooks.view === "manage-books" && state.audiobooks.manageSeriesId) {
+    if (state.audiobooks.view === "manage-books") {
       qs.set("sub", "manage");
-      qs.set("series", state.audiobooks.manageSeriesId);
+      if (state.audiobooks.manageSeriesId) qs.set("series", state.audiobooks.manageSeriesId);
     } else if (state.audiobooks.view === "series") {
       qs.set("sub", "series");
     } else if (state.audiobooks.seriesId) {
       qs.set("series", state.audiobooks.seriesId);
+    } else if (state.audiobooks.author) {
+      qs.set("author", state.audiobooks.author);
+    } else if (state.audiobooks.tag) {
+      qs.set("tag", state.audiobooks.tag);
     } else if (state.audiobooks.filter) {
       qs.set("filter", state.audiobooks.filter);
     }
@@ -934,6 +967,8 @@ function handleSectionHistoryPop() {
     state.audiobooks.view = audiobooks.view;
     state.audiobooks.seriesId = audiobooks.seriesId;
     state.audiobooks.filter = audiobooks.filter;
+    state.audiobooks.author = audiobooks.author || "";
+    state.audiobooks.tag = audiobooks.tag || "";
     state.audiobooks.manageSeriesId = audiobooks.view === "manage-books" ? audiobooks.seriesId : "";
     loadInitialMemes().catch((error) => console.error(error));
     return;
@@ -1746,6 +1781,7 @@ function userPermissionSummary(user) {
   if (user.permissions?.canUploadAudiobooks) labels.push("Upload audiobooks");
   if (user.permissions?.canDeleteAudiobooks) labels.push("Delete audiobooks");
   if (user.permissions?.canManageAudiobookSeries) labels.push("Manage series");
+  if (user.permissions?.audiobookTagRestriction?.length) labels.push(`Restricted: ${user.permissions.audiobookTagRestriction.join(", ")}`);
   return labels.length > 0 ? labels.join(" * ") : "No permissions yet";
 }
 
@@ -1954,6 +1990,10 @@ function renderManagedUsers() {
         <label><input type="checkbox" data-scope="canDeleteAudiobooks" ${checked(user.permissions?.canDeleteAudiobooks)} ${disabledAttr} /> <span>Delete audiobooks</span></label>
         <label><input type="checkbox" data-scope="canManageAudiobookSeries" ${checked(user.permissions?.canManageAudiobookSeries)} ${disabledAttr} /> <span>Manage audiobook series</span></label>
       </div>
+      <label class="field users-tag-restriction">
+        <span>Restrict audiobooks to tags (blank = unrestricted)</span>
+        <input type="text" data-scope="audiobookTagRestriction" value="${escapeHTML((user.permissions?.audiobookTagRestriction || []).join(", "))}" placeholder="e.g. kids" autocomplete="off" ${disabledAttr} />
+      </label>
       ${user.is_super_admin ? "" : '<div class="users-card-actions"><button class="danger-button users-delete-button" type="button">Remove User</button><button class="primary-button users-save-button" type="button">Save Permissions</button></div>'}
       `;
 
@@ -1971,6 +2011,8 @@ function renderManagedUsers() {
           canUploadAudiobooks: !!card.querySelector('input[data-scope="canUploadAudiobooks"]')?.checked,
           canDeleteAudiobooks: !!card.querySelector('input[data-scope="canDeleteAudiobooks"]')?.checked,
           canManageAudiobookSeries: !!card.querySelector('input[data-scope="canManageAudiobookSeries"]')?.checked,
+          audiobookTagRestriction: (card.querySelector('input[data-scope="audiobookTagRestriction"]')?.value || "")
+            .split(",").map((tag) => tag.trim().toLowerCase()).filter(Boolean),
         };
         if (permissions.canUpload || permissions.canAddTags || permissions.canRemoveTags || permissions.canDeleteMemes) {
           permissions.canView = true;
@@ -3511,6 +3553,9 @@ function renderContentMode() {
 	audiobooksView?.classList.toggle("hidden", !audiobooksMode || manageSeriesBooksMode);
 	audiobookSeriesManageView?.classList.toggle("hidden", !manageSeriesBooksMode);
 	document.body.classList.toggle("audiobooks-mode", audiobooksMode);
+	if (tagSearchInput) {
+		tagSearchInput.placeholder = audiobooksMode ? "Search audiobooks…" : "Search memes, tags, or notes…";
+	}
 	if (libraryMode && libraryTitle) {
 		libraryTitle.textContent = state.filters.tag
 			? `#${state.filters.tag}`
@@ -3697,7 +3742,7 @@ async function loadInitialMemes() {
 		await Promise.all([fetchAudiobooks(), fetchAudiobookSeries()]);
 		if (state.audiobooks.view === "manage-books") {
 			await fetchAudiobookSeriesManagerBooks();
-			renderAudiobookSeriesManagePage();
+			renderAudiobookSeriesManagerView();
 		}
 		renderContentMode();
 		return;
@@ -3850,6 +3895,9 @@ async function fetchAudiobooks() {
     const params = new URLSearchParams();
     if (state.audiobooks.filter) params.set("filter", state.audiobooks.filter);
     if (state.audiobooks.seriesId) params.set("series_id", state.audiobooks.seriesId);
+    if (state.audiobooks.author) params.set("author", state.audiobooks.author);
+    if (state.audiobooks.tag) params.set("tag", state.audiobooks.tag);
+    if (state.filters.query) params.set("q", state.filters.query);
     const query = params.toString();
     const response = await fetch(`/api/audiobooks${query ? `?${query}` : ""}`, { credentials: "same-origin" });
     if (!(await expectAuthorized(response, "Could not load audiobooks."))) {
@@ -3879,9 +3927,11 @@ async function fetchAudiobookSeries() {
     console.error(error);
   } finally {
     renderAudiobookSeriesFilter();
-    renderAudiobookSeriesManager();
     if (state.audiobooks.view === "series") {
       renderAudiobooksGrid();
+    }
+    if (state.audiobooks.view === "manage-books") {
+      renderAudiobookSeriesManagerView();
     }
   }
 }
@@ -3891,24 +3941,41 @@ function renderAudiobookSeriesFilter() {
   const series = state.audiobooks.series;
   const current = state.audiobooks.seriesId;
   const activeFilter = state.audiobooks.filter;
+  const activeAuthor = state.audiobooks.author;
+  const activeTag = state.audiobooks.tag;
   const inSeriesGallery = state.audiobooks.view === "series";
 
   audiobooksSubnavFilterItems.forEach((item) => {
-    item.classList.toggle("is-active", !inSeriesGallery && !current && item.dataset.audiobookFilter === activeFilter);
+    item.classList.toggle("is-active", !inSeriesGallery && !current && !activeAuthor && !activeTag && item.dataset.audiobookFilter === activeFilter);
   });
   audiobooksSubnavSeriesButton?.classList.toggle("is-active", inSeriesGallery);
 
   if (audiobooksActiveFilterLabel) {
     const activeSeries = series.find((s) => s.id === current);
-    const labelText = inSeriesGallery
+    const activeSearch = state.filters.query.trim();
+    const baseLabel = inSeriesGallery
       ? "Series"
       : activeSeries
         ? activeSeries.name
-        : activeFilter
-          ? activeFilter.charAt(0).toUpperCase() + activeFilter.slice(1)
-          : "";
-    audiobooksActiveFilterLabel.textContent = labelText;
+        : activeAuthor
+          ? `Books by ${activeAuthor}`
+          : activeTag
+            ? `Tagged "${activeTag}"`
+            : activeFilter
+              ? activeFilter.charAt(0).toUpperCase() + activeFilter.slice(1)
+              : "";
+    const labelText = activeSearch
+      ? (baseLabel ? `${baseLabel} • Search: "${activeSearch}"` : `Search: "${activeSearch}"`)
+      : baseLabel;
+    // Author/tag/search filters have no subnav button to switch away from
+    // (unlike Favorites/Started/Finished/Series), so the label doubles as
+    // the only way back to the full list.
+    const clearable = !!activeAuthor || !!activeTag || !!activeSearch;
+    audiobooksActiveFilterLabel.textContent = labelText + (clearable ? " ×" : "");
     audiobooksActiveFilterLabel.classList.toggle("hidden", !labelText);
+    audiobooksActiveFilterLabel.classList.toggle("is-clearable", clearable);
+    audiobooksActiveFilterLabel.title = clearable ? "Clear filter" : "";
+    audiobooksActiveFilterLabel.onclick = clearable ? () => clearAudiobooksActiveFilter() : null;
   }
 }
 
@@ -3970,7 +4037,6 @@ function renderAudiobookSeriesGallery() {
 // currently active in the main grid - state.audiobooks.items is scoped to
 // that view and would otherwise silently hide books from the picker.
 let audiobookSeriesManagerBooks = [];
-let audiobookSeriesManagerRenamingId = null;
 
 async function fetchAudiobookSeriesManagerBooks() {
   try {
@@ -3991,315 +4057,262 @@ function seriesManagerBooksFor(seriesId) {
   return audiobookSeriesManagerBooks.filter((book) => book.series_id === seriesId);
 }
 
-function renderAudiobookSeriesManager() {
-  if (!audiobookSeriesList) return;
-  const series = state.audiobooks.series;
-  audiobookSeriesList.innerHTML = series.length
-    ? series.map((s) => audiobookSeriesManagerItemHTML(s)).join("")
-    : `<p class="status-text">No series yet. Create one above.</p>`;
-
-  audiobookSeriesList.querySelectorAll("[data-series-manage]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const seriesId = button.closest("[data-series-id]")?.dataset.seriesId;
-      if (seriesId) openAudiobookSeriesManagePage(seriesId).catch((error) => console.error(error));
-    });
-  });
-  audiobookSeriesList.querySelectorAll("[data-series-share]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const current = series.find((s) => s.id === button.closest("[data-series-id]")?.dataset.seriesId);
-      if (current) shareAudiobookSeries(current).catch((error) => console.error(error));
-    });
-  });
-  audiobookSeriesList.querySelectorAll("[data-series-rename]").forEach((button) => {
-    button.addEventListener("click", () => {
-      audiobookSeriesManagerRenamingId = button.closest("[data-series-id]")?.dataset.seriesId || null;
-      renderAudiobookSeriesManager();
-    });
-  });
-  audiobookSeriesList.querySelectorAll("[data-series-rename-cancel]").forEach((button) => {
-    button.addEventListener("click", () => {
-      audiobookSeriesManagerRenamingId = null;
-      renderAudiobookSeriesManager();
-    });
-  });
-  audiobookSeriesList.querySelectorAll("[data-series-rename-form]").forEach((form) => {
-    form.addEventListener("submit", (event) => {
-      event.preventDefault();
-      const seriesId = form.closest("[data-series-id]")?.dataset.seriesId;
-      const current = series.find((s) => s.id === seriesId);
-      const name = form.querySelector("[data-series-rename-input]")?.value.trim();
-      if (!current || !name || name === current.name) {
-        audiobookSeriesManagerRenamingId = null;
-        renderAudiobookSeriesManager();
-        return;
-      }
-      submitAudiobookSeriesRename(current, name);
-    });
-    form.querySelector("[data-series-rename-input]")?.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") {
-        audiobookSeriesManagerRenamingId = null;
-        renderAudiobookSeriesManager();
-      }
-    });
-  });
-  audiobookSeriesList.querySelectorAll("[data-series-delete]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const current = series.find((s) => s.id === button.closest("[data-series-id]")?.dataset.seriesId);
-      if (current) deleteAudiobookSeriesEntry(current);
-    });
-  });
-
-  const renamingInput = audiobookSeriesList.querySelector("[data-series-rename-input]");
-  if (renamingInput) {
-    renamingInput.focus();
-    renamingInput.select();
-  }
-}
-
-function audiobookSeriesManagerItemHTML(s) {
-  const renaming = audiobookSeriesManagerRenamingId === s.id;
-
-  const nameArea = renaming
-    ? `
-      <form class="audiobook-series-rename-form" data-series-rename-form>
-        <input type="text" value="${escapeHTML(s.name)}" maxlength="200" required data-series-rename-input />
-        <button type="submit" class="secondary-button">Save</button>
-        <button type="button" class="ghost-button" data-series-rename-cancel>Cancel</button>
-      </form>
-    `
-    : `
-      <div class="audiobook-series-row-name-area">
-        <span class="audiobook-series-row-name">${escapeHTML(s.name)}</span>
-        <span class="audiobook-series-row-count">${s.book_count} book${s.book_count === 1 ? "" : "s"}</span>
-      </div>
-    `;
-
-  const actions = renaming
-    ? ""
-    : `
-      <div class="audiobook-series-row-actions">
-        <button type="button" class="secondary-button" data-series-manage>Manage books</button>
-        <button type="button" class="ghost-button" data-series-share title="Copy a link to this series">Share</button>
-        <button type="button" class="ghost-button" data-series-rename>Rename</button>
-        <button type="button" class="danger-button" data-series-delete>Delete</button>
-      </div>
-    `;
-
-  return `
-    <div class="audiobook-series-item" data-series-id="${escapeHTML(s.id)}">
-      <div class="audiobook-series-item-header">${nameArea}${actions}</div>
-    </div>
-  `;
-}
-
 // ---------------------------------------------------------------------------
-// Audiobook series "manage books" page: a full-width two-pane view (your
-// whole library on the left, this series's ordered books on the right) that
-// replaces the old cramped in-modal book list, which got unwieldy past a
-// handful of books. Supports drag-and-drop between/within the panes, with
-// click-based add/remove/reorder controls as a non-drag fallback.
+// Audiobook series manager: one page, no modal and no separate "manage
+// books" page to navigate to. A rail on the left lists every series (name
+// editable in place, cover preview, share/delete) - clicking one loads its
+// ordered books on the right. Adding a book is type-to-search rather than
+// scrolling your whole library, and reordering is a position number plus
+// up/down nudges instead of fragile drag-and-drop.
 // ---------------------------------------------------------------------------
 
-let audiobookSeriesManagePageQuery = "";
-
-async function openAudiobookSeriesManagePage(seriesId) {
-  audiobookSeriesModal?.close();
-  state.audiobooks.manageSeriesId = seriesId;
-  audiobookSeriesManagePageQuery = "";
-  if (audiobookSeriesManageSearch) audiobookSeriesManageSearch.value = "";
+function openAudiobookSeriesManager() {
+  if (!canManageAudiobookSeries()) return;
   state.audiobooks.view = "manage-books";
   syncAudiobooksURL({ push: true });
-  renderContentMode();
-  await fetchAudiobookSeriesManagerBooks();
-  renderAudiobookSeriesManagePage();
+  navigateToView("audiobooks");
 }
 
 function closeAudiobookSeriesManagePage() {
   state.audiobooks.manageSeriesId = "";
-  state.audiobooks.view = "series";
+  state.audiobooks.view = "books";
   syncAudiobooksURL({ push: true });
-  renderContentMode();
-  renderAudiobooksGrid();
+  navigateToView("audiobooks");
 }
 
 async function refreshAudiobookSeriesManagePageData() {
   await fetchAudiobookSeriesManagerBooks();
   await fetchAudiobookSeries();
-  renderAudiobookSeriesManagePage();
+  renderAudiobookSeriesManagerView();
 }
 
-function renderAudiobookSeriesManagePage() {
-  if (!audiobookSeriesManageView) return;
-  const series = state.audiobooks.series.find((s) => s.id === state.audiobooks.manageSeriesId);
-  if (!series) {
-    closeAudiobookSeriesManagePage();
-    return;
-  }
-
-  if (audiobookSeriesManageTitle) audiobookSeriesManageTitle.textContent = series.name;
-  const books = seriesManagerBooksFor(series.id);
-  if (audiobookSeriesManageCount) {
-    audiobookSeriesManageCount.textContent = `${books.length} book${books.length === 1 ? "" : "s"}`;
-  }
-
-  if (audiobookSeriesManageBooksList) {
-    audiobookSeriesManageBooksList.innerHTML = books.length
-      ? books.map((book, index) => audiobookSeriesManageItemHTML(book, { removable: true, index, total: books.length })).join("")
-      : `<p class="status-text audiobook-series-manage-empty">Drag books here from the library, or use the + button.</p>`;
-  }
-
-  const query = audiobookSeriesManagePageQuery.trim().toLowerCase();
-  const library = audiobookSeriesManagerBooks
-    .filter((book) => book.series_id !== series.id)
-    .filter((book) => !query
-      || audiobookDisplayTitle(book).toLowerCase().includes(query)
-      || (book.author || "").toLowerCase().includes(query));
-  if (audiobookSeriesManageLibraryList) {
-    audiobookSeriesManageLibraryList.innerHTML = library.length
-      ? library.map((book) => audiobookSeriesManageItemHTML(book, { removable: false })).join("")
-      : `<p class="status-text">${audiobookSeriesManagerBooks.length ? "No matching books." : "Upload an audiobook first."}</p>`;
-  }
-
-  wireAudiobookSeriesManagePageInteractions(series.id);
+// renderAudiobookSeriesManagerView draws both halves: the rail of every
+// series, and (if one is selected) its book list. One function covers both
+// since selecting a different series, or any edit, can change either side.
+function renderAudiobookSeriesManagerView() {
+  renderAudiobookSeriesManagerRail();
+  renderAudiobookSeriesManagerDetail();
 }
 
-function audiobookSeriesManageItemHTML(book, { removable, index, total }) {
-  const otherSeries = !removable && book.series_id
-    ? state.audiobooks.series.find((s) => s.id === book.series_id)
-    : null;
-  const cover = book.cover_url
-    ? `<img class="audiobook-manage-item-cover" src="${escapeHTML(book.cover_url)}" alt="" loading="lazy" />`
-    : `<div class="audiobook-manage-item-cover audiobook-manage-item-cover-empty" aria-hidden="true"></div>`;
-  const controls = removable
-    ? `
-      <div class="audiobook-series-book-order">
-        <button type="button" class="audiobook-series-icon-button" data-manage-up ${index === 0 ? "disabled" : ""} title="Move up" aria-label="Move up">&#9650;</button>
-        <button type="button" class="audiobook-series-icon-button" data-manage-down ${index === total - 1 ? "disabled" : ""} title="Move down" aria-label="Move down">&#9660;</button>
-      </div>
-      <button type="button" class="audiobook-series-icon-button audiobook-series-book-remove" data-manage-remove title="Remove from series" aria-label="Remove from series">&#10005;</button>
-    `
-    : `<button type="button" class="audiobook-series-icon-button" data-manage-add title="Add to series" aria-label="Add to series">+</button>`;
+async function selectAudiobookSeriesToManage(seriesId) {
+  state.audiobooks.manageSeriesId = seriesId;
+  audiobookSeriesAddQuery = "";
+  if (audiobookSeriesAddInput) audiobookSeriesAddInput.value = "";
+  syncAudiobooksURL({ push: true });
+  renderAudiobookSeriesManagerView();
+}
 
+function renderAudiobookSeriesManagerRail() {
+  if (!audiobookSeriesManagerRailList) return;
+  const series = state.audiobooks.series;
+  const selectedId = state.audiobooks.manageSeriesId;
+  audiobookSeriesManagerRailList.innerHTML = series.length
+    ? series.map((s) => audiobookSeriesManagerRailItemHTML(s, s.id === selectedId)).join("")
+    : `<p class="status-text">No series yet. Create one above.</p>`;
+
+  audiobookSeriesManagerRailList.querySelectorAll("[data-series-row]").forEach((row) => {
+    const seriesId = row.dataset.seriesId;
+    row.addEventListener("click", (event) => {
+      if (event.target.closest("[data-series-name-input], [data-series-share], [data-series-delete]")) return;
+      if (seriesId) selectAudiobookSeriesToManage(seriesId).catch((error) => console.error(error));
+    });
+  });
+  audiobookSeriesManagerRailList.querySelectorAll("[data-series-name-input]").forEach((input) => {
+    const seriesId = input.closest("[data-series-id]")?.dataset.seriesId;
+    const current = series.find((s) => s.id === seriesId);
+    input.addEventListener("click", (event) => event.stopPropagation());
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        input.blur();
+      } else if (event.key === "Escape") {
+        input.value = current?.name || "";
+        input.blur();
+      }
+    });
+    input.addEventListener("blur", () => {
+      const name = input.value.trim();
+      if (!current || !name || name === current.name) {
+        input.value = current?.name || "";
+        return;
+      }
+      submitAudiobookSeriesRename(current, name);
+    });
+  });
+  audiobookSeriesManagerRailList.querySelectorAll("[data-series-share]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const current = series.find((s) => s.id === button.closest("[data-series-id]")?.dataset.seriesId);
+      if (current) shareAudiobookSeries(current).catch((error) => console.error(error));
+    });
+  });
+  audiobookSeriesManagerRailList.querySelectorAll("[data-series-delete]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const current = series.find((s) => s.id === button.closest("[data-series-id]")?.dataset.seriesId);
+      if (current) deleteAudiobookSeriesEntry(current);
+    });
+  });
+}
+
+function audiobookSeriesManagerRailItemHTML(s, selected) {
+  const cover = s.top_books?.[0]?.cover_url
+    ? `<img class="audiobook-series-manager-row-cover" src="${escapeHTML(s.top_books[0].cover_url)}" alt="" loading="lazy" />`
+    : `<div class="audiobook-series-manager-row-cover audiobook-series-manager-row-cover-empty" aria-hidden="true"></div>`;
   return `
-    <div class="audiobook-manage-item" draggable="true" data-book-id="${escapeHTML(book.id)}">
+    <div class="audiobook-series-manager-row${selected ? " is-selected" : ""}" data-series-row data-series-id="${escapeHTML(s.id)}">
       ${cover}
-      <div class="audiobook-manage-item-info">
-        <span class="audiobook-manage-item-title">${escapeHTML(audiobookDisplayTitle(book))}</span>
-        ${book.author ? `<span class="audiobook-manage-item-author">${escapeHTML(book.author)}</span>` : ""}
-        ${otherSeries ? `<span class="audiobook-manage-item-badge">In ${escapeHTML(otherSeries.name)}</span>` : ""}
+      <div class="audiobook-series-manager-row-info">
+        <input type="text" class="audiobook-series-manager-row-name-input" value="${escapeHTML(s.name)}" maxlength="200" data-series-name-input aria-label="Rename series" title="Click to rename" />
+        <span class="audiobook-series-manager-row-count">${s.book_count} book${s.book_count === 1 ? "" : "s"}</span>
       </div>
-      ${controls}
+      <div class="audiobook-series-manager-row-actions">
+        <button type="button" class="audiobook-series-icon-button" data-series-share title="Share" aria-label="Copy a link to ${escapeHTML(s.name)}">&#8599;</button>
+        <button type="button" class="audiobook-series-icon-button audiobook-series-book-remove" data-series-delete title="Delete series" aria-label="Delete ${escapeHTML(s.name)}">&#10005;</button>
+      </div>
     </div>
   `;
 }
 
-// Only wires the per-row controls and drag sources here: those rows are
-// rebuilt via innerHTML on every render, so re-attaching their listeners each
-// time is fine (the old nodes, and their listeners, are discarded with them).
-// The two pane containers are NOT rebuilt, so their drop-zone listeners are
-// wired once, separately (see setUpAudiobookSeriesManageDropZones below) -
-// doing it here too would stack a new copy on every single mutation.
-function wireAudiobookSeriesManagePageInteractions(seriesId) {
-  audiobookSeriesManageBooksList?.querySelectorAll("[data-manage-up]").forEach((button) => {
+function renderAudiobookSeriesManagerDetail() {
+  const series = state.audiobooks.series.find((s) => s.id === state.audiobooks.manageSeriesId);
+  audiobookSeriesManagerEmpty?.classList.toggle("hidden", !!series);
+  audiobookSeriesManagerSelected?.classList.toggle("hidden", !series);
+  if (!series) return;
+
+  if (audiobookSeriesManagerSelectedName) audiobookSeriesManagerSelectedName.textContent = series.name;
+  const books = seriesManagerBooksFor(series.id);
+  if (audiobookSeriesManagerSelectedCount) {
+    audiobookSeriesManagerSelectedCount.textContent = `${books.length} book${books.length === 1 ? "" : "s"}`;
+  }
+
+  if (audiobookSeriesManagerBooksList) {
+    audiobookSeriesManagerBooksList.innerHTML = books.length
+      ? books.map((book, index) => audiobookSeriesManagerBookRowHTML(book, index, books.length)).join("")
+      : `<p class="status-text audiobook-series-manager-no-books">No books yet - search above to add one.</p>`;
+  }
+  wireAudiobookSeriesManagerBookRows(series.id);
+  renderAudiobookSeriesAddList();
+}
+
+function audiobookSeriesManagerBookRowHTML(book, index, total) {
+  const cover = book.cover_url
+    ? `<img class="audiobook-series-manager-book-cover" src="${escapeHTML(book.cover_url)}" alt="" loading="lazy" />`
+    : `<div class="audiobook-series-manager-book-cover audiobook-series-manager-book-cover-empty" aria-hidden="true"></div>`;
+  // The sequence number is directly editable (rather than only derived from
+  // up/down position) so a novella or side-story can be slotted in as, say,
+  // 7.5 between Book 7 and Book 8 without renumbering the whole series.
+  const sequenceValue = Number.isFinite(book.series_sequence) ? book.series_sequence : index + 1;
+  return `
+    <div class="audiobook-series-manager-book" data-book-id="${escapeHTML(book.id)}">
+      ${cover}
+      <div class="audiobook-series-manager-book-info">
+        <span class="audiobook-series-manager-book-title">${escapeHTML(audiobookDisplayTitle(book))}</span>
+        ${book.author ? `<span class="audiobook-series-manager-book-author">${escapeHTML(book.author)}</span>` : ""}
+      </div>
+      <div class="audiobook-series-book-order">
+        <input type="number" step="any" class="audiobook-series-sequence-input" data-manage-sequence value="${escapeHTML(String(sequenceValue))}" title="Exact position - use e.g. 7.5 to slot a book between 7 and 8" aria-label="Sequence number" />
+        <button type="button" class="audiobook-series-icon-button" data-manage-up ${index === 0 ? "disabled" : ""} title="Move up" aria-label="Move up">&#9650;</button>
+        <button type="button" class="audiobook-series-icon-button" data-manage-down ${index === total - 1 ? "disabled" : ""} title="Move down" aria-label="Move down">&#9660;</button>
+      </div>
+      <button type="button" class="audiobook-series-icon-button audiobook-series-book-remove" data-manage-remove title="Remove from series" aria-label="Remove from series">&#10005;</button>
+    </div>
+  `;
+}
+
+// Rebuilt via innerHTML on every render, so re-attaching listeners each time
+// is fine - the old nodes, and their listeners, go with them.
+function wireAudiobookSeriesManagerBookRows(seriesId) {
+  audiobookSeriesManagerBooksList?.querySelectorAll("[data-manage-up]").forEach((button) => {
     button.addEventListener("click", () => {
       const bookId = button.closest("[data-book-id]")?.dataset.bookId;
       if (bookId) moveAudiobookInSeries(seriesId, bookId, -1).catch((error) => console.error(error));
     });
   });
-  audiobookSeriesManageBooksList?.querySelectorAll("[data-manage-down]").forEach((button) => {
+  audiobookSeriesManagerBooksList?.querySelectorAll("[data-manage-down]").forEach((button) => {
     button.addEventListener("click", () => {
       const bookId = button.closest("[data-book-id]")?.dataset.bookId;
       if (bookId) moveAudiobookInSeries(seriesId, bookId, 1).catch((error) => console.error(error));
     });
   });
-  audiobookSeriesManageBooksList?.querySelectorAll("[data-manage-remove]").forEach((button) => {
+  audiobookSeriesManagerBooksList?.querySelectorAll("[data-manage-remove]").forEach((button) => {
     button.addEventListener("click", () => {
       const bookId = button.closest("[data-book-id]")?.dataset.bookId;
       if (bookId) removeAudiobookFromSeries(bookId).catch((error) => console.error(error));
     });
   });
-  audiobookSeriesManageLibraryList?.querySelectorAll("[data-manage-add]").forEach((button) => {
+  audiobookSeriesManagerBooksList?.querySelectorAll("[data-manage-sequence]").forEach((input) => {
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        input.blur();
+      }
+    });
+    input.addEventListener("change", () => {
+      const bookId = input.closest("[data-book-id]")?.dataset.bookId;
+      const sequence = parseFloat(input.value);
+      if (!bookId || !Number.isFinite(sequence)) return;
+      setAudiobookSeriesSequenceDirect(seriesId, bookId, sequence).catch((error) => console.error(error));
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Add-to-series search: filters the already-fetched full library client side
+// (no extra network round trip per keystroke) and lets a click add a book to
+// the currently selected series straight away - the fast replacement for
+// scrolling a whole separate "library" pane.
+// ---------------------------------------------------------------------------
+
+let audiobookSeriesAddQuery = "";
+
+// With no filter text typed, every book not already in this series is a
+// candidate - this is the browsable "add books" list, not just a search
+// dropdown, so there's still a way to look rather than already knowing what
+// to type.
+function audiobookSeriesAddCandidates(seriesId, query) {
+  const needle = query.trim().toLowerCase();
+  return audiobookSeriesManagerBooks
+    .filter((book) => book.series_id !== seriesId)
+    .filter((book) => !needle
+      || audiobookDisplayTitle(book).toLowerCase().includes(needle)
+      || (book.author || "").toLowerCase().includes(needle))
+    .sort((a, b) => audiobookDisplayTitle(a).localeCompare(audiobookDisplayTitle(b)));
+}
+
+function renderAudiobookSeriesAddList() {
+  if (!audiobookSeriesAddList) return;
+  const seriesId = state.audiobooks.manageSeriesId;
+  const candidates = seriesId ? audiobookSeriesAddCandidates(seriesId, audiobookSeriesAddQuery) : [];
+  if (!candidates.length) {
+    audiobookSeriesAddList.innerHTML = `<p class="status-text audiobook-series-add-list-empty">${
+      audiobookSeriesAddQuery.trim() ? "No matching books." : "Every book is already in this series."
+    }</p>`;
+    return;
+  }
+  audiobookSeriesAddList.innerHTML = candidates.map((book) => {
+    const otherSeries = book.series_id ? state.audiobooks.series.find((s) => s.id === book.series_id) : null;
+    const cover = book.cover_url
+      ? `<img class="audiobook-series-add-row-cover" src="${escapeHTML(book.cover_url)}" alt="" loading="lazy" />`
+      : `<div class="audiobook-series-add-row-cover audiobook-series-add-row-cover-empty" aria-hidden="true"></div>`;
+    return `
+      <div class="audiobook-series-add-row" data-book-id="${escapeHTML(book.id)}">
+        ${cover}
+        <div class="audiobook-series-add-row-info">
+          <span class="audiobook-series-add-row-title">${escapeHTML(audiobookDisplayTitle(book))}</span>
+          ${book.author ? `<span class="audiobook-series-add-row-author">${escapeHTML(book.author)}</span>` : ""}
+          ${otherSeries ? `<span class="audiobook-manage-item-badge">In ${escapeHTML(otherSeries.name)}</span>` : ""}
+        </div>
+        <button type="button" class="audiobook-series-icon-button" data-add-book title="Add to series" aria-label="Add ${escapeHTML(audiobookDisplayTitle(book))} to series">+</button>
+      </div>
+    `;
+  }).join("");
+  audiobookSeriesAddList.querySelectorAll("[data-add-book]").forEach((button) => {
     button.addEventListener("click", () => {
       const bookId = button.closest("[data-book-id]")?.dataset.bookId;
-      if (bookId) addAudiobookToSeries(seriesId, bookId).catch((error) => console.error(error));
+      if (bookId && seriesId) addAudiobookToSeries(seriesId, bookId).catch((error) => console.error(error));
     });
   });
-
-  [audiobookSeriesManageLibraryList, audiobookSeriesManageBooksList].forEach((list) => {
-    list?.querySelectorAll("[data-book-id]").forEach((row) => {
-      row.addEventListener("dragstart", (event) => {
-        event.dataTransfer.setData("text/plain", row.dataset.bookId || "");
-        event.dataTransfer.effectAllowed = "move";
-        row.classList.add("is-dragging");
-      });
-      row.addEventListener("dragend", () => row.classList.remove("is-dragging"));
-    });
-  });
-}
-
-// Wired once at startup (not per-render, unlike wireAudiobookSeriesManagePageInteractions
-// above) since these two pane elements persist across renders - only their
-// contents are replaced. Reads state.audiobooks.manageSeriesId at drop time
-// rather than closing over a seriesId, since that's the only way to stay
-// correct across renders for a page whose series can change.
-function setUpAudiobookSeriesManageDropZones() {
-  if (audiobookSeriesManageBooksList) {
-    audiobookSeriesManageBooksList.addEventListener("dragover", (event) => {
-      event.preventDefault();
-      event.dataTransfer.dropEffect = "move";
-      audiobookSeriesManageBooksList.classList.add("is-dragover");
-    });
-    audiobookSeriesManageBooksList.addEventListener("dragleave", (event) => {
-      if (!audiobookSeriesManageBooksList.contains(event.relatedTarget)) {
-        audiobookSeriesManageBooksList.classList.remove("is-dragover");
-      }
-    });
-    audiobookSeriesManageBooksList.addEventListener("drop", (event) => {
-      event.preventDefault();
-      audiobookSeriesManageBooksList.classList.remove("is-dragover");
-      const seriesId = state.audiobooks.manageSeriesId;
-      const bookId = event.dataTransfer.getData("text/plain");
-      if (!seriesId || !bookId) return;
-      const atIndex = audiobookSeriesManageDropIndex(audiobookSeriesManageBooksList, event.clientY, bookId);
-      placeAudiobookInSeries(seriesId, bookId, atIndex).catch((error) => console.error(error));
-    });
-  }
-
-  if (audiobookSeriesManageLibraryList) {
-    audiobookSeriesManageLibraryList.addEventListener("dragover", (event) => {
-      event.preventDefault();
-      event.dataTransfer.dropEffect = "move";
-      audiobookSeriesManageLibraryList.classList.add("is-dragover");
-    });
-    audiobookSeriesManageLibraryList.addEventListener("dragleave", (event) => {
-      if (!audiobookSeriesManageLibraryList.contains(event.relatedTarget)) {
-        audiobookSeriesManageLibraryList.classList.remove("is-dragover");
-      }
-    });
-    audiobookSeriesManageLibraryList.addEventListener("drop", (event) => {
-      event.preventDefault();
-      audiobookSeriesManageLibraryList.classList.remove("is-dragover");
-      const seriesId = state.audiobooks.manageSeriesId;
-      const bookId = event.dataTransfer.getData("text/plain");
-      const book = bookId ? audiobookSeriesManagerBooks.find((b) => b.id === bookId) : null;
-      // Dragging a library book onto the library pane is a no-op; dragging a
-      // series book here means "take it out of the series".
-      if (seriesId && book?.series_id === seriesId) removeAudiobookFromSeries(bookId).catch((error) => console.error(error));
-    });
-  }
-}
-setUpAudiobookSeriesManageDropZones();
-
-// Finds where a dropped book should land among the OTHER rows in a list
-// (the dragged book's own row, if present, is excluded) by comparing the
-// pointer's Y position against each row's vertical midpoint.
-function audiobookSeriesManageDropIndex(container, clientY, draggedBookId) {
-  const rows = Array.from(container.querySelectorAll("[data-book-id]")).filter((row) => row.dataset.bookId !== draggedBookId);
-  for (let i = 0; i < rows.length; i++) {
-    const rect = rows[i].getBoundingClientRect();
-    if (clientY < rect.top + rect.height / 2) return i;
-  }
-  return rows.length;
 }
 
 async function shareAudiobookSeries(series) {
@@ -4314,7 +4327,7 @@ async function shareAudiobookSeries(series) {
 }
 
 async function createAudiobookSeriesEntry(name) {
-  if (audiobookSeriesStatus) audiobookSeriesStatus.textContent = "Creating series...";
+  if (audiobookSeriesManagerStatus) audiobookSeriesManagerStatus.textContent = "Creating series...";
   try {
     const response = await fetch("/api/audiobook-series", {
       method: "POST",
@@ -4323,17 +4336,17 @@ async function createAudiobookSeriesEntry(name) {
       body: JSON.stringify({ name }),
     });
     if (response.status === 409) {
-      if (audiobookSeriesStatus) audiobookSeriesStatus.textContent = "A series with that name already exists.";
+      if (audiobookSeriesManagerStatus) audiobookSeriesManagerStatus.textContent = "A series with that name already exists.";
       return;
     }
     if (!(await expectAuthorized(response, "Could not create series."))) {
       return;
     }
-    if (audiobookSeriesStatus) audiobookSeriesStatus.textContent = "";
+    if (audiobookSeriesManagerStatus) audiobookSeriesManagerStatus.textContent = "";
     await fetchAudiobookSeries();
   } catch (error) {
     console.error(error);
-    if (audiobookSeriesStatus) audiobookSeriesStatus.textContent = "Could not create series.";
+    if (audiobookSeriesManagerStatus) audiobookSeriesManagerStatus.textContent = "Could not create series.";
   }
 }
 
@@ -4352,7 +4365,6 @@ async function submitAudiobookSeriesRename(series, name) {
     if (!(await expectAuthorized(response, "Could not rename series."))) {
       return;
     }
-    audiobookSeriesManagerRenamingId = null;
     await fetchAudiobookSeries();
     await fetchAudiobooks();
   } catch (error) {
@@ -4380,6 +4392,10 @@ async function deleteAudiobookSeriesEntry(series) {
       state.audiobooks.seriesId = "";
       syncAudiobooksURL();
     }
+    if (state.audiobooks.manageSeriesId === series.id) {
+      state.audiobooks.manageSeriesId = "";
+      syncAudiobooksURL();
+    }
     await fetchAudiobookSeries();
     await fetchAudiobooks();
     showToast("Series deleted.", "success", { title: "Audiobook Series" });
@@ -4398,6 +4414,22 @@ async function setAudiobookSeriesRaw(audiobookId, seriesId, sequence) {
   });
   if (!(await expectAuthorized(response, "Could not update that book's series."))) {
     throw new Error("set audiobook series failed");
+  }
+}
+
+// setAudiobookSeriesSequenceDirect sets one book's exact sequence number
+// without touching any other book's - unlike placeAudiobookInSeries (used by
+// drag-and-drop and the up/down buttons), which renumbers the whole series to
+// clean 1..N integers. This is the escape hatch for a sequence that isn't a
+// clean integer, e.g. a 7.5 novella between Book 7 and Book 8.
+async function setAudiobookSeriesSequenceDirect(seriesId, bookId, sequence) {
+  try {
+    await setAudiobookSeriesRaw(bookId, seriesId, sequence);
+    await refreshAudiobookSeriesManagePageData();
+    await fetchAudiobooks();
+  } catch (error) {
+    console.error(error);
+    showToast("Could not update that book's position.", "error", { title: "Audiobook Series" });
   }
 }
 
@@ -4509,6 +4541,9 @@ function audiobookCardHTML(item) {
   const seriesLine = item.series_name
     ? `<span class="audiobook-card-series">${escapeHTML(item.series_name)}${item.series_sequence ? ` • Book ${escapeHTML(String(item.series_sequence))}` : ""}</span>`
     : "";
+  const tagsLine = item.tags?.length
+    ? `<div class="audiobook-card-tags">${item.tags.map((tag) => `<button type="button" class="audiobook-card-tag" data-audiobook-tag="${escapeHTML(tag)}">${escapeHTML(tag)}</button>`).join("")}</div>`
+    : "";
   return `
     <article class="audiobook-card" data-audiobook-id="${escapeHTML(item.id)}">
       <button type="button" class="favorite-button audiobook-card-favorite${item.is_favorite ? " is-favorite" : ""}" data-audiobook-favorite aria-pressed="${item.is_favorite ? "true" : "false"}" aria-label="${item.is_favorite ? "Remove from favorites" : "Add to favorites"}" title="${item.is_favorite ? "Remove from favorites" : "Add to favorites"}">
@@ -4522,18 +4557,20 @@ function audiobookCardHTML(item) {
         </div>
         <div class="audiobook-card-body">
           <strong class="audiobook-card-title">${escapeHTML(title)}</strong>
-          ${item.author ? `<span class="audiobook-card-author">${escapeHTML(item.author)}</span>` : ""}
+          ${item.author ? `<button type="button" class="audiobook-card-author" data-audiobook-author="${escapeHTML(item.author)}" title="Show all books by ${escapeHTML(item.author)}">${escapeHTML(item.author)}</button>` : ""}
           ${seriesLine}
           <span class="audiobook-card-meta">${metaParts.map(escapeHTML).join(" • ")}</span>
           ${progressLine}
+          ${tagsLine}
         </div>
       </div>
       <div class="audiobook-card-actions">
-        <button type="button" class="primary-button" data-audiobook-play>${progressPct > 0 && progressPct < 99 ? "Resume" : "Play"}</button>
-        <a class="ghost-button audiobook-card-download" href="${escapeHTML(item.stream_url)}" download="${escapeHTML(title)}${escapeHTML(audiobookFileExtension(item.filename))}" aria-label="Download ${escapeHTML(title)}" title="Download">
+        <button type="button" class="primary-button audiobook-card-play" data-audiobook-play>${progressPct > 0 && progressPct < 99 ? "Resume" : "Play"}</button>
+        <a class="ghost-button audiobook-card-icon-button" href="${escapeHTML(item.stream_url)}" download="${escapeHTML(title)}${escapeHTML(audiobookFileExtension(item.filename))}" aria-label="Download ${escapeHTML(title)}" title="Download">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11" /><path d="m7.5 11 4.5 4.5 4.5-4.5" /><path d="M5 19.5h14" /></svg>
         </a>
-        ${canDelete ? `<button type="button" class="ghost-button" data-audiobook-delete>Delete</button>` : ""}
+        ${canDelete ? `<button type="button" class="ghost-button audiobook-card-icon-button" data-audiobook-edit aria-label="Edit ${escapeHTML(title)}" title="Edit"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4.5L19 9.5a2.1 2.1 0 0 0-3-3L5.5 17v3Z" /><path d="M14.5 8 17 10.5" /></svg></button>` : ""}
+        ${canDelete ? `<button type="button" class="ghost-button audiobook-card-icon-button" data-audiobook-delete aria-label="Delete ${escapeHTML(title)}" title="Delete"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16" /><path d="M9 7V4.8c0-.44.36-.8.8-.8h4.4c.44 0 .8.36.8.8V7" /><path d="M6 7l.9 12.1a2 2 0 0 0 2 1.9h6.2a2 2 0 0 0 2-1.9L18 7" /><path d="M10 11v6M14 11v6" /></svg></button>` : ""}
       </div>
     </article>
   `;
@@ -4569,6 +4606,20 @@ function renderAudiobooksGrid() {
     card.querySelector("[data-audiobook-favorite]")?.addEventListener("click", (event) => {
       event.stopPropagation();
       toggleAudiobookFavorite(item).catch((error) => console.error(error));
+    });
+    card.querySelector("[data-audiobook-author]")?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      navigateToAudiobookAuthor(item.author);
+    });
+    card.querySelectorAll("[data-audiobook-tag]").forEach((tagButton) => {
+      tagButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        navigateToAudiobookTag(tagButton.dataset.audiobookTag || "");
+      });
+    });
+    card.querySelector("[data-audiobook-edit]")?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openAudiobookEditModal(item);
     });
   });
 }
@@ -4622,6 +4673,263 @@ async function deleteAudiobookItem(item) {
   } catch (error) {
     console.error(error);
     showToast("Could not delete this audiobook.", "error", { title: "Audiobooks" });
+  }
+}
+
+// The audiobook currently loaded into the edit modal, plus any cover change
+// staged there - applied together when Save is pressed, discarded on Cancel.
+let audiobookEditingItem = null;
+let audiobookEditPendingCoverFile = null;
+let audiobookEditRemoveCoverRequested = false;
+
+// The audiobook edit modal's tag editor - token chips with autocomplete
+// against the shared `tags` table, mirroring the meme modal's tag editor
+// (modalTagState / renderTagEditor / fetchTagSuggestions) rather than a
+// plain comma-separated input.
+let audiobookEditTagState = [];
+let audiobookEditTagSequence = 0;
+let audiobookEditTagSuggestionState = [];
+let audiobookEditActiveTagSuggestionIndex = -1;
+let audiobookEditTagSuggestionAbortController = null;
+
+function createAudiobookEditTag(tag) {
+  return { id: `ab-tag-${audiobookEditTagSequence += 1}`, value: normalizeTagValue(tag) };
+}
+
+function setAudiobookEditTags(tags) {
+  const seen = new Set();
+  audiobookEditTagState = [];
+  for (const rawTag of tags || []) {
+    const value = normalizeTagValue(rawTag);
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    audiobookEditTagState.push(createAudiobookEditTag(value));
+  }
+}
+
+function getAudiobookEditTagValues() {
+  return audiobookEditTagState.map((tag) => tag.value);
+}
+
+function addAudiobookEditTag(rawTag) {
+  const tag = normalizeTagValue(rawTag);
+  if (!tag || audiobookEditTagState.some((entry) => entry.value === tag)) return;
+  audiobookEditTagState = [...audiobookEditTagState, createAudiobookEditTag(tag)];
+  if (audiobookEditTagsInput) audiobookEditTagsInput.value = "";
+  audiobookEditTagSuggestionState = [];
+  audiobookEditActiveTagSuggestionIndex = -1;
+  renderAudiobookEditTagEditor();
+  renderAudiobookEditTagSuggestions();
+}
+
+function removeAudiobookEditTag(tagId) {
+  audiobookEditTagState = audiobookEditTagState.filter((tag) => tag.id !== tagId);
+  renderAudiobookEditTagEditor();
+  renderAudiobookEditTagSuggestions();
+}
+
+function renderAudiobookEditTagEditor() {
+  if (!audiobookEditTagChips) return;
+  audiobookEditTagChips.innerHTML = "";
+  for (const tag of audiobookEditTagState) {
+    const chip = document.createElement("span");
+    chip.className = "tag-token";
+    chip.dataset.tagId = tag.id;
+
+    const label = document.createElement("span");
+    label.className = "tag-token-label";
+    label.textContent = tag.value;
+
+    const removeButton = document.createElement("button");
+    removeButton.type = "button";
+    removeButton.className = "tag-token-remove";
+    removeButton.setAttribute("aria-label", `Remove ${tag.value}`);
+    removeButton.textContent = "×";
+    removeButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      removeAudiobookEditTag(tag.id);
+      audiobookEditTagsInput?.focus();
+    });
+
+    chip.append(label, removeButton);
+    audiobookEditTagChips.appendChild(chip);
+  }
+}
+
+function renderAudiobookEditTagSuggestions() {
+  if (!audiobookEditTagsInput || !audiobookEditTagSuggestions) return;
+  renderTagSuggestionList(audiobookEditTagsInput, audiobookEditTagSuggestions, audiobookEditTagSuggestionState, audiobookEditActiveTagSuggestionIndex,
+    (index) => { audiobookEditActiveTagSuggestionIndex = index; }, addAudiobookEditTag);
+}
+
+async function fetchAudiobookEditTagSuggestions() {
+  const needle = normalizeTagValue(audiobookEditTagsInput?.value || "");
+  if (!needle) {
+    if (audiobookEditTagSuggestionAbortController) {
+      audiobookEditTagSuggestionAbortController.abort();
+      audiobookEditTagSuggestionAbortController = null;
+    }
+    audiobookEditTagSuggestionState = [];
+    renderAudiobookEditTagSuggestions();
+    return;
+  }
+
+  if (audiobookEditTagSuggestionAbortController) {
+    audiobookEditTagSuggestionAbortController.abort();
+  }
+  audiobookEditTagSuggestionAbortController = new AbortController();
+
+  try {
+    const response = await fetch(`/api/tags?q=${encodeURIComponent(needle)}`, {
+      signal: audiobookEditTagSuggestionAbortController.signal,
+    });
+    if (!response.ok) return;
+    const payload = await response.json();
+    if (normalizeTagValue(audiobookEditTagsInput?.value || "") !== needle) return;
+    audiobookEditTagSuggestionState = (payload.tags || []).filter((tag) => !audiobookEditTagState.some((entry) => entry.value === tag));
+    renderAudiobookEditTagSuggestions();
+  } catch (error) {
+    if (error.name !== "AbortError") console.error(error);
+  }
+}
+
+function renderAudiobookEditCoverPreview(url) {
+  if (audiobookEditCoverPreviewImg) {
+    if (url) {
+      audiobookEditCoverPreviewImg.src = url;
+      audiobookEditCoverPreviewImg.classList.remove("hidden");
+      audiobookEditCoverPreviewFallback?.classList.add("hidden");
+    } else {
+      audiobookEditCoverPreviewImg.removeAttribute("src");
+      audiobookEditCoverPreviewImg.classList.add("hidden");
+      audiobookEditCoverPreviewFallback?.classList.remove("hidden");
+    }
+  }
+  audiobookEditCoverRemoveButton?.classList.toggle("hidden", !url);
+}
+
+function setAudiobookEditFormBusy(busy) {
+  if (audiobookEditSaveButton) audiobookEditSaveButton.disabled = busy;
+  audiobookEditCancelButton?.toggleAttribute("disabled", busy);
+}
+
+function openAudiobookEditModal(item) {
+  audiobookEditingItem = item;
+  audiobookEditPendingCoverFile = null;
+  audiobookEditRemoveCoverRequested = false;
+  if (audiobookEditCoverInput) audiobookEditCoverInput.value = "";
+  if (audiobookEditTitleInput) audiobookEditTitleInput.value = item.title || "";
+  if (audiobookEditAuthorInput) audiobookEditAuthorInput.value = item.author || "";
+  if (audiobookEditNarratorInput) audiobookEditNarratorInput.value = item.narrator || "";
+  if (audiobookEditTagsInput) audiobookEditTagsInput.value = "";
+  setAudiobookEditTags(item.tags || []);
+  audiobookEditTagSuggestionState = [];
+  audiobookEditActiveTagSuggestionIndex = -1;
+  renderAudiobookEditTagEditor();
+  renderAudiobookEditTagSuggestions();
+  renderAudiobookEditCoverPreview(item.cover_url || "");
+  if (audiobookEditStatus) audiobookEditStatus.textContent = "";
+  setAudiobookEditFormBusy(false);
+  audiobookEditModal?.showModal();
+}
+
+// applyUpdatedAudiobookItem merges a known-complete patch (every field this
+// modal can change) into both the library list and, if it's the book
+// currently loaded in the player, the open player's display - built from the
+// values just submitted rather than a possibly-partial server response, so
+// there's no ambiguity about whether an absent field means "unchanged" or
+// "cleared".
+function applyUpdatedAudiobookItem(id, patch) {
+  const index = state.audiobooks.items.findIndex((entry) => entry.id === id);
+  if (index >= 0) {
+    state.audiobooks.items[index] = { ...state.audiobooks.items[index], ...patch };
+  }
+  if (audiobookPlayerOpenItem?.id === id) {
+    audiobookPlayerOpenItem = { ...audiobookPlayerOpenItem, ...patch };
+    if (audiobookPlayerTitle) audiobookPlayerTitle.textContent = audiobookDisplayTitle(audiobookPlayerOpenItem);
+    if (audiobookPlayerAuthor) {
+      audiobookPlayerAuthor.textContent = audiobookPlayerOpenItem.author || "";
+      audiobookPlayerAuthor.classList.toggle("hidden", !audiobookPlayerOpenItem.author);
+    }
+    if (audiobookPlayerCover) {
+      if (audiobookPlayerOpenItem.cover_url) {
+        audiobookPlayerCover.src = audiobookPlayerOpenItem.cover_url;
+        audiobookPlayerCover.classList.remove("hidden");
+        audiobookPlayerCoverFallback?.classList.add("hidden");
+      } else {
+        audiobookPlayerCover.removeAttribute("src");
+        audiobookPlayerCover.classList.add("hidden");
+        audiobookPlayerCoverFallback?.classList.remove("hidden");
+      }
+    }
+    renderAudiobookPlayerMeta(audiobookPlayerOpenItem);
+  }
+  renderAudiobooksGrid();
+}
+
+async function submitAudiobookEdit(event) {
+  event.preventDefault();
+  const item = audiobookEditingItem;
+  if (!item) return;
+
+  const title = audiobookEditTitleInput?.value.trim() || "";
+  if (!title) {
+    if (audiobookEditStatus) audiobookEditStatus.textContent = "Title is required.";
+    return;
+  }
+  const author = audiobookEditAuthorInput?.value.trim() || "";
+  const narrator = audiobookEditNarratorInput?.value.trim() || "";
+  const tags = getAudiobookEditTagValues();
+
+  setAudiobookEditFormBusy(true);
+  if (audiobookEditStatus) audiobookEditStatus.textContent = "Saving...";
+  try {
+    const metadataResponse = await fetch(`/api/audiobooks/${encodeURIComponent(item.id)}`, {
+      method: "PATCH",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title, author, narrator }),
+    });
+    if (!(await expectAuthorized(metadataResponse, "Could not update audiobook."))) return;
+
+    let coverURL = item.cover_url || "";
+    if (audiobookEditPendingCoverFile) {
+      const coverResponse = await fetch(`/api/audiobooks/${encodeURIComponent(item.id)}/cover`, {
+        method: "PUT",
+        credentials: "same-origin",
+        headers: { "Content-Type": audiobookEditPendingCoverFile.type || "application/octet-stream" },
+        body: audiobookEditPendingCoverFile,
+      });
+      if (!(await expectAuthorized(coverResponse, "Could not update cover."))) return;
+      const coverPayload = await coverResponse.json();
+      coverURL = coverPayload.cover_url || "";
+    } else if (audiobookEditRemoveCoverRequested) {
+      const coverResponse = await fetch(`/api/audiobooks/${encodeURIComponent(item.id)}/cover`, {
+        method: "DELETE",
+        credentials: "same-origin",
+      });
+      if (!(await expectAuthorized(coverResponse, "Could not remove cover."))) return;
+      coverURL = "";
+    }
+
+    const tagsResponse = await fetch(`/api/audiobooks/${encodeURIComponent(item.id)}/tags`, {
+      method: "PUT",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tags }),
+    });
+    if (!(await expectAuthorized(tagsResponse, "Could not update tags."))) return;
+    const tagsPayload = await tagsResponse.json();
+
+    applyUpdatedAudiobookItem(item.id, { title, author, narrator, cover_url: coverURL, tags: tagsPayload.tags || [] });
+    audiobookEditModal?.close();
+    showToast("Audiobook updated.", "success", { title: "Audiobooks" });
+  } catch (error) {
+    console.error(error);
+    if (audiobookEditStatus) audiobookEditStatus.textContent = "Could not update audiobook.";
+  } finally {
+    setAudiobookEditFormBusy(false);
   }
 }
 
@@ -5107,6 +5415,9 @@ async function cancelAudiobookUpload() {
 
 let audiobookAudioEl = null;
 let audiobookPlayerProgressDragging = false;
+// The item backing the currently open player, kept around so the player's
+// own Edit button can open the edit modal without a round trip to the list.
+let audiobookPlayerOpenItem = null;
 // The other device's last-known position, while the banner is showing it -
 // null whenever nothing is playing elsewhere for the open audiobook.
 let audiobookPlaybackElsewhereState = null;
@@ -5405,6 +5716,9 @@ function expandAudiobookPlayer() {
 }
 
 async function openAudiobookPlayer(item) {
+  audiobookPlayerOpenItem = item;
+  const canEditThisBook = canManageUsers() || canDeleteAudiobooks() || (!!state.auth.user?.id && state.auth.user.id === item.uploaded_by);
+  audiobookPlayerEditButton?.classList.toggle("hidden", !canEditThisBook);
   // Re-opening the book that's already loaded (just minimized) should pick up
   // where it is, not reload the audiobook and restart playback from scratch.
   if (state.audiobooks.player?.id === item.id && audiobookAudioEl && !audiobookPlayerModal?.open) {
@@ -5521,6 +5835,7 @@ function renderAudiobookPlayerMeta(item) {
     ["Duration", item.duration_seconds > 0 ? formatMediaTime(item.duration_seconds) : "Unknown"],
   ];
   if (item.chapters?.length) rows.push(["Chapters", String(item.chapters.length)]);
+  if (item.tags?.length) rows.push(["Tags", item.tags.join(", ")]);
   audiobookPlayerMeta.innerHTML = rows
     .filter(([, value]) => value)
     .map(([label, value]) => `<div class="audiobook-player-meta-row"><dt>${escapeHTML(label)}</dt><dd>${escapeHTML(value)}</dd></div>`)
@@ -8773,6 +9088,8 @@ audiobooksSubnavFilterItems.forEach((item) => {
   item.addEventListener("click", () => {
     state.audiobooks.filter = item.dataset.audiobookFilter || "";
     state.audiobooks.seriesId = "";
+    state.audiobooks.author = "";
+    state.audiobooks.tag = "";
     state.audiobooks.view = "books";
     syncAudiobooksURL({ push: true });
     navigateToView("audiobooks");
@@ -8781,32 +9098,119 @@ audiobooksSubnavFilterItems.forEach((item) => {
 audiobooksSubnavSeriesButton?.addEventListener("click", () => {
   state.audiobooks.filter = "";
   state.audiobooks.seriesId = "";
+  state.audiobooks.author = "";
+  state.audiobooks.tag = "";
   state.audiobooks.view = "series";
   syncAudiobooksURL({ push: true });
   navigateToView("audiobooks");
 });
 
-openAudiobookSeriesManagerButton?.addEventListener("click", () => {
-  audiobookSeriesManagerRenamingId = null;
-  renderAudiobookSeriesManager();
-  audiobookSeriesModal?.showModal();
-});
-audiobookSeriesCloseButton?.addEventListener("click", () => audiobookSeriesModal?.close());
-audiobookSeriesCreateForm?.addEventListener("submit", (event) => {
+function navigateToAudiobookAuthor(author) {
+  if (!author) return;
+  state.audiobooks.filter = "";
+  state.audiobooks.seriesId = "";
+  state.audiobooks.tag = "";
+  state.audiobooks.author = author;
+  state.audiobooks.view = "books";
+  syncAudiobooksURL({ push: true });
+  navigateToView("audiobooks");
+}
+
+function navigateToAudiobookTag(tag) {
+  if (!tag) return;
+  state.audiobooks.filter = "";
+  state.audiobooks.seriesId = "";
+  state.audiobooks.author = "";
+  state.audiobooks.tag = tag;
+  state.audiobooks.view = "books";
+  syncAudiobooksURL({ push: true });
+  navigateToView("audiobooks");
+}
+
+function clearAudiobooksActiveFilter() {
+  state.audiobooks.filter = "";
+  state.audiobooks.seriesId = "";
+  state.audiobooks.author = "";
+  state.audiobooks.tag = "";
+  state.audiobooks.view = "books";
+  state.filters.query = "";
+  if (tagSearchInput) tagSearchInput.value = "";
+  syncAudiobooksURL({ push: true });
+  navigateToView("audiobooks");
+}
+
+openAudiobookSeriesManagerButton?.addEventListener("click", openAudiobookSeriesManager);
+audiobookSeriesManagerCreateForm?.addEventListener("submit", (event) => {
   event.preventDefault();
-  const name = audiobookSeriesNameInput?.value.trim();
+  const name = audiobookSeriesManagerNameInput?.value.trim();
   if (!name) return;
   createAudiobookSeriesEntry(name).then(() => {
-    if (audiobookSeriesNameInput) audiobookSeriesNameInput.value = "";
+    if (audiobookSeriesManagerNameInput) audiobookSeriesManagerNameInput.value = "";
   }).catch((error) => console.error(error));
 });
 audiobookSeriesManageBackButton?.addEventListener("click", closeAudiobookSeriesManagePage);
-audiobookSeriesManageSearch?.addEventListener("input", () => {
-  audiobookSeriesManagePageQuery = audiobookSeriesManageSearch.value;
-  renderAudiobookSeriesManagePage();
+audiobookSeriesManagerShareButton?.addEventListener("click", () => {
+  const current = state.audiobooks.series.find((s) => s.id === state.audiobooks.manageSeriesId);
+  if (current) shareAudiobookSeries(current).catch((error) => console.error(error));
+});
+audiobookSeriesAddInput?.addEventListener("input", () => {
+  audiobookSeriesAddQuery = audiobookSeriesAddInput.value;
+  renderAudiobookSeriesAddList();
+});
+
+audiobookEditForm?.addEventListener("submit", (event) => {
+  submitAudiobookEdit(event).catch((error) => console.error(error));
+});
+audiobookEditCancelButton?.addEventListener("click", () => audiobookEditModal?.close());
+audiobookEditCoverInput?.addEventListener("change", () => {
+  const file = audiobookEditCoverInput.files?.[0];
+  if (!file) return;
+  audiobookEditPendingCoverFile = file;
+  audiobookEditRemoveCoverRequested = false;
+  renderAudiobookEditCoverPreview(URL.createObjectURL(file));
+});
+audiobookEditCoverRemoveButton?.addEventListener("click", () => {
+  audiobookEditPendingCoverFile = null;
+  audiobookEditRemoveCoverRequested = true;
+  if (audiobookEditCoverInput) audiobookEditCoverInput.value = "";
+  renderAudiobookEditCoverPreview("");
+});
+
+audiobookEditTagsInput?.addEventListener("input", () => {
+  audiobookEditActiveTagSuggestionIndex = -1;
+  audiobookEditTagSuggestionState = [];
+  renderAudiobookEditTagSuggestions();
+  fetchAudiobookEditTagSuggestions();
+});
+audiobookEditTagsInput?.addEventListener("keydown", (event) => {
+  if (event.isComposing) return;
+  if (audiobookEditTagsInput && navigateTagSuggestions(event, audiobookEditTagsInput, audiobookEditTagSuggestions, audiobookEditTagSuggestionState, audiobookEditActiveTagSuggestionIndex,
+    (index) => { audiobookEditActiveTagSuggestionIndex = index; })) return;
+
+  if ((event.key === "Enter" || event.key === ",") && audiobookEditTagsInput.value.trim()) {
+    event.preventDefault();
+    if (audiobookEditActiveTagSuggestionIndex >= 0 && audiobookEditTagSuggestionState[audiobookEditActiveTagSuggestionIndex]) {
+      addAudiobookEditTag(audiobookEditTagSuggestionState[audiobookEditActiveTagSuggestionIndex]);
+    } else {
+      addAudiobookEditTag(audiobookEditTagsInput.value);
+    }
+    return;
+  }
+
+  if (event.key === "Backspace" && !audiobookEditTagsInput.value && audiobookEditTagState.length > 0) {
+    removeAudiobookEditTag(audiobookEditTagState[audiobookEditTagState.length - 1].id);
+    return;
+  }
+
+  if (event.key === "Escape" && audiobookEditTagSuggestions) {
+    dismissTagSuggestions(audiobookEditTagsInput, audiobookEditTagSuggestions, (index) => { audiobookEditActiveTagSuggestionIndex = index; });
+  }
 });
 
 audiobookPlayerClose?.addEventListener("click", minimizeAudiobookPlayer);
+audiobookPlayerEditButton?.addEventListener("click", () => {
+  if (audiobookPlayerOpenItem) openAudiobookEditModal(audiobookPlayerOpenItem);
+});
 audiobookPlayerModal?.addEventListener("cancel", (event) => {
   event.preventDefault();
   minimizeAudiobookPlayer();
@@ -9310,6 +9714,8 @@ sidebarNavItems.forEach((item) => {
     if (item.dataset.view === "audiobooks") {
       state.audiobooks.filter = "";
       state.audiobooks.seriesId = "";
+      state.audiobooks.author = "";
+      state.audiobooks.tag = "";
       state.audiobooks.view = "books";
     }
     loadInitialMemes().catch((error) => {

@@ -56,8 +56,17 @@ func (s *Server) handleAudiobooks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	session, _ := sessionFromContext(r.Context())
 	userID := currentAudiobookUserID(r)
-	filter := audiobookListFilter{SeriesID: strings.TrimSpace(r.URL.Query().Get("series_id"))}
+	filter := audiobookListFilter{
+		SeriesID: strings.TrimSpace(r.URL.Query().Get("series_id")),
+		Author:   strings.TrimSpace(r.URL.Query().Get("author")),
+		Tag:      strings.ToLower(strings.TrimSpace(r.URL.Query().Get("tag"))),
+		Search:   strings.TrimSpace(r.URL.Query().Get("q")),
+	}
+	if s.auth.enabled() {
+		filter.RestrictToTags = session.Permissions.AudiobookTagRestriction
+	}
 	switch strings.TrimSpace(r.URL.Query().Get("filter")) {
 	case "favorites":
 		filter.Favorite = true
@@ -104,6 +113,16 @@ func (s *Server) handleAudiobookByID(w http.ResponseWriter, r *http.Request) {
 		s.getAudiobook(w, r, id)
 	case action == "" && r.Method == http.MethodDelete:
 		s.deleteAudiobook(w, r, id)
+	case action == "" && r.Method == http.MethodPatch:
+		s.updateAudiobookMetadata(w, r, id)
+	case action == "cover" && r.Method == http.MethodPut:
+		s.replaceAudiobookCover(w, r, id)
+	case action == "cover" && r.Method == http.MethodDelete:
+		s.removeAudiobookCover(w, r, id)
+	case action == "tags" && r.Method == http.MethodGet:
+		s.listAudiobookTags(w, r, id)
+	case action == "tags" && r.Method == http.MethodPut:
+		s.replaceAudiobookTags(w, r, id)
 	case action == "progress" && r.Method == http.MethodPut:
 		s.saveAudiobookProgress(w, r, id)
 	case action == "playback-heartbeat" && r.Method == http.MethodPut:
@@ -129,7 +148,30 @@ func (s *Server) handleAudiobookByID(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// audiobookVisibleToSession reports whether a tag-restricted account (see
+// authPermissions.AudiobookTagRestriction) is allowed to see this particular
+// audiobook. An account with no restriction set, or when auth is disabled
+// entirely, can see everything it otherwise has permission to.
+func audiobookVisibleToSession(session authSession, record audiobookRecord, authEnabled bool) bool {
+	if !authEnabled {
+		return true
+	}
+	restriction := session.Permissions.AudiobookTagRestriction
+	if len(restriction) == 0 {
+		return true
+	}
+	for _, tag := range record.Tags {
+		for _, allowed := range restriction {
+			if tag == allowed {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (s *Server) getAudiobook(w http.ResponseWriter, r *http.Request, id string) {
+	session, _ := sessionFromContext(r.Context())
 	record, err := s.audiobooks.GetAudiobook(r.Context(), id)
 	if errors.Is(err, ErrAudiobookNotFound) {
 		http.NotFound(w, r)
@@ -138,6 +180,10 @@ func (s *Server) getAudiobook(w http.ResponseWriter, r *http.Request, id string)
 	if err != nil {
 		log.Printf("get audiobook failed: %v", err)
 		http.Error(w, "failed to load audiobook", http.StatusInternalServerError)
+		return
+	}
+	if !audiobookVisibleToSession(session, record, s.auth.enabled()) {
+		http.NotFound(w, r)
 		return
 	}
 	writeJSON(w, http.StatusOK, audiobookJSON(record))
@@ -153,6 +199,10 @@ func (s *Server) deleteAudiobook(w http.ResponseWriter, r *http.Request, id stri
 	if err != nil {
 		log.Printf("get audiobook failed: %v", err)
 		http.Error(w, "failed to load audiobook", http.StatusInternalServerError)
+		return
+	}
+	if !audiobookVisibleToSession(session, record, s.auth.enabled()) {
+		http.NotFound(w, r)
 		return
 	}
 
@@ -177,6 +227,246 @@ func (s *Server) deleteAudiobook(w http.ResponseWriter, r *http.Request, id stri
 		}
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// audiobookEditAllowed governs metadata/cover/tag edits: whoever is trusted
+// to delete an audiobook outright is trusted to fix its metadata, which is
+// strictly less destructive, so this reuses permissionDeleteAudiobooks rather
+// than adding a whole separate permission just for edits.
+func audiobookEditAllowed(session authSession, record audiobookRecord, authEnabled bool) bool {
+	if !authEnabled {
+		return true
+	}
+	isOwner := session.UserID != "" && session.UserID == record.UploadedByUserID
+	return isOwner || hasPermission(session.Permissions, permissionDeleteAudiobooks)
+}
+
+func (s *Server) updateAudiobookMetadata(w http.ResponseWriter, r *http.Request, id string) {
+	session, _ := sessionFromContext(r.Context())
+	record, err := s.audiobooks.GetAudiobook(r.Context(), id)
+	if errors.Is(err, ErrAudiobookNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		log.Printf("get audiobook failed: %v", err)
+		http.Error(w, "failed to load audiobook", http.StatusInternalServerError)
+		return
+	}
+	if !audiobookVisibleToSession(session, record, s.auth.enabled()) {
+		http.NotFound(w, r)
+		return
+	}
+	if !audiobookEditAllowed(session, record, s.auth.enabled()) {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "only the uploader or someone with delete-audiobooks access can edit this audiobook"})
+		return
+	}
+
+	var payload struct {
+		Title    *string `json:"title"`
+		Author   *string `json:"author"`
+		Narrator *string `json:"narrator"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&payload); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	if payload.Title != nil {
+		trimmed := strings.TrimSpace(*payload.Title)
+		if trimmed == "" {
+			http.Error(w, "title cannot be empty", http.StatusBadRequest)
+			return
+		}
+		if len(trimmed) > 500 {
+			trimmed = trimmed[:500]
+		}
+		payload.Title = &trimmed
+	}
+	if payload.Author != nil {
+		trimmed := strings.TrimSpace(*payload.Author)
+		if len(trimmed) > 300 {
+			trimmed = trimmed[:300]
+		}
+		payload.Author = &trimmed
+	}
+	if payload.Narrator != nil {
+		trimmed := strings.TrimSpace(*payload.Narrator)
+		if len(trimmed) > 300 {
+			trimmed = trimmed[:300]
+		}
+		payload.Narrator = &trimmed
+	}
+
+	updated, err := s.audiobooks.UpdateAudiobookMetadata(r.Context(), id, payload.Title, payload.Author, payload.Narrator)
+	if errors.Is(err, ErrAudiobookNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		log.Printf("update audiobook metadata failed: %v", err)
+		http.Error(w, "failed to update audiobook", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, audiobookJSON(updated))
+}
+
+// audiobookCoverMaxBytes bounds a replacement cover upload. Covers are small
+// images, not media files, so this is far tighter than the audiobook upload
+// limit itself.
+const audiobookCoverMaxBytes = 8 << 20 // 8 MiB
+
+func (s *Server) replaceAudiobookCover(w http.ResponseWriter, r *http.Request, id string) {
+	session, _ := sessionFromContext(r.Context())
+	record, err := s.audiobooks.GetAudiobook(r.Context(), id)
+	if errors.Is(err, ErrAudiobookNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		log.Printf("get audiobook failed: %v", err)
+		http.Error(w, "failed to load audiobook", http.StatusInternalServerError)
+		return
+	}
+	if !audiobookVisibleToSession(session, record, s.auth.enabled()) {
+		http.NotFound(w, r)
+		return
+	}
+	if !audiobookEditAllowed(session, record, s.auth.enabled()) {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "only the uploader or someone with delete-audiobooks access can edit this audiobook"})
+		return
+	}
+	if s.enforceRateLimit(w, r, s.writeLimiter, "audiobook-cover") {
+		return
+	}
+
+	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, audiobookCoverMaxBytes))
+	if err != nil {
+		http.Error(w, "cover image is too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	// Sniffed from the bytes themselves, the same reasoning as
+	// sniffAudiobookMimeType: never trust a client-supplied Content-Type for
+	// something that gets served back out to other viewers.
+	switch http.DetectContentType(data) {
+	case "image/jpeg", "image/png", "image/webp", "image/gif":
+	default:
+		http.Error(w, "cover must be a JPEG, PNG, WEBP, or GIF image", http.StatusBadRequest)
+		return
+	}
+
+	updated, err := s.audiobooks.SetAudiobookCover(r.Context(), id, data)
+	if errors.Is(err, ErrAudiobookNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		log.Printf("set audiobook cover failed: %v", err)
+		http.Error(w, "failed to update cover", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, audiobookJSON(updated))
+}
+
+func (s *Server) removeAudiobookCover(w http.ResponseWriter, r *http.Request, id string) {
+	session, _ := sessionFromContext(r.Context())
+	record, err := s.audiobooks.GetAudiobook(r.Context(), id)
+	if errors.Is(err, ErrAudiobookNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		log.Printf("get audiobook failed: %v", err)
+		http.Error(w, "failed to load audiobook", http.StatusInternalServerError)
+		return
+	}
+	if !audiobookVisibleToSession(session, record, s.auth.enabled()) {
+		http.NotFound(w, r)
+		return
+	}
+	if !audiobookEditAllowed(session, record, s.auth.enabled()) {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "only the uploader or someone with delete-audiobooks access can edit this audiobook"})
+		return
+	}
+
+	updated, err := s.audiobooks.RemoveAudiobookCover(r.Context(), id)
+	if errors.Is(err, ErrAudiobookNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		log.Printf("remove audiobook cover failed: %v", err)
+		http.Error(w, "failed to remove cover", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, audiobookJSON(updated))
+}
+
+func (s *Server) listAudiobookTags(w http.ResponseWriter, r *http.Request, id string) {
+	session, _ := sessionFromContext(r.Context())
+	record, err := s.audiobooks.GetAudiobook(r.Context(), id)
+	if errors.Is(err, ErrAudiobookNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		log.Printf("get audiobook failed: %v", err)
+		http.Error(w, "failed to load audiobook", http.StatusInternalServerError)
+		return
+	}
+	if !audiobookVisibleToSession(session, record, s.auth.enabled()) {
+		http.NotFound(w, r)
+		return
+	}
+
+	tags, err := s.audiobooks.ListAudiobookTags(r.Context(), id)
+	if err != nil {
+		log.Printf("list audiobook tags failed: %v", err)
+		http.Error(w, "failed to load tags", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tags": tags})
+}
+
+func (s *Server) replaceAudiobookTags(w http.ResponseWriter, r *http.Request, id string) {
+	session, _ := sessionFromContext(r.Context())
+	record, err := s.audiobooks.GetAudiobook(r.Context(), id)
+	if errors.Is(err, ErrAudiobookNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		log.Printf("get audiobook failed: %v", err)
+		http.Error(w, "failed to load audiobook", http.StatusInternalServerError)
+		return
+	}
+	if !audiobookVisibleToSession(session, record, s.auth.enabled()) {
+		http.NotFound(w, r)
+		return
+	}
+	if !audiobookEditAllowed(session, record, s.auth.enabled()) {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "only the uploader or someone with delete-audiobooks access can edit this audiobook"})
+		return
+	}
+
+	var payload struct {
+		Tags []string `json:"tags"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&payload); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	if len(payload.Tags) > 50 {
+		http.Error(w, "too many tags", http.StatusBadRequest)
+		return
+	}
+
+	tags, err := s.audiobooks.ReplaceAudiobookTags(r.Context(), id, payload.Tags)
+	if err != nil {
+		log.Printf("replace audiobook tags failed: %v", err)
+		http.Error(w, "failed to update tags", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tags": tags})
 }
 
 func (s *Server) saveAudiobookProgress(w http.ResponseWriter, r *http.Request, id string) {
@@ -423,7 +713,12 @@ func (s *Server) handleAudiobookSeries(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listAudiobookSeries(w http.ResponseWriter, r *http.Request) {
-	series, err := s.audiobooks.ListSeries(r.Context())
+	session, _ := sessionFromContext(r.Context())
+	var restrictToTags []string
+	if s.auth.enabled() {
+		restrictToTags = session.Permissions.AudiobookTagRestriction
+	}
+	series, err := s.audiobooks.ListSeries(r.Context(), restrictToTags)
 	if err != nil {
 		log.Printf("list audiobook series failed: %v", err)
 		http.Error(w, "failed to load series", http.StatusInternalServerError)
@@ -908,6 +1203,10 @@ func (s *Server) handleAudiobookMedia(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if session, ok := sessionFromContext(r.Context()); ok && !audiobookVisibleToSession(session, record, s.auth.enabled()) {
+		http.NotFound(w, r)
+		return
+	}
 
 	file, err := os.Open(record.StoragePath)
 	if err != nil {
@@ -951,6 +1250,10 @@ func (s *Server) handleAudiobookCover(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if session, ok := sessionFromContext(r.Context()); ok && !audiobookVisibleToSession(session, record, s.auth.enabled()) {
+		http.NotFound(w, r)
+		return
+	}
 
 	file, err := os.Open(record.CoverPath)
 	if err != nil {
@@ -965,7 +1268,9 @@ func (s *Server) handleAudiobookCover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "image/jpeg")
+	// Sniffed from the file's own bytes rather than assumed from the historical
+	// ".jpg" extension - a user-replaced cover can be PNG/WEBP/GIF now too.
+	w.Header().Set("Content-Type", sniffAudiobookMimeType(record.CoverPath))
 	w.Header().Set("Cache-Control", "private, max-age=86400")
 	http.ServeContent(w, r, "cover.jpg", info.ModTime(), file)
 }
@@ -976,6 +1281,16 @@ func currentAudiobookUserID(r *http.Request) string {
 		return ""
 	}
 	return session.UserID
+}
+
+// nonNilStrings normalizes a nil slice to an empty one so it serializes as
+// `[]` rather than `null` - friendlier for a frontend that always expects an
+// array to iterate.
+func nonNilStrings(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return values
 }
 
 func audiobookJSON(record audiobookRecord) map[string]any {
@@ -991,6 +1306,7 @@ func audiobookJSON(record audiobookRecord) map[string]any {
 		"uploaded_by":      record.UploadedByUserID,
 		"created_at":       record.CreatedAt,
 		"stream_url":       "/audiobook-media/" + record.ID,
+		"tags":             nonNilStrings(record.Tags),
 	}
 	if record.CoverPath != "" {
 		payload["cover_url"] = "/audiobook-cover/" + record.ID

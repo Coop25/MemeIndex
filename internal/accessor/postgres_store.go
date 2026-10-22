@@ -1798,11 +1798,28 @@ func (s *PostgresStore) deleteOrphanTags(ctx context.Context, db queryable, tagI
 	if len(tagIDs) == 0 {
 		return nil
 	}
-	_, err := db.Exec(ctx, `
-		DELETE FROM tags
-		WHERE id = ANY($1::bigint[])
-		  AND NOT EXISTS (SELECT 1 FROM meme_tags mt WHERE mt.tag_id = tags.id)
-	`, tagIDs)
+	// audiobook_tags and app_user_audiobook_tag_restrictions tag into this
+	// same shared `tags` table from the client package, so a tag a meme just
+	// stopped using can still be in use by an audiobook, or by an account's
+	// audiobook tag restriction, and must not be deleted out from under
+	// either - checked here too, not just meme_tags. This package's own
+	// schema never creates those two tables, so whether they exist is
+	// checked at runtime (a plain query that names a nonexistent relation
+	// fails before a conditional inside it is even evaluated - "IF EXISTS"
+	// only works on DDL, not a row-level condition like this) rather than
+	// assumed, so this package still works standalone - e.g. its own tests -
+	// without hard-depending on client-package tables that may not be there.
+	query := `DELETE FROM tags WHERE id = ANY($1::bigint[]) AND NOT EXISTS (SELECT 1 FROM meme_tags mt WHERE mt.tag_id = tags.id)`
+	for _, table := range []string{"audiobook_tags", "app_user_audiobook_tag_restrictions"} {
+		var exists bool
+		if err := db.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, table).Scan(&exists); err != nil {
+			return fmt.Errorf("check %s exists: %w", table, err)
+		}
+		if exists {
+			query += fmt.Sprintf(` AND NOT EXISTS (SELECT 1 FROM %s WHERE tag_id = tags.id)`, table)
+		}
+	}
+	_, err := db.Exec(ctx, query, tagIDs)
 	return err
 }
 

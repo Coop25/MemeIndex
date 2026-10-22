@@ -26,7 +26,12 @@ import (
 // has no audiobooks.csv or audiobooks/ directory at all, so it is rejected
 // by format-version mismatch below rather than failing confusingly partway
 // through restore.
-const portableBackupFormatVersion = 2
+//
+// Bumped from 2 to 3 when audiobook tags and per-account audiobook tag
+// restrictions were added: an older format-2 archive has no
+// audiobook_tags.csv or app_user_audiobook_tag_restrictions.csv, which would
+// otherwise fail the same way partway through restore.
+const portableBackupFormatVersion = 3
 
 type portableBackup struct {
 	databaseURL string
@@ -64,6 +69,9 @@ var portableBackupTables = []backupTable{
 	{name: "tags", columns: "id, name"},
 	{name: "app_users", columns: "user_id, username, display_name, avatar_url, last_active_at, can_view, can_upload, can_add_tags, can_remove_tags, can_delete_memes, created_at, updated_at, can_view_audiobooks, can_upload_audiobooks, can_delete_audiobooks, can_manage_audiobook_series"},
 	{name: "app_user_readd_required", columns: "user_id, blocked_at"},
+	// References tags(id), which (like every table below referencing it) must
+	// already be loaded - "tags" above satisfies that for every one of them.
+	{name: "app_user_audiobook_tag_restrictions", columns: "user_id, tag_id"},
 	{name: "meme_tags", columns: "meme_id, tag_id"},
 	{name: "user_favorites", columns: "user_id, meme_id"},
 	{name: "reel_sessions", columns: "id, history, position, last_activity"},
@@ -78,6 +86,7 @@ var portableBackupTables = []backupTable{
 	// just lost, same as it would be across a restart today.
 	{name: "audiobook_series", columns: "id, name, created_by_user_id, created_at"},
 	{name: "audiobooks", columns: "id, title, author, narrator, filename, mime_type, size_bytes, duration_seconds, storage_path, cover_path, chapters, uploaded_by_user_id, created_at, series_id, series_sequence"},
+	{name: "audiobook_tags", columns: "audiobook_id, tag_id"},
 	{name: "audiobook_bookmarks", columns: "id, audiobook_id, user_id, position_seconds, label, created_at"},
 	{name: "audiobook_favorites", columns: "audiobook_id, user_id, created_at"},
 	{name: "audiobook_progress", columns: "audiobook_id, user_id, position_seconds, updated_at"},
@@ -570,7 +579,7 @@ func (b *portableBackup) importArchive(ctx context.Context, source io.Reader) er
 		}
 	}()
 
-	if _, err := conn.Exec(ctx, "TRUNCATE TABLE meme_tags, user_favorites, reel_sessions, meme_audit_logs, tags, memes, app_user_readd_required, app_users, audiobook_bookmarks, audiobook_favorites, audiobook_progress, audiobook_playback_sessions, audiobooks, audiobook_series RESTART IDENTITY CASCADE"); err != nil {
+	if _, err := conn.Exec(ctx, "TRUNCATE TABLE meme_tags, user_favorites, reel_sessions, meme_audit_logs, tags, memes, app_user_readd_required, app_user_audiobook_tag_restrictions, app_users, audiobook_tags, audiobook_bookmarks, audiobook_favorites, audiobook_progress, audiobook_playback_sessions, audiobooks, audiobook_series RESTART IDENTITY CASCADE"); err != nil {
 		return fmt.Errorf("clear current database: %w", err)
 	}
 	for _, table := range portableBackupTables {
