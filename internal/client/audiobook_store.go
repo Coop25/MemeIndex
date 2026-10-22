@@ -748,29 +748,30 @@ func (s *postgresAudiobookStore) SaveProgress(ctx context.Context, audiobookID, 
 
 func (s *postgresAudiobookStore) HeartbeatPlaybackSession(ctx context.Context, audiobookID, userID, deviceID string, positionSeconds float64, isPlaying bool) (bool, error) {
 	var stopRequested bool
-	// The upsert records this device's heartbeat; "cleared" then checks (and,
-	// in the same statement, clears) stop_requested as it stood BEFORE this
-	// heartbeat - an UPDATE's WHERE clause evaluates against the pre-update
-	// row, so this is an atomic read-and-clear in one round trip rather than a
-	// separate read then write that could race with another heartbeat.
+	// current_state reads stop_requested as it stood BEFORE this heartbeat,
+	// using the query's own snapshot - safe because a plain SELECT CTE never
+	// writes, unlike the single INSERT...ON CONFLICT below it, which both
+	// records the heartbeat and unconditionally clears the flag in the same
+	// write. Earlier this was two separate writable CTEs (an upsert, then a
+	// conditional UPDATE) both touching the same row: Postgres only
+	// guarantees well-defined behavior for ONE writable CTE per row in a
+	// single statement, so the second one silently matched zero rows and
+	// stop_requested was never actually cleared - "pause there, play here"
+	// looked like it worked (is_playing flips to false immediately) but the
+	// other device's heartbeat never saw the request and kept playing.
 	err := s.pool.QueryRow(ctx, `
-		WITH upsert AS (
-			INSERT INTO audiobook_playback_sessions (audiobook_id, user_id, device_id, position_seconds, is_playing, updated_at)
-			VALUES ($1, $2, $3, $4, $5, NOW())
-			ON CONFLICT (audiobook_id, user_id, device_id) DO UPDATE
-			SET position_seconds = EXCLUDED.position_seconds,
-				is_playing = EXCLUDED.is_playing,
-				updated_at = NOW()
-			RETURNING audiobook_id
-		),
-		cleared AS (
-			UPDATE audiobook_playback_sessions s
-			SET stop_requested = FALSE
-			FROM upsert
-			WHERE s.audiobook_id = upsert.audiobook_id AND s.user_id = $2 AND s.device_id = $3 AND s.stop_requested = TRUE
-			RETURNING TRUE AS was_set
+		WITH current_state AS (
+			SELECT stop_requested FROM audiobook_playback_sessions
+			WHERE audiobook_id = $1 AND user_id = $2 AND device_id = $3
 		)
-		SELECT COALESCE((SELECT was_set FROM cleared), FALSE)
+		INSERT INTO audiobook_playback_sessions (audiobook_id, user_id, device_id, position_seconds, is_playing, stop_requested, updated_at)
+		VALUES ($1, $2, $3, $4, $5, FALSE, NOW())
+		ON CONFLICT (audiobook_id, user_id, device_id) DO UPDATE
+		SET position_seconds = EXCLUDED.position_seconds,
+			is_playing = EXCLUDED.is_playing,
+			stop_requested = FALSE,
+			updated_at = NOW()
+		RETURNING COALESCE((SELECT stop_requested FROM current_state), FALSE)
 	`, audiobookID, userID, deviceID, positionSeconds, isPlaying).Scan(&stopRequested)
 	if err != nil {
 		return false, fmt.Errorf("heartbeat audiobook playback session: %w", err)
