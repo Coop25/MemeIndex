@@ -5211,6 +5211,40 @@ async function pollAudiobookPlaybackElsewhere() {
   renderAudiobookPlaybackElsewhere(info);
 }
 
+// pauseAudiobookElsewhereAndPlayHere asks every other device playing this
+// book to stop, then takes over playback here from wherever that device had
+// gotten to. Used both by the "playing elsewhere" banner's explicit button
+// and by the main play button, which does the same thing implicitly - this
+// is the one place that actually requests the other device stop, since just
+// calling audio.play() locally (e.g. the plain play() in the button handler
+// below) only starts a second simultaneous playback.
+async function pauseAudiobookElsewhereAndPlayHere() {
+  const player = state.audiobooks.player;
+  const audio = audiobookAudioEl;
+  const elsewhere = audiobookPlaybackElsewhereState;
+  if (!player || !audio || !elsewhere) return;
+  try {
+    const response = await fetch(`/api/audiobooks/${encodeURIComponent(player.id)}/playback-elsewhere/pause`, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ deviceId: getAudiobookDeviceId() }),
+    });
+    if (!(await expectAuthorized(response, "Could not pause the other device."))) return;
+  } catch (error) {
+    console.error(error);
+    showToast("Could not pause the other device.", "error", { title: "Audiobooks" });
+    return;
+  }
+  renderAudiobookPlaybackElsewhere(null);
+  const targetPosition = elsewhere.positionSeconds;
+  if (Number.isFinite(targetPosition) && targetPosition > 0 && audio.duration && targetPosition < audio.duration - 1) {
+    audio.currentTime = targetPosition;
+  }
+  audio.play().catch((error) => console.error(error));
+  showToast("Paused on the other device.", "success", { title: "Audiobooks" });
+}
+
 // sendAudiobookPlaybackHeartbeat reports this device's actual play state and
 // position, and self-pauses if another device just forced this one to stop
 // (the "stopRequested" flag the server clears as it reports it).
@@ -5444,7 +5478,7 @@ async function openAudiobookPlayer(item) {
       audio.currentTime = resumeAt;
     }
     if (audiobookPlaybackElsewhereState) {
-      if (audiobookPlayerStatus) audiobookPlayerStatus.textContent = "Playing on another device — tap play to listen here too.";
+      if (audiobookPlayerStatus) audiobookPlayerStatus.textContent = "Playing on another device — tap play to pause it there and play here.";
       return;
     }
     audio.play().catch(() => {
@@ -8807,7 +8841,15 @@ audiobookPlayerBookmarksToggle?.addEventListener("click", () => {
 audiobookPlayerPlayButton?.addEventListener("click", () => {
   const audio = getAudiobookAudioElement();
   if (audio.paused) {
-    audio.play().catch((error) => console.error(error));
+    // Another device playing this book takes priority over a plain play():
+    // pressing play here means "play here instead", not "play here too", so
+    // it asks that device to stop rather than starting a second simultaneous
+    // playback.
+    if (audiobookPlaybackElsewhereState) {
+      pauseAudiobookElsewhereAndPlayHere().catch((error) => console.error(error));
+    } else {
+      audio.play().catch((error) => console.error(error));
+    }
   } else {
     audio.pause();
   }
@@ -8829,31 +8871,8 @@ audiobookPlayerAddBookmarkButton?.addEventListener("click", () => {
     flashAudiobookActionButton(audiobookPlayerAddBookmarkButton, audiobookPlayerAddBookmarkButton.querySelector("span"), "Saved!");
   }).catch((error) => console.error(error));
 });
-audiobookPlayerElsewhereAction?.addEventListener("click", async () => {
-  const player = state.audiobooks.player;
-  const audio = audiobookAudioEl;
-  const elsewhere = audiobookPlaybackElsewhereState;
-  if (!player || !audio || !elsewhere) return;
-  try {
-    const response = await fetch(`/api/audiobooks/${encodeURIComponent(player.id)}/playback-elsewhere/pause`, {
-      method: "POST",
-      credentials: "same-origin",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ deviceId: getAudiobookDeviceId() }),
-    });
-    if (!(await expectAuthorized(response, "Could not pause the other device."))) return;
-  } catch (error) {
-    console.error(error);
-    showToast("Could not pause the other device.", "error", { title: "Audiobooks" });
-    return;
-  }
-  renderAudiobookPlaybackElsewhere(null);
-  const targetPosition = elsewhere.positionSeconds;
-  if (Number.isFinite(targetPosition) && targetPosition > 0 && audio.duration && targetPosition < audio.duration - 1) {
-    audio.currentTime = targetPosition;
-  }
-  audio.play().catch((error) => console.error(error));
-  showToast("Paused on the other device.", "success", { title: "Audiobooks" });
+audiobookPlayerElsewhereAction?.addEventListener("click", () => {
+  pauseAudiobookElsewhereAndPlayHere().catch((error) => console.error(error));
 });
 audiobookPlayerSleepTimerButton?.addEventListener("click", openSleepTimerPicker);
 sleepTimerOptions?.querySelectorAll(".sleep-timer-option").forEach((button) => {
