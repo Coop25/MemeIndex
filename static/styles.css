@@ -4031,7 +4031,6 @@ body.admin-mode .admin-tab.is-active .admin-tab-badge { background: var(--green-
 .audiobook-card-progress-track { position: absolute; right: 0; bottom: 0; left: 0; z-index: 1; height: 5px; background: rgba(0,0,0,.45); }
 .audiobook-card-progress-track span { display: block; height: 100%; background: linear-gradient(90deg, var(--green-bright), var(--green)); }
 .audiobook-card-actions { display: flex; gap: 8px; margin-top: auto; }
-.audiobook-card-play { flex: 1 1 auto; min-width: 0; padding: 0 10px; overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .audiobook-card-icon-button { display: grid; flex: 0 0 auto; width: 40px; padding: 0; place-items: center; }
 .audiobook-card-icon-button svg { width: 18px; height: 18px; }
 

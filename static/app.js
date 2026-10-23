@@ -4611,7 +4611,9 @@ function audiobookCardHTML(item) {
         </div>
       </div>
       <div class="audiobook-card-actions">
-        <button type="button" class="primary-button audiobook-card-play" data-audiobook-play>${progressPct > 0 && progressPct < 99 ? "Resume" : "Play"}</button>
+        <button type="button" class="primary-button audiobook-card-icon-button audiobook-card-play" data-audiobook-play aria-label="${progressPct > 0 && progressPct < 99 ? "Resume" : "Play"} ${escapeHTML(title)}" title="${progressPct > 0 && progressPct < 99 ? "Resume" : "Play"}">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5v15l13-7.5Z" /></svg>
+        </button>
         <a class="ghost-button audiobook-card-icon-button" href="${escapeHTML(item.stream_url)}" download="${escapeHTML(title)}${escapeHTML(audiobookFileExtension(item.filename))}" aria-label="Download ${escapeHTML(title)}" title="Download">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11" /><path d="m7.5 11 4.5 4.5 4.5-4.5" /><path d="M5 19.5h14" /></svg>
         </a>
