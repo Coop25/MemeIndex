@@ -5667,6 +5667,7 @@ function getAudiobookAudioElement() {
   // resolves, the progress bar and time labels (which depend on duration)
   // need to be recomputed instead of staying wrong for the rest of playback.
   audio.addEventListener("durationchange", updateAudiobookPlayerProgressUI);
+  audio.addEventListener("ratechange", () => setAudiobookMediaSessionPositionState(audio));
   audio.addEventListener("play", () => {
     setAudiobookPlayIcon(true);
     // Save the position the instant playback starts, not just on the 15s
@@ -5675,16 +5676,19 @@ function getAudiobookAudioElement() {
     // marked-as state showing until the next periodic save.
     saveAudiobookProgressNow();
     sendAudiobookPlaybackHeartbeat();
+    setAudiobookMediaSessionPlaybackState(audio);
   });
   audio.addEventListener("pause", () => {
     setAudiobookPlayIcon(false);
     saveAudiobookProgressNow();
     sendAudiobookPlaybackHeartbeat();
+    setAudiobookMediaSessionPlaybackState(audio);
   });
   audio.addEventListener("ended", () => {
     setAudiobookPlayIcon(false);
     saveAudiobookProgressNow();
     sendAudiobookPlaybackHeartbeat();
+    setAudiobookMediaSessionPlaybackState(audio);
   });
   // seeked fires for every way currentTime can change - the scrub bar,
   // chapter/bookmark jumps, the +/-30s buttons - so hooking it here instead
@@ -5694,6 +5698,7 @@ function getAudiobookAudioElement() {
   audio.addEventListener("seeked", () => {
     saveAudiobookProgressNow();
     sendAudiobookPlaybackHeartbeat();
+    setAudiobookMediaSessionPositionState(audio);
   });
   audio.addEventListener("waiting", () => {
     if (audiobookPlayerStatus) audiobookPlayerStatus.textContent = "Buffering...";
@@ -5707,8 +5712,101 @@ function getAudiobookAudioElement() {
       audiobookPlayerStatus.textContent = "Playback error - check your connection, then press play to retry.";
     }
   });
+  setupAudiobookMediaSessionHandlers(audio);
   audiobookAudioEl = audio;
   return audio;
+}
+
+// --- Media Session (lock screen / notification drawer controls) -----------
+//
+// Without this, a backgrounded tab's notification shows only a generic
+// "playing audio" card with just a mute/stop action - Android and iOS both
+// drive their now-playing UI off the Media Session API rather than the
+// <audio> element itself, so title/author/cover and play/pause/seek/chapter
+// controls have to be set up explicitly.
+
+function setAudiobookMediaSessionPlaybackState(audio) {
+  if (!("mediaSession" in navigator)) return;
+  navigator.mediaSession.playbackState = audio.paused ? "paused" : "playing";
+}
+
+function setAudiobookMediaSessionPositionState(audio) {
+  if (!("mediaSession" in navigator) || !navigator.mediaSession.setPositionState) return;
+  const duration = Number.isFinite(audio.duration) ? audio.duration : 0;
+  if (!(duration > 0)) return;
+  try {
+    navigator.mediaSession.setPositionState({
+      duration,
+      playbackRate: audio.playbackRate || 1,
+      position: Math.min(Math.max(audio.currentTime || 0, 0), duration),
+    });
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+// setAudiobookMediaSessionMetadata fills in the lock-screen/notification
+// now-playing card (title, author, cover) so background playback shows real
+// book details instead of a generic tab name. Artwork is listed at several
+// sizes pointing at the same cover image - the OS picks whichever it needs,
+// and we don't know the source image's real dimensions.
+function setAudiobookMediaSessionMetadata(item) {
+  if (!("mediaSession" in navigator) || typeof MediaMetadata === "undefined") return;
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title: audiobookDisplayTitle(item),
+    artist: item.author || "",
+    album: "Audiobook",
+    artwork: item.cover_url
+      ? [96, 128, 192, 256, 384, 512].map((size) => ({ src: item.cover_url, sizes: `${size}x${size}` }))
+      : [],
+  });
+}
+
+// setupAudiobookMediaSessionHandlers wires the OS-level notification/lock-
+// screen controls to the same audio element and helpers the in-page player
+// buttons use, so background playback stays controllable from the
+// notification drawer. Called once, when the shared <audio> element is
+// created.
+function setupAudiobookMediaSessionHandlers(audio) {
+  if (!("mediaSession" in navigator)) return;
+  navigator.mediaSession.setActionHandler("play", () => {
+    if (audiobookPlaybackElsewhereState) {
+      pauseAudiobookElsewhereAndPlayHere().catch((error) => console.error(error));
+    } else {
+      audio.play().catch((error) => console.error(error));
+    }
+  });
+  navigator.mediaSession.setActionHandler("pause", () => audio.pause());
+  navigator.mediaSession.setActionHandler("stop", () => audio.pause());
+  navigator.mediaSession.setActionHandler("seekbackward", (details) => {
+    audio.currentTime = Math.max(0, audio.currentTime - (details?.seekOffset || 30));
+  });
+  navigator.mediaSession.setActionHandler("seekforward", (details) => {
+    audio.currentTime = Math.min(audio.duration || audio.currentTime, audio.currentTime + (details?.seekOffset || 30));
+  });
+  try {
+    navigator.mediaSession.setActionHandler("seekto", (details) => {
+      if (!details || !Number.isFinite(details.seekTime)) return;
+      if (details.fastSeek && "fastSeek" in audio) {
+        audio.fastSeek(details.seekTime);
+      } else {
+        audio.currentTime = details.seekTime;
+      }
+    });
+  } catch (error) {
+    // Some browsers (Safari) don't support the "seekto" action - safe to skip.
+  }
+  updateAudiobookMediaSessionChapterHandlers(false);
+}
+
+// updateAudiobookMediaSessionChapterHandlers enables/disables the
+// previous/next-track notification buttons for chapter navigation - left
+// unset (rather than wired to a no-op) when the open book has no chapters, so
+// the OS doesn't show controls that do nothing.
+function updateAudiobookMediaSessionChapterHandlers(hasChapters) {
+  if (!("mediaSession" in navigator)) return;
+  navigator.mediaSession.setActionHandler("previoustrack", hasChapters ? () => jumpAudiobookChapter(-1) : null);
+  navigator.mediaSession.setActionHandler("nexttrack", hasChapters ? () => jumpAudiobookChapter(1) : null);
 }
 
 function setAudiobookPlayIcon(playing) {
@@ -5811,6 +5909,8 @@ async function openAudiobookPlayer(item) {
   }
   renderAudiobookPlayerMeta(item);
   renderAudiobookPlayerChapters(item.chapters || []);
+  setAudiobookMediaSessionMetadata(item);
+  updateAudiobookMediaSessionChapterHandlers((item.chapters || []).length > 0);
   if (audiobookPlayerStatus) audiobookPlayerStatus.textContent = "";
   if (audiobookPlayerProgress) audiobookPlayerProgress.value = "0";
   if (audiobookPlayerCurrentTime) audiobookPlayerCurrentTime.textContent = "0:00";
@@ -5945,6 +6045,7 @@ function updateAudiobookPlayerProgressUI() {
   }
   highlightActiveAudiobookChapter(audio.currentTime);
   updateAudiobookChapterNavState(audio.currentTime);
+  setAudiobookMediaSessionPositionState(audio);
 }
 
 function renderAudiobookPlayerChapters(chapters) {
@@ -6306,6 +6407,10 @@ function closeAudiobookPlayer() {
   cancelSleepTimer({ silent: true });
   state.audiobooks.player = null;
   audiobookPlayerModal?.close();
+  if ("mediaSession" in navigator) {
+    navigator.mediaSession.metadata = null;
+    navigator.mediaSession.playbackState = "none";
+  }
   renderAudiobooksGrid();
 }
 
