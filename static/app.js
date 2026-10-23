@@ -308,6 +308,7 @@ const audiobookPlayerCoverFallback = document.querySelector("#audiobook-player-c
 const audiobookPlayerMeta = document.querySelector("#audiobook-player-meta");
 const audiobookPlayerChaptersToggle = document.querySelector("#audiobook-player-chapters-toggle");
 const audiobookPlayerEditButton = document.querySelector("#audiobook-player-edit");
+const audiobookPlayerShareButton = document.querySelector("#audiobook-player-share");
 const audiobookPlayerChaptersPanel = document.querySelector("#audiobook-player-chapters-panel");
 const audiobookPlayerChapters = document.querySelector("#audiobook-player-chapters");
 const audiobookPlayerTitle = document.querySelector("#audiobook-player-title");
@@ -834,25 +835,29 @@ function readAudiobooksStateFromURL() {
   if (params.get("view") !== "audiobooks") return null;
   const seriesId = params.get("series") || "";
   const sub = params.get("sub") || "";
+  // "book" is independent of which list view is active underneath - a
+  // shared link opens straight to the player, laid over whatever that view
+  // ends up being, so it rides along on every branch below.
+  const bookId = params.get("book") || "";
   if (sub === "manage") {
-    return { view: "manage-books", seriesId, filter: "", author: "", tag: "" };
+    return { view: "manage-books", seriesId, filter: "", author: "", tag: "", bookId };
   }
   if (sub === "series") {
-    return { view: "series", seriesId: "", filter: "", author: "", tag: "" };
+    return { view: "series", seriesId: "", filter: "", author: "", tag: "", bookId };
   }
   if (seriesId) {
-    return { view: "books", seriesId, filter: "", author: "", tag: "" };
+    return { view: "books", seriesId, filter: "", author: "", tag: "", bookId };
   }
   const author = params.get("author") || "";
   if (author) {
-    return { view: "books", seriesId: "", filter: "", author, tag: "" };
+    return { view: "books", seriesId: "", filter: "", author, tag: "", bookId };
   }
   const tag = params.get("tag") || "";
   if (tag) {
-    return { view: "books", seriesId: "", filter: "", author: "", tag };
+    return { view: "books", seriesId: "", filter: "", author: "", tag, bookId };
   }
   const filter = params.get("filter") || "";
-  return { view: "books", seriesId: "", filter: ["favorites", "started", "finished"].includes(filter) ? filter : "", author: "", tag: "" };
+  return { view: "books", seriesId: "", filter: ["favorites", "started", "finished"].includes(filter) ? filter : "", author: "", tag: "", bookId };
 }
 
 function applyAudiobooksStateFromURL() {
@@ -874,6 +879,7 @@ function applyAudiobooksStateFromURL() {
   state.audiobooks.author = parsed.author || "";
   state.audiobooks.tag = parsed.tag || "";
   state.audiobooks.manageSeriesId = parsed.view === "manage-books" ? parsed.seriesId : "";
+  audiobookPendingDeepLinkBookId = parsed.bookId || "";
   return true;
 }
 
@@ -4326,6 +4332,46 @@ async function shareAudiobookSeries(series) {
   }
 }
 
+// Same idea as shareAudiobookSeries, one level down: a deep link that opens
+// straight to this one book's player. Whoever opens it still needs their own
+// account and view access - this isn't a public, unauthenticated link like a
+// meme share.
+async function shareAudiobookItem(item) {
+  const url = `${window.location.origin}/?view=audiobooks&book=${encodeURIComponent(item.id)}`;
+  try {
+    await copyShareText(url);
+    showToast(`Link to "${audiobookDisplayTitle(item)}" copied.`, "success", { title: "Audiobooks" });
+  } catch (error) {
+    console.error(error);
+    showToast("Could not copy the link.", "error", { title: "Audiobooks" });
+  }
+}
+
+// Consumes a ?book=<id> deep link once, after the initial audiobooks fetch
+// has resolved. Prefers the already-loaded list item (it carries this
+// listener's own playback position/favorite state); falls back to a direct
+// fetch for a book that isn't in whatever's currently loaded - e.g. shared
+// from a different filter than the one this session starts on.
+async function openDeepLinkedAudiobook() {
+  const id = audiobookPendingDeepLinkBookId;
+  audiobookPendingDeepLinkBookId = "";
+  if (!id || !canViewAudiobooks()) return;
+  const existing = state.audiobooks.items.find((entry) => entry.id === id);
+  if (existing) {
+    await openAudiobookPlayer(existing).catch((error) => console.error(error));
+    return;
+  }
+  try {
+    const response = await fetch(`/api/audiobooks/${encodeURIComponent(id)}`, { credentials: "same-origin" });
+    if (!(await expectAuthorized(response, "Could not open the shared audiobook."))) return;
+    const item = await response.json();
+    await openAudiobookPlayer(item);
+  } catch (error) {
+    console.error(error);
+    showToast("Could not open the shared audiobook.", "error", { title: "Audiobooks" });
+  }
+}
+
 async function createAudiobookSeriesEntry(name) {
   if (audiobookSeriesManagerStatus) audiobookSeriesManagerStatus.textContent = "Creating series...";
   try {
@@ -4569,6 +4615,9 @@ function audiobookCardHTML(item) {
         <a class="ghost-button audiobook-card-icon-button" href="${escapeHTML(item.stream_url)}" download="${escapeHTML(title)}${escapeHTML(audiobookFileExtension(item.filename))}" aria-label="Download ${escapeHTML(title)}" title="Download">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11" /><path d="m7.5 11 4.5 4.5 4.5-4.5" /><path d="M5 19.5h14" /></svg>
         </a>
+        <button type="button" class="ghost-button audiobook-card-icon-button" data-audiobook-share aria-label="Copy a link to ${escapeHTML(title)}" title="Share">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.6 13.5 15 9.9M8.6 10.5 15 14.1" /><circle cx="6" cy="12" r="2.3" /><circle cx="17.5" cy="6.5" r="2.3" /><circle cx="17.5" cy="17.5" r="2.3" /></svg>
+        </button>
         ${canDelete ? `<button type="button" class="ghost-button audiobook-card-icon-button" data-audiobook-edit aria-label="Edit ${escapeHTML(title)}" title="Edit"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4.5L19 9.5a2.1 2.1 0 0 0-3-3L5.5 17v3Z" /><path d="M14.5 8 17 10.5" /></svg></button>` : ""}
         ${canDelete ? `<button type="button" class="ghost-button audiobook-card-icon-button" data-audiobook-delete aria-label="Delete ${escapeHTML(title)}" title="Delete"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16" /><path d="M9 7V4.8c0-.44.36-.8.8-.8h4.4c.44 0 .8.36.8.8V7" /><path d="M6 7l.9 12.1a2 2 0 0 0 2 1.9h6.2a2 2 0 0 0 2-1.9L18 7" /><path d="M10 11v6M14 11v6" /></svg></button>` : ""}
       </div>
@@ -4620,6 +4669,10 @@ function renderAudiobooksGrid() {
     card.querySelector("[data-audiobook-edit]")?.addEventListener("click", (event) => {
       event.stopPropagation();
       openAudiobookEditModal(item);
+    });
+    card.querySelector("[data-audiobook-share]")?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      shareAudiobookItem(item).catch((error) => console.error(error));
     });
   });
 }
@@ -5418,6 +5471,10 @@ let audiobookPlayerProgressDragging = false;
 // The item backing the currently open player, kept around so the player's
 // own Edit button can open the edit modal without a round trip to the list.
 let audiobookPlayerOpenItem = null;
+// Set by applyAudiobooksStateFromURL from a shared ?book=<id> link, then
+// consumed once by openDeepLinkedAudiobook after the initial audiobooks
+// fetch resolves (state.audiobooks.items isn't populated yet at parse time).
+let audiobookPendingDeepLinkBookId = "";
 // The other device's last-known position, while the banner is showing it -
 // null whenever nothing is playing elsewhere for the open audiobook.
 let audiobookPlaybackElsewhereState = null;
@@ -9211,6 +9268,9 @@ audiobookPlayerClose?.addEventListener("click", minimizeAudiobookPlayer);
 audiobookPlayerEditButton?.addEventListener("click", () => {
   if (audiobookPlayerOpenItem) openAudiobookEditModal(audiobookPlayerOpenItem);
 });
+audiobookPlayerShareButton?.addEventListener("click", () => {
+  if (audiobookPlayerOpenItem) shareAudiobookItem(audiobookPlayerOpenItem).catch((error) => console.error(error));
+});
 audiobookPlayerModal?.addEventListener("cancel", (event) => {
   event.preventDefault();
   minimizeAudiobookPlayer();
@@ -10595,6 +10655,7 @@ fetchAuthSession()
     }
     await loadInitialMemes();
     await openDeepLinkedMeme();
+    await openDeepLinkedAudiobook();
     consumeShareTargetResult();
   })
   .catch((error) => {
