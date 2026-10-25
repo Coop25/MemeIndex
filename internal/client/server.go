@@ -2317,15 +2317,15 @@ func (s *Server) createManagedUser(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) updateManagedUser(w http.ResponseWriter, r *http.Request, userID string) {
 	var payload struct {
-		CanView                  bool `json:"canView"`
-		CanUpload                bool `json:"canUpload"`
-		CanAddTags               bool `json:"canAddTags"`
-		CanRemoveTags            bool `json:"canRemoveTags"`
-		CanDeleteMemes           bool `json:"canDeleteMemes"`
-		CanViewAudiobooks        bool `json:"canViewAudiobooks"`
-		CanUploadAudiobooks      bool `json:"canUploadAudiobooks"`
-		CanDeleteAudiobooks      bool `json:"canDeleteAudiobooks"`
-		CanManageAudiobookSeries bool `json:"canManageAudiobookSeries"`
+		CanView                  bool     `json:"canView"`
+		CanUpload                bool     `json:"canUpload"`
+		CanAddTags               bool     `json:"canAddTags"`
+		CanRemoveTags            bool     `json:"canRemoveTags"`
+		CanDeleteMemes           bool     `json:"canDeleteMemes"`
+		CanViewAudiobooks        bool     `json:"canViewAudiobooks"`
+		CanUploadAudiobooks      bool     `json:"canUploadAudiobooks"`
+		CanDeleteAudiobooks      bool     `json:"canDeleteAudiobooks"`
+		CanManageAudiobookSeries bool     `json:"canManageAudiobookSeries"`
 		// AudiobookTagRestriction locks this account to only the audiobooks
 		// carrying at least one of these tags; empty (including omitted)
 		// means unrestricted. Always sent in full by the admin UI, same as
