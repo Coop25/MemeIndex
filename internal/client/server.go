@@ -46,11 +46,14 @@ type Server struct {
 	// the running server. While it is set, maintenanceGuard rejects mutating
 	// requests with 503 so nothing reads or writes half-restored state.
 	restoring atomic.Bool
+	// audiobookRemuxMu runs MP3 -> M4B audiobook remuxes one at a time (see
+	// remuxAudiobookMP3).
+	audiobookRemuxMu sync.Mutex
 	// audiobookRemuxProgress feeds the temporary remux admin page
 	// (audiobook_remux_admin.go).
 	audiobookRemuxProgress *audiobookRemuxProgress
 
-	authLimiter      *rateLimiter
+	authLimiter       *rateLimiter
 	writeLimiter      *rateLimiter
 	linkImportLimiter *rateLimiter
 }
@@ -2314,15 +2317,15 @@ func (s *Server) createManagedUser(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) updateManagedUser(w http.ResponseWriter, r *http.Request, userID string) {
 	var payload struct {
-		CanView                  bool     `json:"canView"`
-		CanUpload                bool     `json:"canUpload"`
-		CanAddTags               bool     `json:"canAddTags"`
-		CanRemoveTags            bool     `json:"canRemoveTags"`
-		CanDeleteMemes           bool     `json:"canDeleteMemes"`
-		CanViewAudiobooks        bool     `json:"canViewAudiobooks"`
-		CanUploadAudiobooks      bool     `json:"canUploadAudiobooks"`
-		CanDeleteAudiobooks      bool     `json:"canDeleteAudiobooks"`
-		CanManageAudiobookSeries bool     `json:"canManageAudiobookSeries"`
+		CanView                  bool `json:"canView"`
+		CanUpload                bool `json:"canUpload"`
+		CanAddTags               bool `json:"canAddTags"`
+		CanRemoveTags            bool `json:"canRemoveTags"`
+		CanDeleteMemes           bool `json:"canDeleteMemes"`
+		CanViewAudiobooks        bool `json:"canViewAudiobooks"`
+		CanUploadAudiobooks      bool `json:"canUploadAudiobooks"`
+		CanDeleteAudiobooks      bool `json:"canDeleteAudiobooks"`
+		CanManageAudiobookSeries bool `json:"canManageAudiobookSeries"`
 		// AudiobookTagRestriction locks this account to only the audiobooks
 		// carrying at least one of these tags; empty (including omitted)
 		// means unrestricted. Always sent in full by the admin UI, same as

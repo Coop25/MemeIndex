@@ -5838,16 +5838,57 @@ function getAudiobookAudioElement() {
     setAudiobookMediaSessionPositionState(audio);
   });
   audio.addEventListener("error", () => {
+    const wasPlaying = !audio.paused;
     setAudiobookPlayIcon(false);
     updateAudiobookBufferingUI();
     // An emptied src (closing the player) also raises "error" on some
     // browsers - only a real load failure is worth telling anyone about.
     if (!audio.getAttribute("src")) return;
+    if (reloadAudiobookStreamAfterError(audio, wasPlaying)) return;
     setAudiobookPlayerStatus("Playback error - check your connection, then press play to retry.");
   });
   setupAudiobookMediaSessionHandlers(audio);
   audiobookAudioEl = audio;
   return audio;
+}
+
+// The server can replace a book's file mid-listen - an MP3 is swapped for its
+// lossless .m4b remux at the same URL - after which the element's next range
+// request is answered from a different, differently sized file and fails.
+// Reloading the source once, back at the same position, recovers without the
+// listener noticing more than a brief stall; a second failure soon after is a
+// real problem and is reported as before.
+const AUDIOBOOK_STREAM_RELOAD_WINDOW_MS = 30000;
+let audiobookStreamReloadedAt = 0;
+
+function reloadAudiobookStreamAfterError(audio, wasPlaying) {
+  const player = state.audiobooks.player;
+  if (!player || !isAudiobookAudioForPlayer(audio, player)) return false;
+  if (Date.now() - audiobookStreamReloadedAt < AUDIOBOOK_STREAM_RELOAD_WINDOW_MS) return false;
+  audiobookStreamReloadedAt = Date.now();
+
+  const playerId = player.id;
+  const resumeAt = audio.currentTime;
+  // Only this reload's outcome counts: if it fails too, the listener must not
+  // linger and fire on a later load (reopening the book), where it would seek
+  // and autoplay ahead of the open flow's own resume/other-device checks.
+  // A second loadstart means some other load replaced this one (the player
+  // was closed and a book opened).
+  const reload = new AbortController();
+  let loadStarts = 0;
+  audio.addEventListener("loadstart", () => {
+    loadStarts += 1;
+    if (loadStarts > 1) reload.abort();
+  }, { signal: reload.signal });
+  audio.addEventListener("error", () => reload.abort(), { signal: reload.signal });
+  audio.addEventListener("loadedmetadata", () => {
+    reload.abort();
+    if (state.audiobooks.player?.id !== playerId || !isAudiobookAudioForPlayer(audio, state.audiobooks.player)) return;
+    audio.currentTime = resumeAt;
+    if (wasPlaying) audio.play().catch(() => setAudiobookPlayerStatus("Tap play to keep listening."));
+  }, { signal: reload.signal });
+  audio.src = player.streamUrl;
+  return true;
 }
 
 // --- Media Session (lock screen / notification drawer controls) -----------

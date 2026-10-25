@@ -543,17 +543,6 @@ func (s *postgresAudiobookStore) CompleteUpload(ctx context.Context, id, userID 
 		coverPath = ""
 	}
 
-	// Tags, chapters, and cover were all read from the MP3 above, before it is
-	// swapped for a seekable .m4b; a failed remux just keeps the MP3.
-	filename, sizeBytes := upload.Filename, upload.TotalBytes
-	if remuxedPath, remuxedSize, err := remuxStoredMP3(finalPath, mimeType); err == nil {
-		removeRemuxedMP3(finalPath) // no row references it yet
-		finalPath, sizeBytes, mimeType = remuxedPath, remuxedSize, audiobookM4BMimeType
-		filename = remuxedAudiobookFilename(filename)
-	} else if !errors.Is(err, errAudiobookNotMP3) {
-		log.Printf("audiobooks: remux of %s to m4b failed (keeping the mp3): %v", upload.Filename, err)
-	}
-
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		_ = os.Remove(finalPath)
@@ -570,7 +559,7 @@ func (s *postgresAudiobookStore) CompleteUpload(ctx context.Context, id, userID 
 		INSERT INTO audiobooks (id, title, author, narrator, filename, mime_type, size_bytes, duration_seconds, storage_path, cover_path, chapters, uploaded_by_user_id)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		RETURNING id, title, author, narrator, filename, mime_type, size_bytes, duration_seconds, storage_path, cover_path, chapters, uploaded_by_user_id, created_at
-	`, finalID, title, author, narrator, filename, mimeType, sizeBytes, duration, finalPath, coverPath, chaptersJSON, userID).Scan(
+	`, finalID, title, author, narrator, upload.Filename, mimeType, upload.TotalBytes, duration, finalPath, coverPath, chaptersJSON, userID).Scan(
 		&record.ID, &record.Title, &record.Author, &record.Narrator, &record.Filename, &record.MimeType,
 		&record.SizeBytes, &record.DurationSeconds, &record.StoragePath, &record.CoverPath, &recordChaptersJSON, &record.UploadedByUserID, &record.CreatedAt,
 	)
@@ -609,46 +598,10 @@ func (s *postgresAudiobookStore) CompleteUpload(ctx context.Context, id, userID 
 // rather than sniffed: http.DetectContentType reports any MP4 as video/mp4.
 const audiobookM4BMimeType = "audio/mp4"
 
-// errAudiobookNotMP3 is remuxStoredMP3's "nothing to do" result, as opposed
-// to a remux that was attempted and failed.
-var errAudiobookNotMP3 = errors.New("audiobook is not an mp3")
-
-// remuxStoredMP3 writes a lossless .m4b copy of a stored MP3 next to it (see
-// accessor.RemuxMP3ToM4B for why), returning the new path and size. The MP3
-// is left in place for the caller to delete once nothing references it. On
-// any error no .m4b is left behind; errAudiobookNotMP3 means the file isn't
-// an MP3 at all (sniffing only recognizes one with an ID3 tag, hence the
-// extension check too).
-func remuxStoredMP3(mp3Path, mimeType string) (string, int64, error) {
-	if !isAudiobookMP3(mp3Path, mimeType) {
-		return "", 0, errAudiobookNotMP3
-	}
-	m4bPath := strings.TrimSuffix(mp3Path, filepath.Ext(mp3Path)) + ".m4b"
-	if err := accessor.RemuxMP3ToM4B(mp3Path, m4bPath); err != nil {
-		return "", 0, err
-	}
-	info, err := os.Stat(m4bPath)
-	if err != nil {
-		_ = os.Remove(m4bPath)
-		return "", 0, fmt.Errorf("stat remuxed file: %w", err)
-	}
-	return m4bPath, info.Size(), nil
-}
-
-func isAudiobookMP3(path, mimeType string) bool {
-	return mimeType == "audio/mpeg" || strings.EqualFold(filepath.Ext(path), ".mp3")
-}
-
 // remuxedAudiobookFilename is the display/download filename for a remuxed
 // book: the uploaded name with its extension swapped for .m4b.
 func remuxedAudiobookFilename(filename string) string {
 	return strings.TrimSuffix(filename, filepath.Ext(filename)) + ".m4b"
-}
-
-func removeRemuxedMP3(mp3Path string) {
-	if err := os.Remove(mp3Path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		log.Printf("audiobooks: could not remove %s after remux: %v", filepath.Base(mp3Path), err)
-	}
 }
 
 // audiobookTitleExists reports whether the library already has an audiobook

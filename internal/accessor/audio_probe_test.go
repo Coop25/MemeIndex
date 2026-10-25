@@ -1,6 +1,7 @@
 package accessor
 
 import (
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -54,6 +55,55 @@ func TestRemuxMP3ToM4BKeepsChaptersAndAudio(t *testing.T) {
 	codec, err := exec.Command("ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0", m4b).Output()
 	if err != nil || strings.TrimSpace(string(codec)) != "mp3" {
 		t.Errorf("m4b audio codec = %q (%v), want mp3 (stream copy, no re-encode)", codec, err)
+	}
+}
+
+// Several MP3s joined end to end - a common way audiobooks get assembled -
+// keep only the first part's Xing header, so ffprobe's duration for the
+// whole file is wrong: the first part's length, or (newer ffmpeg, noticing
+// the header no longer matches the file size) an estimate from the opening
+// bitrate. The remux has to be judged on what it actually carried across.
+func TestRemuxMP3ToM4BAcceptsJoinedMP3s(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	dir := t.TempDir()
+	first, second := filepath.Join(dir, "first.mp3"), filepath.Join(dir, "second.mp3")
+	// Loud noise then a quiet tone: very different VBR bitrates, so a
+	// bitrate-based estimate is far off.
+	for _, part := range []struct {
+		path   string
+		source string
+		extra  []string
+	}{
+		{first, "anoisesrc=d=20:a=0.5", nil},
+		{second, "sine=d=40:f=220", []string{"-write_xing", "0", "-id3v2_version", "0"}},
+	} {
+		args := append([]string{"-v", "error", "-f", "lavfi", "-i", part.source, "-c:a", "libmp3lame", "-q:a", "4"}, part.extra...)
+		if out, err := exec.Command("ffmpeg", append(args, part.path)...).CombinedOutput(); err != nil {
+			t.Fatalf("make %s: %v: %s", part.path, err, out)
+		}
+	}
+	firstBytes, _ := os.ReadFile(first)
+	secondBytes, _ := os.ReadFile(second)
+	joined := filepath.Join(dir, "joined.mp3")
+	if err := os.WriteFile(joined, append(firstBytes, secondBytes...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if source, err := ProbeAudioMetadata(joined); err != nil || math.Abs(source.DurationSeconds-60) < 5 {
+		t.Fatalf("expected ffprobe to misreport the joined file's 60s (got %.1fs, %v) - the test no longer exercises the bug", source.DurationSeconds, err)
+	}
+
+	m4b := filepath.Join(dir, "joined.m4b")
+	if err := RemuxMP3ToM4B(joined, m4b); err != nil {
+		t.Fatalf("RemuxMP3ToM4B: %v", err)
+	}
+	got, err := ProbeAudioMetadata(m4b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DurationSeconds < 59 || got.DurationSeconds > 61 {
+		t.Errorf("remuxed duration = %.2fs, want ~60s (both parts)", got.DurationSeconds)
 	}
 }
 

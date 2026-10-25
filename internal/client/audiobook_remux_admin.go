@@ -1,9 +1,10 @@
 package client
 
-// TEMPORARY: the admin page that shows the one-time MP3 -> M4B audiobook
-// remux backfill's progress. Once every server has finished converting, delete
-// this file, static/admin-audiobook-remux.html, the two routes registered in
-// Routes(), the audiobookRemuxProgress field on Server, and its calls in
+// TEMPORARY: the admin page that shows MP3 -> M4B audiobook remux progress -
+// the one-time startup backfill plus any uploads converted since. Once every
+// server has finished converting, delete this file,
+// static/admin-audiobook-remux.html, the two routes registered in Routes(),
+// the audiobookRemuxProgress field on Server, and its calls in
 // audiobook_remux.go - nothing else depends on it.
 
 import (
@@ -18,7 +19,7 @@ import (
 )
 
 // audiobookRemuxProgress is an in-memory record of the current server
-// process's remux run. It starts empty on every boot; the page also shows the
+// process's remuxes. It starts empty on every boot; the page also shows the
 // live count of MP3s still in the database, so a restart mid-run is visible.
 // All methods are safe on a nil receiver, so the tracker can be dropped
 // without touching the conversion loop's control flow.
@@ -37,11 +38,10 @@ type audiobookRemuxItem struct {
 	Filename   string
 	SizeBefore int64
 	SizeAfter  int64
-	Status     string // "pending", "converting", "done", "failed"
+	Status     string // "pending", "converting", "done", "failed", "skipped"
 	Error      string
 	StartedAt  time.Time
 	FinishedAt time.Time
-	mp3Path    string
 	outputPath string
 }
 
@@ -56,12 +56,35 @@ func (p *audiobookRemuxProgress) begin(books []audiobookStoredMP3) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.state, p.err, p.startedAt = "running", "", time.Now()
-	p.items = make([]audiobookRemuxItem, 0, len(books))
 	for _, b := range books {
-		p.items = append(p.items, audiobookRemuxItem{
-			ID: b.ID, Title: b.Title, Filename: b.Filename, SizeBefore: b.SizeBytes, Status: "pending", mp3Path: b.StoragePath,
-		})
+		p.addLocked(b)
 	}
+}
+
+// add tracks one more book - an upload that finished converting on its own,
+// outside the startup run. A book already on the list is left as it is.
+func (p *audiobookRemuxProgress) add(book audiobookStoredMP3) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.addLocked(book)
+}
+
+func (p *audiobookRemuxProgress) addLocked(b audiobookStoredMP3) {
+	for _, item := range p.items {
+		if item.ID == b.ID {
+			return
+		}
+	}
+	p.items = append(p.items, audiobookRemuxItem{ID: b.ID, Title: b.Title, Filename: b.Filename, SizeBefore: b.SizeBytes, Status: "pending"})
+}
+
+func (p *audiobookRemuxProgress) itemSkipped(id, reason string) {
+	p.update(id, func(item *audiobookRemuxItem) {
+		item.Status, item.Error, item.FinishedAt = "skipped", reason, time.Now()
+	})
 }
 
 func (p *audiobookRemuxProgress) itemStarted(id, outputPath string) {
@@ -129,7 +152,7 @@ func (p *audiobookRemuxProgress) snapshot() map[string]any {
 	p.mu.Unlock()
 
 	views := make([]audiobookRemuxItemView, 0, len(items))
-	counts := map[string]int{"pending": 0, "converting": 0, "done": 0, "failed": 0}
+	counts := map[string]int{"pending": 0, "converting": 0, "done": 0, "failed": 0, "skipped": 0}
 	var bytesTotal, bytesDone int64
 	for _, item := range items {
 		view := audiobookRemuxItemView{
@@ -138,7 +161,7 @@ func (p *audiobookRemuxProgress) snapshot() map[string]any {
 			StartedAt: optionalTime(item.StartedAt), FinishedAt: optionalTime(item.FinishedAt),
 		}
 		switch item.Status {
-		case "done", "failed":
+		case "done", "failed", "skipped":
 			view.BytesDone = item.SizeBefore
 		case "converting":
 			// ffmpeg writes the .m4b as it goes, so its size against the MP3's

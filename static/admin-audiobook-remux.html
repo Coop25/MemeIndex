@@ -44,7 +44,8 @@
     .title { font-weight: 600; overflow-wrap: anywhere; }
     .meta { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
     .status { font-size: 13px; font-weight: 600; white-space: nowrap; }
-    .status.done { color: var(--ok); } .status.failed { color: var(--bad); } .status.converting { color: var(--accent); } .status.pending { color: var(--muted); }
+    .status.done { color: var(--ok); } .status.failed { color: var(--bad); } .status.converting { color: var(--accent); } .status.pending, .status.skipped { color: var(--muted); }
+    .note { color: var(--muted); font-size: 13px; margin-top: 4px; overflow-wrap: anywhere; }
     .error { color: var(--bad); font-size: 13px; margin-top: 4px; overflow-wrap: anywhere; }
     .empty { color: var(--muted); margin: 0; }
     .foot { color: var(--muted); font-size: 13px; }
@@ -64,8 +65,8 @@
       <div class="bar"><i id="overall-bar"></i></div>
       <div class="stats">
         <div class="stat"><b id="stat-done">–</b><span>converted</span></div>
-        <div class="stat"><b id="stat-failed">–</b><span>failed</span></div>
-        <div class="stat"><b id="stat-pending">–</b><span>waiting</span></div>
+        <div class="stat"><b id="stat-failed">–</b><span>failed or skipped</span></div>
+        <div class="stat"><b id="stat-pending">–</b><span>to go</span></div>
         <div class="stat"><b id="stat-remaining">–</b><span>MP3s left in library</span></div>
       </div>
       <p id="run-error" class="error" hidden></p>
@@ -77,14 +78,14 @@
       <p id="empty" class="empty" hidden>No MP3 audiobooks needed converting when this server started.</p>
     </section>
 
-    <p class="foot">Failed books stay on their MP3 and are retried the next time the server starts. <span id="updated"></span></p>
+    <p class="foot">A book that fails to convert stays on its MP3 and is retried on a server start at least a week later. New MP3 uploads are converted as they finish and show up here too. <span id="updated"></span></p>
   </main>
 
   <script nonce="{{SCRIPT_NONCE}}">
     (function () {
       const $ = (id) => document.getElementById(id);
       const stateLabels = { waiting: "Waiting to start", running: "Converting", finished: "Finished", failed: "Failed", unavailable: "Audiobooks disabled" };
-      const statusLabels = { pending: "Waiting", converting: "Converting", done: "Done", failed: "Failed" };
+      const statusLabels = { pending: "Waiting", converting: "Converting", done: "Done", failed: "Failed", skipped: "Skipped" };
 
       function formatBytes(bytes) {
         if (!bytes) return "0 MB";
@@ -134,7 +135,7 @@
         }
         if (item.error) {
           const err = document.createElement("div");
-          err.className = "error";
+          err.className = item.status === "skipped" ? "note" : "error";
           err.textContent = item.error;
           li.append(err);
         }
@@ -147,7 +148,7 @@
         state.className = "state " + data.state;
         const counts = data.counts || {};
         $("stat-done").textContent = counts.done ?? 0;
-        $("stat-failed").textContent = counts.failed ?? 0;
+        $("stat-failed").textContent = (counts.failed ?? 0) + (counts.skipped ?? 0);
         $("stat-pending").textContent = (counts.pending ?? 0) + (counts.converting ?? 0);
         $("stat-remaining").textContent = data.mp3s_remaining ?? "–";
         const pct = data.bytes_total ? (data.bytes_done / data.bytes_total) * 100 : (data.state === "finished" ? 100 : 0);
@@ -160,20 +161,23 @@
         $("items").replaceChildren(...items.map(renderItem));
         $("empty").hidden = items.length > 0 || data.state === "waiting" || data.state === "unavailable";
         $("updated").textContent = "Updated " + new Date().toLocaleTimeString() + ".";
-        return data.state;
+        // Keep polling quickly while anything is queued or converting -
+        // an upload can start a conversion after the startup run finished.
+        const inFlight = (counts.pending ?? 0) + (counts.converting ?? 0) > 0;
+        return inFlight || data.state === "running" || data.state === "waiting";
       }
 
       async function poll() {
-        let state = "running";
+        let busy = true;
         try {
           const response = await fetch("/api/admin/audiobook-remux/status", { credentials: "same-origin", cache: "no-store" });
           if (!response.ok) throw new Error("HTTP " + response.status);
-          state = render(await response.json());
+          busy = render(await response.json());
         } catch (error) {
           $("updated").textContent = "Could not refresh (" + error.message + "); retrying.";
         }
         // Poll quickly while there's something to watch, slowly once done.
-        setTimeout(poll, state === "running" || state === "waiting" ? 2000 : 15000);
+        setTimeout(poll, busy ? 2000 : 15000);
       }
       poll();
     })();

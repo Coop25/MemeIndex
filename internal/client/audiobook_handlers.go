@@ -223,6 +223,7 @@ func (s *Server) deleteAudiobook(w http.ResponseWriter, r *http.Request, id stri
 	if err := os.Remove(deleted.StoragePath); err != nil && !os.IsNotExist(err) {
 		log.Printf("delete audiobook file failed: %v", err)
 	}
+	clearAudiobookRemuxFailure(deleted.StoragePath)
 	if deleted.CoverPath != "" {
 		if err := os.Remove(deleted.CoverPath); err != nil && !os.IsNotExist(err) {
 			log.Printf("delete audiobook cover art failed: %v", err)
@@ -1124,6 +1125,7 @@ func (s *Server) completeAudiobookUpload(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	audiobookUploadLocks.Delete(id)
+	go s.remuxUploadedAudiobookMP3(record)
 
 	writeJSON(w, http.StatusCreated, audiobookJSON(record))
 }
