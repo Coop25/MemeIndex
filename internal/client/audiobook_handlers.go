@@ -1198,11 +1198,13 @@ func (s *Server) backfillAudiobookMetadata() {
 	updated, err := s.audiobooks.BackfillMetadata(context.Background())
 	if err != nil {
 		log.Printf("audiobooks: metadata backfill failed: %v", err)
-		return
-	}
-	if updated > 0 {
+	} else if updated > 0 {
 		log.Printf("audiobooks: backfilled cover art/chapters/duration for %d existing audiobook(s)", updated)
 	}
+
+	// After the metadata pass, which reads tags and cover art from the MP3s
+	// this replaces. Once every MP3 is converted this finds nothing to do.
+	s.remuxStoredAudiobookMP3s(context.Background())
 }
 
 func (s *Server) withAudiobookMediaAuth(next http.Handler) http.Handler {

@@ -6111,7 +6111,8 @@ async function openAudiobookPlayer(item) {
   }
   audio.pause();
   cancelSleepTimer({ silent: true });
-  state.audiobooks.player = { id: item.id, streamUrl: item.stream_url, chapters: item.chapters || [], durationSeconds: item.duration_seconds || 0, bookmarks: [] };
+  const chapters = normalizeAudiobookChapters(item.chapters || [], item.duration_seconds || 0);
+  state.audiobooks.player = { id: item.id, streamUrl: item.stream_url, chapters, durationSeconds: item.duration_seconds || 0, bookmarks: [] };
 
   audiobookPlayerFlip?.classList.remove("is-flipped");
   if (audiobookPlayerTitle) audiobookPlayerTitle.textContent = audiobookDisplayTitle(item);
@@ -6131,9 +6132,9 @@ async function openAudiobookPlayer(item) {
     }
   }
   renderAudiobookPlayerMeta(item);
-  renderAudiobookPlayerChapters(item.chapters || []);
+  renderAudiobookPlayerChapters(chapters);
   setAudiobookMediaSessionMetadata(item);
-  updateAudiobookMediaSessionChapterHandlers((item.chapters || []).length > 0);
+  updateAudiobookMediaSessionChapterHandlers(chapters.length > 0);
   audiobookTakeoverConfirmToken++;
   audiobookTakeoverConfirming = false;
   audiobookYieldedToOtherDevice = false;
@@ -6244,6 +6245,30 @@ function renderAudiobookPlayerMeta(item) {
     .join("");
 }
 
+// A seek to a chapter's start can land a few milliseconds short of it - the
+// browser snaps to an audio frame boundary - which would otherwise count as
+// still being at the very end of the previous chapter: the wrong chapter
+// highlighted, a "-0:00" seek bar, and "next chapter" re-jumping to the same
+// spot. Positions this close before a chapter start count as inside it.
+const AUDIOBOOK_CHAPTER_BOUNDARY_TOLERANCE_SECONDS = 0.5;
+
+// normalizeAudiobookChapters sorts chapters into playback order and repairs
+// missing/zero-length/overlapping end times (each chapter runs until the
+// next starts, the last until the end of the book) - the same repair the
+// server now applies at upload, repeated here for books probed before that.
+function normalizeAudiobookChapters(chapters, durationSeconds) {
+  const sorted = chapters
+    .map((chapter) => ({ ...chapter, start_seconds: Math.max(0, Number(chapter.start_seconds) || 0), end_seconds: Number(chapter.end_seconds) || 0 }))
+    .sort((a, b) => a.start_seconds - b.start_seconds);
+  sorted.forEach((chapter, index) => {
+    const limit = index + 1 < sorted.length ? sorted[index + 1].start_seconds : durationSeconds;
+    if (chapter.end_seconds <= chapter.start_seconds || (limit > chapter.start_seconds && chapter.end_seconds > limit)) {
+      chapter.end_seconds = limit;
+    }
+  });
+  return sorted;
+}
+
 // getCurrentAudiobookChapterBounds returns the {start, end} of the chapter
 // containing currentTime, or null when there is no chapter data - callers
 // fall back to book-wide progress in that case.
@@ -6270,8 +6295,8 @@ function updateAudiobookPlayerProgressUI() {
   // line underneath always tracks the whole book regardless.
   const chapterBounds = getCurrentAudiobookChapterBounds(audio.currentTime);
   if (chapterBounds) {
-    const elapsedInChapter = audio.currentTime - chapterBounds.start;
     const chapterLength = chapterBounds.end - chapterBounds.start;
+    const elapsedInChapter = Math.min(Math.max(audio.currentTime - chapterBounds.start, 0), chapterLength);
     if (audiobookPlayerCurrentTime) audiobookPlayerCurrentTime.textContent = formatMediaTime(elapsedInChapter);
     if (audiobookPlayerDuration) audiobookPlayerDuration.textContent = `-${formatMediaTime(chapterLength - elapsedInChapter)}`;
     if (audiobookPlayerProgress && !audiobookPlayerProgressDragging) {
@@ -6351,12 +6376,7 @@ function renderAudiobookPlayerChapters(chapters) {
 function highlightActiveAudiobookChapter(currentTime) {
   const chapters = state.audiobooks.player?.chapters;
   if (!chapters || chapters.length === 0 || !audiobookPlayerChapters) return;
-
-  let activeIndex = -1;
-  for (let i = 0; i < chapters.length; i += 1) {
-    if (currentTime >= chapters[i].start_seconds) activeIndex = i;
-  }
-
+  const activeIndex = findActiveAudiobookChapterIndex(currentTime, chapters);
   audiobookPlayerChapters.querySelectorAll(".audiobook-player-chapter").forEach((button, index) => {
     button.classList.toggle("is-active", index === activeIndex);
   });
@@ -6367,7 +6387,7 @@ function highlightActiveAudiobookChapter(currentTime) {
 function findActiveAudiobookChapterIndex(currentTime, chapters) {
   let activeIndex = -1;
   for (let i = 0; i < chapters.length; i += 1) {
-    if (currentTime >= chapters[i].start_seconds) activeIndex = i;
+    if (currentTime + AUDIOBOOK_CHAPTER_BOUNDARY_TOLERANCE_SECONDS >= chapters[i].start_seconds) activeIndex = i;
   }
   return activeIndex;
 }
@@ -9832,7 +9852,10 @@ audiobookPlayerProgress?.addEventListener("input", () => {
 audiobookPlayerProgress?.addEventListener("change", () => {
   const audio = getAudiobookAudioElement();
   const fraction = Number(audiobookPlayerProgress.value) / 1000;
-  const chapterBounds = audiobookPlayerDragChapterBounds;
+  // A "change" with no "input" before it (some keyboard/assistive-tech
+  // adjustments) never froze bounds; the slider is still on the chapter
+  // scale, so look them up now rather than reading it as a whole-book fraction.
+  const chapterBounds = audiobookPlayerProgressDragging ? audiobookPlayerDragChapterBounds : getCurrentAudiobookChapterBounds(audio.currentTime);
   if (chapterBounds) {
     audio.currentTime = chapterBounds.start + fraction * (chapterBounds.end - chapterBounds.start);
   } else {

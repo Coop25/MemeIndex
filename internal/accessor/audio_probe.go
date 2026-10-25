@@ -3,7 +3,11 @@ package accessor
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"math"
+	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -62,10 +66,17 @@ func (b *boundedProbeOutput) Write(p []byte) (int, error) {
 	return n, nil
 }
 
+// runProbeCommand keeps stderr apart from stdout: ffprobe can print a
+// demuxer complaint (a damaged frame, an odd tag) and still exit 0, and
+// interleaving that text into the JSON would make it unparsable - losing
+// every chapter over one harmless warning.
 func runProbeCommand(cmd *exec.Cmd) ([]byte, error) {
-	var output boundedProbeOutput
-	cmd.Stdout, cmd.Stderr = &output, &output
+	var output, stderr boundedProbeOutput
+	cmd.Stdout, cmd.Stderr = &output, &stderr
 	err := cmd.Run()
+	if err != nil && len(stderr.data) > 0 {
+		err = fmt.Errorf("%w: %s", err, strings.TrimSpace(string(stderr.data)))
+	}
 	return output.data, err
 }
 
@@ -124,8 +135,37 @@ func ProbeAudioMetadata(path string) (AudioMetadata, error) {
 			EndSeconds:   end,
 		})
 	}
+	meta.Chapters = normalizeAudioChapters(meta.Chapters, meta.DurationSeconds)
 
 	return meta, nil
+}
+
+// normalizeAudioChapters puts chapter markers in playback order and repairs
+// the end times the player relies on for its chapter-relative seek bar.
+// Taggers - ID3 CHAP writers especially - commonly leave the end time at
+// zero, equal to the start, or overlapping the next chapter; each chapter is
+// taken to run until the next one starts, and the last until the end of the
+// file.
+func normalizeAudioChapters(chapters []AudioChapter, durationSeconds float64) []AudioChapter {
+	if len(chapters) == 0 {
+		return chapters
+	}
+	sort.SliceStable(chapters, func(i, j int) bool { return chapters[i].StartSeconds < chapters[j].StartSeconds })
+	for i := range chapters {
+		if chapters[i].StartSeconds < 0 {
+			chapters[i].StartSeconds = 0
+		}
+		limit := durationSeconds
+		if i+1 < len(chapters) {
+			limit = chapters[i+1].StartSeconds
+		}
+		end := chapters[i].EndSeconds
+		if end <= chapters[i].StartSeconds || (limit > chapters[i].StartSeconds && end > limit) {
+			end = limit
+		}
+		chapters[i].EndSeconds = end
+	}
+	return chapters
 }
 
 // audioTagValue looks up a format/chapter tag case-insensitively: ffprobe
@@ -152,6 +192,73 @@ func firstAudioTagValue(tags map[string]string, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+// remuxTimeout bounds one remux. It's a stream copy, so it's I/O-bound - a
+// 700 MB, 15-hour book takes well under a minute on ordinary disks - but
+// +faststart then rewrites the whole file once more to put the index first.
+const remuxTimeout = 15 * time.Minute
+
+// RemuxMP3ToM4B copies an MP3's audio frames, unchanged, into an MP4 (.m4b)
+// container at outputPath, keeping its tags and chapter markers.
+//
+// The point is seeking. A browser can't compute where a timestamp falls in a
+// VBR MP3, so it estimates from the 100-entry Xing table of contents - off by
+// tens of seconds or more in a long audiobook, which is what made chapter
+// jumps land in the wrong place. An MP4 carries a per-frame index, so every
+// browser seeks exactly. No re-encode happens, so there's no quality loss.
+//
+// The output is checked against the input's duration before this returns
+// nil; on any failure outputPath is removed and the caller should keep
+// serving the original file.
+func RemuxMP3ToM4B(inputPath, outputPath string) error {
+	source, err := ProbeAudioMetadata(inputPath)
+	if err != nil {
+		return fmt.Errorf("probe source: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), remuxTimeout)
+	defer cancel()
+	cmd := localMediaCommand(ctx,
+		"ffmpeg",
+		"-y",
+		"-i", inputPath,
+		// Audio only: an embedded cover is an attached-picture video stream,
+		// which the cover-art pipeline already extracted separately.
+		"-map", "0:a:0",
+		"-c:a", "copy",
+		"-map_metadata", "0",
+		"-map_chapters", "0",
+		// Index (moov) at the front, so playback and seeking can start
+		// without first fetching the end of a multi-hundred-MB file.
+		"-movflags", "+faststart",
+		"-f", "mp4",
+		outputPath,
+	)
+	if output, err := runMediaCommand(cmd); err != nil {
+		_ = os.Remove(outputPath)
+		return fmt.Errorf("ffmpeg remux: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+
+	remuxed, err := ProbeAudioMetadata(outputPath)
+	if err != nil {
+		_ = os.Remove(outputPath)
+		return fmt.Errorf("probe remuxed file: %w", err)
+	}
+	if !remuxDurationMatches(source.DurationSeconds, remuxed.DurationSeconds) {
+		_ = os.Remove(outputPath)
+		return fmt.Errorf("remuxed duration %.2fs does not match source %.2fs", remuxed.DurationSeconds, source.DurationSeconds)
+	}
+	return nil
+}
+
+// remuxDurationMatches allows for the few milliseconds of encoder delay and
+// padding a container change can trim, but not for a truncated copy.
+func remuxDurationMatches(source, remuxed float64) bool {
+	if source <= 0 || remuxed <= 0 {
+		return false
+	}
+	return math.Abs(source-remuxed) <= max(2, source*0.001)
 }
 
 // ExtractEmbeddedCoverArt pulls the first attached picture out of an audio
