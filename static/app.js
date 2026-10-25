@@ -39,6 +39,7 @@ const state = {
     },
     tagQueueStatus: null,
     linkRetryStatus: null,
+    remuxStatus: null,
     backupStatus: null,
     dashboard: null,
     tagHygiene: {
@@ -167,6 +168,11 @@ const ADMIN_TABS = Object.freeze({
     group: "Operations", label: "Backup & Restore", superOnly: true, panel: "admin-backup-panel",
     title: "Backup & Restore", kicker: "Admin",
     copy: "Move the complete meme library and its database to another MemeIndex Docker instance.",
+  },
+  "audiobook-conversion": {
+    group: "Operations", label: "MP3 Conversion", superOnly: true, panel: "admin-remux-panel",
+    title: "Audiobook Conversion", kicker: "Admin",
+    copy: "MP3 audiobooks are copied, without re-encoding, into .m4b files so chapter jumps and seeking land exactly. Books stay playable throughout.",
   },
 });
 const ADMIN_TAB_IDS = Object.freeze(Object.keys(ADMIN_TABS));
@@ -1051,7 +1057,13 @@ const adminBackupPoller = createAdminPoller({
   tick: () => fetchAdminBackupStatus(),
 });
 
-const adminPollers = [adminTagQueuePoller, adminLinkQueuePoller, adminBackupPoller];
+const adminRemuxPoller = createAdminPoller({
+  baseInterval: 3000,
+  shouldRun: () => isAdminView() && canManageUsers() && activeAdminTab() === "audiobook-conversion",
+  tick: () => fetchAdminRemuxStatus(),
+});
+
+const adminPollers = [adminTagQueuePoller, adminLinkQueuePoller, adminBackupPoller, adminRemuxPoller];
 
 document.addEventListener("visibilitychange", () => {
   adminPollers.forEach((poller) => poller.sync());
@@ -3050,6 +3062,117 @@ function syncAdminLinkQueuePolling() {
   adminLinkQueuePoller.sync();
 }
 
+// --- Audiobook conversion (MP3 -> M4B remux) -------------------------------
+
+async function fetchAdminRemuxStatus() {
+  if (!canManageUsers()) {
+    return null;
+  }
+  const response = await fetch("/api/admin/audiobook-remux/status");
+  if (!(await expectAuthorized(response, "Failed to load audiobook conversion status."))) {
+    return null;
+  }
+  state.admin.remuxStatus = (await response.json()) || null;
+  renderAdminRemuxStatus();
+  return state.admin.remuxStatus;
+}
+
+const ADMIN_REMUX_STATE_LABELS = { waiting: "Waiting to start", running: "Converting", finished: "Finished", failed: "Failed", unavailable: "Audiobooks disabled" };
+const ADMIN_REMUX_STATUS_LABELS = { pending: "Waiting", converting: "Converting", done: "Done", failed: "Failed", skipped: "Skipped" };
+
+function formatRemuxBytes(bytes) {
+  if (!bytes) return "0 MB";
+  return bytes >= 1e9 ? `${(bytes / 1e9).toFixed(2)} GB` : `${Math.round(bytes / 1e6)} MB`;
+}
+
+function renderAdminRemuxStatus() {
+  const panel = document.querySelector("#admin-remux-panel");
+  const grid = document.querySelector("#admin-remux-grid");
+  const list = document.querySelector("#admin-remux-list");
+  const summary = document.querySelector("#admin-remux-summary");
+  const bar = document.querySelector("#admin-remux-bar");
+  if (!panel || !grid || !list || !summary) return;
+
+  const visible = isAdminView() && canManageUsers() && activeAdminTab() === "audiobook-conversion";
+  panel.classList.toggle("hidden", !visible);
+  if (!visible) return;
+
+  const status = state.admin.remuxStatus;
+  if (!status) {
+    summary.textContent = "Loading conversion status...";
+    grid.innerHTML = `<p class="users-empty">Loading audiobook conversion status...</p>`;
+    list.innerHTML = "";
+    return;
+  }
+
+  const counts = status.counts || {};
+  const items = Array.isArray(status.items) ? status.items : [];
+  const toGo = (counts.pending || 0) + (counts.converting || 0);
+  summary.textContent = status.bytes_total
+    ? `${ADMIN_REMUX_STATE_LABELS[status.state] || status.state} * ${formatRemuxBytes(status.bytes_done)} of ${formatRemuxBytes(status.bytes_total)}`
+    : ADMIN_REMUX_STATE_LABELS[status.state] || status.state || "";
+  if (bar) {
+    const pct = status.bytes_total ? (status.bytes_done / status.bytes_total) * 100 : (status.state === "finished" ? 100 : 0);
+    bar.style.width = `${Math.min(100, pct)}%`;
+  }
+
+  const stat = (label, value) => `
+    <article class="admin-tag-queue-stat">
+      <span class="admin-tag-queue-label">${escapeHTML(label)}</span>
+      <strong class="admin-tag-queue-value">${escapeHTML(String(value))}</strong>
+    </article>`;
+  grid.innerHTML = [
+    stat("Converted", counts.done || 0),
+    stat("Failed or Skipped", (counts.failed || 0) + (counts.skipped || 0)),
+    stat("To Go", toGo),
+    stat("MP3s Left in Library", status.mp3s_remaining ?? "-"),
+  ].join("");
+
+  if (items.length === 0) {
+    list.innerHTML = `
+      <section class="admin-tag-queue-section">
+        <div class="admin-tag-queue-list-head">
+          <strong>Books</strong>
+          <span>${status.state === "waiting" ? "Waiting for the startup conversion to begin." : "No MP3 audiobooks have needed converting since the server started."}</span>
+        </div>
+      </section>`;
+    return;
+  }
+
+  list.innerHTML = `
+    <section class="admin-tag-queue-section">
+      <div class="admin-tag-queue-list-head">
+        <strong>Books</strong>
+        <span>Failed books stay on their MP3 and are retried on a server start at least a week later.</span>
+      </div>
+      <div class="admin-tag-queue-items">
+        ${items.map((item) => {
+          const parts = [formatRemuxBytes(item.size_before)];
+          if (item.status === "done" && item.size_after) parts.push(`to ${formatRemuxBytes(item.size_after)}`);
+          if (item.started_at) {
+            const end = item.finished_at ? new Date(item.finished_at) : new Date();
+            parts.push(formatDurationWords(Math.max(0, Math.round((end - new Date(item.started_at)) / 1000))));
+          }
+          let pct = 0;
+          if (item.status === "converting" && item.size_before) {
+            pct = Math.min(100, Math.round((item.bytes_done / item.size_before) * 100));
+            parts.push(pct >= 100 ? "finalizing" : `${pct}%`);
+          }
+          return `
+            <article class="admin-tag-queue-item admin-remux-item is-${escapeHTML(item.status || "")}">
+              <span class="admin-tag-queue-rank">${escapeHTML(ADMIN_REMUX_STATUS_LABELS[item.status] || item.status || "")}</span>
+              <div class="admin-tag-queue-item-copy">
+                <strong>${escapeHTML(item.title || item.filename || item.id || "Untitled")}</strong>
+                <span>${escapeHTML(parts.join(" * "))}</span>
+                ${item.status === "converting" ? `<div class="admin-remux-progress is-item" aria-hidden="true"><i style="width:${pct}%"></i></div>` : ""}
+                ${item.error ? `<code>${escapeHTML(item.error)}</code>` : ""}
+              </div>
+            </article>`;
+        }).join("")}
+      </div>
+    </section>`;
+}
+
 async function retryRejectedLinkDownload(id) {
   if (!id) {
     return;
@@ -3615,9 +3738,11 @@ function renderContentMode() {
   renderAdminTagHygiene();
   renderAdminTagQueueStatus();
   renderAdminLinkRetryStatus();
+  renderAdminRemuxStatus();
   syncAdminTagQueuePolling();
   syncAdminLinkQueuePolling();
   syncAdminBackupPolling();
+  adminRemuxPoller.sync();
 }
 
 function syncAdminPagination() {
@@ -3733,6 +3858,7 @@ const ADMIN_TAB_LOADERS = {
   "link-retries": { run: () => fetchAdminLinkRetryStatus() },
   "rejected-links": { run: () => fetchAdminLinkRetryStatus() },
   backup: { run: () => { renderAdminBackupStatus(); return fetchAdminBackupStatus(); } },
+  "audiobook-conversion": { run: () => fetchAdminRemuxStatus() },
 };
 
 async function loadInitialMemes() {
@@ -5838,16 +5964,57 @@ function getAudiobookAudioElement() {
     setAudiobookMediaSessionPositionState(audio);
   });
   audio.addEventListener("error", () => {
+    const wasPlaying = !audio.paused;
     setAudiobookPlayIcon(false);
     updateAudiobookBufferingUI();
     // An emptied src (closing the player) also raises "error" on some
     // browsers - only a real load failure is worth telling anyone about.
     if (!audio.getAttribute("src")) return;
+    if (reloadAudiobookStreamAfterError(audio, wasPlaying)) return;
     setAudiobookPlayerStatus("Playback error - check your connection, then press play to retry.");
   });
   setupAudiobookMediaSessionHandlers(audio);
   audiobookAudioEl = audio;
   return audio;
+}
+
+// The server can replace a book's file mid-listen - an MP3 is swapped for its
+// lossless .m4b remux at the same URL - after which the element's next range
+// request is answered from a different, differently sized file and fails.
+// Reloading the source once, back at the same position, recovers without the
+// listener noticing more than a brief stall; a second failure soon after is a
+// real problem and is reported as before.
+const AUDIOBOOK_STREAM_RELOAD_WINDOW_MS = 30000;
+let audiobookStreamReloadedAt = 0;
+
+function reloadAudiobookStreamAfterError(audio, wasPlaying) {
+  const player = state.audiobooks.player;
+  if (!player || !isAudiobookAudioForPlayer(audio, player)) return false;
+  if (Date.now() - audiobookStreamReloadedAt < AUDIOBOOK_STREAM_RELOAD_WINDOW_MS) return false;
+  audiobookStreamReloadedAt = Date.now();
+
+  const playerId = player.id;
+  const resumeAt = audio.currentTime;
+  // Only this reload's outcome counts: if it fails too, the listener must not
+  // linger and fire on a later load (reopening the book), where it would seek
+  // and autoplay ahead of the open flow's own resume/other-device checks.
+  // A second loadstart means some other load replaced this one (the player
+  // was closed and a book opened).
+  const reload = new AbortController();
+  let loadStarts = 0;
+  audio.addEventListener("loadstart", () => {
+    loadStarts += 1;
+    if (loadStarts > 1) reload.abort();
+  }, { signal: reload.signal });
+  audio.addEventListener("error", () => reload.abort(), { signal: reload.signal });
+  audio.addEventListener("loadedmetadata", () => {
+    reload.abort();
+    if (state.audiobooks.player?.id !== playerId || !isAudiobookAudioForPlayer(audio, state.audiobooks.player)) return;
+    audio.currentTime = resumeAt;
+    if (wasPlaying) audio.play().catch(() => setAudiobookPlayerStatus("Tap play to keep listening."));
+  }, { signal: reload.signal });
+  audio.src = player.streamUrl;
+  return true;
 }
 
 // --- Media Session (lock screen / notification drawer controls) -----------
@@ -6111,7 +6278,8 @@ async function openAudiobookPlayer(item) {
   }
   audio.pause();
   cancelSleepTimer({ silent: true });
-  state.audiobooks.player = { id: item.id, streamUrl: item.stream_url, chapters: item.chapters || [], durationSeconds: item.duration_seconds || 0, bookmarks: [] };
+  const chapters = normalizeAudiobookChapters(item.chapters || [], item.duration_seconds || 0);
+  state.audiobooks.player = { id: item.id, streamUrl: item.stream_url, chapters, durationSeconds: item.duration_seconds || 0, bookmarks: [] };
 
   audiobookPlayerFlip?.classList.remove("is-flipped");
   if (audiobookPlayerTitle) audiobookPlayerTitle.textContent = audiobookDisplayTitle(item);
@@ -6131,9 +6299,9 @@ async function openAudiobookPlayer(item) {
     }
   }
   renderAudiobookPlayerMeta(item);
-  renderAudiobookPlayerChapters(item.chapters || []);
+  renderAudiobookPlayerChapters(chapters);
   setAudiobookMediaSessionMetadata(item);
-  updateAudiobookMediaSessionChapterHandlers((item.chapters || []).length > 0);
+  updateAudiobookMediaSessionChapterHandlers(chapters.length > 0);
   audiobookTakeoverConfirmToken++;
   audiobookTakeoverConfirming = false;
   audiobookYieldedToOtherDevice = false;
@@ -6244,6 +6412,30 @@ function renderAudiobookPlayerMeta(item) {
     .join("");
 }
 
+// A seek to a chapter's start can land a few milliseconds short of it - the
+// browser snaps to an audio frame boundary - which would otherwise count as
+// still being at the very end of the previous chapter: the wrong chapter
+// highlighted, a "-0:00" seek bar, and "next chapter" re-jumping to the same
+// spot. Positions this close before a chapter start count as inside it.
+const AUDIOBOOK_CHAPTER_BOUNDARY_TOLERANCE_SECONDS = 0.5;
+
+// normalizeAudiobookChapters sorts chapters into playback order and repairs
+// missing/zero-length/overlapping end times (each chapter runs until the
+// next starts, the last until the end of the book) - the same repair the
+// server now applies at upload, repeated here for books probed before that.
+function normalizeAudiobookChapters(chapters, durationSeconds) {
+  const sorted = chapters
+    .map((chapter) => ({ ...chapter, start_seconds: Math.max(0, Number(chapter.start_seconds) || 0), end_seconds: Number(chapter.end_seconds) || 0 }))
+    .sort((a, b) => a.start_seconds - b.start_seconds);
+  sorted.forEach((chapter, index) => {
+    const limit = index + 1 < sorted.length ? sorted[index + 1].start_seconds : durationSeconds;
+    if (chapter.end_seconds <= chapter.start_seconds || (limit > chapter.start_seconds && chapter.end_seconds > limit)) {
+      chapter.end_seconds = limit;
+    }
+  });
+  return sorted;
+}
+
 // getCurrentAudiobookChapterBounds returns the {start, end} of the chapter
 // containing currentTime, or null when there is no chapter data - callers
 // fall back to book-wide progress in that case.
@@ -6270,8 +6462,8 @@ function updateAudiobookPlayerProgressUI() {
   // line underneath always tracks the whole book regardless.
   const chapterBounds = getCurrentAudiobookChapterBounds(audio.currentTime);
   if (chapterBounds) {
-    const elapsedInChapter = audio.currentTime - chapterBounds.start;
     const chapterLength = chapterBounds.end - chapterBounds.start;
+    const elapsedInChapter = Math.min(Math.max(audio.currentTime - chapterBounds.start, 0), chapterLength);
     if (audiobookPlayerCurrentTime) audiobookPlayerCurrentTime.textContent = formatMediaTime(elapsedInChapter);
     if (audiobookPlayerDuration) audiobookPlayerDuration.textContent = `-${formatMediaTime(chapterLength - elapsedInChapter)}`;
     if (audiobookPlayerProgress && !audiobookPlayerProgressDragging) {
@@ -6351,12 +6543,7 @@ function renderAudiobookPlayerChapters(chapters) {
 function highlightActiveAudiobookChapter(currentTime) {
   const chapters = state.audiobooks.player?.chapters;
   if (!chapters || chapters.length === 0 || !audiobookPlayerChapters) return;
-
-  let activeIndex = -1;
-  for (let i = 0; i < chapters.length; i += 1) {
-    if (currentTime >= chapters[i].start_seconds) activeIndex = i;
-  }
-
+  const activeIndex = findActiveAudiobookChapterIndex(currentTime, chapters);
   audiobookPlayerChapters.querySelectorAll(".audiobook-player-chapter").forEach((button, index) => {
     button.classList.toggle("is-active", index === activeIndex);
   });
@@ -6367,7 +6554,7 @@ function highlightActiveAudiobookChapter(currentTime) {
 function findActiveAudiobookChapterIndex(currentTime, chapters) {
   let activeIndex = -1;
   for (let i = 0; i < chapters.length; i += 1) {
-    if (currentTime >= chapters[i].start_seconds) activeIndex = i;
+    if (currentTime + AUDIOBOOK_CHAPTER_BOUNDARY_TOLERANCE_SECONDS >= chapters[i].start_seconds) activeIndex = i;
   }
   return activeIndex;
 }
@@ -9832,7 +10019,10 @@ audiobookPlayerProgress?.addEventListener("input", () => {
 audiobookPlayerProgress?.addEventListener("change", () => {
   const audio = getAudiobookAudioElement();
   const fraction = Number(audiobookPlayerProgress.value) / 1000;
-  const chapterBounds = audiobookPlayerDragChapterBounds;
+  // A "change" with no "input" before it (some keyboard/assistive-tech
+  // adjustments) never froze bounds; the slider is still on the chapter
+  // scale, so look them up now rather than reading it as a whole-book fraction.
+  const chapterBounds = audiobookPlayerProgressDragging ? audiobookPlayerDragChapterBounds : getCurrentAudiobookChapterBounds(audio.currentTime);
   if (chapterBounds) {
     audio.currentTime = chapterBounds.start + fraction * (chapterBounds.end - chapterBounds.start);
   } else {

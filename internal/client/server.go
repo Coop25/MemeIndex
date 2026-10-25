@@ -46,6 +46,12 @@ type Server struct {
 	// the running server. While it is set, maintenanceGuard rejects mutating
 	// requests with 503 so nothing reads or writes half-restored state.
 	restoring atomic.Bool
+	// audiobookRemuxMu runs MP3 -> M4B audiobook remuxes one at a time (see
+	// remuxAudiobookMP3).
+	audiobookRemuxMu sync.Mutex
+	// audiobookRemuxProgress feeds the admin Audiobook Conversion tab
+	// (audiobook_remux_status.go).
+	audiobookRemuxProgress *audiobookRemuxProgress
 
 	authLimiter       *rateLimiter
 	writeLimiter      *rateLimiter
@@ -118,6 +124,8 @@ func NewServer(config Config, memeManager *manager.MemeManager) *Server {
 		mediaClient: mediaClient,
 		backup:      newPortableBackup(config.DatabaseURL, config.DataDir),
 		shareSecret: shareSecret,
+
+		audiobookRemuxProgress: newAudiobookRemuxProgress(),
 	}
 	server.linkRetries = newLinkRetryQueue(config.MediaFetchRetry.Interval, config.MediaFetchRetry.MaxAttempts, server.processRetriedLinkJob)
 	server.startAudiobookUploadCleanupSweeper()
@@ -174,6 +182,7 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/api/admin/memes/", s.withAPIAuth(http.HandlerFunc(s.handleAdminMemeActions), permissionManageUsers))
 	mux.Handle("/api/admin/shares", s.withAPIAuth(http.HandlerFunc(s.handleAdminShares), permissionManageUsers))
 	mux.Handle("/api/admin/shares/", s.withAPIAuth(http.HandlerFunc(s.handleAdminShares), permissionManageUsers))
+	mux.Handle("/api/admin/audiobook-remux/status", s.withAPIAuth(http.HandlerFunc(s.handleAudiobookRemuxStatus), permissionManageUsers))
 	mux.Handle("/uploads/", s.withProtectedAssetAuth(http.StripPrefix("/uploads/", http.FileServer(http.Dir(s.managers.UploadDir())))))
 	if thumbnailDir := s.managers.ThumbnailDir(); strings.TrimSpace(thumbnailDir) != "" {
 		mux.Handle("/thumbnails/", s.withProtectedAssetAuth(http.StripPrefix("/thumbnails/", http.FileServer(http.Dir(thumbnailDir)))))

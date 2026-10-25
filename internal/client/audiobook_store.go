@@ -121,6 +121,16 @@ type audiobookChapter struct {
 	EndSeconds   float64 `json:"end_seconds"`
 }
 
+// audiobookStoredMP3 is one ListStoredMP3s row: just what remuxing it needs.
+type audiobookStoredMP3 struct {
+	ID          string
+	Title       string
+	Filename    string
+	StoragePath string
+	MimeType    string
+	SizeBytes   int64
+}
+
 type audiobookWithProgress struct {
 	audiobookRecord
 	PositionSeconds float64
@@ -261,6 +271,14 @@ type audiobookStore interface {
 	// disk, so nothing needs to be re-uploaded. It returns how many rows
 	// picked up something new.
 	BackfillMetadata(ctx context.Context) (int, error)
+	// ListStoredMP3s returns every audiobook still stored as an MP3 - ones
+	// uploaded before CompleteUpload started remuxing to .m4b, or whose remux
+	// failed - oldest first.
+	ListStoredMP3s(ctx context.Context) ([]audiobookStoredMP3, error)
+	// RecordRemuxedM4B points an audiobook at its remuxed .m4b in place of the
+	// MP3 it was listed with. ErrAudiobookNotFound means the row was deleted
+	// or its file changed meanwhile, and the caller should discard the .m4b.
+	RecordRemuxedM4B(ctx context.Context, book audiobookStoredMP3, m4bPath string, sizeBytes int64) error
 
 	CreateBookmark(ctx context.Context, audiobookID, userID string, positionSeconds float64, label string) (audiobookBookmark, error)
 	ListBookmarks(ctx context.Context, audiobookID, userID string) ([]audiobookBookmark, error)
@@ -574,6 +592,16 @@ func (s *postgresAudiobookStore) CompleteUpload(ctx context.Context, id, userID 
 		return audiobookRecord{}, fmt.Errorf("commit completed audiobook: %w", err)
 	}
 	return record, nil
+}
+
+// audiobookM4BMimeType is set directly for files the server remuxed itself,
+// rather than sniffed: http.DetectContentType reports any MP4 as video/mp4.
+const audiobookM4BMimeType = "audio/mp4"
+
+// remuxedAudiobookFilename is the display/download filename for a remuxed
+// book: the uploaded name with its extension swapped for .m4b.
+func remuxedAudiobookFilename(filename string) string {
+	return strings.TrimSuffix(filename, filepath.Ext(filename)) + ".m4b"
 }
 
 // audiobookTitleExists reports whether the library already has an audiobook
@@ -945,6 +973,48 @@ func (s *postgresAudiobookStore) BackfillMetadata(ctx context.Context) (int, err
 		}
 	}
 	return updated, nil
+}
+
+func (s *postgresAudiobookStore) ListStoredMP3s(ctx context.Context) ([]audiobookStoredMP3, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, title, filename, storage_path, mime_type, size_bytes
+		FROM audiobooks
+		WHERE mime_type = 'audio/mpeg' OR lower(storage_path) LIKE '%.mp3'
+		ORDER BY created_at
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list mp3 audiobooks: %w", err)
+	}
+	defer rows.Close()
+	var books []audiobookStoredMP3
+	for rows.Next() {
+		var b audiobookStoredMP3
+		if err := rows.Scan(&b.ID, &b.Title, &b.Filename, &b.StoragePath, &b.MimeType, &b.SizeBytes); err != nil {
+			return nil, fmt.Errorf("scan mp3 audiobook: %w", err)
+		}
+		books = append(books, b)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate mp3 audiobooks: %w", err)
+	}
+	return books, nil
+}
+
+func (s *postgresAudiobookStore) RecordRemuxedM4B(ctx context.Context, book audiobookStoredMP3, m4bPath string, sizeBytes int64) error {
+	// Guarded on the old storage_path so a book deleted or replaced while its
+	// remux ran isn't pointed at the new file.
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE audiobooks
+		SET storage_path = $2, mime_type = $3, size_bytes = $4, filename = $5
+		WHERE id = $1 AND storage_path = $6
+	`, book.ID, m4bPath, audiobookM4BMimeType, sizeBytes, remuxedAudiobookFilename(book.Filename), book.StoragePath)
+	if err != nil {
+		return fmt.Errorf("record remuxed audiobook: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrAudiobookNotFound
+	}
+	return nil
 }
 
 // backfillOne re-probes a single already-stored audiobook file and applies

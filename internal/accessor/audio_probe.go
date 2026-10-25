@@ -3,7 +3,10 @@ package accessor
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -62,10 +65,17 @@ func (b *boundedProbeOutput) Write(p []byte) (int, error) {
 	return n, nil
 }
 
+// runProbeCommand keeps stderr apart from stdout: ffprobe can print a
+// demuxer complaint (a damaged frame, an odd tag) and still exit 0, and
+// interleaving that text into the JSON would make it unparsable - losing
+// every chapter over one harmless warning.
 func runProbeCommand(cmd *exec.Cmd) ([]byte, error) {
-	var output boundedProbeOutput
-	cmd.Stdout, cmd.Stderr = &output, &output
+	var output, stderr boundedProbeOutput
+	cmd.Stdout, cmd.Stderr = &output, &stderr
 	err := cmd.Run()
+	if err != nil && len(stderr.data) > 0 {
+		err = fmt.Errorf("%w: %s", err, strings.TrimSpace(string(stderr.data)))
+	}
 	return output.data, err
 }
 
@@ -124,8 +134,37 @@ func ProbeAudioMetadata(path string) (AudioMetadata, error) {
 			EndSeconds:   end,
 		})
 	}
+	meta.Chapters = normalizeAudioChapters(meta.Chapters, meta.DurationSeconds)
 
 	return meta, nil
+}
+
+// normalizeAudioChapters puts chapter markers in playback order and repairs
+// the end times the player relies on for its chapter-relative seek bar.
+// Taggers - ID3 CHAP writers especially - commonly leave the end time at
+// zero, equal to the start, or overlapping the next chapter; each chapter is
+// taken to run until the next one starts, and the last until the end of the
+// file.
+func normalizeAudioChapters(chapters []AudioChapter, durationSeconds float64) []AudioChapter {
+	if len(chapters) == 0 {
+		return chapters
+	}
+	sort.SliceStable(chapters, func(i, j int) bool { return chapters[i].StartSeconds < chapters[j].StartSeconds })
+	for i := range chapters {
+		if chapters[i].StartSeconds < 0 {
+			chapters[i].StartSeconds = 0
+		}
+		limit := durationSeconds
+		if i+1 < len(chapters) {
+			limit = chapters[i+1].StartSeconds
+		}
+		end := chapters[i].EndSeconds
+		if end <= chapters[i].StartSeconds || (limit > chapters[i].StartSeconds && end > limit) {
+			end = limit
+		}
+		chapters[i].EndSeconds = end
+	}
+	return chapters
 }
 
 // audioTagValue looks up a format/chapter tag case-insensitively: ffprobe
@@ -152,6 +191,104 @@ func firstAudioTagValue(tags map[string]string, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+// remuxTimeout bounds one remux. It's a stream copy, so it's I/O-bound - a
+// 700 MB, 15-hour book takes well under a minute on ordinary disks - but the
+// source is read twice (copy, then packet count) and +faststart rewrites the
+// output once more to put the index first, so the budget grows with the
+// file: MEMEINDEX_MAX_AUDIOBOOK_BYTES allows books of up to 20 GB, which a
+// slow disk or NAS can't get through in a fixed few minutes.
+func remuxTimeout(sizeBytes int64) time.Duration {
+	const perGB = 2 * time.Minute
+	return 15*time.Minute + time.Duration(sizeBytes/(1<<30))*perGB
+}
+
+// RemuxMP3ToM4B copies an MP3's audio frames, unchanged, into an MP4 (.m4b)
+// container at outputPath, keeping its tags and chapter markers.
+//
+// The point is seeking. A browser can't compute where a timestamp falls in a
+// VBR MP3, so it estimates from the 100-entry Xing table of contents - off by
+// tens of seconds or more in a long audiobook, which is what made chapter
+// jumps land in the wrong place. An MP4 carries a per-frame index, so every
+// browser seeks exactly. No re-encode happens, so there's no quality loss.
+//
+// Before this returns nil the output is checked to hold exactly as many
+// audio packets as the source; on any failure outputPath is removed and the
+// caller should keep serving the original file.
+func RemuxMP3ToM4B(inputPath, outputPath string) error {
+	info, err := os.Stat(inputPath)
+	if err != nil {
+		return fmt.Errorf("stat source: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), remuxTimeout(info.Size()))
+	defer cancel()
+
+	cmd := localMediaCommand(ctx,
+		"ffmpeg",
+		"-y",
+		"-i", inputPath,
+		// Audio only: an embedded cover is an attached-picture video stream,
+		// which the cover-art pipeline already extracted separately.
+		"-map", "0:a:0",
+		"-c:a", "copy",
+		"-map_metadata", "0",
+		"-map_chapters", "0",
+		// Index (moov) at the front, so playback and seeking can start
+		// without first fetching the end of a multi-hundred-MB file.
+		"-movflags", "+faststart",
+		"-f", "mp4",
+		outputPath,
+	)
+	if output, err := runMediaCommand(cmd); err != nil {
+		_ = os.Remove(outputPath)
+		return fmt.Errorf("ffmpeg remux: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+
+	if err := verifyRemuxedPackets(ctx, inputPath, outputPath); err != nil {
+		_ = os.Remove(outputPath)
+		return err
+	}
+	return nil
+}
+
+// verifyRemuxedPackets compares audio packet counts rather than durations:
+// ffprobe's duration for an MP3 is only exact when it carries an accurate
+// Xing/Info header - for one without, or several MP3s joined end to end
+// (common for audiobooks), it's an estimate that can be far off, while the
+// remux reports the true length. A stream copy must carry every packet
+// across. The source count needs a full read of the MP3 (it has no index -
+// the whole problem), which right after the remux mostly comes from the page
+// cache; the MP4's count is read straight from its index.
+func verifyRemuxedPackets(ctx context.Context, sourcePath, remuxedPath string) error {
+	sourcePackets, err := probeAudioPacketCount(ctx, sourcePath, true)
+	if err != nil {
+		return fmt.Errorf("count source packets: %w", err)
+	}
+	remuxedPackets, err := probeAudioPacketCount(ctx, remuxedPath, false)
+	if err != nil {
+		return fmt.Errorf("count remuxed packets: %w", err)
+	}
+	if sourcePackets == 0 || sourcePackets != remuxedPackets {
+		return fmt.Errorf("remuxed file has %d audio packets, source has %d", remuxedPackets, sourcePackets)
+	}
+	return nil
+}
+
+// probeAudioPacketCount returns the first audio stream's packet count:
+// read from the container's index, or, with countPackets, by demuxing the
+// whole file for containers that have none.
+func probeAudioPacketCount(ctx context.Context, path string, countPackets bool) (int64, error) {
+	args := []string{"-select_streams", "a:0", "-show_entries", "stream=nb_frames", "-of", "csv=p=0", path}
+	if countPackets {
+		args = []string{"-select_streams", "a:0", "-count_packets", "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", path}
+	}
+	output, err := runProbeCommand(localMediaCommand(ctx, "ffprobe", args...))
+	if err != nil {
+		return 0, err
+	}
+	value, _, _ := strings.Cut(strings.TrimSpace(string(output)), ",")
+	return strconv.ParseInt(strings.TrimSpace(value), 10, 64)
 }
 
 // ExtractEmbeddedCoverArt pulls the first attached picture out of an audio
