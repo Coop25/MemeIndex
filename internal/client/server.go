@@ -49,8 +49,8 @@ type Server struct {
 	// audiobookRemuxMu runs MP3 -> M4B audiobook remuxes one at a time (see
 	// remuxAudiobookMP3).
 	audiobookRemuxMu sync.Mutex
-	// audiobookRemuxProgress feeds the temporary remux admin page
-	// (audiobook_remux_admin.go).
+	// audiobookRemuxProgress feeds the admin Audiobook Conversion tab
+	// (audiobook_remux_status.go).
 	audiobookRemuxProgress *audiobookRemuxProgress
 
 	authLimiter       *rateLimiter
@@ -182,9 +182,7 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/api/admin/memes/", s.withAPIAuth(http.HandlerFunc(s.handleAdminMemeActions), permissionManageUsers))
 	mux.Handle("/api/admin/shares", s.withAPIAuth(http.HandlerFunc(s.handleAdminShares), permissionManageUsers))
 	mux.Handle("/api/admin/shares/", s.withAPIAuth(http.HandlerFunc(s.handleAdminShares), permissionManageUsers))
-	// TEMPORARY: MP3 -> M4B audiobook remux progress (audiobook_remux_admin.go).
 	mux.Handle("/api/admin/audiobook-remux/status", s.withAPIAuth(http.HandlerFunc(s.handleAudiobookRemuxStatus), permissionManageUsers))
-	mux.Handle("/admin/audiobook-remux", s.withPageAuth(http.HandlerFunc(s.handleAudiobookRemuxPage)))
 	mux.Handle("/uploads/", s.withProtectedAssetAuth(http.StripPrefix("/uploads/", http.FileServer(http.Dir(s.managers.UploadDir())))))
 	if thumbnailDir := s.managers.ThumbnailDir(); strings.TrimSpace(thumbnailDir) != "" {
 		mux.Handle("/thumbnails/", s.withProtectedAssetAuth(http.StripPrefix("/thumbnails/", http.FileServer(http.Dir(thumbnailDir)))))

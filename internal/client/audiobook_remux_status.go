@@ -1,28 +1,22 @@
 package client
 
-// TEMPORARY: the admin page that shows MP3 -> M4B audiobook remux progress -
-// the one-time startup backfill plus any uploads converted since. Once every
-// server has finished converting, delete this file,
-// static/admin-audiobook-remux.html, the two routes registered in Routes(),
-// the audiobookRemuxProgress field on Server, and its calls in
-// audiobook_remux.go - nothing else depends on it.
+// The admin workspace's Audiobook Conversion tab reads MP3 -> M4B remux
+// progress - the startup backfill plus any uploads converted since - from
+// handleAudiobookRemuxStatus.
 
 import (
 	"errors"
-	"html"
 	"net/http"
 	"os"
-	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 )
 
 // audiobookRemuxProgress is an in-memory record of the current server
-// process's remuxes. It starts empty on every boot; the page also shows the
+// process's remuxes. It starts empty on every boot; the tab also shows the
 // live count of MP3s still in the database, so a restart mid-run is visible.
-// All methods are safe on a nil receiver, so the tracker can be dropped
-// without touching the conversion loop's control flow.
+// All methods are safe on a nil receiver, so the conversion loop never has
+// to check whether progress is being tracked.
 type audiobookRemuxProgress struct {
 	mu         sync.Mutex
 	state      string // "waiting", "running", "finished", "failed"
@@ -215,31 +209,4 @@ func (s *Server) handleAudiobookRemuxStatus(w http.ResponseWriter, r *http.Reque
 	}
 	payload["mp3s_remaining"] = len(remaining)
 	writeJSON(w, http.StatusOK, payload)
-}
-
-func (s *Server) handleAudiobookRemuxPage(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if s.auth.enabled() {
-		session, ok := sessionFromContext(r.Context())
-		if !ok || !hasPermission(session.Permissions, permissionManageUsers) {
-			http.NotFound(w, r)
-			return
-		}
-	}
-	content, err := os.ReadFile(filepath.Join("static", "admin-audiobook-remux.html"))
-	if err != nil {
-		http.Error(w, "failed to load page", http.StatusInternalServerError)
-		return
-	}
-	nonce := newCSPNonce()
-	page := strings.ReplaceAll(string(content), "{{SCRIPT_NONCE}}", html.EscapeString(nonce))
-	w.Header().Set("Cache-Control", "no-store, max-age=0")
-	// Same shape as the access-denied page's policy: one nonce-pinned inline
-	// script, inline styles, and fetches back to this origin only.
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'nonce-"+nonce+"'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'")
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(page))
 }

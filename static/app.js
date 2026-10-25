@@ -39,6 +39,7 @@ const state = {
     },
     tagQueueStatus: null,
     linkRetryStatus: null,
+    remuxStatus: null,
     backupStatus: null,
     dashboard: null,
     tagHygiene: {
@@ -167,6 +168,11 @@ const ADMIN_TABS = Object.freeze({
     group: "Operations", label: "Backup & Restore", superOnly: true, panel: "admin-backup-panel",
     title: "Backup & Restore", kicker: "Admin",
     copy: "Move the complete meme library and its database to another MemeIndex Docker instance.",
+  },
+  "audiobook-conversion": {
+    group: "Operations", label: "MP3 Conversion", superOnly: true, panel: "admin-remux-panel",
+    title: "Audiobook Conversion", kicker: "Admin",
+    copy: "MP3 audiobooks are copied, without re-encoding, into .m4b files so chapter jumps and seeking land exactly. Books stay playable throughout.",
   },
 });
 const ADMIN_TAB_IDS = Object.freeze(Object.keys(ADMIN_TABS));
@@ -1051,7 +1057,13 @@ const adminBackupPoller = createAdminPoller({
   tick: () => fetchAdminBackupStatus(),
 });
 
-const adminPollers = [adminTagQueuePoller, adminLinkQueuePoller, adminBackupPoller];
+const adminRemuxPoller = createAdminPoller({
+  baseInterval: 3000,
+  shouldRun: () => isAdminView() && canManageUsers() && activeAdminTab() === "audiobook-conversion",
+  tick: () => fetchAdminRemuxStatus(),
+});
+
+const adminPollers = [adminTagQueuePoller, adminLinkQueuePoller, adminBackupPoller, adminRemuxPoller];
 
 document.addEventListener("visibilitychange", () => {
   adminPollers.forEach((poller) => poller.sync());
@@ -3050,6 +3062,117 @@ function syncAdminLinkQueuePolling() {
   adminLinkQueuePoller.sync();
 }
 
+// --- Audiobook conversion (MP3 -> M4B remux) -------------------------------
+
+async function fetchAdminRemuxStatus() {
+  if (!canManageUsers()) {
+    return null;
+  }
+  const response = await fetch("/api/admin/audiobook-remux/status");
+  if (!(await expectAuthorized(response, "Failed to load audiobook conversion status."))) {
+    return null;
+  }
+  state.admin.remuxStatus = (await response.json()) || null;
+  renderAdminRemuxStatus();
+  return state.admin.remuxStatus;
+}
+
+const ADMIN_REMUX_STATE_LABELS = { waiting: "Waiting to start", running: "Converting", finished: "Finished", failed: "Failed", unavailable: "Audiobooks disabled" };
+const ADMIN_REMUX_STATUS_LABELS = { pending: "Waiting", converting: "Converting", done: "Done", failed: "Failed", skipped: "Skipped" };
+
+function formatRemuxBytes(bytes) {
+  if (!bytes) return "0 MB";
+  return bytes >= 1e9 ? `${(bytes / 1e9).toFixed(2)} GB` : `${Math.round(bytes / 1e6)} MB`;
+}
+
+function renderAdminRemuxStatus() {
+  const panel = document.querySelector("#admin-remux-panel");
+  const grid = document.querySelector("#admin-remux-grid");
+  const list = document.querySelector("#admin-remux-list");
+  const summary = document.querySelector("#admin-remux-summary");
+  const bar = document.querySelector("#admin-remux-bar");
+  if (!panel || !grid || !list || !summary) return;
+
+  const visible = isAdminView() && canManageUsers() && activeAdminTab() === "audiobook-conversion";
+  panel.classList.toggle("hidden", !visible);
+  if (!visible) return;
+
+  const status = state.admin.remuxStatus;
+  if (!status) {
+    summary.textContent = "Loading conversion status...";
+    grid.innerHTML = `<p class="users-empty">Loading audiobook conversion status...</p>`;
+    list.innerHTML = "";
+    return;
+  }
+
+  const counts = status.counts || {};
+  const items = Array.isArray(status.items) ? status.items : [];
+  const toGo = (counts.pending || 0) + (counts.converting || 0);
+  summary.textContent = status.bytes_total
+    ? `${ADMIN_REMUX_STATE_LABELS[status.state] || status.state} * ${formatRemuxBytes(status.bytes_done)} of ${formatRemuxBytes(status.bytes_total)}`
+    : ADMIN_REMUX_STATE_LABELS[status.state] || status.state || "";
+  if (bar) {
+    const pct = status.bytes_total ? (status.bytes_done / status.bytes_total) * 100 : (status.state === "finished" ? 100 : 0);
+    bar.style.width = `${Math.min(100, pct)}%`;
+  }
+
+  const stat = (label, value) => `
+    <article class="admin-tag-queue-stat">
+      <span class="admin-tag-queue-label">${escapeHTML(label)}</span>
+      <strong class="admin-tag-queue-value">${escapeHTML(String(value))}</strong>
+    </article>`;
+  grid.innerHTML = [
+    stat("Converted", counts.done || 0),
+    stat("Failed or Skipped", (counts.failed || 0) + (counts.skipped || 0)),
+    stat("To Go", toGo),
+    stat("MP3s Left in Library", status.mp3s_remaining ?? "-"),
+  ].join("");
+
+  if (items.length === 0) {
+    list.innerHTML = `
+      <section class="admin-tag-queue-section">
+        <div class="admin-tag-queue-list-head">
+          <strong>Books</strong>
+          <span>${status.state === "waiting" ? "Waiting for the startup conversion to begin." : "No MP3 audiobooks have needed converting since the server started."}</span>
+        </div>
+      </section>`;
+    return;
+  }
+
+  list.innerHTML = `
+    <section class="admin-tag-queue-section">
+      <div class="admin-tag-queue-list-head">
+        <strong>Books</strong>
+        <span>Failed books stay on their MP3 and are retried on a server start at least a week later.</span>
+      </div>
+      <div class="admin-tag-queue-items">
+        ${items.map((item) => {
+          const parts = [formatRemuxBytes(item.size_before)];
+          if (item.status === "done" && item.size_after) parts.push(`to ${formatRemuxBytes(item.size_after)}`);
+          if (item.started_at) {
+            const end = item.finished_at ? new Date(item.finished_at) : new Date();
+            parts.push(formatDurationWords(Math.max(0, Math.round((end - new Date(item.started_at)) / 1000))));
+          }
+          let pct = 0;
+          if (item.status === "converting" && item.size_before) {
+            pct = Math.min(100, Math.round((item.bytes_done / item.size_before) * 100));
+            parts.push(pct >= 100 ? "finalizing" : `${pct}%`);
+          }
+          return `
+            <article class="admin-tag-queue-item admin-remux-item is-${escapeHTML(item.status || "")}">
+              <span class="admin-tag-queue-rank">${escapeHTML(ADMIN_REMUX_STATUS_LABELS[item.status] || item.status || "")}</span>
+              <div class="admin-tag-queue-item-copy">
+                <strong>${escapeHTML(item.title || item.filename || item.id || "Untitled")}</strong>
+                <span>${escapeHTML(parts.join(" * "))}</span>
+                ${item.status === "converting" ? `<div class="admin-remux-progress is-item" aria-hidden="true"><i style="width:${pct}%"></i></div>` : ""}
+                ${item.error ? `<code>${escapeHTML(item.error)}</code>` : ""}
+              </div>
+            </article>`;
+        }).join("")}
+      </div>
+    </section>`;
+}
+
 async function retryRejectedLinkDownload(id) {
   if (!id) {
     return;
@@ -3615,9 +3738,11 @@ function renderContentMode() {
   renderAdminTagHygiene();
   renderAdminTagQueueStatus();
   renderAdminLinkRetryStatus();
+  renderAdminRemuxStatus();
   syncAdminTagQueuePolling();
   syncAdminLinkQueuePolling();
   syncAdminBackupPolling();
+  adminRemuxPoller.sync();
 }
 
 function syncAdminPagination() {
@@ -3733,6 +3858,7 @@ const ADMIN_TAB_LOADERS = {
   "link-retries": { run: () => fetchAdminLinkRetryStatus() },
   "rejected-links": { run: () => fetchAdminLinkRetryStatus() },
   backup: { run: () => { renderAdminBackupStatus(); return fetchAdminBackupStatus(); } },
+  "audiobook-conversion": { run: () => fetchAdminRemuxStatus() },
 };
 
 async function loadInitialMemes() {
