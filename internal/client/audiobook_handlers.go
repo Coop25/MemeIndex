@@ -123,6 +123,8 @@ func (s *Server) handleAudiobookByID(w http.ResponseWriter, r *http.Request) {
 		s.listAudiobookTags(w, r, id)
 	case action == "tags" && r.Method == http.MethodPut:
 		s.replaceAudiobookTags(w, r, id)
+	case action == "progress" && r.Method == http.MethodGet:
+		s.getAudiobookProgress(w, r, id)
 	case action == "progress" && r.Method == http.MethodPut:
 		s.saveAudiobookProgress(w, r, id)
 	case action == "playback-heartbeat" && r.Method == http.MethodPut:
@@ -469,6 +471,19 @@ func (s *Server) replaceAudiobookTags(w http.ResponseWriter, r *http.Request, id
 	writeJSON(w, http.StatusOK, map[string]any{"tags": tags})
 }
 
+// getAudiobookProgress lets the player read the latest saved position at open
+// time, rather than trusting whatever the library list had when it was loaded
+// - that copy goes stale as soon as the book is played on another device.
+func (s *Server) getAudiobookProgress(w http.ResponseWriter, r *http.Request, id string) {
+	position, ok, err := s.audiobooks.GetProgress(r.Context(), id, currentAudiobookUserID(r))
+	if err != nil {
+		log.Printf("get audiobook progress failed: %v", err)
+		http.Error(w, "failed to load progress", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"found": ok, "position_seconds": position})
+}
+
 func (s *Server) saveAudiobookProgress(w http.ResponseWriter, r *http.Request, id string) {
 	var payload struct {
 		PositionSeconds float64 `json:"positionSeconds"`
@@ -496,6 +511,13 @@ func (s *Server) saveAudiobookProgress(w http.ResponseWriter, r *http.Request, i
 // clean pause.
 const audiobookPlaybackActiveWindow = 20 * time.Second
 
+// audiobookPlaybackStopPendingGrace widens the active window for the "has the
+// other device picked up my stop request yet" check. A device can be flagged
+// while its last heartbeat was already most of the active window old; without
+// this extra time, it would age out of the check partway through the client's
+// confirm loop and look like it had stopped when it simply never answered.
+const audiobookPlaybackStopPendingGrace = 15 * time.Second
+
 // audiobookDeviceIDMaxLen bounds the client-supplied device id. It's just an
 // opaque label a browser invents for itself to tell its own heartbeats apart
 // from another device's, not anything that needs to carry real identity.
@@ -506,6 +528,7 @@ func (s *Server) saveAudiobookPlaybackHeartbeat(w http.ResponseWriter, r *http.R
 		DeviceID        string  `json:"deviceId"`
 		PositionSeconds float64 `json:"positionSeconds"`
 		IsPlaying       bool    `json:"isPlaying"`
+		Resumed         bool    `json:"resumed"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&payload); err != nil {
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
@@ -520,7 +543,7 @@ func (s *Server) saveAudiobookPlaybackHeartbeat(w http.ResponseWriter, r *http.R
 		payload.PositionSeconds = 0
 	}
 
-	stopRequested, err := s.audiobooks.HeartbeatPlaybackSession(r.Context(), id, currentAudiobookUserID(r), deviceID, payload.PositionSeconds, payload.IsPlaying)
+	stopRequested, err := s.audiobooks.HeartbeatPlaybackSession(r.Context(), id, currentAudiobookUserID(r), deviceID, payload.PositionSeconds, payload.IsPlaying, payload.Resumed)
 	if err != nil {
 		log.Printf("audiobook playback heartbeat failed: %v", err)
 		http.Error(w, "failed to record playback heartbeat", http.StatusInternalServerError)
@@ -536,20 +559,38 @@ func (s *Server) getAudiobookPlaybackElsewhere(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	session, ok, err := s.audiobooks.OtherActivePlaybackSession(r.Context(), id, currentAudiobookUserID(r), deviceID, time.Now().Add(-audiobookPlaybackActiveWindow))
+	now := time.Now()
+	activeSince := now.Add(-audiobookPlaybackActiveWindow)
+	userID := currentAudiobookUserID(r)
+	session, ok, err := s.audiobooks.OtherActivePlaybackSession(r.Context(), id, userID, deviceID, activeSince)
 	if err != nil {
 		log.Printf("get other audiobook playback session failed: %v", err)
 		http.Error(w, "failed to check other devices", http.StatusInternalServerError)
 		return
 	}
-	if !ok {
-		writeJSON(w, http.StatusOK, map[string]any{"active": false})
+	stopPending, err := s.audiobooks.OtherPlaybackStopPending(r.Context(), id, userID, deviceID, activeSince.Add(-audiobookPlaybackStopPendingGrace))
+	if err != nil {
+		log.Printf("check pending audiobook playback stop failed: %v", err)
+		http.Error(w, "failed to check other devices", http.StatusInternalServerError)
 		return
+	}
+	if !ok {
+		writeJSON(w, http.StatusOK, map[string]any{"active": false, "stop_pending": stopPending})
+		return
+	}
+	// age_seconds is measured here rather than left to the client to work out
+	// from updated_at, so a phone whose clock is a few seconds off doesn't
+	// resume a takeover from the wrong spot.
+	ageSeconds := now.Sub(session.UpdatedAt).Seconds()
+	if ageSeconds < 0 {
+		ageSeconds = 0
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"active":           true,
 		"position_seconds": session.PositionSeconds,
 		"updated_at":       session.UpdatedAt,
+		"age_seconds":      ageSeconds,
+		"stop_pending":     stopPending,
 	})
 }
 
