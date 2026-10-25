@@ -227,6 +227,9 @@ type audiobookStore interface {
 	GetAudiobook(ctx context.Context, id string) (audiobookRecord, error)
 	DeleteAudiobook(ctx context.Context, id string) (audiobookRecord, error)
 	SaveProgress(ctx context.Context, audiobookID, userID string, positionSeconds float64) error
+	// GetProgress returns this user's saved position for one audiobook, or
+	// ok=false if they have never played it.
+	GetProgress(ctx context.Context, audiobookID, userID string) (positionSeconds float64, ok bool, err error)
 
 	// UpdateAudiobookMetadata overwrites title/author/narrator with whichever of
 	// the three pointers are non-nil (a nil pointer leaves that column as is),
@@ -265,15 +268,23 @@ type audiobookStore interface {
 
 	// HeartbeatPlaybackSession records this device's current playback state for
 	// an audiobook and reports whether another device has asked it to stop
-	// (clearing that request as it does so).
-	HeartbeatPlaybackSession(ctx context.Context, audiobookID, userID, deviceID string, positionSeconds float64, isPlaying bool) (stopRequested bool, err error)
+	// (clearing that request as it does so). resumed marks the heartbeat sent
+	// the moment the listener pressed play on this device: any stop request
+	// still sitting on the row predates that press and is dropped instead of
+	// immediately pausing the playback they just started.
+	HeartbeatPlaybackSession(ctx context.Context, audiobookID, userID, deviceID string, positionSeconds float64, isPlaying, resumed bool) (stopRequested bool, err error)
 	// OtherActivePlaybackSession returns the most recently updated OTHER
 	// device's playback session for this audiobook+user that is still playing
 	// and newer than activeSince, or ok=false if there is none.
 	OtherActivePlaybackSession(ctx context.Context, audiobookID, userID, deviceID string, activeSince time.Time) (session audiobookPlaybackSession, ok bool, err error)
-	// RequestOtherPlaybackSessionsStop asks every other device's session for
-	// this audiobook+user to pause on its next heartbeat.
+	// RequestOtherPlaybackSessionsStop asks every other device that is still
+	// playing this audiobook+user to pause on its next heartbeat.
 	RequestOtherPlaybackSessionsStop(ctx context.Context, audiobookID, userID, deviceID string) error
+	// OtherPlaybackStopPending reports whether a stop request is still waiting
+	// on another device that has heartbeated since activeSince - i.e. that
+	// device hasn't picked it up yet. A row that has gone quiet past activeSince
+	// no longer counts: that device is gone, not just slow.
+	OtherPlaybackStopPending(ctx context.Context, audiobookID, userID, deviceID string, activeSince time.Time) (bool, error)
 }
 
 type postgresAudiobookStore struct {
@@ -787,6 +798,21 @@ func (s *postgresAudiobookStore) DeleteAudiobook(ctx context.Context, id string)
 	return record, nil
 }
 
+func (s *postgresAudiobookStore) GetProgress(ctx context.Context, audiobookID, userID string) (float64, bool, error) {
+	var position float64
+	err := s.pool.QueryRow(ctx, `
+		SELECT position_seconds FROM audiobook_progress
+		WHERE audiobook_id = $1 AND user_id = $2
+	`, audiobookID, userID).Scan(&position)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("get audiobook progress: %w", err)
+	}
+	return position, true, nil
+}
+
 func (s *postgresAudiobookStore) SaveProgress(ctx context.Context, audiobookID, userID string, positionSeconds float64) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO audiobook_progress (audiobook_id, user_id, position_seconds, updated_at)
@@ -801,7 +827,7 @@ func (s *postgresAudiobookStore) SaveProgress(ctx context.Context, audiobookID, 
 	return nil
 }
 
-func (s *postgresAudiobookStore) HeartbeatPlaybackSession(ctx context.Context, audiobookID, userID, deviceID string, positionSeconds float64, isPlaying bool) (bool, error) {
+func (s *postgresAudiobookStore) HeartbeatPlaybackSession(ctx context.Context, audiobookID, userID, deviceID string, positionSeconds float64, isPlaying, resumed bool) (bool, error) {
 	var stopRequested bool
 	// current_state reads stop_requested as it stood BEFORE this heartbeat,
 	// using the query's own snapshot - safe because a plain SELECT CTE never
@@ -831,7 +857,7 @@ func (s *postgresAudiobookStore) HeartbeatPlaybackSession(ctx context.Context, a
 	if err != nil {
 		return false, fmt.Errorf("heartbeat audiobook playback session: %w", err)
 	}
-	return stopRequested, nil
+	return stopRequested && !resumed, nil
 }
 
 func (s *postgresAudiobookStore) OtherActivePlaybackSession(ctx context.Context, audiobookID, userID, deviceID string, activeSince time.Time) (audiobookPlaybackSession, bool, error) {
@@ -856,12 +882,26 @@ func (s *postgresAudiobookStore) RequestOtherPlaybackSessionsStop(ctx context.Co
 	_, err := s.pool.Exec(ctx, `
 		UPDATE audiobook_playback_sessions
 		SET stop_requested = TRUE, is_playing = FALSE
-		WHERE audiobook_id = $1 AND user_id = $2 AND device_id != $3
+		WHERE audiobook_id = $1 AND user_id = $2 AND device_id != $3 AND is_playing = TRUE
 	`, audiobookID, userID, deviceID)
 	if err != nil {
 		return fmt.Errorf("request audiobook playback sessions stop: %w", err)
 	}
 	return nil
+}
+
+func (s *postgresAudiobookStore) OtherPlaybackStopPending(ctx context.Context, audiobookID, userID, deviceID string, activeSince time.Time) (bool, error) {
+	var pending bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM audiobook_playback_sessions
+			WHERE audiobook_id = $1 AND user_id = $2 AND device_id != $3 AND stop_requested = TRUE AND updated_at > $4
+		)
+	`, audiobookID, userID, deviceID, activeSince).Scan(&pending)
+	if err != nil {
+		return false, fmt.Errorf("check pending audiobook playback stop: %w", err)
+	}
+	return pending, nil
 }
 
 func (s *postgresAudiobookStore) BackfillMetadata(ctx context.Context) (int, error) {

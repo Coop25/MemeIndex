@@ -4197,6 +4197,49 @@ body.admin-mode .admin-tab.is-active .admin-tab-badge { background: var(--green-
 .audiobook-player-chapter-nav:disabled:hover { background: transparent; }
 .audiobook-player-play { display: grid; width: 60px; height: 60px; place-items: center; border: 0; border-radius: 50%; background: linear-gradient(135deg,#b27a42,#8d5e31); color: #fff; font-size: 22px; cursor: pointer; box-shadow: 0 10px 24px rgba(141,94,49,.4); }
 .audiobook-player-play:hover { filter: brightness(1.08); }
+/* Solid glyphs, not the outline style every other player icon uses - the
+   play/pause shape has to read instantly at a glance. The wrapper span is
+   what the icon swap writes into. */
+.audiobook-player-play { position: relative; }
+.audiobook-player-play > span { display: grid; place-items: center; }
+.audiobook-player-play svg { width: 26px; height: 26px; fill: currentColor; stroke: none; }
+/* Buffering: a ring spinning around the play button. The button node is
+   shared between the full player and the mini bar, so this shows in both,
+   and the dimmed glyph keeps it obvious that pressing it won't do anything
+   new until the audio catches up. */
+.audiobook-player-play::after {
+  position: absolute; inset: -5px; border: 3px solid transparent; border-top-color: var(--green-bright); border-right-color: var(--green-bright);
+  border-radius: 50%; content: ""; opacity: 0; pointer-events: none; transition: opacity .2s ease;
+}
+.audiobook-player-play.is-buffering::after { opacity: 1; animation: audiobookBufferingSpin .8s linear infinite; }
+.audiobook-player-play.is-buffering svg { opacity: .55; }
+@keyframes audiobookBufferingSpin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .audiobook-player-play.is-buffering::after { animation-duration: 2.4s; }
+}
+
+/* The seek bar draws its own track so it can show three bands: played, then
+   downloaded-but-not-played (--buffered, set from audio.buffered in app.js),
+   then not loaded yet. */
+#audiobook-player-progress {
+  --played: 0%; --buffered: 0%;
+  height: 18px; margin: 0; background: transparent; cursor: pointer; appearance: none; -webkit-appearance: none;
+}
+#audiobook-player-progress::-webkit-slider-runnable-track {
+  height: 5px; border-radius: 999px;
+  background: linear-gradient(to right, var(--green) 0 var(--played), rgba(229,179,111,.38) var(--played) var(--buffered), rgba(255,255,255,.12) var(--buffered) 100%);
+}
+#audiobook-player-progress::-moz-range-track {
+  height: 5px; border-radius: 999px;
+  background: linear-gradient(to right, var(--green) 0 var(--played), rgba(229,179,111,.38) var(--played) var(--buffered), rgba(255,255,255,.12) var(--buffered) 100%);
+}
+#audiobook-player-progress::-webkit-slider-thumb {
+  width: 15px; height: 15px; margin-top: -5px; border: 0; border-radius: 50%; background: var(--green-bright); box-shadow: 0 1px 5px rgba(0,0,0,.45); -webkit-appearance: none;
+}
+#audiobook-player-progress::-moz-range-thumb {
+  width: 15px; height: 15px; border: 0; border-radius: 50%; background: var(--green-bright); box-shadow: 0 1px 5px rgba(0,0,0,.45);
+}
+#audiobook-player-progress:focus-visible { outline: 2px solid var(--green-bright); outline-offset: 3px; border-radius: 999px; }
 .audiobook-player-speed-field { display: flex; align-items: center; gap: 8px; justify-self: start; color: var(--muted); font-size: 12px; }
 .audiobook-player-speed-field select { padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg-soft); color: var(--text); font-size: 13px; }
 .audiobook-player-action-group { display: flex; justify-content: center; gap: 10px; }
@@ -4279,6 +4322,7 @@ body.admin-mode .admin-tab.is-active .admin-tab-badge { background: var(--green-
   .audiobook-player-skip-button { min-width: 44px; height: 40px; font-size: 11px; }
   .audiobook-player-chapter-nav { width: 34px; height: 34px; }
   .audiobook-player-play { width: 50px; height: 50px; font-size: 18px; }
+  .audiobook-player-play svg { width: 22px; height: 22px; }
   .audiobook-player-bottombar-row { column-gap: 8px; row-gap: 6px; }
   .audiobook-player-speed-field { gap: 4px; font-size: 11px; }
   .audiobook-player-speed-field span { display: none; }
@@ -4327,6 +4371,43 @@ body.admin-mode .admin-tab.is-active .admin-tab-badge { background: var(--green-
 .audiobook-mini-player-controls-slot { display: flex; justify-content: center; cursor: pointer; }
 .audiobook-mini-player-controls-slot .audiobook-player-controls { gap: 6px; }
 .audiobook-mini-player-controls-slot .audiobook-player-play { width: 44px; height: 44px; font-size: 16px; }
+.audiobook-mini-player-controls-slot .audiobook-player-play svg { width: 19px; height: 19px; }
+
+/* Cover + title + a one-line subtitle, so the docked bar says what's
+   playing - and, since the full player's banner isn't visible from here,
+   whether it's buffering or playing on another device. */
+.audiobook-mini-player-info { display: flex; align-items: center; gap: 10px; min-width: 0; cursor: pointer; }
+.audiobook-mini-player-cover-wrap { display: grid; flex-shrink: 0; width: 40px; height: 40px; place-items: center; overflow: hidden; border-radius: 7px; background: var(--panel-3); }
+.audiobook-mini-player-cover { width: 100%; height: 100%; object-fit: cover; }
+.audiobook-mini-player-cover-fallback { width: 55%; height: 55%; color: var(--green-bright); }
+.audiobook-mini-player-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.audiobook-mini-player-title { overflow: hidden; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.audiobook-mini-player-subtitle { overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.audiobook-mini-player-subtitle:empty { display: none; }
+.audiobook-mini-player-subtitle[data-tone="warning"] { color: var(--amber); }
+.audiobook-mini-player-subtitle[data-tone="busy"] { color: var(--green-bright); }
+
+/* Desktop: dock to the right of the sidebar instead of across it (the
+   sidebar sits under this bar's z-index, so left:0 hid its bottom buttons),
+   and lay everything out on one row - info, transport, seek bar, close -
+   which there's plenty of width for. --sidebar-width already tracks the
+   collapsed sidebar at narrower widths. */
+@media (min-width: 761px) {
+  .audiobook-mini-player { left: var(--sidebar-width); padding: 8px 18px 10px; }
+  .audiobook-mini-player-content {
+    display: grid; grid-template-columns: minmax(160px, 280px) auto minmax(0, 1fr) auto;
+    grid-template-areas: "info controls progress close"; align-items: center; column-gap: 18px;
+  }
+  .audiobook-mini-player-info { grid-area: info; }
+  .audiobook-mini-player-top { display: contents; }
+  .audiobook-mini-player-progress-slot { grid-area: progress; }
+  .audiobook-mini-player-close { grid-area: close; }
+  .audiobook-mini-player-controls-slot { grid-area: controls; }
+}
+@media (min-width: 761px) and (max-width: 1100px) {
+  .audiobook-mini-player-content { grid-template-columns: minmax(120px, 200px) auto minmax(0, 1fr) auto; column-gap: 12px; }
+  .audiobook-mini-player-controls-slot .audiobook-player-chapter-nav { display: none; }
+}
 .audiobook-mini-player-controls-slot .audiobook-player-chapter-nav { width: 32px; height: 32px; }
 .audiobook-mini-player-controls-slot .audiobook-player-skip-button { min-width: 42px; height: 36px; font-size: 11px; }
 
@@ -4341,6 +4422,46 @@ body.admin-mode .admin-tab.is-active .admin-tab-badge { background: var(--green-
     bottom: calc(70px + env(safe-area-inset-bottom)); padding: 8px 12px;
     transform: translateY(calc(100% + 70px + env(safe-area-inset-bottom) + 2px));
   }
+  /* Kept to one short line on a phone so the bar doesn't grow much taller
+     than it was - the cover shrinks and the subtitle sits beside the title. */
+  .audiobook-mini-player-content { max-height: 200px; }
+  .audiobook-mini-player-cover-wrap { width: 28px; height: 28px; border-radius: 5px; }
+  .audiobook-mini-player-text { flex-direction: row; align-items: baseline; gap: 8px; }
+  .audiobook-mini-player-title { flex-shrink: 1; font-size: 12px; }
+  .audiobook-mini-player-subtitle { flex-shrink: 2; }
+}
+
+/* Phone on its side: wider than the 760px mobile breakpoint, so it would
+   otherwise get the desktop layout - a stacked cover, title and two-row
+   transport squeezed into ~390px of height, with the middle clipped. Put
+   the cover on the left and everything you touch on the right instead. */
+@media (orientation: landscape) and (max-height: 540px) {
+  .audiobook-player-shell {
+    display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr);
+    height: 100dvh; padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  .audiobook-player-topbar { grid-column: 1 / -1; padding: calc(6px + env(safe-area-inset-top)) 14px 4px; }
+  .audiobook-player-icon-button { width: 36px; height: 36px; }
+  .audiobook-player-topbar .status-text { max-width: 30vw; overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+  .audiobook-player-elsewhere-banner { grid-column: 1 / -1; padding: 6px 14px; font-size: 12px; }
+  .audiobook-player-main { grid-column: 1; grid-row: 3; }
+  .audiobook-player-stage { gap: 6px; padding: 4px 12px 8px; }
+  .audiobook-player-flip { width: min(calc(100dvh - 145px), 40vw); }
+  /* The "playing elsewhere" banner takes a row of its own height out of
+     what's left for the cover. */
+  .audiobook-player-shell:has(.audiobook-player-elsewhere-banner:not(.hidden)) .audiobook-player-flip { width: min(calc(100dvh - 190px), 40vw); }
+  .audiobook-player-stage h2 { font-size: 14px; }
+  .audiobook-player-author { font-size: 12px; }
+  .audiobook-player-remaining { margin-top: -4px; font-size: 11px; }
+  .audiobook-player-bottombar {
+    grid-column: 2; grid-row: 3; justify-content: center; gap: 14px; padding: 8px 20px 12px;
+    border-top: 0; border-left: 1px solid var(--line); background: transparent; overflow-y: auto;
+  }
+  .audiobook-player-bottombar-row { display: flex; flex-wrap: wrap; justify-content: center; row-gap: 8px; column-gap: 10px; }
+  .audiobook-player-controls { gap: 6px; }
+  .audiobook-player-play { width: 54px; height: 54px; }
+  .audiobook-player-skip-button { min-width: 46px; height: 40px; }
+  .audiobook-player-action-button { padding: 6px 11px; }
 }
 
 /* Generic confirm modal: a styled stand-in for window.confirm(), currently

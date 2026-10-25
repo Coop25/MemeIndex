@@ -302,6 +302,10 @@ const audiobookMiniPlayerProgressSlot = document.querySelector("#audiobook-mini-
 const audiobookMiniPlayerControlsSlot = document.querySelector("#audiobook-mini-player-controls-slot");
 const audiobookMiniPlayerClose = document.querySelector("#audiobook-mini-player-close");
 const audiobookMiniPlayerHandle = document.querySelector("#audiobook-mini-player-handle");
+const audiobookMiniPlayerTitle = document.querySelector("#audiobook-mini-player-title");
+const audiobookMiniPlayerSubtitle = document.querySelector("#audiobook-mini-player-subtitle");
+const audiobookMiniPlayerCover = document.querySelector("#audiobook-mini-player-cover");
+const audiobookMiniPlayerCoverFallback = document.querySelector("#audiobook-mini-player-cover-fallback");
 const audiobookPlayerFlip = document.querySelector("#audiobook-player-flip");
 const audiobookPlayerCover = document.querySelector("#audiobook-player-cover");
 const audiobookPlayerCoverFallback = document.querySelector("#audiobook-player-cover-fallback");
@@ -3843,11 +3847,19 @@ const AUDIOBOOK_UPLOAD_CONCURRENCY_DEFAULT = 4;
 const AUDIOBOOK_UPLOAD_STORAGE_KEY = "memevault.audiobookUpload";
 const AUDIOBOOK_PROGRESS_SAVE_INTERVAL_MS = 15000;
 // How often this device reports its playback state while actually playing,
-// and how often it polls for another device doing the same - both need to be
-// quick enough that "force pause it" feels responsive, not a bandwidth concern
-// at this scale.
-const AUDIOBOOK_PLAYBACK_HEARTBEAT_INTERVAL_MS = 5000;
+// and how often it polls for another device doing the same. The heartbeat is
+// also how a playing device hears it was asked to stop, so it's what bounds
+// how long two devices overlap after "play here" - kept short for that, not a
+// bandwidth concern at this scale.
+const AUDIOBOOK_PLAYBACK_HEARTBEAT_INTERVAL_MS = 2000;
 const AUDIOBOOK_PLAYBACK_ELSEWHERE_POLL_INTERVAL_MS = 5000;
+// After asking another device to stop, how long to keep checking that it
+// actually did before telling the listener it didn't respond.
+const AUDIOBOOK_TAKEOVER_CONFIRM_TIMEOUT_MS = 10000;
+const AUDIOBOOK_TAKEOVER_CONFIRM_POLL_MS = 1000;
+// The server stops counting a device as playing after 20s without a
+// heartbeat, so a reported position is never older than that.
+const AUDIOBOOK_PLAYBACK_MAX_AGE_SECONDS = 20;
 const AUDIOBOOK_DEVICE_ID_STORAGE_KEY = "memeindex.audiobookDeviceId";
 
 let audiobookDeviceIdCache = null;
@@ -5542,20 +5554,38 @@ function scheduleAudiobookVolumeAutoHide() {
 // device" banner. info is {positionSeconds} from the server, or null once
 // nothing is playing elsewhere (either we never found one, or the listener
 // just took over).
+const AUDIOBOOK_ELSEWHERE_STATUS = "Playing on another device — tap play to pause it there and play here.";
+
 function renderAudiobookPlaybackElsewhere(info) {
   audiobookPlaybackElsewhereState = info;
+  if (!info) clearAudiobookPlayerStatus(AUDIOBOOK_ELSEWHERE_STATUS);
+  renderAudiobookMiniPlayerInfo();
   if (!audiobookPlayerElsewhereBanner) return;
   if (!info) {
     audiobookPlayerElsewhereBanner.classList.add("hidden");
     return;
   }
   if (audiobookPlayerElsewhereText) {
-    audiobookPlayerElsewhereText.textContent = `Playing on another device — ${formatMediaTime(info.positionSeconds)}`;
+    audiobookPlayerElsewhereText.textContent = `Playing on another device — ${formatMediaTime(estimateAudiobookElsewherePosition(info))}`;
   }
   audiobookPlayerElsewhereBanner.classList.remove("hidden");
 }
 
-async function fetchAudiobookPlaybackElsewhere(audiobookId) {
+// estimateAudiobookElsewherePosition works out where the other device has
+// gotten to by now, not where it was at its last heartbeat: that report is
+// already ageSeconds old when the server hands it over, plus however long ago
+// this browser received it. Assumes 1x speed - the server doesn't track rate.
+function estimateAudiobookElsewherePosition(info) {
+  const sinceFetch = (performance.now() - info.fetchedAt) / 1000;
+  const age = Math.min(info.ageSeconds + sinceFetch, AUDIOBOOK_PLAYBACK_MAX_AGE_SECONDS);
+  return info.positionSeconds + Math.max(age, 0);
+}
+
+// fetchAudiobookPlaybackStatus returns the raw "other devices" picture for an
+// audiobook: elsewhere is {positionSeconds, ageSeconds, fetchedAt} for another
+// device still playing it (or null), and stopPending says a stop request this
+// device sent hasn't been picked up yet. null on a failed request.
+async function fetchAudiobookPlaybackStatus(audiobookId) {
   try {
     const response = await fetch(
       `/api/audiobooks/${encodeURIComponent(audiobookId)}/playback-elsewhere?deviceId=${encodeURIComponent(getAudiobookDeviceId())}`,
@@ -5563,7 +5593,32 @@ async function fetchAudiobookPlaybackElsewhere(audiobookId) {
     );
     if (!response.ok) return null;
     const payload = await response.json();
-    return payload.active ? { positionSeconds: payload.position_seconds || 0 } : null;
+    return {
+      elsewhere: payload.active
+        ? { positionSeconds: payload.position_seconds || 0, ageSeconds: payload.age_seconds || 0, fetchedAt: performance.now() }
+        : null,
+      stopPending: !!payload.stop_pending,
+    };
+  } catch (error) {
+    console.error(error);
+    return null;
+  }
+}
+
+async function fetchAudiobookPlaybackElsewhere(audiobookId) {
+  const status = await fetchAudiobookPlaybackStatus(audiobookId);
+  return status?.elsewhere || null;
+}
+
+// fetchAudiobookSavedPosition reads the server's latest saved position for
+// a book, or null if it can't be fetched (the caller falls back to the list's
+// copy).
+async function fetchAudiobookSavedPosition(audiobookId) {
+  try {
+    const response = await fetch(`/api/audiobooks/${encodeURIComponent(audiobookId)}/progress`, { credentials: "same-origin" });
+    if (!response.ok) return null;
+    const payload = await response.json();
+    return payload.found ? Number(payload.position_seconds) || 0 : null;
   } catch (error) {
     console.error(error);
     return null;
@@ -5576,8 +5631,12 @@ async function fetchAudiobookPlaybackElsewhere(audiobookId) {
 async function pollAudiobookPlaybackElsewhere() {
   const player = state.audiobooks.player;
   if (!player) return;
+  // While a takeover is still being confirmed, the device being stopped can
+  // report itself as playing one last time before it hears the request -
+  // showing the banner for that would just flash it back up for a moment.
+  if (audiobookTakeoverConfirming) return;
   const info = await fetchAudiobookPlaybackElsewhere(player.id);
-  if (state.audiobooks.player?.id !== player.id) return;
+  if (state.audiobooks.player?.id !== player.id || audiobookTakeoverConfirming) return;
   renderAudiobookPlaybackElsewhere(info);
 }
 
@@ -5606,35 +5665,83 @@ async function pauseAudiobookElsewhereAndPlayHere() {
     showToast("Could not pause the other device.", "error", { title: "Audiobooks" });
     return;
   }
+  const targetPosition = estimateAudiobookElsewherePosition(elsewhere);
   renderAudiobookPlaybackElsewhere(null);
-  const targetPosition = elsewhere.positionSeconds;
-  if (Number.isFinite(targetPosition) && targetPosition > 0 && audio.duration && targetPosition < audio.duration - 1) {
+  const knownDuration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : player.durationSeconds || 0;
+  if (Number.isFinite(targetPosition) && targetPosition > 0 && (!knownDuration || targetPosition < knownDuration - 1)) {
     audio.currentTime = targetPosition;
   }
   audio.play().catch((error) => console.error(error));
-  showToast("Paused on the other device.", "success", { title: "Audiobooks" });
+  confirmAudiobookTakeover(player.id).catch((error) => console.error(error));
 }
+
+// confirmAudiobookTakeover waits for the other device to actually pick up the
+// stop request (the server reports it pending until that device's next
+// heartbeat) instead of announcing success the moment the request is sent.
+// A device that never answers - a phone whose browser froze the tab in the
+// background, say - gets an honest "may still be playing" instead.
+let audiobookTakeoverConfirmToken = 0;
+let audiobookTakeoverConfirming = false;
+const AUDIOBOOK_TAKEOVER_STATUS = "Pausing the other device...";
+async function confirmAudiobookTakeover(audiobookId) {
+  const token = ++audiobookTakeoverConfirmToken;
+  const isCurrent = () => token === audiobookTakeoverConfirmToken && state.audiobooks.player?.id === audiobookId;
+  audiobookTakeoverConfirming = true;
+  setAudiobookPlayerStatus(AUDIOBOOK_TAKEOVER_STATUS);
+  try {
+    const deadline = performance.now() + AUDIOBOOK_TAKEOVER_CONFIRM_TIMEOUT_MS;
+    while (performance.now() < deadline) {
+      await new Promise((resolve) => window.setTimeout(resolve, AUDIOBOOK_TAKEOVER_CONFIRM_POLL_MS));
+      if (!isCurrent()) return;
+      const status = await fetchAudiobookPlaybackStatus(audiobookId);
+      if (!isCurrent()) return;
+      if (status && !status.stopPending) {
+        showToast("Paused on the other device.", "success", { title: "Audiobooks" });
+        return;
+      }
+    }
+    showToast("The other device didn't respond — it may still be playing.", "info", { title: "Audiobooks" });
+  } finally {
+    if (token === audiobookTakeoverConfirmToken) {
+      audiobookTakeoverConfirming = false;
+      clearAudiobookPlayerStatus(AUDIOBOOK_TAKEOVER_STATUS);
+    }
+  }
+}
+
+// Set while this device pauses itself because another device took over, so
+// the pause handler skips its usual progress save - this device's position is
+// a few seconds ahead of where the other one resumed, and saving it would
+// briefly overwrite the newer position the other device is now writing.
+let audiobookRemotePauseInProgress = false;
+let audiobookLastHeartbeatAt = 0;
 
 // sendAudiobookPlaybackHeartbeat reports this device's actual play state and
 // position, and self-pauses if another device just forced this one to stop
-// (the "stopRequested" flag the server clears as it reports it).
-async function sendAudiobookPlaybackHeartbeat() {
+// (the "stopRequested" flag the server clears as it reports it). resumed is
+// set for the heartbeat sent the moment the listener presses play here, which
+// tells the server to drop any older stop request instead of acting on it.
+async function sendAudiobookPlaybackHeartbeat({ resumed = false } = {}) {
   const player = state.audiobooks.player;
   const audio = audiobookAudioEl;
   if (!player || !audio) return;
+  audiobookLastHeartbeatAt = performance.now();
   try {
     const response = await fetch(`/api/audiobooks/${encodeURIComponent(player.id)}/playback-heartbeat`, {
       method: "PUT",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ deviceId: getAudiobookDeviceId(), positionSeconds: audio.currentTime || 0, isPlaying: !audio.paused }),
+      body: JSON.stringify({ deviceId: getAudiobookDeviceId(), positionSeconds: audio.currentTime || 0, isPlaying: !audio.paused, resumed }),
       keepalive: true,
     });
     if (!response.ok) return;
     const payload = await response.json();
     if (payload.stopRequested && state.audiobooks.player?.id === player.id && !audio.paused) {
+      audiobookRemotePauseInProgress = true;
       audio.pause();
+      setAudiobookPlayerStatus("Paused — now playing on another device.");
       showToast("Paused here — resumed on another device.", "info", { title: "Audiobooks" });
+      pollAudiobookPlaybackElsewhere();
     }
   } catch (error) {
     console.error(error);
@@ -5661,8 +5768,28 @@ function sendAudiobookPlaybackStoppedSignal() {
 function getAudiobookAudioElement() {
   if (audiobookAudioEl) return audiobookAudioEl;
   const audio = new Audio();
-  audio.addEventListener("timeupdate", updateAudiobookPlayerProgressUI);
+  audio.addEventListener("timeupdate", () => {
+    updateAudiobookPlayerProgressUI();
+    updateAudiobookBufferingUI();
+    // Backstop for the worker-driven heartbeat: some mobile browsers suspend
+    // workers in a backgrounded tab while still delivering timeupdate to the
+    // page as long as audio is playing. Without this a locked phone can keep
+    // playing but go quiet to the server, so another device neither sees it
+    // as playing nor can tell it to stop.
+    if (!audio.paused && performance.now() - audiobookLastHeartbeatAt > AUDIOBOOK_PLAYBACK_HEARTBEAT_INTERVAL_MS * 1.5) {
+      sendAudiobookPlaybackHeartbeat();
+    }
+  });
   audio.addEventListener("loadedmetadata", updateAudiobookPlayerProgressUI);
+  // progress fires as more of the file downloads - only the buffered band on
+  // the seek bar depends on it.
+  audio.addEventListener("progress", updateAudiobookPlayerProgressUI);
+  // Buffering state is derived from the element itself (see
+  // updateAudiobookBufferingUI), so every event that can change readyState,
+  // paused, or seeking just re-derives it rather than each one guessing.
+  for (const type of ["waiting", "playing", "canplay", "canplaythrough", "seeking", "seeked", "stalled", "loadstart", "emptied"]) {
+    audio.addEventListener(type, updateAudiobookBufferingUI);
+  }
   // durationchange covers files whose real length isn't known yet at
   // loadedmetadata (e.g. an M4B with its moov atom at the end of the file,
   // needing an extra range request the browser hasn't made yet) - once it
@@ -5677,14 +5804,21 @@ function getAudiobookAudioElement() {
     // soon as the listener presses play again, instead of leaving the old
     // marked-as state showing until the next periodic save.
     saveAudiobookProgressNow();
-    sendAudiobookPlaybackHeartbeat();
+    sendAudiobookPlaybackHeartbeat({ resumed: true });
     setAudiobookMediaSessionPlaybackState(audio);
+    clearAudiobookPlayerStatus("Paused — now playing on another device.");
+    updateAudiobookBufferingUI();
   });
   audio.addEventListener("pause", () => {
     setAudiobookPlayIcon(false);
-    saveAudiobookProgressNow();
+    if (audiobookRemotePauseInProgress) {
+      audiobookRemotePauseInProgress = false;
+    } else {
+      saveAudiobookProgressNow();
+    }
     sendAudiobookPlaybackHeartbeat();
     setAudiobookMediaSessionPlaybackState(audio);
+    updateAudiobookBufferingUI();
   });
   audio.addEventListener("ended", () => {
     setAudiobookPlayIcon(false);
@@ -5702,17 +5836,13 @@ function getAudiobookAudioElement() {
     sendAudiobookPlaybackHeartbeat();
     setAudiobookMediaSessionPositionState(audio);
   });
-  audio.addEventListener("waiting", () => {
-    if (audiobookPlayerStatus) audiobookPlayerStatus.textContent = "Buffering...";
-  });
-  audio.addEventListener("playing", () => {
-    if (audiobookPlayerStatus) audiobookPlayerStatus.textContent = "";
-  });
   audio.addEventListener("error", () => {
     setAudiobookPlayIcon(false);
-    if (audiobookPlayerStatus) {
-      audiobookPlayerStatus.textContent = "Playback error - check your connection, then press play to retry.";
-    }
+    updateAudiobookBufferingUI();
+    // An emptied src (closing the player) also raises "error" on some
+    // browsers - only a real load failure is worth telling anyone about.
+    if (!audio.getAttribute("src")) return;
+    setAudiobookPlayerStatus("Playback error - check your connection, then press play to retry.");
   });
   setupAudiobookMediaSessionHandlers(audio);
   audiobookAudioEl = audio;
@@ -5811,9 +5941,91 @@ function updateAudiobookMediaSessionChapterHandlers(hasChapters) {
   navigator.mediaSession.setActionHandler("nexttrack", hasChapters ? () => jumpAudiobookChapter(1) : null);
 }
 
+const AUDIOBOOK_PLAY_ICON_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5Z" /></svg>';
+const AUDIOBOOK_PAUSE_ICON_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1.2" /><rect x="14" y="5" width="4" height="14" rx="1.2" /></svg>';
+
 function setAudiobookPlayIcon(playing) {
-  if (audiobookPlayerPlayIcon) audiobookPlayerPlayIcon.innerHTML = playing ? "&#10074;&#10074;" : "&#9654;";
+  if (audiobookPlayerPlayIcon) audiobookPlayerPlayIcon.innerHTML = playing ? AUDIOBOOK_PAUSE_ICON_SVG : AUDIOBOOK_PLAY_ICON_SVG;
   audiobookPlayerPlayButton?.setAttribute("aria-label", playing ? "Pause" : "Play");
+}
+
+// The player's one-line status (top bar of the full player, subtitle of the
+// mini bar). setAudiobookPlayerStatus replaces it; clearAudiobookPlayerStatus
+// only clears it if it still says `text`, so a transient message ("Pausing
+// the other device...") finishing doesn't wipe out a newer one that replaced
+// it in the meantime.
+function setAudiobookPlayerStatus(text) {
+  if (audiobookPlayerStatus) audiobookPlayerStatus.textContent = text;
+  renderAudiobookMiniPlayerInfo();
+}
+
+function clearAudiobookPlayerStatus(text) {
+  if (audiobookPlayerStatus?.textContent === text) setAudiobookPlayerStatus("");
+}
+
+const AUDIOBOOK_BUFFERING_STATUS = "Buffering...";
+let audiobookBuffering = false;
+
+// updateAudiobookBufferingUI derives "is this stuck waiting on data" from the
+// audio element's own state - it's meant to be playing (not paused/ended) but
+// doesn't have enough data to move forward, or is mid-seek - rather than
+// tracking waiting/playing events, which miss cases like a seek while paused
+// that then never fires "playing" to clear it. Shows as a spinning ring on
+// the play button, which is the same node in both the full and mini player.
+function updateAudiobookBufferingUI() {
+  const audio = audiobookAudioEl;
+  const buffering = !!audio && !!audio.getAttribute("src") && !audio.paused && !audio.ended && !audio.error
+    && (audio.readyState < HTMLMediaElement.HAVE_FUTURE_DATA || audio.seeking);
+  if (buffering === audiobookBuffering) return;
+  audiobookBuffering = buffering;
+  audiobookPlayerPlayButton?.classList.toggle("is-buffering", buffering);
+  audiobookPlayerPlayButton?.setAttribute("aria-busy", String(buffering));
+  if (buffering) {
+    if (!audiobookPlayerStatus?.textContent) setAudiobookPlayerStatus(AUDIOBOOK_BUFFERING_STATUS);
+    else renderAudiobookMiniPlayerInfo();
+  } else {
+    clearAudiobookPlayerStatus(AUDIOBOOK_BUFFERING_STATUS);
+    renderAudiobookMiniPlayerInfo();
+  }
+}
+
+// renderAudiobookMiniPlayerInfo fills the mini bar's title line and the
+// subtitle under it, which carries whatever is most worth knowing while the
+// full player is hidden: another device playing, buffering, a status
+// message, or else just the author.
+function renderAudiobookMiniPlayerInfo() {
+  if (!audiobookMiniPlayerSubtitle) return;
+  const item = audiobookPlayerOpenItem;
+  let subtitle = item?.author || "";
+  let tone = "";
+  const statusText = audiobookPlayerStatus?.textContent || "";
+  if (audiobookPlaybackElsewhereState) {
+    subtitle = "Playing on another device — press play to take over";
+    tone = "warning";
+  } else if (audiobookBuffering) {
+    subtitle = AUDIOBOOK_BUFFERING_STATUS;
+    tone = "busy";
+  } else if (statusText) {
+    subtitle = statusText;
+  }
+  audiobookMiniPlayerSubtitle.textContent = subtitle;
+  audiobookMiniPlayerSubtitle.dataset.tone = tone;
+}
+
+function renderAudiobookMiniPlayerItem(item) {
+  if (audiobookMiniPlayerTitle) audiobookMiniPlayerTitle.textContent = audiobookDisplayTitle(item);
+  if (audiobookMiniPlayerCover) {
+    if (item.cover_url) {
+      audiobookMiniPlayerCover.src = item.cover_url;
+      audiobookMiniPlayerCover.classList.remove("hidden");
+      audiobookMiniPlayerCoverFallback?.classList.add("hidden");
+    } else {
+      audiobookMiniPlayerCover.removeAttribute("src");
+      audiobookMiniPlayerCover.classList.add("hidden");
+      audiobookMiniPlayerCoverFallback?.classList.remove("hidden");
+    }
+  }
+  renderAudiobookMiniPlayerInfo();
 }
 
 // setAudiobookMiniPlayerOpen shows/hides the mini bar and keeps a body class
@@ -5913,7 +6125,10 @@ async function openAudiobookPlayer(item) {
   renderAudiobookPlayerChapters(item.chapters || []);
   setAudiobookMediaSessionMetadata(item);
   updateAudiobookMediaSessionChapterHandlers((item.chapters || []).length > 0);
-  if (audiobookPlayerStatus) audiobookPlayerStatus.textContent = "";
+  audiobookTakeoverConfirmToken++;
+  audiobookTakeoverConfirming = false;
+  setAudiobookPlayerStatus("");
+  renderAudiobookMiniPlayerItem(item);
   if (audiobookPlayerProgress) audiobookPlayerProgress.value = "0";
   if (audiobookPlayerCurrentTime) audiobookPlayerCurrentTime.textContent = "0:00";
   if (audiobookPlayerDuration) audiobookPlayerDuration.textContent = "0:00";
@@ -5929,16 +6144,19 @@ async function openAudiobookPlayer(item) {
   audio.src = item.stream_url;
   renderAudiobookPlaybackElsewhere(null);
 
-  // Autoplay-on-open has to wait on BOTH the audio metadata and the
-  // elsewhere-check, whichever lands last - jumping straight to play() the
-  // instant metadata is ready would start a second simultaneous playback
-  // before we've had a chance to find out this book is already playing on
-  // another device.
-  const resumeAt = item.position_seconds || 0;
+  // Autoplay-on-open has to wait on the audio metadata, the elsewhere-check,
+  // and a fresh read of the saved position, whichever lands last - jumping
+  // straight to play() the instant metadata is ready would start a second
+  // simultaneous playback before we've had a chance to find out this book is
+  // already playing on another device. The position is re-read rather than
+  // taken from the library list, which is only as fresh as when it loaded
+  // and misses anything listened to on another device since.
+  let resumeAt = item.position_seconds || 0;
   let metadataReady = false;
   let elsewhereChecked = false;
+  let positionChecked = false;
   const tryAutoplayDecision = () => {
-    if (!metadataReady || !elsewhereChecked) return;
+    if (!metadataReady || !elsewhereChecked || !positionChecked) return;
     // audio.duration can still be NaN here for some files even after
     // loadedmetadata (e.g. an M4B whose real length needs another range
     // request the browser hasn't made yet) - falling back to the server's
@@ -5951,11 +6169,11 @@ async function openAudiobookPlayer(item) {
       audio.currentTime = resumeAt;
     }
     if (audiobookPlaybackElsewhereState) {
-      if (audiobookPlayerStatus) audiobookPlayerStatus.textContent = "Playing on another device — tap play to pause it there and play here.";
+      setAudiobookPlayerStatus(AUDIOBOOK_ELSEWHERE_STATUS);
       return;
     }
     audio.play().catch(() => {
-      if (audiobookPlayerStatus) audiobookPlayerStatus.textContent = "Tap play to start listening.";
+      setAudiobookPlayerStatus("Tap play to start listening.");
     });
   };
   const onReady = () => {
@@ -5973,6 +6191,16 @@ async function openAudiobookPlayer(item) {
   }).catch((error) => {
     console.error(error);
     elsewhereChecked = true;
+    tryAutoplayDecision();
+  });
+
+  fetchAudiobookSavedPosition(item.id).then((position) => {
+    if (state.audiobooks.player?.id !== item.id) return;
+    if (position !== null) {
+      resumeAt = position;
+      item.position_seconds = position;
+    }
+    positionChecked = true;
     tryAutoplayDecision();
   });
 
@@ -6045,9 +6273,34 @@ function updateAudiobookPlayerProgressUI() {
   if (audiobookPlayerRemaining) {
     audiobookPlayerRemaining.textContent = bookRemaining > 1 ? formatAudiobookRemaining(bookRemaining) : "";
   }
+  updateAudiobookProgressTrack(audio, chapterBounds, duration);
   highlightActiveAudiobookChapter(audio.currentTime);
   updateAudiobookChapterNavState(audio.currentTime);
   setAudiobookMediaSessionPositionState(audio);
+}
+
+// updateAudiobookProgressTrack paints the seek bar's track: the played part,
+// then a lighter band for what's already downloaded ahead of the playhead -
+// so it's visible whether jumping forward will play right away or stall.
+// Same chapter-relative scale as the slider itself. Only the buffered range
+// containing the playhead counts; a range further ahead (from an earlier
+// seek) doesn't help playback continue from here.
+function updateAudiobookProgressTrack(audio, chapterBounds, duration) {
+  if (!audiobookPlayerProgress) return;
+  const start = chapterBounds ? chapterBounds.start : 0;
+  const length = chapterBounds ? chapterBounds.end - chapterBounds.start : duration;
+  let bufferedEnd = audio.currentTime;
+  const ranges = audio.buffered;
+  for (let i = 0; i < ranges.length; i++) {
+    if (ranges.start(i) <= audio.currentTime + 0.5 && ranges.end(i) >= audio.currentTime) {
+      bufferedEnd = ranges.end(i);
+      break;
+    }
+  }
+  const played = Number(audiobookPlayerProgress.value) / 10;
+  const buffered = length > 0 ? Math.min(Math.max(((bufferedEnd - start) / length) * 100, 0), 100) : 0;
+  audiobookPlayerProgress.style.setProperty("--played", `${played}%`);
+  audiobookPlayerProgress.style.setProperty("--buffered", `${Math.max(buffered, played)}%`);
 }
 
 function renderAudiobookPlayerChapters(chapters) {
@@ -6403,6 +6656,8 @@ function closeAudiobookPlayer() {
     audio.load();
   }
   audiobookSyncActive = false;
+  audiobookTakeoverConfirmToken++;
+  audiobookTakeoverConfirming = false;
   renderAudiobookPlaybackElsewhere(null);
   restoreAudiobookBottombarNodes();
   setAudiobookVolumeExpanded(false);
@@ -9529,6 +9784,7 @@ audiobookPlayerProgress?.addEventListener("input", () => {
       audiobookPlayerCurrentTime.textContent = formatMediaTime(fraction * duration);
     }
   }
+  audiobookPlayerProgress.style.setProperty("--played", `${fraction * 100}%`);
 });
 audiobookPlayerProgress?.addEventListener("change", () => {
   const audio = getAudiobookAudioElement();
