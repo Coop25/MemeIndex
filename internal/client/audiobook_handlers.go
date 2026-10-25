@@ -511,6 +511,13 @@ func (s *Server) saveAudiobookProgress(w http.ResponseWriter, r *http.Request, i
 // clean pause.
 const audiobookPlaybackActiveWindow = 20 * time.Second
 
+// audiobookPlaybackStopPendingGrace widens the active window for the "has the
+// other device picked up my stop request yet" check. A device can be flagged
+// while its last heartbeat was already most of the active window old; without
+// this extra time, it would age out of the check partway through the client's
+// confirm loop and look like it had stopped when it simply never answered.
+const audiobookPlaybackStopPendingGrace = 15 * time.Second
+
 // audiobookDeviceIDMaxLen bounds the client-supplied device id. It's just an
 // opaque label a browser invents for itself to tell its own heartbeats apart
 // from another device's, not anything that needs to carry real identity.
@@ -561,7 +568,7 @@ func (s *Server) getAudiobookPlaybackElsewhere(w http.ResponseWriter, r *http.Re
 		http.Error(w, "failed to check other devices", http.StatusInternalServerError)
 		return
 	}
-	stopPending, err := s.audiobooks.OtherPlaybackStopPending(r.Context(), id, userID, deviceID, activeSince)
+	stopPending, err := s.audiobooks.OtherPlaybackStopPending(r.Context(), id, userID, deviceID, activeSince.Add(-audiobookPlaybackStopPendingGrace))
 	if err != nil {
 		log.Printf("check pending audiobook playback stop failed: %v", err)
 		http.Error(w, "failed to check other devices", http.StatusInternalServerError)

@@ -4404,6 +4404,13 @@ body.admin-mode .admin-tab.is-active .admin-tab-badge { background: var(--green-
   .audiobook-mini-player-close { grid-area: close; }
   .audiobook-mini-player-controls-slot { grid-area: controls; }
 }
+/* Room at the end of the page for the docked bar, so the last row of cards
+   can still be scrolled out from under it. A spacer rather than more bottom
+   padding, since each view mode sets its own .content-panel padding. */
+body.audiobook-mini-player-open .content-panel::after { display: block; height: 96px; content: ""; }
+@media (max-width: 760px) {
+  body.audiobook-mini-player-open .content-panel::after { height: 120px; }
+}
 @media (min-width: 761px) and (max-width: 1100px) {
   .audiobook-mini-player-content { grid-template-columns: minmax(120px, 200px) auto minmax(0, 1fr) auto; column-gap: 12px; }
   .audiobook-mini-player-controls-slot .audiobook-player-chapter-nav { display: none; }

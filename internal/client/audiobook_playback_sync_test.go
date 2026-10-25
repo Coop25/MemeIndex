@@ -73,6 +73,13 @@ func TestHeartbeatPlaybackSessionClearsStopRequested(t *testing.T) {
 	if !stopRequested {
 		t.Fatalf("heartbeat A (after stop request): stopRequested = false, want true")
 	}
+	// A reported itself playing on that heartbeat, but it's about to pause -
+	// it must not reappear as "playing elsewhere" to B in the meantime.
+	if _, active, err := store.OtherActivePlaybackSession(ctx, audiobookID, userID, deviceB, time.Now().Add(-time.Minute)); err != nil {
+		t.Fatalf("OtherActivePlaybackSession: %v", err)
+	} else if active {
+		t.Fatalf("A shows as playing right after being told to stop")
+	}
 
 	// ...and clear it, so a subsequent heartbeat does not see it again.
 	stopRequested, err = store.HeartbeatPlaybackSession(ctx, audiobookID, userID, deviceA, 20, true, false)

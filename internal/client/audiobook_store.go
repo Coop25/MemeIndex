@@ -840,24 +840,30 @@ func (s *postgresAudiobookStore) HeartbeatPlaybackSession(ctx context.Context, a
 	// stop_requested was never actually cleared - "pause there, play here"
 	// looked like it worked (is_playing flips to false immediately) but the
 	// other device's heartbeat never saw the request and kept playing.
+	//
+	// A stop that this heartbeat delivers (honored) is also recorded as
+	// is_playing = FALSE right here, even though the device reported itself
+	// playing: it is about to pause, and writing TRUE would make it show up as
+	// "playing elsewhere" again on the device that just took over until its
+	// own pause heartbeat lands. A resumed heartbeat drops the stop instead.
 	err := s.pool.QueryRow(ctx, `
 		WITH current_state AS (
-			SELECT stop_requested FROM audiobook_playback_sessions
+			SELECT stop_requested AND NOT $6::boolean AS honored FROM audiobook_playback_sessions
 			WHERE audiobook_id = $1 AND user_id = $2 AND device_id = $3
 		)
 		INSERT INTO audiobook_playback_sessions (audiobook_id, user_id, device_id, position_seconds, is_playing, stop_requested, updated_at)
-		VALUES ($1, $2, $3, $4, $5, FALSE, NOW())
+		VALUES ($1, $2, $3, $4, $5 AND NOT COALESCE((SELECT honored FROM current_state), FALSE), FALSE, NOW())
 		ON CONFLICT (audiobook_id, user_id, device_id) DO UPDATE
 		SET position_seconds = EXCLUDED.position_seconds,
 			is_playing = EXCLUDED.is_playing,
 			stop_requested = FALSE,
 			updated_at = NOW()
-		RETURNING COALESCE((SELECT stop_requested FROM current_state), FALSE)
-	`, audiobookID, userID, deviceID, positionSeconds, isPlaying).Scan(&stopRequested)
+		RETURNING COALESCE((SELECT honored FROM current_state), FALSE)
+	`, audiobookID, userID, deviceID, positionSeconds, isPlaying, resumed).Scan(&stopRequested)
 	if err != nil {
 		return false, fmt.Errorf("heartbeat audiobook playback session: %w", err)
 	}
-	return stopRequested && !resumed, nil
+	return stopRequested, nil
 }
 
 func (s *postgresAudiobookStore) OtherActivePlaybackSession(ctx context.Context, audiobookID, userID, deviceID string, activeSince time.Time) (audiobookPlaybackSession, bool, error) {

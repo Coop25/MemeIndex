@@ -5492,6 +5492,7 @@ let audiobookPendingDeepLinkBookId = "";
 // The other device's last-known position, while the banner is showing it -
 // null whenever nothing is playing elsewhere for the open audiobook.
 let audiobookPlaybackElsewhereState = null;
+const AUDIOBOOK_ELSEWHERE_STATUS = "Playing on another device — tap play to pause it there and play here.";
 
 // Progress save, heartbeat, and "playing elsewhere" poll are all driven off
 // one shared Worker tick (see getAudiobookSyncWorker) rather than their own
@@ -5551,11 +5552,9 @@ function scheduleAudiobookVolumeAutoHide() {
 }
 
 // renderAudiobookPlaybackElsewhere shows or hides the "playing on another
-// device" banner. info is {positionSeconds} from the server, or null once
-// nothing is playing elsewhere (either we never found one, or the listener
-// just took over).
-const AUDIOBOOK_ELSEWHERE_STATUS = "Playing on another device — tap play to pause it there and play here.";
-
+// device" banner. info is {positionSeconds, ageSeconds, fetchedAt} from
+// fetchAudiobookPlaybackStatus, or null once nothing is playing elsewhere
+// (either we never found one, or the listener just took over).
 function renderAudiobookPlaybackElsewhere(info) {
   audiobookPlaybackElsewhereState = info;
   if (!info) clearAudiobookPlayerStatus(AUDIOBOOK_ELSEWHERE_STATUS);
@@ -5709,11 +5708,13 @@ async function confirmAudiobookTakeover(audiobookId) {
   }
 }
 
-// Set while this device pauses itself because another device took over, so
-// the pause handler skips its usual progress save - this device's position is
-// a few seconds ahead of where the other one resumed, and saving it would
-// briefly overwrite the newer position the other device is now writing.
-let audiobookRemotePauseInProgress = false;
+// Set once this device pauses itself because another device took over, and
+// held until the listener plays or seeks here again. While set, progress saves
+// from this device are skipped - its position is a few seconds ahead of where
+// the other one resumed, and the pause event, closing the player, or the tab
+// going to the background would otherwise save it over the newer position
+// the other device is now writing.
+let audiobookYieldedToOtherDevice = false;
 let audiobookLastHeartbeatAt = 0;
 
 // sendAudiobookPlaybackHeartbeat reports this device's actual play state and
@@ -5724,7 +5725,7 @@ let audiobookLastHeartbeatAt = 0;
 async function sendAudiobookPlaybackHeartbeat({ resumed = false } = {}) {
   const player = state.audiobooks.player;
   const audio = audiobookAudioEl;
-  if (!player || !audio) return;
+  if (!player || !audio || !isAudiobookAudioForPlayer(audio, player)) return;
   audiobookLastHeartbeatAt = performance.now();
   try {
     const response = await fetch(`/api/audiobooks/${encodeURIComponent(player.id)}/playback-heartbeat`, {
@@ -5737,7 +5738,7 @@ async function sendAudiobookPlaybackHeartbeat({ resumed = false } = {}) {
     if (!response.ok) return;
     const payload = await response.json();
     if (payload.stopRequested && state.audiobooks.player?.id === player.id && !audio.paused) {
-      audiobookRemotePauseInProgress = true;
+      audiobookYieldedToOtherDevice = true;
       audio.pause();
       setAudiobookPlayerStatus("Paused — now playing on another device.");
       showToast("Paused here — resumed on another device.", "info", { title: "Audiobooks" });
@@ -5803,6 +5804,7 @@ function getAudiobookAudioElement() {
     // timer - this is what clears a "Finished"/"not started" card badge as
     // soon as the listener presses play again, instead of leaving the old
     // marked-as state showing until the next periodic save.
+    audiobookYieldedToOtherDevice = false;
     saveAudiobookProgressNow();
     sendAudiobookPlaybackHeartbeat({ resumed: true });
     setAudiobookMediaSessionPlaybackState(audio);
@@ -5811,11 +5813,7 @@ function getAudiobookAudioElement() {
   });
   audio.addEventListener("pause", () => {
     setAudiobookPlayIcon(false);
-    if (audiobookRemotePauseInProgress) {
-      audiobookRemotePauseInProgress = false;
-    } else {
-      saveAudiobookProgressNow();
-    }
+    saveAudiobookProgressNow();
     sendAudiobookPlaybackHeartbeat();
     setAudiobookMediaSessionPlaybackState(audio);
     updateAudiobookBufferingUI();
@@ -5832,6 +5830,9 @@ function getAudiobookAudioElement() {
   // on another open instance, rather than waiting on the next 15s save or 5s
   // heartbeat (or being lost entirely if the tab closes before either fires).
   audio.addEventListener("seeked", () => {
+    // Moving the playhead here means the listener is back on this device, so
+    // its position is worth saving again.
+    audiobookYieldedToOtherDevice = false;
     saveAudiobookProgressNow();
     sendAudiobookPlaybackHeartbeat();
     setAudiobookMediaSessionPositionState(audio);
@@ -6100,9 +6101,17 @@ async function openAudiobookPlayer(item) {
   restoreAudiobookBottombarNodes();
 
   const audio = getAudiobookAudioElement();
+  // Switching straight from another book: save its position and tell other
+  // devices it stopped now, while player state still points at it. The
+  // pause event this queues lands after state (and src) have moved to the
+  // new book, and is ignored by saveAudiobookProgressNow's loaded check.
+  if (state.audiobooks.player && state.audiobooks.player.id !== item.id) {
+    saveAudiobookProgressNow();
+    sendAudiobookPlaybackStoppedSignal();
+  }
   audio.pause();
   cancelSleepTimer({ silent: true });
-  state.audiobooks.player = { id: item.id, chapters: item.chapters || [], durationSeconds: item.duration_seconds || 0, bookmarks: [] };
+  state.audiobooks.player = { id: item.id, streamUrl: item.stream_url, chapters: item.chapters || [], durationSeconds: item.duration_seconds || 0, bookmarks: [] };
 
   audiobookPlayerFlip?.classList.remove("is-flipped");
   if (audiobookPlayerTitle) audiobookPlayerTitle.textContent = audiobookDisplayTitle(item);
@@ -6127,6 +6136,7 @@ async function openAudiobookPlayer(item) {
   updateAudiobookMediaSessionChapterHandlers((item.chapters || []).length > 0);
   audiobookTakeoverConfirmToken++;
   audiobookTakeoverConfirming = false;
+  audiobookYieldedToOtherDevice = false;
   setAudiobookPlayerStatus("");
   renderAudiobookMiniPlayerItem(item);
   if (audiobookPlayerProgress) audiobookPlayerProgress.value = "0";
@@ -6196,7 +6206,12 @@ async function openAudiobookPlayer(item) {
 
   fetchAudiobookSavedPosition(item.id).then((position) => {
     if (state.audiobooks.player?.id !== item.id) return;
-    if (position !== null) {
+    // This device's own save from just before (closing the player, then
+    // reopening the same book) can still be in flight, so the server may not
+    // have it yet - a save that recent is newer than anything it could hold.
+    const localSave = audiobookLastLocalSave;
+    const localSaveIsFresh = localSave?.id === item.id && performance.now() - localSave.at < AUDIOBOOK_LOCAL_SAVE_TRUST_MS;
+    if (position !== null && !localSaveIsFresh) {
       resumeAt = position;
       item.position_seconds = position;
     }
@@ -6593,11 +6608,39 @@ function sleepTimerElapsed() {
   }
 }
 
+// isAudiobookAudioForPlayer reports whether the shared audio element is
+// actually loaded with the open book's stream. getAttribute (not .src) so
+// it compares the same relative URL that was assigned.
+function isAudiobookAudioForPlayer(audio, player) {
+  return !!player.streamUrl && audio.getAttribute("src") === player.streamUrl;
+}
+
+// hasAudiobookPositionToSave is isAudiobookAudioForPlayer plus "something is
+// actually loaded": assigning a new src resets readyState to HAVE_NOTHING and
+// currentTime to 0 synchronously, so an event queued by the previous book
+// (its pause, when switching books mid-playback) would otherwise run after
+// the new src is set and save 0 over the new book's real position.
+function hasAudiobookPositionToSave(audio, player) {
+  return isAudiobookAudioForPlayer(audio, player) && audio.readyState > HTMLMediaElement.HAVE_NOTHING;
+}
+
+// The last progress save this tab sent, so reopening a book right after
+// closing it can tell its own just-sent save apart from what the server
+// returns - see openAudiobookPlayer.
+let audiobookLastLocalSave = null;
+const AUDIOBOOK_LOCAL_SAVE_TRUST_MS = 5000;
+
 function saveAudiobookProgressNow() {
   const player = state.audiobooks.player;
   const audio = audiobookAudioEl;
   if (!player || !audio) return;
+  if (audiobookYieldedToOtherDevice) return;
+  // The audio element can still be holding (or just unloading) the previous
+  // book for a moment after player state moves to a new one - its position
+  // belongs to that book, not this one.
+  if (!hasAudiobookPositionToSave(audio, player)) return;
   const position = audio.currentTime || 0;
+  audiobookLastLocalSave = { id: player.id, at: performance.now() };
   fetch(`/api/audiobooks/${encodeURIComponent(player.id)}/progress`, {
     method: "PUT",
     credentials: "same-origin",
