@@ -6861,12 +6861,15 @@ async function startSleepTimer(selection) {
   // counting down - if the listener drifts off, this marks roughly where
   // they still were awake rather than wherever playback happened to stop.
   const bookmark = await createAudiobookBookmark("Sleep timer started");
+  // Another start may have finished while the bookmark was saving - replace
+  // it rather than leaving its interval running.
+  cancelSleepTimer({ silent: true });
 
   // Chapter mode ticks faster so the pause lands close to the boundary
   // instead of up to a second into the next chapter.
   const intervalId = window.setInterval(updateSleepTimerButtonUI, selection.mode === "chapter" ? 250 : 1000);
   audiobookSleepTimer = selection.mode === "chapter"
-    ? { mode: "chapter", chapterEnd, intervalId }
+    ? { mode: "chapter", chapterEnd, lastTime: audiobookAudioEl?.currentTime || 0, lastTick: Date.now(), intervalId }
     : { mode: "minutes", endsAt: Date.now() + selection.minutes * 60 * 1000, minutes: selection.minutes, intervalId };
   updateSleepTimerButtonUI();
   // The label already switches to a live countdown, which is its own
@@ -6882,22 +6885,33 @@ async function startSleepTimer(selection) {
 }
 
 // getSleepTimerRemainingSeconds returns how long is left on the running
-// timer, or 0 once it's due. In chapter mode, seeking into another chapter
-// retargets to that chapter's end; only playing across the boundary fires.
+// timer, or 0 once it's due. In chapter mode only playing across the
+// boundary fires: a seek (including the next-chapter button, which lands
+// exactly on the boundary) retargets to the end of whichever chapter it
+// landed in. A move counts as playback when it's no further than the
+// elapsed wall time at the current speed, plus slack for timer jitter.
 function getSleepTimerRemainingSeconds() {
   const timer = audiobookSleepTimer;
   if (timer.mode !== "chapter") return Math.max(0, (timer.endsAt - Date.now()) / 1000);
   const audio = audiobookAudioEl;
   if (!audio) return 0;
   const time = audio.currentTime;
-  if (time >= timer.chapterEnd) {
-    if (time - timer.chapterEnd <= 1.5) return 0;
-    timer.chapterEnd = getCurrentAudiobookChapterBounds(time)?.end || timer.chapterEnd;
-  } else {
+  const now = Date.now();
+  const rate = audio.playbackRate || 1;
+  const moved = time - timer.lastTime;
+  const played = moved >= 0 && moved <= ((now - timer.lastTick) / 1000 + 0.5) * rate;
+  const crossed = timer.lastTime < timer.chapterEnd && time >= timer.chapterEnd;
+  timer.lastTime = time;
+  timer.lastTick = now;
+  if (crossed && played) return 0;
+  // Only retarget after a seek: chapter lookup treats the last moment
+  // before a boundary as the next chapter, so doing it during normal
+  // playback would hop the target forward just before it's reached.
+  if (!played) {
     const bounds = getCurrentAudiobookChapterBounds(time);
-    if (bounds && bounds.end < timer.chapterEnd) timer.chapterEnd = bounds.end;
+    if (bounds) timer.chapterEnd = bounds.end;
   }
-  return Math.max(0, (timer.chapterEnd - time) / (audio.playbackRate || 1));
+  return Math.max(0, (timer.chapterEnd - time) / rate);
 }
 
 function formatSleepCountdown(totalSeconds) {
@@ -6931,6 +6945,9 @@ function updateSleepTimerButtonUI() {
   if (!active) {
     if (audiobookPlayerSleepTimerLabel) audiobookPlayerSleepTimerLabel.textContent = "Sleep";
     if (sleepTimerStatus) sleepTimerStatus.textContent = "Pauses playback and bookmarks your spot.";
+    // The timer can end while the picker is open; drop its "Turn off" and
+    // "Restart" state so the picker matches.
+    if (sleepTimerModal?.open) renderSleepTimerPicker();
     return;
   }
   const totalSeconds = Math.ceil(remainingSeconds);
