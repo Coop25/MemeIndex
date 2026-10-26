@@ -6315,13 +6315,18 @@ async function openAudiobookPlayer(item) {
   audiobookTakeoverConfirming = false;
   audiobookYieldedToOtherDevice = false;
   setAudiobookPlayerStatus("");
+  // Clear the previous book's chapter label before rendering the mini
+  // player's info line below - renderAudiobookMiniPlayerItem reads
+  // audiobookActiveChapterLabel as its subtitle's first choice, so clearing
+  // it after would leave the old book's chapter name showing (as the new
+  // book's subtitle) until the next progress tick caught up.
+  audiobookActiveChapterLabel = "";
+  if (audiobookPlayerChapterLabel) audiobookPlayerChapterLabel.classList.add("hidden");
   renderAudiobookMiniPlayerItem(item);
   if (audiobookPlayerProgress) audiobookPlayerProgress.value = "0";
   if (audiobookPlayerCurrentTime) audiobookPlayerCurrentTime.textContent = "0:00";
   if (audiobookPlayerDuration) audiobookPlayerDuration.textContent = "0:00";
   if (audiobookPlayerRemaining) audiobookPlayerRemaining.textContent = "";
-  audiobookActiveChapterLabel = "";
-  if (audiobookPlayerChapterLabel) audiobookPlayerChapterLabel.classList.add("hidden");
   setAudiobookVolumeExpanded(false);
   if (audiobookPlayerSpeed) audiobookPlayerSpeed.value = "1";
   audio.playbackRate = 1;
@@ -7050,6 +7055,11 @@ function saveAudiobookProgressNow() {
 // pause) rather than a real "someone else moved the bookmark" difference.
 const AUDIOBOOK_RESUME_POSITION_TOLERANCE_SECONDS = 2;
 
+// A press is only superseded by a later one while still paused (see the
+// token check below) - once playback actually starts, audio.paused itself
+// is enough to tell a stale resolution it's no longer relevant.
+let audiobookResumeRequestToken = 0;
+
 // resumeAudiobookPlaybackFromSavedPosition is what the play button actually
 // calls (when no other device is actively playing - see the click handler):
 // it re-fetches the server's saved position right before playing and jumps
@@ -7063,7 +7073,13 @@ async function resumeAudiobookPlaybackFromSavedPosition() {
   const player = state.audiobooks.player;
   const audio = audiobookAudioEl;
   if (!player || !audio) return;
+  // Mashing play (or play arriving from both a UI click and a media-session/
+  // hardware key in close succession) while still paused would otherwise fire
+  // this twice - each fetching the position independently and racing to seek
+  // right before calling play(). Only the most recent press's result applies.
+  const token = ++audiobookResumeRequestToken;
   const position = await fetchAudiobookSavedPosition(player.id);
+  if (token !== audiobookResumeRequestToken) return;
   // The player can close, switch to a different book, or already be playing
   // again (a second press, a media-session/hardware play key) while this was
   // in flight - any of those make the fetched position no longer relevant.
