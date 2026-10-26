@@ -66,7 +66,7 @@ Example with the raw auth token:
 ```powershell
 .\scripts\upload-memes.ps1 `
   -FolderPath "F:\Memes\Backlog" `
-  -BaseUrl "https://memes.cooplabs.net" `
+  -BaseUrl "https://memes.example.com" `
   -SessionToken "PASTE_THE_RAW_TOKEN_HERE" `
   -Recurse `
   -BatchSize 10
@@ -77,7 +77,7 @@ Example if you copied the exact `memeindex_session` cookie value from the browse
 ```powershell
 .\scripts\upload-memes.ps1 `
   -FolderPath "F:\Memes\Backlog" `
-  -BaseUrl "https://memes.cooplabs.net" `
+  -BaseUrl "https://memes.example.com" `
   -CookieValue "PASTE_THE_COOKIE_VALUE_HERE" `
   -Recurse
 ```
@@ -174,7 +174,7 @@ $env:MEMEINDEX_DISCORD_DYNAMIC_REDIRECT="true"
 Then add both callback URLs in the Discord developer portal, for example:
 
 - `http://localhost:8080/auth/callback`
-- `http://192.168.1.123:8080/auth/callback`
+- `http://<your-lan-ip>:8080/auth/callback`
 
 When enabled, MemeIndex will use whichever host you started from in the browser.
 
@@ -387,7 +387,7 @@ To enable it:
 
 - `MEMEINDEX_LOCAL_ADDR=:8081` (or any port you prefer) - the app listens on it
 - the compose file already publishes host port `8081` to match (override with `MEMEINDEX_LOCAL_HOST_PORT` if that collides with something else on your host); this mapping is harmless when `MEMEINDEX_LOCAL_ADDR` is unset, since nothing is listening behind it
-- in the Discord Developer Portal, add a second OAuth2 redirect URI for this exact address, e.g. `http://192.168.1.10:8081/auth/callback` - keep your existing production redirect URI too, both can coexist
+- in the Discord Developer Portal, add a second OAuth2 redirect URI for this exact address, e.g. `http://<your-lan-ip>:8081/auth/callback` - keep your existing production redirect URI too, both can coexist
 - restart the `app` container
 
 **Never port-forward this port on your router.** It is meant purely for LAN reachability; Cloudflare Tunnel remains the only sanctioned path in from the internet. A local DNS override (Pi-hole, AdGuard Home, your router's DNS rewrites) pointing your public hostname at this port on your LAN IP is a reasonable way to use the same domain name from both places, if you want that - but the port itself is what matters here, not the hostname.

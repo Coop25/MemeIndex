@@ -15,7 +15,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
 
   app:
-    image: ${MEMEINDEX_IMAGE:-ghcr.io/Coop25/memeindex:latest}
+    image: ${MEMEINDEX_IMAGE:-ghcr.io/your-github-user-or-org/memeindex:latest}
     pull_policy: always
     restart: unless-stopped
     # The image starts as root only to fix ownership of ./data, then drops to a

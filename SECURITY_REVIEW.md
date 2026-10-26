@@ -1,6 +1,6 @@
 # MemeIndex security review — 2026-09-07
 
-Scope: local source review and low-volume, anonymous HTTPS checks against memes.cooplabs.net using the supplied share. No production uploads, account changes, revocations, brute force, load testing, or requests to internal network targets were performed. Local source is not proof that every reviewed code path is deployed. No production patch has been deployed.
+Scope: local source review and low-volume, anonymous HTTPS checks against memes.example.com using the supplied share. No production uploads, account changes, revocations, brute force, load testing, or requests to internal network targets were performed. Local source is not proof that every reviewed code path is deployed. No production patch has been deployed.
 
 The [second-pass review](SECURITY_REVIEW_SECOND_PASS.md) supersedes the outstanding-work and validation sections below with additional findings and fixes.
 
@@ -42,6 +42,6 @@ These are sampled checks, not a guarantee that all authorization paths are safe.
 - Share regression covers HTML, media, and preview responses with a spoofed forwarded host and checks all cache-control layers.
 - Frontend regression executes the affected renderers with hostile metadata and verifies escaped output; it is not a full browser end-to-end exploit test.
 
-Deploy the backend and frontend together. Verify the reverse proxy preserves `Host: memes.cooplabs.net`. With the stricter OAuth state check, login attempts started before a restart must be restarted; multiple application replicas require sticky routing or a shared single-use state store. Shared media will use more bandwidth because it cannot be cached. Purge any existing edge-cached share media when deploying; already downloaded copies or third-party preview caches cannot be recalled. Retest the anonymous checks and complete a normal Discord login after deployment.
+Deploy the backend and frontend together. Verify the reverse proxy preserves `Host: memes.example.com`. With the stricter OAuth state check, login attempts started before a restart must be restarted; multiple application replicas require sticky routing or a shared single-use state store. Shared media will use more bandwidth because it cannot be cached. Purge any existing edge-cached share media when deploying; already downloaded copies or third-party preview caches cannot be recalled. Retest the anonymous checks and complete a normal Discord login after deployment.
 
 The supplied share token is intentionally omitted from this report because it grants access to the meme.
