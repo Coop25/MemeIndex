@@ -749,20 +749,37 @@
     </dialog>
 
     <dialog id="sleep-timer-modal" class="confirm-modal">
-      <div class="confirm-modal-card">
-        <h3 class="confirm-modal-title">Sleep timer</h3>
-        <p class="confirm-modal-message">Pause playback automatically. A bookmark is dropped at the current spot as soon as the timer starts, so it's easy to find where you drifted off.</p>
-        <div id="sleep-timer-options" class="sleep-timer-options">
-          <button type="button" class="sleep-timer-option" data-minutes="5">5 min</button>
-          <button type="button" class="sleep-timer-option" data-minutes="10">10 min</button>
-          <button type="button" class="sleep-timer-option" data-minutes="15">15 min</button>
-          <button type="button" class="sleep-timer-option" data-minutes="30">30 min</button>
-          <button type="button" class="sleep-timer-option" data-minutes="45">45 min</button>
-          <button type="button" class="sleep-timer-option" data-minutes="60">60 min</button>
+      <div class="confirm-modal-card sleep-timer-card">
+        <div class="sleep-timer-header">
+          <span class="sleep-timer-header-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z" /></svg></span>
+          <div class="sleep-timer-header-text">
+            <h3 class="confirm-modal-title">Sleep timer</h3>
+            <p id="sleep-timer-status" class="sleep-timer-status">Pauses playback and bookmarks your spot.</p>
+          </div>
+          <button id="sleep-timer-cancel" type="button" class="audiobook-player-icon-button sleep-timer-close" aria-label="Close">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
+          </button>
         </div>
-        <div class="confirm-modal-actions">
-          <button id="sleep-timer-cancel" type="button" class="secondary-button">Close</button>
-          <button id="sleep-timer-off" type="button" class="danger-button hidden">Turn off timer</button>
+        <div class="sleep-timer-stepper">
+          <button id="sleep-timer-minus" type="button" class="sleep-timer-step" aria-label="Less time">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12" /></svg>
+          </button>
+          <div id="sleep-timer-value" class="sleep-timer-value" aria-live="polite"></div>
+          <button id="sleep-timer-plus" type="button" class="sleep-timer-step" aria-label="More time">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12M12 6v12" /></svg>
+          </button>
+        </div>
+        <div id="sleep-timer-presets" class="sleep-timer-presets">
+          <button type="button" class="sleep-timer-preset" data-minutes="15">15m</button>
+          <button type="button" class="sleep-timer-preset" data-minutes="30">30m</button>
+          <button type="button" class="sleep-timer-preset" data-minutes="45">45m</button>
+          <button type="button" class="sleep-timer-preset" data-minutes="60">1h</button>
+          <button type="button" class="sleep-timer-preset" data-minutes="120">2h</button>
+          <button id="sleep-timer-preset-chapter" type="button" class="sleep-timer-preset" data-mode="chapter">End of chapter</button>
+        </div>
+        <div class="sleep-timer-actions">
+          <button id="sleep-timer-off" type="button" class="text-button sleep-timer-off hidden">Turn off</button>
+          <button id="sleep-timer-start" type="button" class="primary-button sleep-timer-start">Start timer</button>
         </div>
       </div>
     </dialog>
@@ -916,6 +933,10 @@
                   <svg id="audiobook-player-cover-fallback" class="audiobook-player-cover-fallback" viewBox="0 0 24 24" aria-hidden="true">
                     <path d="M6 5.5h8.5a3.5 3.5 0 0 1 3.5 3.5v9.5H8a2 2 0 0 1-2-2V5.5Z"/><path d="M6 15.5h12"/><path d="M9.5 9.5h5"/>
                   </svg>
+                  <div id="audiobook-player-sleep-overlay" class="audiobook-player-sleep-overlay hidden" aria-hidden="true">
+                    <span class="audiobook-player-sleep-overlay-label"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z" /></svg>Sleeping in</span>
+                    <span id="audiobook-player-sleep-overlay-time" class="audiobook-player-sleep-overlay-time"></span>
+                  </div>
                 </div>
                 <div class="audiobook-player-flip-back">
                   <dl id="audiobook-player-meta" class="audiobook-player-meta"></dl>
@@ -984,8 +1005,8 @@
             </label>
             <div class="audiobook-player-action-group">
               <button id="audiobook-player-sleep-timer" type="button" class="audiobook-player-action-button">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="13" r="8" /><path d="M12 9v4l3 2" /><path d="M9 2h6" /></svg>
-                <span id="audiobook-player-sleep-timer-label">Timer</span>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z" /></svg>
+                <span id="audiobook-player-sleep-timer-label">Sleep</span>
               </button>
               <button id="audiobook-player-add-bookmark" type="button" class="audiobook-player-action-button">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5h10a1 1 0 0 1 1 1V20l-6-4-6 4V5.5a1 1 0 0 1 1-1Z" /><path d="M9.5 9h5M12 6.5v5" /></svg>

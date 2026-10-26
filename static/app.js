@@ -348,9 +348,17 @@ const audiobookPlayerAddBookmarkButton = document.querySelector("#audiobook-play
 const audiobookPlayerSleepTimerButton = document.querySelector("#audiobook-player-sleep-timer");
 const audiobookPlayerSleepTimerLabel = document.querySelector("#audiobook-player-sleep-timer-label");
 const sleepTimerModal = document.querySelector("#sleep-timer-modal");
-const sleepTimerOptions = document.querySelector("#sleep-timer-options");
 const sleepTimerCancelButton = document.querySelector("#sleep-timer-cancel");
 const sleepTimerOffButton = document.querySelector("#sleep-timer-off");
+const sleepTimerStartButton = document.querySelector("#sleep-timer-start");
+const sleepTimerStatus = document.querySelector("#sleep-timer-status");
+const sleepTimerValue = document.querySelector("#sleep-timer-value");
+const sleepTimerMinusButton = document.querySelector("#sleep-timer-minus");
+const sleepTimerPlusButton = document.querySelector("#sleep-timer-plus");
+const sleepTimerPresets = document.querySelector("#sleep-timer-presets");
+const sleepTimerChapterPreset = document.querySelector("#sleep-timer-preset-chapter");
+const audiobookPlayerSleepOverlay = document.querySelector("#audiobook-player-sleep-overlay");
+const audiobookPlayerSleepOverlayTime = document.querySelector("#audiobook-player-sleep-overlay-time");
 const confirmModal = document.querySelector("#confirm-modal");
 const confirmModalTitle = document.querySelector("#confirm-modal-title");
 const confirmModalMessage = document.querySelector("#confirm-modal-message");
@@ -6724,38 +6732,194 @@ async function deleteAudiobookBookmark(bookmarkId) {
 
 // --- Sleep timer -------------------------------------------------------------
 
-let audiobookSleepTimer = null; // { endsAt: number, intervalId: number, minutes: number }
+// A running timer is either a fixed number of minutes (wall clock, endsAt)
+// or "end of chapter" (chapterEnd, in book seconds - it follows playback, so
+// pausing or changing speed moves it with the audio).
+let audiobookSleepTimer = null; // { mode: "minutes"|"chapter", endsAt?, chapterEnd?, minutes?, intervalId }
+// What the picker currently shows; only becomes a timer on "Start timer".
+let sleepTimerSelection = { mode: "minutes", minutes: 30 };
+let sleepTimerRepeat = null; // hold-to-repeat timers for the +/- buttons
+
+const SLEEP_TIMER_MIN_MINUTES = 5;
+const SLEEP_TIMER_MAX_MINUTES = 24 * 60;
+const SLEEP_TIMER_STORAGE_KEY = "memeindex.sleepTimerMinutes";
 
 function openSleepTimerPicker() {
   if (!sleepTimerModal) return;
-  sleepTimerOptions?.querySelectorAll(".sleep-timer-option").forEach((button) => {
-    button.classList.toggle("is-active", audiobookSleepTimer && Number(button.dataset.minutes) === audiobookSleepTimer.minutes);
-  });
-  sleepTimerOffButton?.classList.toggle("hidden", !audiobookSleepTimer);
+  const hasChapters = !!getCurrentAudiobookChapterBounds(audiobookAudioEl?.currentTime || 0);
+  sleepTimerChapterPreset?.classList.toggle("hidden", !hasChapters);
+  if (audiobookSleepTimer?.mode === "chapter" && hasChapters) {
+    sleepTimerSelection = { mode: "chapter", minutes: sleepTimerSelection.minutes };
+  } else {
+    let minutes = audiobookSleepTimer?.minutes;
+    if (!minutes) {
+      try { minutes = Number(window.localStorage.getItem(SLEEP_TIMER_STORAGE_KEY)); } catch (error) { /* Optional preference. */ }
+    }
+    sleepTimerSelection = { mode: "minutes", minutes: clampSleepTimerMinutes(minutes || 30) };
+  }
+  renderSleepTimerPicker();
   sleepTimerModal.showModal();
 }
 
-async function startSleepTimer(minutes) {
+function clampSleepTimerMinutes(minutes) {
+  return Math.min(SLEEP_TIMER_MAX_MINUTES, Math.max(SLEEP_TIMER_MIN_MINUTES, Math.round(minutes)));
+}
+
+// Finer steps for short timers, coarser once it's past an hour, so neither
+// end of the range takes forever to reach with the +/- buttons.
+function stepSleepTimerSelection(direction) {
+  if (sleepTimerSelection.mode === "chapter") {
+    sleepTimerSelection = { mode: "minutes", minutes: sleepTimerSelection.minutes };
+  } else {
+    const current = sleepTimerSelection.minutes;
+    const step = direction > 0 ? (current < 60 ? 5 : 15) : (current <= 60 ? 5 : 15);
+    // Move to the next multiple of the step rather than adding it, so odd
+    // values (a remembered 37) snap back onto round numbers.
+    const snapped = direction > 0 ? Math.floor(current / step) * step + step : Math.ceil(current / step) * step - step;
+    sleepTimerSelection.minutes = clampSleepTimerMinutes(snapped);
+    // At a limit the button disables itself and may never see pointerup.
+    if (sleepTimerSelection.minutes === current) stopSleepTimerRepeat();
+  }
+  renderSleepTimerPicker();
+}
+
+function formatSleepTimerDuration(minutes) {
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest ? `${hours}h ${rest}m` : `${hours}h`;
+}
+
+function renderSleepTimerPicker() {
+  if (!sleepTimerValue) return;
+  const { mode, minutes } = sleepTimerSelection;
+  sleepTimerValue.replaceChildren();
+  sleepTimerValue.classList.toggle("is-chapter", mode === "chapter");
+  const addPart = (text, className) => {
+    const span = document.createElement("span");
+    span.className = className;
+    span.textContent = text;
+    sleepTimerValue.append(span);
+  };
+  if (mode === "chapter") {
+    addPart("End of chapter", "sleep-timer-value-number");
+  } else if (minutes < 60) {
+    addPart(String(minutes), "sleep-timer-value-number");
+    addPart("min", "sleep-timer-value-unit");
+  } else {
+    addPart(String(Math.floor(minutes / 60)), "sleep-timer-value-number");
+    addPart("h", "sleep-timer-value-unit");
+    if (minutes % 60) {
+      addPart(String(minutes % 60), "sleep-timer-value-number");
+      addPart("m", "sleep-timer-value-unit");
+    }
+  }
+  if (sleepTimerMinusButton) sleepTimerMinusButton.disabled = mode === "minutes" && minutes <= SLEEP_TIMER_MIN_MINUTES;
+  if (sleepTimerPlusButton) sleepTimerPlusButton.disabled = mode === "minutes" && minutes >= SLEEP_TIMER_MAX_MINUTES;
+  sleepTimerPresets?.querySelectorAll(".sleep-timer-preset").forEach((button) => {
+    const active = button.dataset.mode === "chapter" ? mode === "chapter" : mode === "minutes" && Number(button.dataset.minutes) === minutes;
+    button.classList.toggle("is-active", active);
+  });
+  sleepTimerOffButton?.classList.toggle("hidden", !audiobookSleepTimer);
+  if (sleepTimerStartButton) sleepTimerStartButton.textContent = audiobookSleepTimer ? "Restart timer" : "Start timer";
+}
+
+// Press-and-hold on +/- keeps stepping, since there's no upper limit and
+// tapping out to several hours would be tedious.
+function startSleepTimerRepeat(direction) {
+  stopSleepTimerRepeat();
+  stepSleepTimerSelection(direction);
+  sleepTimerRepeat = {
+    timeoutId: window.setTimeout(() => {
+      sleepTimerRepeat.intervalId = window.setInterval(() => stepSleepTimerSelection(direction), 110);
+    }, 420),
+  };
+}
+
+function stopSleepTimerRepeat() {
+  if (!sleepTimerRepeat) return;
+  window.clearTimeout(sleepTimerRepeat.timeoutId);
+  window.clearInterval(sleepTimerRepeat.intervalId);
+  sleepTimerRepeat = null;
+}
+
+async function startSleepTimer(selection) {
   cancelSleepTimer({ silent: true });
+
+  let chapterEnd = null;
+  if (selection.mode === "chapter") {
+    chapterEnd = getCurrentAudiobookChapterBounds(audiobookAudioEl?.currentTime || 0)?.end;
+    if (!chapterEnd) {
+      showToast("This audiobook has no chapter data.", "error", { title: "Audiobooks" });
+      return;
+    }
+  } else {
+    try { window.localStorage.setItem(SLEEP_TIMER_STORAGE_KEY, String(selection.minutes)); } catch (error) { /* Optional preference. */ }
+  }
 
   // Drop a bookmark right where playback is now, before the timer starts
   // counting down - if the listener drifts off, this marks roughly where
   // they still were awake rather than wherever playback happened to stop.
   const bookmark = await createAudiobookBookmark("Sleep timer started");
+  // Another start may have finished while the bookmark was saving - replace
+  // it rather than leaving its interval running.
+  cancelSleepTimer({ silent: true });
 
-  const endsAt = Date.now() + minutes * 60 * 1000;
-  const intervalId = window.setInterval(updateSleepTimerButtonUI, 1000);
-  audiobookSleepTimer = { endsAt, intervalId, minutes };
+  // Chapter mode ticks faster so the pause lands close to the boundary
+  // instead of up to a second into the next chapter.
+  const intervalId = window.setInterval(updateSleepTimerButtonUI, selection.mode === "chapter" ? 250 : 1000);
+  audiobookSleepTimer = selection.mode === "chapter"
+    ? { mode: "chapter", chapterEnd, lastTime: audiobookAudioEl?.currentTime || 0, lastTick: Date.now(), intervalId }
+    : { mode: "minutes", endsAt: Date.now() + selection.minutes * 60 * 1000, minutes: selection.minutes, intervalId };
   updateSleepTimerButtonUI();
-  // The label already switches from "Timer" to a live countdown, which is
-  // its own feedback - just pulse the button rather than swapping text that
-  // the countdown tick would immediately overwrite anyway.
+  // The label already switches to a live countdown, which is its own
+  // feedback - just pulse the button rather than swapping text that the
+  // countdown tick would immediately overwrite anyway.
   flashAudiobookActionButton(audiobookPlayerSleepTimerButton, null, null);
+  const what = selection.mode === "chapter" ? "the end of this chapter" : formatSleepTimerDuration(selection.minutes);
   showToast(
-    bookmark ? `Sleep timer set for ${minutes} min. Bookmarked your spot.` : `Sleep timer set for ${minutes} min.`,
+    bookmark ? `Sleep timer set for ${what}. Bookmarked your spot.` : `Sleep timer set for ${what}.`,
     "success",
     { title: "Audiobooks" },
   );
+}
+
+// getSleepTimerRemainingSeconds returns how long is left on the running
+// timer, or 0 once it's due. In chapter mode only playing across the
+// boundary fires: a seek (including the next-chapter button, which lands
+// exactly on the boundary) retargets to the end of whichever chapter it
+// landed in. A move counts as playback when it's no further than the
+// elapsed wall time at the current speed, plus slack for timer jitter.
+function getSleepTimerRemainingSeconds() {
+  const timer = audiobookSleepTimer;
+  if (timer.mode !== "chapter") return Math.max(0, (timer.endsAt - Date.now()) / 1000);
+  const audio = audiobookAudioEl;
+  if (!audio) return 0;
+  const time = audio.currentTime;
+  const now = Date.now();
+  const rate = audio.playbackRate || 1;
+  const moved = time - timer.lastTime;
+  const played = moved >= 0 && moved <= ((now - timer.lastTick) / 1000 + 0.5) * rate;
+  const crossed = timer.lastTime < timer.chapterEnd && time >= timer.chapterEnd;
+  timer.lastTime = time;
+  timer.lastTick = now;
+  if (crossed && played) return 0;
+  // Only retarget after a seek: chapter lookup treats the last moment
+  // before a boundary as the next chapter, so doing it during normal
+  // playback would hop the target forward just before it's reached.
+  if (!played) {
+    const bounds = getCurrentAudiobookChapterBounds(time);
+    if (bounds) timer.chapterEnd = bounds.end;
+  }
+  return Math.max(0, (timer.chapterEnd - time) / rate);
+}
+
+function formatSleepCountdown(totalSeconds) {
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const mmss = `${String(minutes).padStart(hours ? 2 : 1, "0")}:${String(seconds).padStart(2, "0")}`;
+  return hours ? `${hours}:${mmss}` : mmss;
 }
 
 function cancelSleepTimer({ silent } = {}) {
@@ -6766,31 +6930,46 @@ function cancelSleepTimer({ silent } = {}) {
   if (!silent) showToast("Sleep timer turned off.", "info", { title: "Audiobooks" });
 }
 
+// Keeps every sleep timer surface in step: the action button label, the big
+// countdown over the cover, and the status line in the picker.
 function updateSleepTimerButtonUI() {
-  const active = !!audiobookSleepTimer;
-  audiobookPlayerSleepTimerButton?.classList.toggle("is-active", active);
-  if (!audiobookPlayerSleepTimerLabel) return;
-  if (!active) {
-    audiobookPlayerSleepTimerLabel.textContent = "Timer";
-    return;
-  }
-  const remainingMs = audiobookSleepTimer.endsAt - Date.now();
-  if (remainingMs <= 0) {
-    audiobookPlayerSleepTimerLabel.textContent = "Timer";
+  const remainingSeconds = audiobookSleepTimer ? getSleepTimerRemainingSeconds() : 0;
+  if (audiobookSleepTimer && remainingSeconds <= 0) {
     sleepTimerElapsed();
     return;
   }
-  const totalSeconds = Math.ceil(remainingMs / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  audiobookPlayerSleepTimerLabel.textContent = `${minutes}:${String(seconds).padStart(2, "0")}`;
+  const active = !!audiobookSleepTimer;
+  audiobookPlayerSleepTimerButton?.classList.toggle("is-active", active);
+  audiobookPlayerSleepOverlay?.classList.toggle("hidden", !active);
+  sleepTimerStatus?.classList.toggle("is-active", active);
+  if (!active) {
+    if (audiobookPlayerSleepTimerLabel) audiobookPlayerSleepTimerLabel.textContent = "Sleep";
+    if (sleepTimerStatus) sleepTimerStatus.textContent = "Pauses playback and bookmarks your spot.";
+    // The timer can end while the picker is open; drop its "Turn off" and
+    // "Restart" state so the picker matches.
+    if (sleepTimerModal?.open) renderSleepTimerPicker();
+    return;
+  }
+  const totalSeconds = Math.ceil(remainingSeconds);
+  const countdown = formatSleepCountdown(totalSeconds);
+  if (audiobookPlayerSleepTimerLabel) audiobookPlayerSleepTimerLabel.textContent = countdown;
+  if (audiobookPlayerSleepOverlayTime) audiobookPlayerSleepOverlayTime.textContent = countdown;
+  audiobookPlayerSleepOverlay?.classList.toggle("is-ending", totalSeconds <= 60);
+  audiobookPlayerSleepOverlay?.classList.toggle("has-hours", totalSeconds >= 3600);
+  if (sleepTimerStatus) {
+    sleepTimerStatus.textContent = audiobookSleepTimer.mode === "chapter" ? `Pausing at chapter end · ${countdown}` : `Pausing in ${countdown}`;
+  }
 }
 
 function sleepTimerElapsed() {
+  const chapterEnd = audiobookSleepTimer?.mode === "chapter" ? audiobookSleepTimer.chapterEnd : null;
   cancelSleepTimer({ silent: true });
   const audio = audiobookAudioEl;
   if (audio && !audio.paused) {
     audio.pause();
+    // The tick can land a fraction of a second past the boundary - park
+    // exactly on it so resuming starts cleanly at the next chapter.
+    if (chapterEnd !== null && audio.currentTime > chapterEnd) audio.currentTime = chapterEnd;
     showToast("Sleep timer ended - playback paused.", "info", { title: "Audiobooks" });
   }
 }
@@ -9931,12 +10110,33 @@ audiobookPlayerElsewhereAction?.addEventListener("click", () => {
   pauseAudiobookElsewhereAndPlayHere().catch((error) => console.error(error));
 });
 audiobookPlayerSleepTimerButton?.addEventListener("click", openSleepTimerPicker);
-sleepTimerOptions?.querySelectorAll(".sleep-timer-option").forEach((button) => {
-  button.addEventListener("click", () => {
-    startSleepTimer(Number(button.dataset.minutes) || 15).catch((error) => console.error(error));
-    sleepTimerModal?.close();
+[[sleepTimerMinusButton, -1], [sleepTimerPlusButton, 1]].forEach(([button, direction]) => {
+  if (!button) return;
+  button.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || button.disabled) return;
+    button.setPointerCapture?.(event.pointerId);
+    startSleepTimerRepeat(direction);
+  });
+  ["pointerup", "pointercancel", "lostpointercapture"].forEach((type) => button.addEventListener(type, stopSleepTimerRepeat));
+  // Pointer presses already stepped on pointerdown; detail === 0 means the
+  // click came from the keyboard (Enter/Space), which needs its own step.
+  button.addEventListener("click", (event) => {
+    if (event.detail === 0) stepSleepTimerSelection(direction);
   });
 });
+sleepTimerPresets?.querySelectorAll(".sleep-timer-preset").forEach((button) => {
+  button.addEventListener("click", () => {
+    sleepTimerSelection = button.dataset.mode === "chapter"
+      ? { mode: "chapter", minutes: sleepTimerSelection.minutes }
+      : { mode: "minutes", minutes: Number(button.dataset.minutes) || 30 };
+    renderSleepTimerPicker();
+  });
+});
+sleepTimerStartButton?.addEventListener("click", () => {
+  startSleepTimer({ ...sleepTimerSelection }).catch((error) => console.error(error));
+  sleepTimerModal?.close();
+});
+sleepTimerModal?.addEventListener("close", stopSleepTimerRepeat);
 sleepTimerCancelButton?.addEventListener("click", () => sleepTimerModal?.close());
 sleepTimerOffButton?.addEventListener("click", () => {
   cancelSleepTimer();

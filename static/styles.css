@@ -4487,10 +4487,53 @@ body.audiobook-mini-player-open .content-panel::after { display: block; height: 
 .confirm-modal-message { margin: 0; color: var(--muted); line-height: 1.55; white-space: pre-line; }
 .confirm-modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
 
-.sleep-timer-options { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 18px; }
-.sleep-timer-option { padding: 10px 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); color: var(--text); font-size: 13px; font-weight: 600; cursor: pointer; }
-.sleep-timer-option:hover { border-color: rgba(201,149,93,.45); }
-.sleep-timer-option.is-active { border-color: var(--amber); background: rgba(232,184,78,.14); color: var(--amber); }
+.sleep-timer-card { width: min(380px, calc(100vw - 32px)); padding: 20px 22px 22px; }
+.sleep-timer-header { display: flex; align-items: center; gap: 14px; }
+.sleep-timer-header-text { flex: 1; min-width: 0; }
+.sleep-timer-header .confirm-modal-title { margin: 0 0 3px; }
+.sleep-timer-header-icon { display: grid; flex: none; place-items: center; width: 42px; height: 42px; border-radius: 12px; background: rgba(232,184,78,.12); color: var(--amber); }
+.sleep-timer-header-icon svg { width: 20px; height: 20px; }
+.sleep-timer-close { width: 34px; height: 34px; align-self: flex-start; border-color: transparent; background: transparent; color: var(--muted); }
+.sleep-timer-close svg { width: 18px; height: 18px; }
+.sleep-timer-status { margin: 0; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.sleep-timer-status.is-active { color: var(--amber); font-weight: 600; }
+.sleep-timer-stepper { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 26px 0 22px; }
+.sleep-timer-step { display: grid; flex: none; place-items: center; width: 52px; height: 52px; padding: 0; border: 1px solid var(--line); border-radius: 50%; background: var(--panel-2); color: var(--text); cursor: pointer; touch-action: manipulation; user-select: none; transition: background .15s, transform .1s; }
+.sleep-timer-step:hover { background: var(--panel-3); }
+.sleep-timer-step:active { transform: scale(.92); }
+.sleep-timer-step:disabled { opacity: .35; cursor: default; transform: none; }
+.sleep-timer-step svg { width: 22px; height: 22px; stroke-width: 2; }
+.sleep-timer-value { display: flex; flex: 1; align-items: baseline; justify-content: center; gap: 4px; min-width: 0; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.sleep-timer-value-number { font-size: 64px; font-weight: 750; line-height: 1; letter-spacing: -.04em; }
+.sleep-timer-value-unit { margin-right: 6px; color: var(--muted); font-size: 20px; font-weight: 600; }
+.sleep-timer-value-unit:last-child { margin-right: 0; }
+.sleep-timer-value.is-chapter .sleep-timer-value-number { font-size: 34px; letter-spacing: -.02em; }
+.sleep-timer-presets { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
+.sleep-timer-preset { padding: 7px 13px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--muted); font-size: 13px; font-weight: 600; cursor: pointer; transition: background .15s, color .15s, border-color .15s; }
+.sleep-timer-preset:hover { background: var(--panel-2); color: var(--text); }
+.sleep-timer-preset.is-active { border-color: rgba(232,184,78,.55); background: rgba(232,184,78,.12); color: var(--amber); }
+.sleep-timer-actions { display: flex; align-items: center; gap: 10px; margin-top: 24px; }
+.sleep-timer-start { flex: 1; min-height: 46px; border-radius: 12px; font-size: 15px; }
+.sleep-timer-off { padding: 0 6px; color: #ffabab; font-size: 14px; font-weight: 600; }
+.sleep-timer-off:hover { color: var(--red); }
+@media (max-width: 420px) {
+  .sleep-timer-value-number { font-size: 54px; }
+}
+
+/* Big countdown laid over the cover art while a sleep timer runs. Sits on
+   the flip's front face so it turns away with the cover when flipped. */
+.audiobook-player-flip-front { container-type: size; }
+.audiobook-player-sleep-overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2cqh; background: radial-gradient(circle, rgba(8,8,11,.55), rgba(8,8,11,.78)); backdrop-filter: blur(3px); color: #fff; pointer-events: none; animation: sleepOverlayIn .35s ease; }
+.audiobook-player-sleep-overlay-label { display: flex; align-items: center; gap: .5em; color: rgba(255,255,255,.72); font-size: clamp(11px, 4cqw, 18px); font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
+.audiobook-player-sleep-overlay-label svg { width: 1.2em; height: 1.2em; color: var(--amber); }
+.audiobook-player-sleep-overlay-time { font-size: 24cqw; font-weight: 750; line-height: 1; letter-spacing: -.04em; font-variant-numeric: tabular-nums; text-shadow: 0 4px 30px rgba(0,0,0,.5); }
+.audiobook-player-sleep-overlay.has-hours .audiobook-player-sleep-overlay-time { font-size: 17cqw; }
+.audiobook-player-sleep-overlay.is-ending .audiobook-player-sleep-overlay-time { color: var(--amber); animation: sleepOverlayPulse 2s ease-in-out infinite; }
+@keyframes sleepOverlayIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes sleepOverlayPulse { 50% { opacity: .55; } }
+@media (prefers-reduced-motion: reduce) {
+  .audiobook-player-sleep-overlay, .audiobook-player-sleep-overlay.is-ending .audiobook-player-sleep-overlay-time { animation: none; }
+}
 
 .audiobook-series-create-form { display: flex; gap: 8px; }
 .audiobook-series-create-form input { flex: 1; min-height: 38px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 9px; background: rgba(11,11,14,.72); color: var(--text); }
