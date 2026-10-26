@@ -4198,8 +4198,15 @@ body.admin-mode .admin-tab.is-active .admin-tab-badge { background: var(--green-
    share the same round icon-button look rather than the old text pill - a
    single shared .audiobook-player-skip-icon rule (width/height only) keeps
    every size variant below (mini bar, mobile, landscape) in lockstep with
-   the button's own box instead of drifting independently. */
+   the button's own box instead of drifting independently. The icon itself
+   is Google's Material Symbols "replay_30"/"forward_30" glyph (Apache 2.0) -
+   a solid filled shape like the play button rather than this file's usual
+   stroked outline, since a hand-drawn arc-plus-text version couldn't make
+   "30" read clearly at these sizes the way a glyph purpose-built for a 24px
+   grid does. fill overrides the page-wide `svg { fill: none; stroke:
+   currentColor }` reset the same way .audiobook-player-play svg does. */
 .audiobook-player-skip-button { width: 46px; height: 46px; flex-shrink: 0; }
+.audiobook-player-skip-icon { fill: currentColor; stroke: none; }
 .audiobook-player-skip-button .audiobook-player-skip-icon { width: 28px; height: 28px; }
 .audiobook-player-chapter-nav { background: transparent; border-color: transparent; color: var(--muted); }
 .audiobook-player-chapter-nav:hover { background: var(--panel-2); color: var(--text); }
