@@ -323,6 +323,7 @@ const audiobookPlayerChaptersPanel = document.querySelector("#audiobook-player-c
 const audiobookPlayerChapters = document.querySelector("#audiobook-player-chapters");
 const audiobookPlayerTitle = document.querySelector("#audiobook-player-title");
 const audiobookPlayerAuthor = document.querySelector("#audiobook-player-author");
+const audiobookPlayerChapterLabel = document.querySelector("#audiobook-player-chapter-label");
 const audiobookPlayerProgress = document.querySelector("#audiobook-player-progress");
 const audiobookPlayerCurrentTime = document.querySelector("#audiobook-player-current-time");
 const audiobookPlayerDuration = document.querySelector("#audiobook-player-duration");
@@ -6081,7 +6082,7 @@ function setupAudiobookMediaSessionHandlers(audio) {
     if (audiobookPlaybackElsewhereState) {
       pauseAudiobookElsewhereAndPlayHere().catch((error) => console.error(error));
     } else {
-      audio.play().catch((error) => console.error(error));
+      resumeAudiobookPlaybackFromSavedPosition().catch((error) => console.error(error));
     }
   });
   navigator.mediaSession.setActionHandler("pause", () => audio.pause());
@@ -6172,7 +6173,7 @@ function updateAudiobookBufferingUI() {
 function renderAudiobookMiniPlayerInfo() {
   if (!audiobookMiniPlayerSubtitle) return;
   const item = audiobookPlayerOpenItem;
-  let subtitle = item?.author || "";
+  let subtitle = audiobookActiveChapterLabel || item?.author || "";
   let tone = "";
   const statusText = audiobookPlayerStatus?.textContent || "";
   if (audiobookPlaybackElsewhereState) {
@@ -6314,6 +6315,13 @@ async function openAudiobookPlayer(item) {
   audiobookTakeoverConfirming = false;
   audiobookYieldedToOtherDevice = false;
   setAudiobookPlayerStatus("");
+  // Clear the previous book's chapter label before rendering the mini
+  // player's info line below - renderAudiobookMiniPlayerItem reads
+  // audiobookActiveChapterLabel as its subtitle's first choice, so clearing
+  // it after would leave the old book's chapter name showing (as the new
+  // book's subtitle) until the next progress tick caught up.
+  audiobookActiveChapterLabel = "";
+  if (audiobookPlayerChapterLabel) audiobookPlayerChapterLabel.classList.add("hidden");
   renderAudiobookMiniPlayerItem(item);
   if (audiobookPlayerProgress) audiobookPlayerProgress.value = "0";
   if (audiobookPlayerCurrentTime) audiobookPlayerCurrentTime.textContent = "0:00";
@@ -6491,6 +6499,7 @@ function updateAudiobookPlayerProgressUI() {
   updateAudiobookProgressTrack(audio, chapterBounds, duration);
   highlightActiveAudiobookChapter(audio.currentTime);
   updateAudiobookChapterNavState(audio.currentTime);
+  updateAudiobookActiveChapterLabel(audio.currentTime);
   setAudiobookMediaSessionPositionState(audio);
 }
 
@@ -6555,6 +6564,28 @@ function highlightActiveAudiobookChapter(currentTime) {
   audiobookPlayerChapters.querySelectorAll(".audiobook-player-chapter").forEach((button, index) => {
     button.classList.toggle("is-active", index === activeIndex);
   });
+}
+
+// audiobookActiveChapterLabel is the current "Chapter N" / chapter title
+// text, shared by the full player's label under the author line and the
+// mini bar's subtitle (see renderAudiobookMiniPlayerInfo). Kept as module
+// state, rather than recomputed inline wherever it's needed, so a change
+// only triggers a mini-bar re-render when the chapter actually changes.
+let audiobookActiveChapterLabel = "";
+
+function updateAudiobookActiveChapterLabel(currentTime) {
+  const chapters = state.audiobooks.player?.chapters || [];
+  const activeIndex = findActiveAudiobookChapterIndex(currentTime, chapters);
+  const chapter = activeIndex >= 0 ? chapters[activeIndex] : null;
+  const label = chapter ? (chapter.title || `Chapter ${activeIndex + 1}`) : "";
+  if (audiobookPlayerChapterLabel) {
+    audiobookPlayerChapterLabel.textContent = label;
+    audiobookPlayerChapterLabel.classList.toggle("hidden", !label);
+  }
+  if (label !== audiobookActiveChapterLabel) {
+    audiobookActiveChapterLabel = label;
+    renderAudiobookMiniPlayerInfo();
+  }
 }
 
 // findActiveAudiobookChapterIndex returns the index of the chapter containing
@@ -7017,6 +7048,49 @@ function saveAudiobookProgressNow() {
 
   const item = state.audiobooks.items.find((entry) => entry.id === player.id);
   if (item) item.position_seconds = position;
+}
+
+// Below this, a seek onto the saved position isn't worth doing - it's within
+// normal drift (a heartbeat/save that landed a couple of seconds before the
+// pause) rather than a real "someone else moved the bookmark" difference.
+const AUDIOBOOK_RESUME_POSITION_TOLERANCE_SECONDS = 2;
+
+// A press is only superseded by a later one while still paused (see the
+// token check below) - once playback actually starts, audio.paused itself
+// is enough to tell a stale resolution it's no longer relevant.
+let audiobookResumeRequestToken = 0;
+
+// resumeAudiobookPlaybackFromSavedPosition is what the play button actually
+// calls (when no other device is actively playing - see the click handler):
+// it re-fetches the server's saved position right before playing and jumps
+// there first if it disagrees with whatever this tab already had loaded, so
+// pressing play always reconciles with the database instead of trusting a
+// position that might be stale (e.g. another device paused further along
+// since this tab last opened or synced). Mirrors the "elsewhere" takeover's
+// own re-check in pauseAudiobookElsewhereAndPlayHere, just without an active
+// device to ask to stop first.
+async function resumeAudiobookPlaybackFromSavedPosition() {
+  const player = state.audiobooks.player;
+  const audio = audiobookAudioEl;
+  if (!player || !audio) return;
+  // Mashing play (or play arriving from both a UI click and a media-session/
+  // hardware key in close succession) while still paused would otherwise fire
+  // this twice - each fetching the position independently and racing to seek
+  // right before calling play(). Only the most recent press's result applies.
+  const token = ++audiobookResumeRequestToken;
+  const position = await fetchAudiobookSavedPosition(player.id);
+  if (token !== audiobookResumeRequestToken) return;
+  // The player can close, switch to a different book, or already be playing
+  // again (a second press, a media-session/hardware play key) while this was
+  // in flight - any of those make the fetched position no longer relevant.
+  if (state.audiobooks.player?.id !== player.id || !audio.paused) return;
+  if (position !== null && Math.abs(position - audio.currentTime) > AUDIOBOOK_RESUME_POSITION_TOLERANCE_SECONDS) {
+    const knownDuration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : player.durationSeconds || 0;
+    if (!knownDuration || position < knownDuration - 1) {
+      audio.currentTime = position;
+    }
+  }
+  audio.play().catch((error) => console.error(error));
 }
 
 // setAudiobookPlayerPosition is the shared path for the "mark as not
@@ -10083,7 +10157,7 @@ audiobookPlayerPlayButton?.addEventListener("click", () => {
     if (audiobookPlaybackElsewhereState) {
       pauseAudiobookElsewhereAndPlayHere().catch((error) => console.error(error));
     } else {
-      audio.play().catch((error) => console.error(error));
+      resumeAudiobookPlaybackFromSavedPosition().catch((error) => console.error(error));
     }
   } else {
     audio.pause();
