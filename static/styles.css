@@ -4200,7 +4200,7 @@ body.admin-mode .admin-tab.is-active .admin-tab-badge { background: var(--green-
    every size variant below (mini bar, mobile, landscape) in lockstep with
    the button's own box instead of drifting independently. */
 .audiobook-player-skip-button { width: 46px; height: 46px; flex-shrink: 0; }
-.audiobook-player-skip-button .audiobook-player-skip-icon { width: 24px; height: 24px; }
+.audiobook-player-skip-button .audiobook-player-skip-icon { width: 28px; height: 28px; }
 .audiobook-player-chapter-nav { background: transparent; border-color: transparent; color: var(--muted); }
 .audiobook-player-chapter-nav:hover { background: var(--panel-2); color: var(--text); }
 .audiobook-player-chapter-nav:disabled { opacity: .35; cursor: default; }
@@ -4253,7 +4253,7 @@ body.admin-mode .admin-tab.is-active .admin-tab-badge { background: var(--green-
 .audiobook-player-speed-field { display: flex; align-items: center; gap: 8px; justify-self: start; color: var(--muted); font-size: 12px; }
 .audiobook-player-speed-field select { padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg-soft); color: var(--text); font-size: 13px; }
 .audiobook-player-action-group { display: flex; justify-content: center; gap: 10px; }
-.audiobook-player-action-button { display: flex; align-items: center; gap: 7px; padding: 8px 13px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); color: var(--muted); font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.audiobook-player-action-button { display: flex; align-items: center; gap: 7px; height: 40px; padding: 0 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--muted); font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
 .audiobook-player-action-button:hover { background: var(--panel-2); color: var(--text); }
 .audiobook-player-action-button.is-active { border-color: var(--amber); background: rgba(232,184,78,.14); color: var(--amber); }
 .audiobook-player-action-button.is-success { animation: audiobookActionPulse .5s ease; border-color: var(--green) !important; background: rgba(201,149,93,.18) !important; color: var(--green-bright) !important; }
@@ -4330,7 +4330,7 @@ body.admin-mode .admin-tab.is-active .admin-tab-badge { background: var(--green-
   .audiobook-player-progress-wrap { gap: 8px; }
   .audiobook-player-controls { gap: 4px; }
   .audiobook-player-skip-button { width: 40px; height: 40px; }
-  .audiobook-player-skip-button .audiobook-player-skip-icon { width: 21px; height: 21px; }
+  .audiobook-player-skip-button .audiobook-player-skip-icon { width: 24px; height: 24px; }
   .audiobook-player-chapter-nav { width: 34px; height: 34px; }
   .audiobook-player-play { width: 50px; height: 50px; font-size: 18px; }
   .audiobook-player-play svg { width: 22px; height: 22px; }
@@ -4339,7 +4339,7 @@ body.admin-mode .admin-tab.is-active .admin-tab-badge { background: var(--green-
   .audiobook-player-speed-field span { display: none; }
   .audiobook-player-speed-field select { padding: 5px 6px; font-size: 12px; }
   .audiobook-player-action-group { gap: 6px; flex-wrap: wrap; justify-content: center; }
-  .audiobook-player-action-button { gap: 5px; padding: 6px 10px; font-size: 11px; }
+  .audiobook-player-action-button { gap: 5px; height: 34px; padding: 0 10px; font-size: 11px; }
   .audiobook-player-action-button span { font-size: 11px; }
 }
 
@@ -4412,7 +4412,7 @@ body.admin-mode .admin-tab.is-active .admin-tab-badge { background: var(--green-
    position depends on its neighbors' actual widths, not on them being equal. */
 @media (min-width: 761px) {
   .audiobook-mini-player { left: var(--sidebar-width); padding: 8px 18px 10px; }
-  .audiobook-mini-player-content { display: flex; align-items: center; gap: 18px; }
+  .audiobook-mini-player-content { display: flex; flex-direction: row; align-items: center; gap: 18px; }
   .audiobook-mini-player-info { flex: 1 1 0; order: 1; }
   .audiobook-mini-player-controls-slot { flex: 0 0 auto; order: 2; }
   .audiobook-mini-player-top { flex: 1 1 0; display: flex; align-items: center; gap: 14px; min-width: 0; order: 3; }
@@ -4432,7 +4432,7 @@ body.audiobook-mini-player-open .content-panel::after { display: block; height: 
 }
 .audiobook-mini-player-controls-slot .audiobook-player-chapter-nav { width: 32px; height: 32px; }
 .audiobook-mini-player-controls-slot .audiobook-player-skip-button { width: 38px; height: 38px; }
-.audiobook-mini-player-controls-slot .audiobook-player-skip-button .audiobook-player-skip-icon { width: 20px; height: 20px; }
+.audiobook-mini-player-controls-slot .audiobook-player-skip-button .audiobook-player-skip-icon { width: 23px; height: 23px; }
 
 @media (max-width: 760px) {
   /* Sits just above the mobile bottom nav instead of covering it. The closed
@@ -4484,7 +4484,8 @@ body.audiobook-mini-player-open .content-panel::after { display: block; height: 
   .audiobook-player-controls { gap: 6px; }
   .audiobook-player-play { width: 54px; height: 54px; }
   .audiobook-player-skip-button { width: 42px; height: 42px; }
-  .audiobook-player-action-button { padding: 6px 11px; }
+  .audiobook-player-skip-button .audiobook-player-skip-icon { width: 26px; height: 26px; }
+  .audiobook-player-action-button { padding: 0 11px; }
 }
 
 /* Generic confirm modal: a styled stand-in for window.confirm(), currently
