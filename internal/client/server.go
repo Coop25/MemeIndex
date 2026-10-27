@@ -2556,6 +2556,7 @@ func (s *Server) handleAuthSession(w http.ResponseWriter, r *http.Request) {
 			"enabled":                      false,
 			"version":                      BuildVersion(),
 			"audiobook_upload_concurrency": s.config.AudiobookUploadConcurrency,
+			"public_base_url":              s.publicOrigin(r),
 			"permissions": authPermissions{
 				CanView:                  true,
 				CanUpload:                true,
@@ -2582,6 +2583,7 @@ func (s *Server) handleAuthSession(w http.ResponseWriter, r *http.Request) {
 			"login_url":                    "/auth/login",
 			"version":                      BuildVersion(),
 			"audiobook_upload_concurrency": s.config.AudiobookUploadConcurrency,
+			"public_base_url":              s.publicOrigin(r),
 		})
 		return
 	}
@@ -2599,6 +2601,7 @@ func (s *Server) handleAuthSession(w http.ResponseWriter, r *http.Request) {
 		"logout_url":                   "/auth/logout",
 		"version":                      BuildVersion(),
 		"audiobook_upload_concurrency": s.config.AudiobookUploadConcurrency,
+		"public_base_url":              s.publicOrigin(r),
 	})
 }
 

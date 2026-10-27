@@ -1400,6 +1400,7 @@ async function fetchAuthSession() {
       canManage: false,
     },
     logoutURL: payload.logout_url || "/auth/logout",
+    publicBaseURL: String(payload.public_base_url || "").trim(),
   };
 
   if (state.auth.enabled && state.auth.authenticated && !state.auth.permissions?.canView && !state.auth.permissions?.canViewAudiobooks) {
@@ -4468,8 +4469,15 @@ function renderAudiobookSeriesAddList() {
   });
 }
 
+// Prefers the server-resolved public origin (MEMEINDEX_PUBLIC_BASE_URL) over
+// window.location.origin, so a link copied while connected through the
+// direct-LAN listener still reads as the public domain, not a local IP.
+function shareOrigin() {
+  return state.auth?.publicBaseURL || window.location.origin;
+}
+
 async function shareAudiobookSeries(series) {
-  const url = `${window.location.origin}/?view=audiobooks&series=${encodeURIComponent(series.id)}`;
+  const url = `${shareOrigin()}/?view=audiobooks&series=${encodeURIComponent(series.id)}`;
   try {
     await copyShareText(url);
     showToast(`Link to "${series.name}" copied.`, "success", { title: "Audiobook Series" });
@@ -4484,7 +4492,7 @@ async function shareAudiobookSeries(series) {
 // account and view access - this isn't a public, unauthenticated link like a
 // meme share.
 async function shareAudiobookItem(item) {
-  const url = `${window.location.origin}/?view=audiobooks&book=${encodeURIComponent(item.id)}`;
+  const url = `${shareOrigin()}/?view=audiobooks&book=${encodeURIComponent(item.id)}`;
   try {
     await copyShareText(url);
     showToast(`Link to "${audiobookDisplayTitle(item)}" copied.`, "success", { title: "Audiobooks" });

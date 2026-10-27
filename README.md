@@ -392,7 +392,7 @@ To enable it:
 
 **Never port-forward this port on your router.** It is meant purely for LAN reachability; Cloudflare Tunnel remains the only sanctioned path in from the internet. A local DNS override (Pi-hole, AdGuard Home, your router's DNS rewrites) pointing your public hostname at this port on your LAN IP is a reasonable way to use the same domain name from both places, if you want that - but the port itself is what matters here, not the hostname.
 
-Sharing a meme (the Share button) builds its link from the request's own `Host` header by default, so a share created over `MEMEINDEX_LOCAL_ADDR` would otherwise produce a link using your LAN IP - unreachable to anyone outside the LAN. Set `MEMEINDEX_PUBLIC_BASE_URL` (e.g. `https://memes.example.com`) to make every share link use that origin instead, no matter which listener served the request that created it.
+Sharing a meme (the Share button) builds its link from the request's own `Host` header by default, and the audiobook "Share"/series-link buttons build theirs from the browser's own `window.location.origin` - so either one, used over `MEMEINDEX_LOCAL_ADDR`, would otherwise produce a link using your LAN IP, unreachable to anyone outside the LAN. Set `MEMEINDEX_PUBLIC_BASE_URL` (e.g. `https://memes.example.com`) to make every one of these links use that origin instead, no matter which listener served the request that created it.
 
 ## Downloader network isolation
 
