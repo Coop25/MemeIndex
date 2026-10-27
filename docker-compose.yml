@@ -35,6 +35,10 @@ services:
       # below) to enable. See "Local-network access" in the README before
       # turning this on.
       MEMEINDEX_LOCAL_ADDR: ${MEMEINDEX_LOCAL_ADDR:-}
+      # Origin used for share links regardless of which listener (ADDR or
+      # LOCAL_ADDR) the request came in on, e.g. https://memes.example.com.
+      # Leave blank to fall back to the request's own Host header.
+      MEMEINDEX_PUBLIC_BASE_URL: ${MEMEINDEX_PUBLIC_BASE_URL:-}
       MEMEINDEX_DATA_DIR: ${MEMEINDEX_DATA_DIR:-data}
       MEMEINDEX_DATABASE_URL: postgres://${POSTGRES_USER:-memeindex}:${POSTGRES_PASSWORD:-memeindex}@postgres:5432/${POSTGRES_DB:-memeindex}?sslmode=disable
       MEMEINDEX_MEDIAFETCH_YTDLP_BINARY: ${MEMEINDEX_MEDIAFETCH_YTDLP_BINARY:-yt-dlp}

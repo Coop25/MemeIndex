@@ -229,11 +229,24 @@ func (s *Server) handleAdminShares(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) memeSharePageURL(r *http.Request, share accessor.MemeShareState) string {
-	return requestOrigin(r) + "/m/" + url.PathEscape(share.MemeID) + "?share=" + url.QueryEscape(s.signMemeShare(share))
+	return s.publicOrigin(r) + "/m/" + url.PathEscape(share.MemeID) + "?share=" + url.QueryEscape(s.signMemeShare(share))
 }
 
 func (s *Server) memeShareMediaURL(r *http.Request, share accessor.MemeShareState, meme accessor.Meme) string {
-	return requestOrigin(r) + "/m/" + url.PathEscape(share.MemeID) + "/media/" + url.PathEscape(sharedAssetFileName(meme, false)) + "?share=" + url.QueryEscape(s.signMemeShare(share))
+	return s.publicOrigin(r) + "/m/" + url.PathEscape(share.MemeID) + "/media/" + url.PathEscape(sharedAssetFileName(meme, false)) + "?share=" + url.QueryEscape(s.signMemeShare(share))
+}
+
+// publicOrigin returns the origin shared links should use. Memes can be
+// reached from a public domain (reverse-proxied Addr listener) or from the
+// direct-LAN LocalAddr listener, whose Host header carries a local IP that
+// is meaningless to whoever the link is shared with. When a public base URL
+// is configured, every shared link uses it regardless of which listener
+// served the request that created the share.
+func (s *Server) publicOrigin(r *http.Request) string {
+	if s.config.PublicBaseURL != "" {
+		return s.config.PublicBaseURL
+	}
+	return requestOrigin(r)
 }
 
 func (s *Server) signMemeShare(share accessor.MemeShareState) string {
@@ -299,7 +312,7 @@ func (s *Server) serveSharedMemeAsset(w http.ResponseWriter, r *http.Request, me
 }
 
 func (s *Server) renderSharedMemePage(w http.ResponseWriter, r *http.Request, token string, meme accessor.Meme, expiresAt time.Time) {
-	origin := requestOrigin(r)
+	origin := s.publicOrigin(r)
 	shareURL := origin + "/m/" + url.PathEscape(meme.ID) + "?share=" + url.QueryEscape(token)
 	mediaURL := origin + "/m/" + url.PathEscape(meme.ID) + "/media/" + url.PathEscape(sharedAssetFileName(meme, false)) + "?share=" + url.QueryEscape(token)
 	previewURL := origin + "/m/" + url.PathEscape(meme.ID) + "/preview/" + url.PathEscape(sharedAssetFileName(meme, true)) + "?share=" + url.QueryEscape(token)

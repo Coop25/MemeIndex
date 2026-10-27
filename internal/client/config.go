@@ -2,6 +2,7 @@ package client
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -20,6 +21,7 @@ type Config struct {
 	LocalAddr                  string
 	DataDir                    string
 	DatabaseURL                string
+	PublicBaseURL              string
 	ShareSecret                string
 	MediaFetchYTDLPBinary      string
 	MediaFetchProxy            string
@@ -82,6 +84,7 @@ type rawConfig struct {
 	LocalAddr                       string   `envconfig:"LOCAL_ADDR"`
 	DataDir                         string   `envconfig:"DATA_DIR" default:"data"`
 	DatabaseURL                     string   `envconfig:"DATABASE_URL"`
+	PublicBaseURL                   string   `envconfig:"PUBLIC_BASE_URL"`
 	MediaFetchYTDLPBinary           string   `envconfig:"MEDIAFETCH_YTDLP_BINARY" default:"yt-dlp"`
 	MediaFetchProxy                 string   `envconfig:"MEDIAFETCH_PROXY"`
 	RateLimitEnabled                bool     `envconfig:"RATE_LIMIT_ENABLED" default:"true"`
@@ -161,6 +164,7 @@ func LoadConfig() (Config, error) {
 		LocalAddr:                  strings.TrimSpace(raw.LocalAddr),
 		DataDir:                    strings.TrimSpace(raw.DataDir),
 		DatabaseURL:                strings.TrimSpace(raw.DatabaseURL),
+		PublicBaseURL:              strings.TrimSuffix(strings.TrimSpace(raw.PublicBaseURL), "/"),
 		ShareSecret:                firstNonEmpty(strings.TrimSpace(raw.ShareSecret), strings.TrimSpace(raw.SessionSecret)),
 		MediaFetchYTDLPBinary:      strings.TrimSpace(raw.MediaFetchYTDLPBinary),
 		MediaFetchProxy: firstNonEmpty(
@@ -226,6 +230,12 @@ func (c Config) validateSecurity() error {
 	}
 	if c.MaxUploadBytes <= 0 {
 		return fmt.Errorf("MEMEINDEX_MAX_UPLOAD_BYTES must be positive")
+	}
+	if c.PublicBaseURL != "" {
+		parsed, err := url.Parse(c.PublicBaseURL)
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			return fmt.Errorf("MEMEINDEX_PUBLIC_BASE_URL must be an absolute http(s) URL")
+		}
 	}
 	return nil
 }
