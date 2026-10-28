@@ -145,6 +145,8 @@ func (s *Server) handleAudiobookByID(w http.ResponseWriter, r *http.Request) {
 		s.unfavoriteAudiobook(w, r, id)
 	case action == "series" && r.Method == http.MethodPut:
 		s.setAudiobookSeries(w, r, id)
+	case action == "listening-history" && r.Method == http.MethodGet:
+		s.getAudiobookListeningHistory(w, r, id)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
@@ -695,6 +697,58 @@ func (s *Server) unfavoriteAudiobook(w http.ResponseWriter, r *http.Request, id 
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleAudiobookStatsOverview serves GET /api/audiobooks/stats/overview: the
+// payload behind the audiobooks "Stats" view (total time listened, current
+// streak, last 30 days of daily totals, and finished-books history) for the
+// signed-in user.
+func (s *Server) handleAudiobookStatsOverview(w http.ResponseWriter, r *http.Request) {
+	if s.audiobooks == nil {
+		http.Error(w, "audiobooks require a database", http.StatusNotImplemented)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	overview, err := s.audiobooks.GetListeningOverview(r.Context(), currentAudiobookUserID(r))
+	if err != nil {
+		log.Printf("get audiobook listening overview failed: %v", err)
+		http.Error(w, "failed to load listening stats", http.StatusInternalServerError)
+		return
+	}
+	finished := make([]map[string]any, 0, len(overview.FinishedBooks))
+	for _, book := range overview.FinishedBooks {
+		entry := map[string]any{
+			"id":          book.ID,
+			"title":       book.Title,
+			"author":      book.Author,
+			"finished_at": book.FinishedAt,
+		}
+		if book.CoverPath != "" {
+			entry["cover_url"] = "/audiobook-cover/" + book.ID
+		}
+		finished = append(finished, entry)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"total_seconds_listened": overview.TotalSecondsListened,
+		"streak_days":            overview.StreakDays,
+		"daily_totals":           overview.DailyTotals,
+		"finished_books":         finished,
+	})
+}
+
+// getAudiobookListeningHistory serves GET /api/audiobooks/{id}/listening-history:
+// one book's day-by-day listened seconds for the signed-in user.
+func (s *Server) getAudiobookListeningHistory(w http.ResponseWriter, r *http.Request, id string) {
+	history, err := s.audiobooks.GetBookListeningHistory(r.Context(), id, currentAudiobookUserID(r))
+	if err != nil {
+		log.Printf("get audiobook listening history failed: %v", err)
+		http.Error(w, "failed to load listening history", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"history": history})
 }
 
 // setAudiobookSeries handles PUT /api/audiobooks/{id}/series: assigning (or,

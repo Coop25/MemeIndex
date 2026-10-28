@@ -200,6 +200,7 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/api/audiobooks", s.withAPIAuth(http.HandlerFunc(s.handleAudiobooks), permissionViewAudiobooks))
 	mux.Handle("/api/audiobooks/uploads", s.withAPIAuth(http.HandlerFunc(s.handleAudiobookUploads), permissionUploadAudiobooks))
 	mux.Handle("/api/audiobooks/uploads/", s.withAPIAuth(http.HandlerFunc(s.handleAudiobookUploadByID), permissionUploadAudiobooks))
+	mux.Handle("/api/audiobooks/stats/overview", s.withAPIAuth(http.HandlerFunc(s.handleAudiobookStatsOverview), permissionViewAudiobooks))
 	mux.Handle("/api/audiobooks/", s.withAPIAuth(http.HandlerFunc(s.handleAudiobookByID), permissionViewAudiobooks))
 	mux.Handle("/api/audiobook-series", s.withAPIAuth(http.HandlerFunc(s.handleAudiobookSeries), permissionViewAudiobooks))
 	mux.Handle("/api/audiobook-series/", s.withAPIAuth(http.HandlerFunc(s.handleAudiobookSeriesByID), permissionViewAudiobooks))
@@ -2315,15 +2316,15 @@ func (s *Server) createManagedUser(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) updateManagedUser(w http.ResponseWriter, r *http.Request, userID string) {
 	var payload struct {
-		CanView                  bool     `json:"canView"`
-		CanUpload                bool     `json:"canUpload"`
-		CanAddTags               bool     `json:"canAddTags"`
-		CanRemoveTags            bool     `json:"canRemoveTags"`
-		CanDeleteMemes           bool     `json:"canDeleteMemes"`
-		CanViewAudiobooks        bool     `json:"canViewAudiobooks"`
-		CanUploadAudiobooks      bool     `json:"canUploadAudiobooks"`
-		CanDeleteAudiobooks      bool     `json:"canDeleteAudiobooks"`
-		CanManageAudiobookSeries bool     `json:"canManageAudiobookSeries"`
+		CanView                  bool `json:"canView"`
+		CanUpload                bool `json:"canUpload"`
+		CanAddTags               bool `json:"canAddTags"`
+		CanRemoveTags            bool `json:"canRemoveTags"`
+		CanDeleteMemes           bool `json:"canDeleteMemes"`
+		CanViewAudiobooks        bool `json:"canViewAudiobooks"`
+		CanUploadAudiobooks      bool `json:"canUploadAudiobooks"`
+		CanDeleteAudiobooks      bool `json:"canDeleteAudiobooks"`
+		CanManageAudiobookSeries bool `json:"canManageAudiobookSeries"`
 		// AudiobookTagRestriction locks this account to only the audiobooks
 		// carrying at least one of these tags; empty (including omitted)
 		// means unrestricted. Always sent in full by the admin UI, same as
