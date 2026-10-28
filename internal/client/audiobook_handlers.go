@@ -712,7 +712,12 @@ func (s *Server) handleAudiobookStatsOverview(w http.ResponseWriter, r *http.Req
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	overview, err := s.audiobooks.GetListeningOverview(r.Context(), currentAudiobookUserID(r))
+	session, _ := sessionFromContext(r.Context())
+	var restrictToTags []string
+	if s.auth.enabled() {
+		restrictToTags = session.Permissions.AudiobookTagRestriction
+	}
+	overview, err := s.audiobooks.GetListeningOverview(r.Context(), currentAudiobookUserID(r), restrictToTags)
 	if err != nil {
 		log.Printf("get audiobook listening overview failed: %v", err)
 		http.Error(w, "failed to load listening stats", http.StatusInternalServerError)
@@ -742,6 +747,21 @@ func (s *Server) handleAudiobookStatsOverview(w http.ResponseWriter, r *http.Req
 // getAudiobookListeningHistory serves GET /api/audiobooks/{id}/listening-history:
 // one book's day-by-day listened seconds for the signed-in user.
 func (s *Server) getAudiobookListeningHistory(w http.ResponseWriter, r *http.Request, id string) {
+	session, _ := sessionFromContext(r.Context())
+	record, err := s.audiobooks.GetAudiobook(r.Context(), id)
+	if errors.Is(err, ErrAudiobookNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		log.Printf("get audiobook (for listening history) failed: %v", err)
+		http.Error(w, "failed to load listening history", http.StatusInternalServerError)
+		return
+	}
+	if !audiobookVisibleToSession(session, record, s.auth.enabled()) {
+		http.NotFound(w, r)
+		return
+	}
 	history, err := s.audiobooks.GetBookListeningHistory(r.Context(), id, currentAudiobookUserID(r))
 	if err != nil {
 		log.Printf("get audiobook listening history failed: %v", err)

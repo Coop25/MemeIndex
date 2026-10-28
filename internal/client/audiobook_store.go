@@ -307,8 +307,11 @@ type audiobookStore interface {
 	// GetListeningOverview summarizes a user's listening activity across
 	// their whole library: all-time total seconds listened, the current
 	// day-streak, the last 30 days of daily totals, and every book they've
-	// finished (most recently finished first).
-	GetListeningOverview(ctx context.Context, userID string) (audiobookListeningOverview, error)
+	// finished (most recently finished first). restrictToTags mirrors
+	// audiobookListFilter.RestrictToTags: when non-empty, the finished-books
+	// list is narrowed to books carrying one of those tags, the same
+	// tag-restriction a tag-restricted account sees everywhere else.
+	GetListeningOverview(ctx context.Context, userID string, restrictToTags []string) (audiobookListeningOverview, error)
 	// GetBookListeningHistory returns one user's day-by-day listened seconds
 	// for a single audiobook, most recent day first.
 	GetBookListeningHistory(ctx context.Context, audiobookID, userID string) ([]audiobookListeningDay, error)
@@ -877,16 +880,16 @@ func (s *postgresAudiobookStore) GetProgress(ctx context.Context, audiobookID, u
 }
 
 func (s *postgresAudiobookStore) SaveProgress(ctx context.Context, audiobookID, userID string, positionSeconds float64) error {
-	_, err := s.pool.Exec(ctx, fmt.Sprintf(`
+	_, err := s.pool.Exec(ctx, `
 		INSERT INTO audiobook_progress (audiobook_id, user_id, position_seconds, updated_at, finished_at)
 		VALUES ($1, $2, $3, NOW(), CASE WHEN EXISTS (
-			SELECT 1 FROM audiobooks a WHERE a.id = $1 AND a.duration_seconds > 0 AND $3 >= a.duration_seconds * %v
+			SELECT 1 FROM audiobooks a WHERE a.id = $1 AND a.duration_seconds > 0 AND $3 >= a.duration_seconds * $4
 		) THEN NOW() ELSE NULL END)
 		ON CONFLICT (audiobook_id, user_id) DO UPDATE
 		SET position_seconds = EXCLUDED.position_seconds,
 			updated_at = NOW(),
 			finished_at = COALESCE(audiobook_progress.finished_at, EXCLUDED.finished_at)
-	`, audiobookFinishedFraction), audiobookID, userID, positionSeconds)
+	`, audiobookID, userID, positionSeconds, audiobookFinishedFraction)
 	if err != nil {
 		return fmt.Errorf("save audiobook progress: %w", err)
 	}
@@ -918,16 +921,20 @@ func (s *postgresAudiobookStore) HeartbeatPlaybackSession(ctx context.Context, a
 	// clear ("pause there, play here" looked like it worked - is_playing
 	// flipped to false immediately - but the other device's heartbeat never
 	// saw the request and kept playing).
-	var oldPosition float64
+	// now comes from Postgres's own clock (read in the same query as the old
+	// row), not the app process's - the two can drift, and that drift would
+	// otherwise leak directly into the elapsed-time math below as spurious
+	// listening time (or negative/dropped time).
+	var now time.Time
 	var oldIsPlaying, oldStopRequested bool
 	var oldUpdatedAt time.Time
 	hadRow := true
 	err = tx.QueryRow(ctx, `
-		SELECT position_seconds, is_playing, stop_requested, updated_at
+		SELECT NOW(), is_playing, stop_requested, updated_at
 		FROM audiobook_playback_sessions
 		WHERE audiobook_id = $1 AND user_id = $2 AND device_id = $3
 		FOR UPDATE
-	`, audiobookID, userID, deviceID).Scan(&oldPosition, &oldIsPlaying, &oldStopRequested, &oldUpdatedAt)
+	`, audiobookID, userID, deviceID).Scan(&now, &oldIsPlaying, &oldStopRequested, &oldUpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		hadRow = false
 	} else if err != nil {
@@ -940,7 +947,6 @@ func (s *postgresAudiobookStore) HeartbeatPlaybackSession(ctx context.Context, a
 	// "playing elsewhere" again on the device that just took over until its
 	// own pause heartbeat lands. A resumed heartbeat drops the stop instead.
 	honored := hadRow && oldStopRequested && !resumed
-	now := time.Now()
 
 	_, err = tx.Exec(ctx, `
 		INSERT INTO audiobook_playback_sessions (audiobook_id, user_id, device_id, position_seconds, is_playing, stop_requested, updated_at)
@@ -966,12 +972,18 @@ func (s *postgresAudiobookStore) HeartbeatPlaybackSession(ctx context.Context, a
 			elapsed = audiobookListeningStatsMaxGap
 		}
 		if elapsed > 0 {
+			// Bucketed by the Go process's own UTC calendar day, not Postgres's
+			// CURRENT_DATE - the streak/chart math in audiobookListeningStreak
+			// and the frontend both reason in UTC days, and CURRENT_DATE follows
+			// whatever timezone the Postgres server happens to be configured
+			// with, which would otherwise disagree near midnight.
+			listenDate := now.UTC().Truncate(24 * time.Hour)
 			if _, err := tx.Exec(ctx, `
 				INSERT INTO audiobook_listening_stats (user_id, audiobook_id, listen_date, seconds_listened)
-				VALUES ($1, $2, CURRENT_DATE, $3)
+				VALUES ($1, $2, $3, $4)
 				ON CONFLICT (user_id, audiobook_id, listen_date) DO UPDATE
 				SET seconds_listened = audiobook_listening_stats.seconds_listened + EXCLUDED.seconds_listened
-			`, userID, audiobookID, elapsed.Seconds()); err != nil {
+			`, userID, audiobookID, listenDate, elapsed.Seconds()); err != nil {
 				return false, fmt.Errorf("heartbeat audiobook playback session (record stats): %w", err)
 			}
 		}
@@ -1027,25 +1039,57 @@ func (s *postgresAudiobookStore) OtherPlaybackStopPending(ctx context.Context, a
 	return pending, nil
 }
 
-func (s *postgresAudiobookStore) GetListeningOverview(ctx context.Context, userID string) (audiobookListeningOverview, error) {
+func (s *postgresAudiobookStore) GetListeningOverview(ctx context.Context, userID string, restrictToTags []string) (audiobookListeningOverview, error) {
 	overview := audiobookListeningOverview{
 		DailyTotals:   []audiobookListeningDay{},
 		FinishedBooks: []audiobookFinishedBook{},
 	}
 
-	if err := s.pool.QueryRow(ctx, `
-		SELECT COALESCE(SUM(seconds_listened), 0) FROM audiobook_listening_stats WHERE user_id = $1
-	`, userID).Scan(&overview.TotalSecondsListened); err != nil {
-		return overview, fmt.Errorf("total audiobook listening time: %w", err)
+	// One pass over every day this user has ever listened on gives both the
+	// all-time total and the set of days the streak needs, instead of
+	// querying each separately against the same table.
+	allDaysRows, err := s.pool.Query(ctx, `
+		SELECT listen_date::text, SUM(seconds_listened)
+		FROM audiobook_listening_stats
+		WHERE user_id = $1
+		GROUP BY listen_date
+	`, userID)
+	if err != nil {
+		return overview, fmt.Errorf("audiobook listening days: %w", err)
 	}
+	listenedOn := map[string]bool{}
+	for allDaysRows.Next() {
+		var date string
+		var seconds float64
+		if err := allDaysRows.Scan(&date, &seconds); err != nil {
+			allDaysRows.Close()
+			return overview, fmt.Errorf("scan audiobook listening day: %w", err)
+		}
+		overview.TotalSecondsListened += seconds
+		if seconds > 0 {
+			listenedOn[date] = true
+		}
+	}
+	allDaysErr := allDaysRows.Err()
+	allDaysRows.Close()
+	if allDaysErr != nil {
+		return overview, fmt.Errorf("iterate audiobook listening days: %w", allDaysErr)
+	}
+	overview.StreakDays = audiobookListeningStreak(listenedOn, time.Now())
 
+	// The cutoff is computed here in Go (UTC), not via Postgres's
+	// CURRENT_DATE, to stay on the same UTC-day boundaries listen_date is
+	// now written with and audiobookListeningStreak reasons in - CURRENT_DATE
+	// follows the Postgres server's configured timezone, which won't always
+	// agree with UTC near midnight.
+	chartCutoff := time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, -29)
 	dailyRows, err := s.pool.Query(ctx, `
 		SELECT listen_date::text, SUM(seconds_listened)
 		FROM audiobook_listening_stats
-		WHERE user_id = $1 AND listen_date >= CURRENT_DATE - INTERVAL '29 days'
+		WHERE user_id = $1 AND listen_date >= $2
 		GROUP BY listen_date
 		ORDER BY listen_date
-	`, userID)
+	`, userID, chartCutoff)
 	if err != nil {
 		return overview, fmt.Errorf("audiobook daily listening totals: %w", err)
 	}
@@ -1061,37 +1105,24 @@ func (s *postgresAudiobookStore) GetListeningOverview(ctx context.Context, userI
 		return overview, fmt.Errorf("iterate audiobook daily listening totals: %w", err)
 	}
 
-	streakRows, err := s.pool.Query(ctx, `
-		SELECT DISTINCT listen_date::text FROM audiobook_listening_stats
-		WHERE user_id = $1 AND seconds_listened > 0
-		ORDER BY listen_date DESC
-	`, userID)
-	if err != nil {
-		return overview, fmt.Errorf("audiobook listening days: %w", err)
-	}
-	listenedOn := map[string]bool{}
-	for streakRows.Next() {
-		var date string
-		if err := streakRows.Scan(&date); err != nil {
-			streakRows.Close()
-			return overview, fmt.Errorf("scan audiobook listening day: %w", err)
-		}
-		listenedOn[date] = true
-	}
-	streakErr := streakRows.Err()
-	streakRows.Close()
-	if streakErr != nil {
-		return overview, fmt.Errorf("iterate audiobook listening days: %w", streakErr)
-	}
-	overview.StreakDays = audiobookListeningStreak(listenedOn, time.Now())
-
-	finishedRows, err := s.pool.Query(ctx, `
+	// restrictToTags mirrors the same tag-restriction ListAudiobooks applies
+	// (audiobookListFilter.RestrictToTags) - a tag-restricted account must
+	// not see a finished book here that it couldn't otherwise see or open.
+	finishedQuery := strings.Builder{}
+	finishedQuery.WriteString(`
 		SELECT a.id, a.title, a.author, a.cover_path, p.finished_at
 		FROM audiobook_progress p
 		JOIN audiobooks a ON a.id = p.audiobook_id
 		WHERE p.user_id = $1 AND p.finished_at IS NOT NULL
-		ORDER BY p.finished_at DESC
-	`, userID)
+	`)
+	finishedArgs := []any{userID}
+	if len(restrictToTags) > 0 {
+		finishedArgs = append(finishedArgs, restrictToTags)
+		_, _ = fmt.Fprintf(&finishedQuery, " AND EXISTS (SELECT 1 FROM audiobook_tags at JOIN tags t ON t.id = at.tag_id WHERE at.audiobook_id = a.id AND t.name = ANY($%d::text[]))", len(finishedArgs))
+	}
+	finishedQuery.WriteString(" ORDER BY p.finished_at DESC")
+
+	finishedRows, err := s.pool.Query(ctx, finishedQuery.String(), finishedArgs...)
 	if err != nil {
 		return overview, fmt.Errorf("audiobook finished books: %w", err)
 	}

@@ -94,6 +94,7 @@ const state = {
     stats: null,
     statsHistoryOpenID: "",
     statsHistoryByID: {},
+    statsHistoryFailedIDs: new Set(),
   },
 };
 
@@ -3903,13 +3904,21 @@ async function loadInitialMemes() {
 		return;
 	}
 	if (isAudiobooksView()) {
+		if (state.audiobooks.view === "stats") {
+			// The Stats page needs neither the full book list nor the series
+			// list - skip both fetches rather than loading them only to throw
+			// the result away. renderAudiobookSeriesFilter still runs (off
+			// whatever series data is already cached) purely for the subnav's
+			// active-button highlighting, which doesn't depend on it being fresh.
+			renderAudiobookSeriesFilter();
+			await fetchAudiobookStatsOverview();
+			renderContentMode();
+			return;
+		}
 		await Promise.all([fetchAudiobooks(), fetchAudiobookSeries()]);
 		if (state.audiobooks.view === "manage-books") {
 			await fetchAudiobookSeriesManagerBooks();
 			renderAudiobookSeriesManagerView();
-		}
-		if (state.audiobooks.view === "stats") {
-			await fetchAudiobookStatsOverview();
 		}
 		renderContentMode();
 		return;
@@ -4111,16 +4120,6 @@ async function fetchAudiobookSeries() {
   }
 }
 
-// formatAudiobookStatsDuration renders a seconds count as "Xh Ym" (or just
-// "Ym" / "0m" for anything under an hour) - coarser than formatMediaTime's
-// clock-style output, which reads oddly for a multi-hour listening total.
-function formatAudiobookStatsDuration(totalSeconds) {
-  const seconds = Math.max(0, Number(totalSeconds) || 0);
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
-}
-
 async function fetchAudiobookStatsOverview() {
   try {
     const response = await fetch("/api/audiobooks/stats/overview", { credentials: "same-origin" });
@@ -4144,14 +4143,18 @@ async function toggleAudiobookStatsHistory(bookId) {
   }
   state.audiobooks.statsHistoryOpenID = bookId;
   if (!state.audiobooks.statsHistoryByID[bookId]) {
+    state.audiobooks.statsHistoryFailedIDs.delete(bookId);
     try {
       const response = await fetch(`/api/audiobooks/${encodeURIComponent(bookId)}/listening-history`, { credentials: "same-origin" });
       if (response.ok) {
         const payload = await response.json();
         state.audiobooks.statsHistoryByID[bookId] = payload.history || [];
+      } else {
+        state.audiobooks.statsHistoryFailedIDs.add(bookId);
       }
     } catch (error) {
       console.error(error);
+      state.audiobooks.statsHistoryFailedIDs.add(bookId);
     }
   }
   renderAudiobookStatsView();
@@ -4198,9 +4201,12 @@ function renderAudiobookStatsView() {
     audiobookStatsFinishedList.innerHTML = finished.map((book) => {
       const isOpen = book.id === openID;
       const history = state.audiobooks.statsHistoryByID[book.id];
+      const failed = state.audiobooks.statsHistoryFailedIDs.has(book.id);
       const historyHTML = !isOpen
         ? ""
-        : !history
+        : failed
+          ? `<p class="status-text">Could not load listening history. Collapse and reopen to try again.</p>`
+          : !history
           ? `<p class="status-text">Loading...</p>`
           : history.length === 0
             ? `<p class="status-text">No recorded listening sessions.</p>`
@@ -4854,13 +4860,23 @@ function audiobookFileExtension(filename) {
   return match ? match[0] : "";
 }
 
-function formatAudiobookRemaining(seconds) {
+// formatAudiobookRemaining renders a seconds count as "Xh Ym<suffix>" (or
+// zeroText for anything under a minute). The default suffix/zeroText match
+// its original "time left on this book" use; the Stats view reuses it with
+// both blanked out for a plain duration like "2h 15m".
+function formatAudiobookRemaining(seconds, { suffix = " left", zeroText = "Less than a minute left" } = {}) {
   const total = Math.max(0, Math.round(seconds || 0));
   const hours = Math.floor(total / 3600);
   const minutes = Math.floor((total % 3600) / 60);
-  if (hours > 0) return `${hours}h ${minutes}m left`;
-  if (minutes > 0) return `${minutes}m left`;
-  return "Less than a minute left";
+  if (hours > 0) return `${hours}h ${minutes}m${suffix}`;
+  if (minutes > 0) return `${minutes}m${suffix}`;
+  return zeroText;
+}
+
+// formatAudiobookStatsDuration is formatAudiobookRemaining with the "time
+// left" framing stripped out, for a plain total like "2h 15m" or "0m".
+function formatAudiobookStatsDuration(totalSeconds) {
+  return formatAudiobookRemaining(totalSeconds, { suffix: "", zeroText: "0m" });
 }
 
 function audiobookCardHTML(item) {

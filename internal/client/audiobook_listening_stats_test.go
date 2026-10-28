@@ -179,7 +179,7 @@ func TestSaveProgressSetsFinishedAtOnce(t *testing.T) {
 	if err := store.SaveProgress(ctx, audiobookID, userID, 50); err != nil {
 		t.Fatalf("save progress (not yet finished): %v", err)
 	}
-	overview, err := store.GetListeningOverview(ctx, userID)
+	overview, err := store.GetListeningOverview(ctx, userID, nil)
 	if err != nil {
 		t.Fatalf("GetListeningOverview: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestSaveProgressSetsFinishedAtOnce(t *testing.T) {
 	if err := store.SaveProgress(ctx, audiobookID, userID, 99); err != nil {
 		t.Fatalf("save progress (finished): %v", err)
 	}
-	overview, err = store.GetListeningOverview(ctx, userID)
+	overview, err = store.GetListeningOverview(ctx, userID, nil)
 	if err != nil {
 		t.Fatalf("GetListeningOverview: %v", err)
 	}
@@ -203,11 +203,55 @@ func TestSaveProgressSetsFinishedAtOnce(t *testing.T) {
 	if err := store.SaveProgress(ctx, audiobookID, userID, 0); err != nil {
 		t.Fatalf("save progress (restarted): %v", err)
 	}
-	overview, err = store.GetListeningOverview(ctx, userID)
+	overview, err = store.GetListeningOverview(ctx, userID, nil)
 	if err != nil {
 		t.Fatalf("GetListeningOverview: %v", err)
 	}
 	if len(overview.FinishedBooks) != 1 || !overview.FinishedBooks[0].FinishedAt.Equal(firstFinishedAt) {
 		t.Fatalf("finished books = %+v, want finished_at unchanged at %v", overview.FinishedBooks, firstFinishedAt)
+	}
+}
+
+// TestGetListeningOverviewRestrictsFinishedBooksByTag covers that a
+// tag-restricted account's finished-books list only includes books carrying
+// one of its allowed tags - the same restriction ListAudiobooks applies, so
+// a restricted account can't see a finished book here that it couldn't
+// otherwise see or open.
+func TestGetListeningOverviewRestrictsFinishedBooksByTag(t *testing.T) {
+	store := newTestAudiobookStore(t)
+	ctx := context.Background()
+	allowedBookID, userID := insertTestAudiobook(t, store, 100)
+	restrictedBookID, _ := insertTestAudiobook(t, store, 100)
+
+	if _, err := store.ReplaceAudiobookTags(ctx, allowedBookID, []string{"allowed"}); err != nil {
+		t.Fatalf("tag allowed book: %v", err)
+	}
+	if _, err := store.ReplaceAudiobookTags(ctx, restrictedBookID, []string{"restricted"}); err != nil {
+		t.Fatalf("tag restricted book: %v", err)
+	}
+
+	// Both books are finished under the SAME listening user (insertTestAudiobook's
+	// returned userID is only each book's uploader, which SaveProgress ignores).
+	if err := store.SaveProgress(ctx, allowedBookID, userID, 99); err != nil {
+		t.Fatalf("finish allowed book: %v", err)
+	}
+	if err := store.SaveProgress(ctx, restrictedBookID, userID, 99); err != nil {
+		t.Fatalf("finish restricted book: %v", err)
+	}
+
+	overview, err := store.GetListeningOverview(ctx, userID, []string{"allowed"})
+	if err != nil {
+		t.Fatalf("GetListeningOverview: %v", err)
+	}
+	if len(overview.FinishedBooks) != 1 || overview.FinishedBooks[0].ID != allowedBookID {
+		t.Fatalf("finished books = %+v, want only %q", overview.FinishedBooks, allowedBookID)
+	}
+
+	unrestricted, err := store.GetListeningOverview(ctx, userID, nil)
+	if err != nil {
+		t.Fatalf("GetListeningOverview (unrestricted): %v", err)
+	}
+	if len(unrestricted.FinishedBooks) != 2 {
+		t.Fatalf("finished books (unrestricted) = %+v, want both books", unrestricted.FinishedBooks)
 	}
 }
