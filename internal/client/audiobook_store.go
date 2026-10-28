@@ -373,7 +373,7 @@ func newAudiobookStore(ctx context.Context, databaseURL, dataDir string) (audiob
 	}
 
 	store := &postgresAudiobookStore{pool: pool, dir: dir, tmpDir: tmpDir, coversDir: coversDir}
-	if err := dbschema.Apply(ctx, pool, "015_audiobooks.sql", "016_audiobook_cover_art.sql", "017_audiobook_chapters.sql", "018_audiobook_narrator.sql", "019_audiobook_bookmarks.sql", "021_audiobook_series.sql", "022_audiobook_favorites.sql", "024_audiobook_upload_ranges.sql", "025_audiobook_playback_sessions.sql", "026_audiobook_tags.sql"); err != nil {
+	if err := dbschema.Apply(ctx, pool, "015_audiobooks.sql", "016_audiobook_cover_art.sql", "017_audiobook_chapters.sql", "018_audiobook_narrator.sql", "019_audiobook_bookmarks.sql", "021_audiobook_series.sql", "022_audiobook_favorites.sql", "024_audiobook_upload_ranges.sql", "025_audiobook_playback_sessions.sql", "026_audiobook_tags.sql", "028_audiobook_listening_stats.sql"); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("ensure audiobooks schema: %w", err)
 	}
@@ -909,7 +909,7 @@ func (s *postgresAudiobookStore) HeartbeatPlaybackSession(ctx context.Context, a
 	if err != nil {
 		return false, fmt.Errorf("heartbeat audiobook playback session (begin): %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	// Read this device's previous heartbeat, locked, before writing the new
 	// one - the read-then-write happens as two plain statements in one
