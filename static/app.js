@@ -91,6 +91,10 @@ const state = {
     series: [],
     view: "books",
     manageSeriesId: "",
+    stats: null,
+    statsHistoryOpenID: "",
+    statsHistoryByID: {},
+    statsHistoryFailedIDs: new Set(),
   },
 };
 
@@ -243,6 +247,14 @@ const openAudiobookUploadButton = document.querySelector("#open-audiobook-upload
 const audiobooksSubnav = document.querySelector("#audiobooks-subnav");
 const audiobooksSubnavFilterItems = document.querySelectorAll("#audiobooks-subnav [data-audiobook-filter]");
 const audiobooksSubnavSeriesButton = document.querySelector("#audiobooks-subnav-series-button");
+const audiobooksSubnavStatsButton = document.querySelector("#audiobooks-subnav-stats-button");
+const audiobookStatsView = document.querySelector("#audiobook-stats-view");
+const audiobookStatsBackButton = document.querySelector("#audiobook-stats-back");
+const audiobookStatsTotalTime = document.querySelector("#audiobook-stats-total-time");
+const audiobookStatsStreak = document.querySelector("#audiobook-stats-streak");
+const audiobookStatsChart = document.querySelector("#audiobook-stats-chart");
+const audiobookStatsFinishedList = document.querySelector("#audiobook-stats-finished-list");
+const audiobookStatsFinishedEmpty = document.querySelector("#audiobook-stats-finished-empty");
 const audiobooksActiveFilterLabel = document.querySelector("#audiobooks-active-filter-label");
 const openAudiobookSeriesManagerButton = document.querySelector("#open-audiobook-series-manager");
 const audiobookSeriesManageView = document.querySelector("#audiobook-series-manage-view");
@@ -864,6 +876,9 @@ function readAudiobooksStateFromURL() {
   if (sub === "series") {
     return { view: "series", seriesId: "", filter: "", author: "", tag: "", bookId };
   }
+  if (sub === "stats") {
+    return { view: "stats", seriesId: "", filter: "", author: "", tag: "", bookId };
+  }
   if (seriesId) {
     return { view: "books", seriesId, filter: "", author: "", tag: "", bookId };
   }
@@ -913,6 +928,8 @@ function syncAudiobooksURL({ push = false } = {}) {
       if (state.audiobooks.manageSeriesId) qs.set("series", state.audiobooks.manageSeriesId);
     } else if (state.audiobooks.view === "series") {
       qs.set("sub", "series");
+    } else if (state.audiobooks.view === "stats") {
+      qs.set("sub", "stats");
     } else if (state.audiobooks.seriesId) {
       qs.set("series", state.audiobooks.seriesId);
     } else if (state.audiobooks.author) {
@@ -3692,9 +3709,11 @@ function renderContentMode() {
 	const homeMode = state.filters.view === "home";
 	const audiobooksMode = isAudiobooksView();
 	const manageSeriesBooksMode = audiobooksMode && state.audiobooks.view === "manage-books";
+	const statsMode = audiobooksMode && state.audiobooks.view === "stats";
 	const libraryMode = !adminMode && !homeMode && !audiobooksMode;
-	audiobooksView?.classList.toggle("hidden", !audiobooksMode || manageSeriesBooksMode);
+	audiobooksView?.classList.toggle("hidden", !audiobooksMode || manageSeriesBooksMode || statsMode);
 	audiobookSeriesManageView?.classList.toggle("hidden", !manageSeriesBooksMode);
+	audiobookStatsView?.classList.toggle("hidden", !statsMode);
 	document.body.classList.toggle("audiobooks-mode", audiobooksMode);
 	if (tagSearchInput) {
 		tagSearchInput.placeholder = audiobooksMode ? "Search audiobooks…" : "Search memes, tags, or notes…";
@@ -3885,6 +3904,17 @@ async function loadInitialMemes() {
 		return;
 	}
 	if (isAudiobooksView()) {
+		if (state.audiobooks.view === "stats") {
+			// The Stats page needs neither the full book list nor the series
+			// list - skip both fetches rather than loading them only to throw
+			// the result away. renderAudiobookSeriesFilter still runs (off
+			// whatever series data is already cached) purely for the subnav's
+			// active-button highlighting, which doesn't depend on it being fresh.
+			renderAudiobookSeriesFilter();
+			await fetchAudiobookStatsOverview();
+			renderContentMode();
+			return;
+		}
 		await Promise.all([fetchAudiobooks(), fetchAudiobookSeries()]);
 		if (state.audiobooks.view === "manage-books") {
 			await fetchAudiobookSeriesManagerBooks();
@@ -4090,6 +4120,123 @@ async function fetchAudiobookSeries() {
   }
 }
 
+async function fetchAudiobookStatsOverview() {
+  try {
+    const response = await fetch("/api/audiobooks/stats/overview", { credentials: "same-origin" });
+    if (!(await expectAuthorized(response, "Could not load listening stats."))) {
+      return;
+    }
+    state.audiobooks.stats = await response.json();
+  } catch (error) {
+    console.error(error);
+    state.audiobooks.stats = null;
+  } finally {
+    renderAudiobookStatsView();
+  }
+}
+
+async function toggleAudiobookStatsHistory(bookId) {
+  if (state.audiobooks.statsHistoryOpenID === bookId) {
+    state.audiobooks.statsHistoryOpenID = "";
+    renderAudiobookStatsView();
+    return;
+  }
+  state.audiobooks.statsHistoryOpenID = bookId;
+  if (!state.audiobooks.statsHistoryByID[bookId]) {
+    state.audiobooks.statsHistoryFailedIDs.delete(bookId);
+    try {
+      const response = await fetch(`/api/audiobooks/${encodeURIComponent(bookId)}/listening-history`, { credentials: "same-origin" });
+      if (response.ok) {
+        const payload = await response.json();
+        state.audiobooks.statsHistoryByID[bookId] = payload.history || [];
+      } else {
+        state.audiobooks.statsHistoryFailedIDs.add(bookId);
+      }
+    } catch (error) {
+      console.error(error);
+      state.audiobooks.statsHistoryFailedIDs.add(bookId);
+    }
+  }
+  renderAudiobookStatsView();
+}
+
+// renderAudiobookStatsView draws the whole Stats page from state.audiobooks.stats:
+// the total-time/streak tiles, a lightweight CSS bar chart of the last 30
+// days, and the finished-books history (each row expandable in place to that
+// book's own day-by-day listening log, fetched on first expand).
+function renderAudiobookStatsView() {
+  if (!audiobookStatsView) return;
+  const overview = state.audiobooks.stats;
+  if (audiobookStatsTotalTime) {
+    audiobookStatsTotalTime.textContent = formatAudiobookStatsDuration(overview?.total_seconds_listened);
+  }
+  if (audiobookStatsStreak) {
+    const days = Number(overview?.streak_days || 0);
+    audiobookStatsStreak.textContent = `${days} day${days === 1 ? "" : "s"}`;
+  }
+
+  if (audiobookStatsChart) {
+    const totals = new Map((overview?.daily_totals || []).map((day) => [day.date, Number(day.seconds_listened) || 0]));
+    const maxSeconds = Math.max(1, ...totals.values());
+    const days = [];
+    const cursor = new Date();
+    cursor.setUTCHours(0, 0, 0, 0);
+    for (let i = 29; i >= 0; i--) {
+      const date = new Date(cursor);
+      date.setUTCDate(date.getUTCDate() - i);
+      const key = date.toISOString().slice(0, 10);
+      days.push({ key, seconds: totals.get(key) || 0 });
+    }
+    audiobookStatsChart.innerHTML = days.map((day) => {
+      const heightPct = Math.max(2, Math.round((day.seconds / maxSeconds) * 100));
+      const title = `${day.key}: ${formatAudiobookStatsDuration(day.seconds)}`;
+      return `<div class="audiobook-stats-chart-bar" style="height:${heightPct}%" title="${escapeHTML(title)}"></div>`;
+    }).join("");
+  }
+
+  const finished = overview?.finished_books || [];
+  audiobookStatsFinishedEmpty?.classList.toggle("hidden", finished.length !== 0);
+  if (audiobookStatsFinishedList) {
+    const openID = state.audiobooks.statsHistoryOpenID;
+    audiobookStatsFinishedList.innerHTML = finished.map((book) => {
+      const isOpen = book.id === openID;
+      const history = state.audiobooks.statsHistoryByID[book.id];
+      const failed = state.audiobooks.statsHistoryFailedIDs.has(book.id);
+      const historyHTML = !isOpen
+        ? ""
+        : failed
+          ? `<p class="status-text">Could not load listening history. Collapse and reopen to try again.</p>`
+          : !history
+          ? `<p class="status-text">Loading...</p>`
+          : history.length === 0
+            ? `<p class="status-text">No recorded listening sessions.</p>`
+            : `<ul class="audiobook-stats-history-list">${history.map((day) =>
+                `<li><span>${escapeHTML(day.date)}</span><span>${formatAudiobookStatsDuration(day.seconds_listened)}</span></li>`
+              ).join("")}</ul>`;
+      return `
+        <article class="audiobook-stats-finished-row" data-finished-book-id="${escapeHTML(book.id)}">
+          <button type="button" class="audiobook-stats-finished-summary" data-finished-toggle>
+            ${book.cover_url ? `<img class="audiobook-stats-finished-cover" src="${escapeHTML(book.cover_url)}" alt="" loading="lazy" />` : `<div class="audiobook-stats-finished-cover audiobook-stats-finished-cover-empty" aria-hidden="true"></div>`}
+            <span class="audiobook-stats-finished-info">
+              <strong>${escapeHTML(book.title)}</strong>
+              <span class="status-text">${escapeHTML(book.author || "")}</span>
+            </span>
+            <span class="status-text" title="${escapeHTML(formatDateTimeZoned(book.finished_at))}">${escapeHTML(formatRelativeTime(book.finished_at))}</span>
+          </button>
+          <div class="audiobook-stats-finished-history${isOpen ? "" : " hidden"}">${historyHTML}</div>
+        </article>
+      `;
+    }).join("");
+
+    audiobookStatsFinishedList.querySelectorAll("[data-finished-toggle]").forEach((button) => {
+      const bookId = button.closest("[data-finished-book-id]")?.dataset.finishedBookId;
+      button.addEventListener("click", () => {
+        if (bookId) toggleAudiobookStatsHistory(bookId).catch((error) => console.error(error));
+      });
+    });
+  }
+}
+
 function renderAudiobookSeriesFilter() {
   audiobooksSubnav?.classList.toggle("hidden", !canViewAudiobooks());
   const series = state.audiobooks.series;
@@ -4098,11 +4245,13 @@ function renderAudiobookSeriesFilter() {
   const activeAuthor = state.audiobooks.author;
   const activeTag = state.audiobooks.tag;
   const inSeriesGallery = state.audiobooks.view === "series";
+  const inStatsView = state.audiobooks.view === "stats";
 
   audiobooksSubnavFilterItems.forEach((item) => {
-    item.classList.toggle("is-active", !inSeriesGallery && !current && !activeAuthor && !activeTag && item.dataset.audiobookFilter === activeFilter);
+    item.classList.toggle("is-active", !inSeriesGallery && !inStatsView && !current && !activeAuthor && !activeTag && item.dataset.audiobookFilter === activeFilter);
   });
   audiobooksSubnavSeriesButton?.classList.toggle("is-active", inSeriesGallery);
+  audiobooksSubnavStatsButton?.classList.toggle("is-active", inStatsView);
 
   if (audiobooksActiveFilterLabel) {
     const activeSeries = series.find((s) => s.id === current);
@@ -4711,13 +4860,23 @@ function audiobookFileExtension(filename) {
   return match ? match[0] : "";
 }
 
-function formatAudiobookRemaining(seconds) {
+// formatAudiobookRemaining renders a seconds count as "Xh Ym<suffix>" (or
+// zeroText for anything under a minute). The default suffix/zeroText match
+// its original "time left on this book" use; the Stats view reuses it with
+// both blanked out for a plain duration like "2h 15m".
+function formatAudiobookRemaining(seconds, { suffix = " left", zeroText = "Less than a minute left" } = {}) {
   const total = Math.max(0, Math.round(seconds || 0));
   const hours = Math.floor(total / 3600);
   const minutes = Math.floor((total % 3600) / 60);
-  if (hours > 0) return `${hours}h ${minutes}m left`;
-  if (minutes > 0) return `${minutes}m left`;
-  return "Less than a minute left";
+  if (hours > 0) return `${hours}h ${minutes}m${suffix}`;
+  if (minutes > 0) return `${minutes}m${suffix}`;
+  return zeroText;
+}
+
+// formatAudiobookStatsDuration is formatAudiobookRemaining with the "time
+// left" framing stripped out, for a plain total like "2h 15m" or "0m".
+function formatAudiobookStatsDuration(totalSeconds) {
+  return formatAudiobookRemaining(totalSeconds, { suffix: "", zeroText: "0m" });
 }
 
 function audiobookCardHTML(item) {
@@ -10011,6 +10170,20 @@ audiobooksSubnavSeriesButton?.addEventListener("click", () => {
   state.audiobooks.author = "";
   state.audiobooks.tag = "";
   state.audiobooks.view = "series";
+  syncAudiobooksURL({ push: true });
+  navigateToView("audiobooks");
+});
+audiobooksSubnavStatsButton?.addEventListener("click", () => {
+  state.audiobooks.filter = "";
+  state.audiobooks.seriesId = "";
+  state.audiobooks.author = "";
+  state.audiobooks.tag = "";
+  state.audiobooks.view = "stats";
+  syncAudiobooksURL({ push: true });
+  navigateToView("audiobooks");
+});
+audiobookStatsBackButton?.addEventListener("click", () => {
+  state.audiobooks.view = "books";
   syncAudiobooksURL({ push: true });
   navigateToView("audiobooks");
 });

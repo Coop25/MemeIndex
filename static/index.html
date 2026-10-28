@@ -94,6 +94,7 @@
             <button type="button" class="audiobooks-subnav-item" data-audiobook-filter="started">Started</button>
             <button type="button" class="audiobooks-subnav-item" data-audiobook-filter="finished">Finished</button>
             <button id="audiobooks-subnav-series-button" type="button" class="audiobooks-subnav-item" data-audiobook-view="series">Series</button>
+            <button id="audiobooks-subnav-stats-button" type="button" class="audiobooks-subnav-item" data-audiobook-view="stats">Stats</button>
           </div>
           <p id="nav-section-categories" class="nav-section-label">Categories</p>
           <button class="nav-item" type="button" data-view="videos">
@@ -512,6 +513,29 @@
                 </div>
               </div>
             </div>
+          </section>
+          <section id="audiobook-stats-view" class="audiobook-stats-view hidden">
+            <div class="audiobooks-view-header">
+              <div>
+                <button id="audiobook-stats-back" type="button" class="ghost-button audiobook-series-manage-back">&larr; Back to audiobooks</button>
+                <h2>Listening Stats</h2>
+              </div>
+            </div>
+            <div class="audiobook-stats-summary">
+              <div class="audiobook-stats-tile">
+                <span class="audiobook-stats-tile-value" id="audiobook-stats-total-time">0h</span>
+                <span class="audiobook-stats-tile-label">Total time listened</span>
+              </div>
+              <div class="audiobook-stats-tile">
+                <span class="audiobook-stats-tile-value" id="audiobook-stats-streak">0</span>
+                <span class="audiobook-stats-tile-label">Day streak</span>
+              </div>
+            </div>
+            <h3 class="audiobook-stats-section-heading">Last 30 days</h3>
+            <div id="audiobook-stats-chart" class="audiobook-stats-chart"></div>
+            <h3 class="audiobook-stats-section-heading">Finished books</h3>
+            <p id="audiobook-stats-finished-empty" class="status-text hidden">No finished books yet.</p>
+            <div id="audiobook-stats-finished-list" class="audiobook-stats-finished-list"></div>
           </section>
           <div id="meme-grid-loader" class="loading-indicator loading-indicator-grid hidden" aria-live="polite" aria-hidden="true">
             <span class="loading-spinner" aria-hidden="true"></span>
