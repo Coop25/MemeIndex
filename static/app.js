@@ -41,6 +41,7 @@ const state = {
     linkRetryStatus: null,
     remuxStatus: null,
     backupStatus: null,
+    backupIncoming: null,
     dashboard: null,
     tagHygiene: {
       loaded: false,
@@ -448,9 +449,10 @@ const adminUsersStatus = document.querySelector("#admin-users-status");
 const adminUsersList = document.querySelector("#admin-users-list");
 const adminBackupPanel = document.querySelector("#admin-backup-panel");
 const adminBackupExport = document.querySelector("#admin-backup-export");
-const adminBackupDownload = document.querySelector("#admin-backup-download");
+const adminBackupDownloads = document.querySelector("#admin-backup-downloads");
 const adminBackupImport = document.querySelector("#admin-backup-import");
 const adminBackupFile = document.querySelector("#admin-backup-file");
+const adminBackupDiscard = document.querySelector("#admin-backup-discard");
 const adminBackupStatus = document.querySelector("#admin-backup-status");
 const adminViewTable = document.querySelector("#admin-view-table");
 const adminPagination = document.querySelector("#admin-pagination");
@@ -1547,10 +1549,8 @@ function renderAdminBackupStatus() {
   adminBackupExport.disabled = running || adminBackupImportBusy;
   adminBackupExport.textContent = running ? "Backup Running..." : "Create Backup";
   adminBackupImport.disabled = running || adminBackupImportBusy;
-  adminBackupDownload?.classList.toggle("hidden", !status?.download_available);
-  if (adminBackupDownload && status?.filename) {
-    adminBackupDownload.setAttribute("download", status.filename);
-  }
+  if (adminBackupDiscard) adminBackupDiscard.disabled = adminBackupImportBusy;
+  renderAdminBackupDownloads(status);
 
   adminBackupStatus.classList.toggle("admin-backup-status-running", running);
   adminBackupStatus.classList.toggle("admin-backup-status-failed", status?.state === "failed");
@@ -1568,10 +1568,12 @@ function renderAdminBackupStatus() {
     return;
   }
   if (status.state === "ready" && status.download_available) {
-    const details = [status.filename || "Backup ready"];
+    const partCount = status.parts?.length || 0;
+    const details = [partCount > 1 ? `Backup ready in ${partCount} parts` : "Backup ready"];
     if (status.size_bytes) details.push(formatSize(Number(status.size_bytes)));
     if (status.completed_at) details.push(`completed ${formatDateTimeZoned(status.completed_at)}`);
-    adminBackupStatus.textContent = `${details.join(" · ")}. This file remains available until a newer backup completes.`;
+    adminBackupStatus.textContent = `${details.join(" · ")}. Download the manifest and every part; ` +
+      `they remain available until a newer backup completes.${adminBackupIncomingSuffix()}`;
     return;
   }
   if (status.state === "failed") {
@@ -1582,7 +1584,46 @@ function renderAdminBackupStatus() {
     adminBackupStatus.textContent = status.error || "Portable backups are unavailable on this server.";
     return;
   }
-  adminBackupStatus.textContent = "No server backup has been created yet.";
+  adminBackupStatus.textContent = `No server backup has been created yet.${adminBackupIncomingSuffix()}`;
+}
+
+// One link per backup file. Each points straight at the download endpoint so
+// the browser streams a multi-gigabyte part to disk instead of buffering it.
+function renderAdminBackupDownloads(status) {
+  if (!adminBackupDownloads) return;
+  const files = status?.download_available && status.filename
+    ? [{ filename: status.filename, label: "Manifest", size: 0 }, ...(status.parts || []).map((part) => ({
+      filename: part.filename,
+      label: `Part ${part.index} of ${status.parts.length}`,
+      size: Number(part.size_bytes) || 0,
+    }))]
+    : [];
+  adminBackupDownloads.classList.toggle("hidden", files.length === 0);
+  // The status poller re-renders every few seconds; only rebuild the links
+  // when the backup changes, so a link is never swapped out mid-click.
+  const key = files.map((file) => file.filename).join("\n");
+  if (adminBackupDownloads.dataset.files === key) return;
+  adminBackupDownloads.dataset.files = key;
+  adminBackupDownloads.innerHTML = files.map((file) => `
+    <a class="secondary-button admin-backup-download" href="/api/admin/backup/download?file=${encodeURIComponent(file.filename)}"
+      download="${escapeHTML(file.filename)}" title="${escapeHTML(file.filename)}">
+      ${escapeHTML(file.label)}${file.size ? ` · ${escapeHTML(formatSize(file.size))}` : ""}
+    </a>`).join("");
+}
+
+function adminBackupIncomingSuffix() {
+  const incoming = state.admin.backupIncoming;
+  adminBackupDiscard?.classList.toggle("hidden", !incoming?.staged);
+  if (!incoming?.staged || incoming.complete) return "";
+  const missing = (incoming.parts || []).filter((part) => !part.received).map((part) => part.filename);
+  return ` A restore of ${incoming.backup_id} is waiting on ${missing.length} of ${incoming.part_count} part(s): ` +
+    `${missing.join(", ")}. Choose them with "Choose Backup to Import" to continue.`;
+}
+
+async function fetchAdminBackupIncoming() {
+  const response = await fetch("/api/admin/backup/import/parts", { cache: "no-store" });
+  state.admin.backupIncoming = response.ok ? await response.json() : null;
+  return state.admin.backupIncoming;
 }
 
 async function fetchAdminBackupStatus() {
@@ -1602,6 +1643,7 @@ async function fetchAdminBackupStatus() {
   }
 
   state.admin.backupStatus = await response.json();
+  await fetchAdminBackupIncoming().catch((error) => console.error(error));
   renderAdminBackupStatus();
   return state.admin.backupStatus;
 }
@@ -1640,24 +1682,52 @@ function syncAdminBackupPolling() {
   adminBackupPoller.sync();
 }
 
-async function importPortableBackup(file) {
-  if (!file || !adminBackupImport) return;
+function confirmBackupReplace(description) {
   const typed = window.prompt(
-    `Import ${file.name}?\n\nThis REPLACES every meme and all database data on this server with the contents of the backup. ` +
+    `Import ${description}?\n\nThis REPLACES every meme and all database data on this server with the contents of the backup. ` +
     `The server automatically snapshots itself first, but the safest undo is your own export.\n\n` +
     `Type REPLACE to confirm:`,
     "",
   );
-  if (typed === null) {
-    adminBackupFile.value = "";
-    return;
-  }
+  if (typed === null) return false;
   if (typed.trim().toUpperCase() !== "REPLACE") {
-    adminBackupFile.value = "";
     adminBackupStatus.textContent = "Import cancelled — confirmation text did not match.";
     showToast("Import cancelled.", "info", { title: "Backup & Restore" });
+    return false;
+  }
+  return true;
+}
+
+function isBackupManifestFile(file) {
+  return /\.manifest\.json$/i.test(file.name);
+}
+
+function isBackupPartFile(file) {
+  return /\.tar\.gz\.part\d+$/i.test(file.name);
+}
+
+async function finishBackupImport(response) {
+  if (!(await expectAuthorized(response, "Failed to import backup."))) {
+    adminBackupStatus.textContent = await readAPIErrorMessage(response, "Failed to import backup.");
     return;
   }
+  adminBackupStatus.textContent = "Backup imported successfully. Reloading the restored library...";
+  showToast("Backup imported successfully.", "success", { title: "Backup & Restore" });
+  window.setTimeout(forceFreshHTMLReload, 900);
+}
+
+async function importPortableBackup(files) {
+  if (!files.length || !adminBackupImport) return;
+  if (files.some(isBackupManifestFile) || files.some(isBackupPartFile)) {
+    await importSplitPortableBackup(files);
+    return;
+  }
+  if (files.length > 1) {
+    adminBackupStatus.textContent = "Choose either one .tar.gz backup, or a backup's .manifest.json together with its part files.";
+    return;
+  }
+  const [file] = files;
+  if (!confirmBackupReplace(file.name)) return;
 
   adminBackupImportBusy = true;
   renderAdminBackupStatus();
@@ -1668,17 +1738,103 @@ async function importPortableBackup(file) {
       headers: { "Content-Type": "application/gzip" },
       body: file,
     });
-    if (!(await expectAuthorized(response, "Failed to import backup."))) {
-      adminBackupStatus.textContent = await readAPIErrorMessage(response, "Failed to import backup.");
+    await finishBackupImport(response);
+  } finally {
+    await endAdminBackupImport();
+  }
+}
+
+// Refresh the panel without losing the import's own outcome message, which a
+// plain re-render would replace with the generic backup status.
+async function endAdminBackupImport() {
+  adminBackupImportBusy = false;
+  const message = adminBackupStatus.textContent;
+  await fetchAdminBackupStatus();
+  adminBackupStatus.textContent = message;
+}
+
+// A split backup restores in stages: the manifest tells the server how many
+// parts to expect, each chosen part is uploaded and checked against it, and
+// parts already on the server are skipped, so an interrupted import resumes by
+// choosing just the files that are still missing. Once every part has
+// arrived, the restore runs.
+async function importSplitPortableBackup(files) {
+  const manifestFile = files.find(isBackupManifestFile);
+  let incoming;
+  if (manifestFile) {
+    const response = await fetch("/api/admin/backup/import/parts/manifest", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: await manifestFile.text(),
+    });
+    if (!(await expectAuthorized(response, "Could not read the backup manifest."))) {
+      adminBackupStatus.textContent = await readAPIErrorMessage(response, "Could not read the backup manifest.");
       return;
     }
-    adminBackupStatus.textContent = "Backup imported successfully. Reloading the restored library...";
-    showToast("Backup imported successfully.", "success", { title: "Backup & Restore" });
-    window.setTimeout(forceFreshHTMLReload, 900);
+    incoming = await response.json();
+  } else {
+    incoming = await fetchAdminBackupIncoming();
+    if (!incoming?.staged) {
+      adminBackupStatus.textContent = "Include the backup's .manifest.json file so the server knows how many parts to expect.";
+      return;
+    }
+  }
+
+  const byName = new Map(files.map((file) => [file.name, file]));
+  const partNames = new Set(incoming.parts.map((part) => part.filename));
+  // Browsers save a repeat download as "name (1).ext", which no longer
+  // matches the manifest - say so rather than silently skipping the file.
+  const unmatched = files.filter((file) => !isBackupManifestFile(file) && !partNames.has(file.name)).map((file) => file.name);
+  const unmatchedNote = unmatched.length
+    ? ` Skipped ${unmatched.join(", ")}: not a part of ${incoming.backup_id} by name (rename a renamed download back to its original name).`
+    : "";
+  const missing = incoming.parts.filter((part) => !part.received);
+  const toUpload = [];
+  for (const part of missing) {
+    const file = byName.get(part.filename);
+    if (!file) continue;
+    if (file.size !== Number(part.size_bytes)) {
+      adminBackupStatus.textContent = `${part.filename} is ${formatSize(file.size)} but the manifest expects ` +
+        `${formatSize(Number(part.size_bytes))} — the download may be incomplete. Download that part again.`;
+      return;
+    }
+    toUpload.push({ part, file });
+  }
+  const willComplete = toUpload.length === missing.length;
+  if (willComplete && !confirmBackupReplace(`${incoming.backup_id} (${incoming.part_count} part${incoming.part_count === 1 ? "" : "s"})`)) {
+    return;
+  }
+
+  adminBackupImportBusy = true;
+  renderAdminBackupStatus();
+  try {
+    for (const [position, { part, file }] of toUpload.entries()) {
+      adminBackupStatus.textContent = `Uploading ${part.filename} (${position + 1} of ${toUpload.length} this time, ` +
+        `${formatSize(file.size)}). Keep this page open...`;
+      const response = await fetch(`/api/admin/backup/import/parts?file=${encodeURIComponent(part.filename)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: file,
+      });
+      if (!(await expectAuthorized(response, "Failed to upload a backup part."))) {
+        adminBackupStatus.textContent = await readAPIErrorMessage(response, `Failed to upload ${part.filename}.`);
+        return;
+      }
+      incoming = await response.json();
+    }
+    state.admin.backupIncoming = incoming;
+    if (!incoming.complete) {
+      const stillMissing = incoming.parts.filter((part) => !part.received).map((part) => part.filename);
+      adminBackupStatus.textContent = `Received ${incoming.received_count} of ${incoming.part_count} parts of ${incoming.backup_id}. ` +
+        `Still needed: ${stillMissing.join(", ")}. Choose those files when you have them; the parts already uploaded stay on the server.${unmatchedNote}`;
+      showToast(`${incoming.received_count} of ${incoming.part_count} backup parts uploaded.`, "info", { title: "Backup & Restore" });
+      return;
+    }
+    adminBackupStatus.textContent = "All backup parts received. Restoring the server; large libraries can take several minutes...";
+    const response = await fetch("/api/admin/backup/import/parts/restore", { method: "POST" });
+    await finishBackupImport(response);
   } finally {
-    adminBackupImportBusy = false;
-    adminBackupFile.value = "";
-    await fetchAdminBackupStatus();
+    await endAdminBackupImport();
   }
 }
 
@@ -11001,58 +11157,75 @@ adminBackupExport?.addEventListener("click", () => {
   });
 });
 
+adminBackupDiscard?.addEventListener("click", async () => {
+  const incoming = state.admin.backupIncoming;
+  if (!incoming?.staged) return;
+  if (!window.confirm(`Discard the ${incoming.received_count} uploaded part(s) of ${incoming.backup_id}? ` +
+    "You would need to upload them again to restore this backup.")) {
+    return;
+  }
+  try {
+    const response = await fetch("/api/admin/backup/import/parts", { method: "DELETE" });
+    if (!(await expectAuthorized(response, "Could not discard the uploaded parts."))) {
+      adminBackupStatus.textContent = await readAPIErrorMessage(response, "Could not discard the uploaded parts.");
+      return;
+    }
+    showToast("Uploaded backup parts discarded.", "success", { title: "Backup & Restore" });
+    await fetchAdminBackupStatus();
+  } catch (error) {
+    console.error(error);
+    showToast("Could not discard the uploaded parts.", "error", { title: "Backup & Restore" });
+  }
+});
+
 adminBackupImport?.addEventListener("click", () => {
   adminBackupFile?.click();
 });
 
-// Fetch the archive via XHR so an expired session surfaces as a handled error
-// instead of navigating the tab to a broken/forbidden page.
-adminBackupDownload?.addEventListener("click", async (event) => {
+// Check the session with a HEAD request first so an expired login surfaces as
+// a handled error, then hand the URL to the browser's own downloader: a part
+// can be tens of gigabytes, far too much to buffer through fetch().
+adminBackupDownloads?.addEventListener("click", async (event) => {
+  const link = event.target.closest("a.admin-backup-download");
+  if (!link) return;
   event.preventDefault();
-  const link = adminBackupDownload;
   if (link.dataset.busy === "1") return;
   link.dataset.busy = "1";
-  const previousText = link.textContent;
-  link.textContent = "Preparing download...";
   try {
-    const response = await fetch("/api/admin/backup/download", { cache: "no-store" });
+    const response = await fetch(link.href, { method: "HEAD", cache: "no-store" });
     if (!(await expectAuthorized(response, "Could not download the backup."))) {
       return;
     }
     if (!response.ok) {
-      adminBackupStatus.textContent = await readAPIErrorMessage(response, "Could not download the backup.");
+      adminBackupStatus.textContent = "That backup file is no longer available. Refresh to see the latest backup.";
       showToast("Could not download the backup.", "error", { title: "Backup & Restore" });
       return;
     }
-    const blob = await response.blob();
-    const filename = state.admin.backupStatus?.filename || "memeindex-backup.tar.gz";
-    const objectURL = URL.createObjectURL(blob);
     const temp = document.createElement("a");
-    temp.href = objectURL;
-    temp.download = filename;
+    temp.href = link.href;
+    temp.download = link.getAttribute("download") || "";
     document.body.appendChild(temp);
     temp.click();
     temp.remove();
-    window.setTimeout(() => URL.revokeObjectURL(objectURL), 10000);
   } catch (error) {
     console.error(error);
     adminBackupStatus.textContent = "Could not download the backup.";
     showToast("Could not download the backup.", "error", { title: "Backup & Restore" });
   } finally {
-    link.textContent = previousText;
     delete link.dataset.busy;
   }
 });
 
 adminBackupFile?.addEventListener("change", () => {
-  const file = adminBackupFile.files?.[0];
-  if (!file) return;
-  importPortableBackup(file).catch((error) => {
+  const files = Array.from(adminBackupFile.files || []);
+  if (!files.length) return;
+  importPortableBackup(files).catch((error) => {
     console.error(error);
     adminBackupStatus.textContent = "Could not import the backup.";
     showToast("Could not import the backup.", "error", { title: "Backup & Restore" });
     adminBackupImportBusy = false;
     renderAdminBackupStatus();
+  }).finally(() => {
     adminBackupFile.value = "";
   });
 });

@@ -418,21 +418,24 @@
                 <div>
                   <p class="section-kicker">Export</p>
                   <h3>Download the complete archive</h3>
-                  <p>Creates one portable file containing every meme, thumbnail, tag, favorite, user, audit entry, and other database record.</p>
+                  <p>Creates a portable archive of every meme, thumbnail, tag, favorite, user, audit entry, and other database record. Large archives are split into parts of up to 25 GB, plus a manifest file that lists them, so you can download them over several sittings.</p>
                 </div>
                 <div class="admin-backup-actions">
                   <button id="admin-backup-export" class="primary-button" type="button">Create Backup</button>
-                  <a id="admin-backup-download" class="secondary-button hidden" href="/api/admin/backup/download">Download Latest</a>
                 </div>
+                <div id="admin-backup-downloads" class="admin-backup-downloads hidden" aria-label="Backup files to download"></div>
               </article>
               <article class="admin-backup-card admin-backup-danger">
                 <div>
                   <p class="section-kicker">Restore</p>
                   <h3>Replace this server from a backup</h3>
-                  <p>Importing replaces the current library and application database. Export this server first if you may need to undo the restore.</p>
+                  <p>Importing replaces the current library and application database. Export this server first if you may need to undo the restore. For a split backup, choose the manifest together with its part files; parts can be added over several sittings and the restore starts once every part has arrived.</p>
                 </div>
-                <input id="admin-backup-file" class="hidden" type="file" accept=".gz,.tgz,application/gzip" />
-                <button id="admin-backup-import" class="danger-button" type="button">Choose Backup to Import</button>
+                <input id="admin-backup-file" class="hidden" type="file" multiple />
+                <div class="admin-backup-actions">
+                  <button id="admin-backup-import" class="danger-button" type="button">Choose Backup to Import</button>
+                  <button id="admin-backup-discard" class="secondary-button hidden" type="button">Discard Uploaded Parts</button>
+                </div>
               </article>
               <p id="admin-backup-status" class="status-text"></p>
             </section>

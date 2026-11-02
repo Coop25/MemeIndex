@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"io"
 	"log"
 	"mime"
 	"mime/multipart"
@@ -172,6 +173,9 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/api/admin/backup/export", s.withAPIAuth(http.HandlerFunc(s.handleBackupExport), permissionManageUsers))
 	mux.Handle("/api/admin/backup/download", s.withAPIAuth(http.HandlerFunc(s.handleBackupDownload), permissionManageUsers))
 	mux.Handle("/api/admin/backup/import", s.withAPIAuth(http.HandlerFunc(s.handleBackupImport), permissionManageUsers))
+	mux.Handle("/api/admin/backup/import/parts", s.withAPIAuth(http.HandlerFunc(s.handleBackupImportParts), permissionManageUsers))
+	mux.Handle("/api/admin/backup/import/parts/manifest", s.withAPIAuth(http.HandlerFunc(s.handleBackupImportManifest), permissionManageUsers))
+	mux.Handle("/api/admin/backup/import/parts/restore", s.withAPIAuth(http.HandlerFunc(s.handleBackupImportPartsRestore), permissionManageUsers))
 	mux.Handle("/api/admin/audit-logs", s.withAPIAuth(http.HandlerFunc(s.handleAuditLogs), permissionManageUsers))
 	mux.Handle("/api/admin/tag-hygiene", s.withAPIAuth(http.HandlerFunc(s.handleTagHygiene), permissionManageUsers))
 	mux.Handle("/api/admin/tag-suggestions/status", s.withAPIAuth(http.HandlerFunc(s.handleTagSuggestionStatus), permissionManageUsers))
@@ -216,7 +220,7 @@ func (s *Server) Routes() http.Handler {
 // second import attempt still receives a precise 409 from handleBackupImport.
 func (s *Server) maintenanceGuard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.restoring.Load() && isMutatingMethod(r.Method) && r.URL.Path != "/api/admin/backup/import" {
+		if s.restoring.Load() && isMutatingMethod(r.Method) && r.URL.Path != "/api/admin/backup/import" && r.URL.Path != "/api/admin/backup/import/parts/restore" {
 			w.Header().Set("Retry-After", "30")
 			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 				"error": "MemeIndex is temporarily read-only while a backup restore finishes; retry shortly",
@@ -1911,10 +1915,16 @@ func (s *Server) handleBackupDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	file, status, err := s.backup.openLatestExport()
+	// ?file= names the manifest or one part of the latest backup; without it
+	// the manifest is served, since it lists every part to fetch next.
+	requested := r.URL.Query().Get("file")
+	if requested == "" {
+		requested = s.backup.exportStatus().Filename
+	}
+	file, status, err := s.backup.openLatestExport(requested)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			http.Error(w, "no completed backup is available", http.StatusNotFound)
+			http.Error(w, "no completed backup file by that name is available", http.StatusNotFound)
 			return
 		}
 		log.Printf("open completed backup failed: %v", err)
@@ -1929,7 +1939,7 @@ func (s *Server) handleBackupDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	filename := sanitizeDownloadFilename(status.Filename)
+	filename := sanitizeDownloadFilename(requested)
 	if filename == "" {
 		filename = "memeindex-backup.tar.gz"
 	}
@@ -1938,7 +1948,11 @@ func (s *Server) handleBackupDownload(w http.ResponseWriter, r *http.Request) {
 		disposition = `attachment; filename="memeindex-backup.tar.gz"`
 	}
 	w.Header().Set("Content-Disposition", disposition)
-	w.Header().Set("Content-Type", "application/gzip")
+	if requested == status.Filename {
+		w.Header().Set("Content-Type", "application/json")
+	} else {
+		w.Header().Set("Content-Type", "application/octet-stream")
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	http.ServeContent(w, r, filename, info.ModTime(), file)
 }
@@ -1952,6 +1966,14 @@ func (s *Server) handleBackupImport(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "portable backups require PostgreSQL storage", http.StatusConflict)
 		return
 	}
+	s.runBackupRestore(w, r, func(ctx context.Context) error {
+		return s.backup.importArchive(ctx, r.Body)
+	})
+}
+
+// runBackupRestore wraps a restore with the checks and locking every import
+// path shares.
+func (s *Server) runBackupRestore(w http.ResponseWriter, r *http.Request, restore func(context.Context) error) {
 	if s.backup.exportStatus().State == "running" {
 		http.Error(w, "wait for the running backup to finish before importing", http.StatusConflict)
 		return
@@ -1965,7 +1987,7 @@ func (s *Server) handleBackupImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.restoring.Store(false)
-	if err := s.backup.importArchive(r.Context(), r.Body); err != nil {
+	if err := restore(r.Context()); err != nil {
 		log.Printf("backup import failed: %v", err)
 		http.Error(w, "backup import failed: "+err.Error(), http.StatusBadRequest)
 		return
@@ -1977,6 +1999,80 @@ func (s *Server) handleBackupImport(w http.ResponseWriter, r *http.Request) {
 		"ok":      true,
 		"message": "Backup imported successfully.",
 	})
+}
+
+// handleBackupImportParts serves the staging area for restoring a split
+// backup: GET reports which parts have arrived, PUT ?file=<part name> uploads
+// one part, and DELETE discards everything staged so far.
+func (s *Server) handleBackupImportParts(w http.ResponseWriter, r *http.Request) {
+	if s.backup == nil {
+		http.Error(w, "portable backups require PostgreSQL storage", http.StatusConflict)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	switch r.Method {
+	case http.MethodGet:
+		status, err := s.backup.incomingStatus()
+		if err != nil {
+			http.Error(w, "staged backup is unreadable: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, status)
+	case http.MethodPut:
+		if s.restoring.Load() {
+			http.Error(w, "a restore is already in progress", http.StatusConflict)
+			return
+		}
+		status, err := s.backup.receiveImportPart(r.URL.Query().Get("file"), r.Body)
+		if err != nil {
+			log.Printf("backup part upload rejected: %v", err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, http.StatusOK, status)
+	case http.MethodDelete:
+		if err := s.backup.discardIncoming(); err != nil {
+			http.Error(w, "failed to discard staged backup: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, backupIncomingStatus{})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleBackupImportManifest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.backup == nil {
+		http.Error(w, "portable backups require PostgreSQL storage", http.StatusConflict)
+		return
+	}
+	payload, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "failed to read backup manifest", http.StatusBadRequest)
+		return
+	}
+	status, err := s.backup.stageImportManifest(payload)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (s *Server) handleBackupImportPartsRestore(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.backup == nil {
+		http.Error(w, "portable backups require PostgreSQL storage", http.StatusConflict)
+		return
+	}
+	s.runBackupRestore(w, r, s.backup.importStagedParts)
 }
 
 func (s *Server) handleAuditLogs(w http.ResponseWriter, r *http.Request) {

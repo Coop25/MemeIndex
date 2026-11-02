@@ -39,18 +39,33 @@ type portableBackup struct {
 	mu          sync.Mutex
 	jobMu       sync.RWMutex
 	job         backupJobStatus
-	latestPath  string
-	exportFunc  func(context.Context) (string, error)
+	// latestDir holds the completed backup's manifest and parts.
+	latestDir string
+	// exportFunc builds a backup and returns a temporary directory holding
+	// its raw parts (see splitPartWriter), which installExport then names.
+	exportFunc func(context.Context) (string, error)
+	incomingMu sync.Mutex
+	// partMaxBytes overrides backupPartMaxBytes when set (tests only).
+	partMaxBytes int64
+}
+
+func (b *portableBackup) partLimit() int64 {
+	if b.partMaxBytes > 0 {
+		return b.partMaxBytes
+	}
+	return backupPartMaxBytes
 }
 
 type backupJobStatus struct {
-	State             string     `json:"state"`
-	StartedAt         *time.Time `json:"started_at,omitempty"`
-	CompletedAt       *time.Time `json:"completed_at,omitempty"`
-	Filename          string     `json:"filename,omitempty"`
-	SizeBytes         int64      `json:"size_bytes,omitempty"`
-	DownloadAvailable bool       `json:"download_available"`
-	Error             string     `json:"error,omitempty"`
+	State       string     `json:"state"`
+	StartedAt   *time.Time `json:"started_at,omitempty"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
+	// Filename is the manifest that lists every part of the backup.
+	Filename          string       `json:"filename,omitempty"`
+	SizeBytes         int64        `json:"size_bytes,omitempty"`
+	Parts             []backupPart `json:"parts,omitempty"`
+	DownloadAvailable bool         `json:"download_available"`
+	Error             string       `json:"error,omitempty"`
 }
 
 type portableBackupManifest struct {
@@ -123,40 +138,55 @@ func (b *portableBackup) backupDir() string {
 	return filepath.Join(b.dataDir, "backups")
 }
 
+// restoreLatestExport picks the newest complete backup back up after a
+// restart. Each backup lives in its own memeindex-backup-* directory holding
+// its manifest and parts; one with a missing or truncated part is skipped.
 func (b *portableBackup) restoreLatestExport() {
 	entries, err := os.ReadDir(b.backupDir())
 	if err != nil {
 		return
 	}
 
-	var latestPath string
-	var latestInfo os.FileInfo
+	var latestDir string
+	var latest *backupPartsManifest
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "memeindex-backup-") || !strings.HasSuffix(entry.Name(), ".tar.gz") {
+		if !entry.IsDir() || !backupIDPattern.MatchString(entry.Name()) {
 			continue
 		}
-		info, err := entry.Info()
-		if err != nil || !info.Mode().IsRegular() {
+		dir := filepath.Join(b.backupDir(), entry.Name())
+		manifest, err := readBackupPartsManifest(filepath.Join(dir, backupManifestFilename(entry.Name())))
+		if err != nil || manifest.BackupID != entry.Name() || !backupPartsPresent(dir, manifest.Parts) {
 			continue
 		}
-		if latestInfo == nil || info.ModTime().After(latestInfo.ModTime()) {
-			latestPath = filepath.Join(b.backupDir(), entry.Name())
-			latestInfo = info
+		if latest == nil || manifest.CreatedAt.After(latest.CreatedAt) {
+			latestDir = dir
+			latest = &manifest
 		}
 	}
-	if latestInfo == nil {
+	if latest == nil {
 		return
 	}
 
-	completedAt := latestInfo.ModTime().UTC()
-	b.latestPath = latestPath
+	completedAt := latest.CreatedAt
+	b.latestDir = latestDir
 	b.job = backupJobStatus{
 		State:             "ready",
 		CompletedAt:       &completedAt,
-		Filename:          filepath.Base(latestPath),
-		SizeBytes:         latestInfo.Size(),
+		Filename:          backupManifestFilename(latest.BackupID),
+		SizeBytes:         latest.TotalSizeBytes,
+		Parts:             latest.Parts,
 		DownloadAvailable: true,
 	}
+}
+
+func backupPartsPresent(dir string, parts []backupPart) bool {
+	for _, part := range parts {
+		info, err := os.Stat(filepath.Join(dir, part.Filename))
+		if err != nil || !info.Mode().IsRegular() || info.Size() != part.SizeBytes {
+			return false
+		}
+	}
+	return true
 }
 
 func (b *portableBackup) exportStatus() backupJobStatus {
@@ -189,14 +219,14 @@ func (b *portableBackup) runExportJob() {
 	if exportFunc == nil {
 		exportFunc = b.export
 	}
-	archivePath, err := exportFunc(context.Background())
+	exportDir, err := exportFunc(context.Background())
 	if err != nil {
 		log.Printf("backup export task failed: %v", err)
 		b.failExportJob(err)
 		return
 	}
-	if err := b.installExport(archivePath); err != nil {
-		_ = os.Remove(archivePath)
+	if err := b.installExport(exportDir); err != nil {
+		_ = os.RemoveAll(exportDir)
 		log.Printf("backup export task failed while storing archive: %v", err)
 		b.failExportJob(err)
 		return
@@ -215,57 +245,121 @@ func (b *portableBackup) failExportJob(err error) {
 	b.jobMu.Unlock()
 }
 
-func (b *portableBackup) installExport(archivePath string) error {
+// installExport names a finished export and makes it the downloadable
+// backup: exportDir becomes backups/<backup id>/, its raw parts are renamed
+// <backup id>.tar.gz.partNNN, and <backup id>.manifest.json records how many
+// parts there are and the size and checksum of each.
+func (b *portableBackup) installExport(exportDir string) error {
+	parts, err := readExportParts(exportDir)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(b.backupDir(), 0o755); err != nil {
 		return fmt.Errorf("create backup directory: %w", err)
 	}
 
 	completedAt := time.Now().UTC()
-	filename := "memeindex-backup-" + completedAt.Format("20060102-150405") + ".tar.gz"
-	destination := filepath.Join(b.backupDir(), filename)
+	backupID := "memeindex-backup-" + completedAt.Format("20060102-150405")
+	destination := filepath.Join(b.backupDir(), backupID)
 	if _, err := os.Stat(destination); err == nil {
-		filename = "memeindex-backup-" + completedAt.Format("20060102-150405") + fmt.Sprintf("-%d.tar.gz", completedAt.UnixNano())
-		destination = filepath.Join(b.backupDir(), filename)
+		backupID += fmt.Sprintf("-%d", completedAt.UnixNano())
+		destination = filepath.Join(b.backupDir(), backupID)
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("check backup destination: %w", err)
 	}
-	if err := os.Rename(archivePath, destination); err != nil {
+	if err := os.Rename(exportDir, destination); err != nil {
 		return fmt.Errorf("store completed backup: %w", err)
 	}
-	info, err := os.Stat(destination)
-	if err != nil {
-		return fmt.Errorf("inspect completed backup: %w", err)
+	installed := false
+	defer func() {
+		if !installed {
+			_ = os.RemoveAll(destination)
+		}
+	}()
+
+	var total int64
+	for i := range parts {
+		name := backupPartFilename(backupID, i+1)
+		if err := os.Rename(filepath.Join(destination, parts[i].Filename), filepath.Join(destination, name)); err != nil {
+			return fmt.Errorf("name backup part %d: %w", i+1, err)
+		}
+		parts[i].Index = i + 1
+		parts[i].Filename = name
+		total += parts[i].SizeBytes
+	}
+	_ = os.Remove(filepath.Join(destination, exportPartsIndexName))
+	manifestName := backupManifestFilename(backupID)
+	manifest := backupPartsManifest{
+		Kind:               backupPartsManifestKind,
+		BackupID:           backupID,
+		CreatedAt:          completedAt,
+		AppVersion:         BuildVersion(),
+		PartCount:          len(parts),
+		TotalSizeBytes:     total,
+		PartSizeLimitBytes: b.partLimit(),
+		Parts:              parts,
+		Instructions: fmt.Sprintf("This backup is split into %d part(s). To restore, open Admin > Backup & Restore and choose this manifest together with the part files; "+
+			"they can be uploaded over several sittings and the restore starts once every part has arrived. "+
+			"Concatenating the parts in order (e.g. cat %s.tar.gz.part* > %s.tar.gz) also rebuilds the single original archive.", len(parts), backupID, backupID),
+	}
+	if err := writeJSONFile(filepath.Join(destination, manifestName), manifest); err != nil {
+		return fmt.Errorf("write backup manifest: %w", err)
 	}
 
 	b.jobMu.Lock()
-	previousPath := b.latestPath
-	b.latestPath = destination
+	previousDir := b.latestDir
+	b.latestDir = destination
 	b.job = backupJobStatus{
 		State:             "ready",
 		StartedAt:         b.job.StartedAt,
 		CompletedAt:       &completedAt,
-		Filename:          filename,
-		SizeBytes:         info.Size(),
+		Filename:          manifestName,
+		SizeBytes:         total,
+		Parts:             parts,
 		DownloadAvailable: true,
 	}
 	b.jobMu.Unlock()
+	installed = true
 
-	if previousPath != "" && previousPath != destination {
-		_ = os.Remove(previousPath)
+	if previousDir != "" && previousDir != destination {
+		_ = os.RemoveAll(previousDir)
 	}
+	b.removeLegacyExports()
 	return nil
 }
 
-func (b *portableBackup) openLatestExport() (*os.File, backupJobStatus, error) {
+// removeLegacyExports deletes single-file backups written before backups
+// were split into parts; nothing tracks them anymore once a newer backup
+// exists, so they would otherwise sit on disk forever.
+func (b *portableBackup) removeLegacyExports() {
+	entries, err := os.ReadDir(b.backupDir())
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasPrefix(entry.Name(), "memeindex-backup-") && strings.HasSuffix(entry.Name(), ".tar.gz") {
+			_ = os.Remove(filepath.Join(b.backupDir(), entry.Name()))
+		}
+	}
+}
+
+// openLatestExport opens one file of the completed backup - its manifest or
+// one of its parts - by name. Any other name reports os.ErrNotExist.
+func (b *portableBackup) openLatestExport(filename string) (*os.File, backupJobStatus, error) {
 	b.jobMu.RLock()
+	defer b.jobMu.RUnlock()
 	status := b.job
-	path := b.latestPath
-	if path == "" || !status.DownloadAvailable {
-		b.jobMu.RUnlock()
+	if b.latestDir == "" || !status.DownloadAvailable {
 		return nil, status, os.ErrNotExist
 	}
-	file, err := os.Open(path)
-	b.jobMu.RUnlock()
+	known := filename == status.Filename
+	for _, part := range status.Parts {
+		known = known || filename == part.Filename
+	}
+	if !known {
+		return nil, status, os.ErrNotExist
+	}
+	file, err := os.Open(filepath.Join(b.latestDir, filename))
 	if err != nil {
 		return nil, status, err
 	}
@@ -279,16 +373,16 @@ func (b *portableBackup) export(ctx context.Context) (string, error) {
 	if err := os.MkdirAll(b.dataDir, 0o755); err != nil {
 		return "", err
 	}
-	output, err := os.CreateTemp(b.dataDir, ".memeindex-export-*.tar.gz")
+	outputDir, err := os.MkdirTemp(b.dataDir, ".memeindex-export-*")
 	if err != nil {
 		return "", err
 	}
-	outputPath := output.Name()
+	output := &splitPartWriter{dir: outputDir, limit: b.partLimit()}
 	keep := false
 	defer func() {
-		_ = output.Close()
+		_ = output.finishPart()
 		if !keep {
-			_ = os.Remove(outputPath)
+			_ = os.RemoveAll(outputDir)
 		}
 	}()
 
@@ -448,7 +542,7 @@ func (b *portableBackup) export(ctx context.Context) (string, error) {
 		return "", err
 	}
 	keep = true
-	return outputPath, nil
+	return outputDir, nil
 }
 
 // preRestoreDir holds automatic snapshots taken immediately before an import.
@@ -458,35 +552,38 @@ func (b *portableBackup) preRestoreDir() string {
 	return filepath.Join(b.backupDir(), "pre-restore")
 }
 
-// snapshotBeforeRestore builds a full archive of the current server and stores it
-// under preRestoreDir, keeping only the most recent few. It returns the path to
-// the snapshot it wrote.
+// snapshotBeforeRestore builds a full archive of the current server and stores
+// its parts in a directory under preRestoreDir, keeping only the most recent
+// few. It returns the path to the snapshot directory it wrote; concatenating
+// its part files in order yields the .tar.gz.
 func (b *portableBackup) snapshotBeforeRestore(ctx context.Context) (string, error) {
 	exportFunc := b.exportFunc
 	if exportFunc == nil {
 		exportFunc = b.export
 	}
-	archivePath, err := exportFunc(ctx)
+	exportDir, err := exportFunc(ctx)
 	if err != nil {
 		return "", err
 	}
 	if err := os.MkdirAll(b.preRestoreDir(), 0o755); err != nil {
-		_ = os.Remove(archivePath)
+		_ = os.RemoveAll(exportDir)
 		return "", err
 	}
-	dest := filepath.Join(b.preRestoreDir(), "memeindex-pre-restore-"+time.Now().UTC().Format("20060102-150405")+".tar.gz")
+	dest := filepath.Join(b.preRestoreDir(), "memeindex-pre-restore-"+time.Now().UTC().Format("20060102-150405"))
 	if _, err := os.Stat(dest); err == nil {
-		dest = filepath.Join(b.preRestoreDir(), fmt.Sprintf("memeindex-pre-restore-%d.tar.gz", time.Now().UTC().UnixNano()))
+		dest = filepath.Join(b.preRestoreDir(), fmt.Sprintf("memeindex-pre-restore-%d", time.Now().UTC().UnixNano()))
 	}
-	if err := os.Rename(archivePath, dest); err != nil {
-		_ = os.Remove(archivePath)
+	if err := os.Rename(exportDir, dest); err != nil {
+		_ = os.RemoveAll(exportDir)
 		return "", err
 	}
 	b.pruneOldPreRestoreSnapshots(3)
 	return dest, nil
 }
 
-// pruneOldPreRestoreSnapshots keeps the newest keep snapshots and removes the rest.
+// pruneOldPreRestoreSnapshots keeps the newest keep snapshots and removes the
+// rest - both current part directories and single .tar.gz files written
+// before backups were split.
 func (b *portableBackup) pruneOldPreRestoreSnapshots(keep int) {
 	entries, err := os.ReadDir(b.preRestoreDir())
 	if err != nil {
@@ -494,7 +591,7 @@ func (b *portableBackup) pruneOldPreRestoreSnapshots(keep int) {
 	}
 	names := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "memeindex-pre-restore-") || !strings.HasSuffix(entry.Name(), ".tar.gz") {
+		if !strings.HasPrefix(entry.Name(), "memeindex-pre-restore-") || (!entry.IsDir() && !strings.HasSuffix(entry.Name(), ".tar.gz")) {
 			continue
 		}
 		names = append(names, entry.Name())
@@ -504,11 +601,15 @@ func (b *portableBackup) pruneOldPreRestoreSnapshots(keep int) {
 	}
 	slices.Sort(names) // timestamped names sort chronologically
 	for _, name := range names[:len(names)-keep] {
-		_ = os.Remove(filepath.Join(b.preRestoreDir(), name))
+		_ = os.RemoveAll(filepath.Join(b.preRestoreDir(), name))
 	}
 }
 
 func (b *portableBackup) importArchive(ctx context.Context, source io.Reader) error {
+	return b.importArchiveWithLimit(ctx, source, defaultMaxExtractBytes)
+}
+
+func (b *portableBackup) importArchiveWithLimit(ctx context.Context, source io.Reader, maxExtractBytes int64) error {
 	// Snapshot the current server before we replace it so a mistaken restore can be
 	// rolled back. Best-effort: a snapshot failure is logged loudly but must not
 	// block a deliberate restore. Runs before b.mu is taken because the export
@@ -527,7 +628,7 @@ func (b *portableBackup) importArchive(ctx context.Context, source io.Reader) er
 		return err
 	}
 	defer os.RemoveAll(staging)
-	if err := extractPortableArchive(source, staging); err != nil {
+	if err := extractPortableArchiveWithLimits(source, staging, maxExtractBytes, defaultMaxExtractEntries); err != nil {
 		return err
 	}
 
@@ -897,8 +998,13 @@ func addDirectoryToTar(tw *tar.Writer, root, archiveRoot string, exclude ...stri
 	})
 }
 
+const (
+	defaultMaxExtractBytes   int64 = 64 << 30
+	defaultMaxExtractEntries       = 1000000
+)
+
 func extractPortableArchive(source io.Reader, destination string) error {
-	return extractPortableArchiveWithLimits(source, destination, 64<<30, 1000000)
+	return extractPortableArchiveWithLimits(source, destination, defaultMaxExtractBytes, defaultMaxExtractEntries)
 }
 
 func extractPortableArchiveWithLimits(source io.Reader, destination string, maxBytes int64, maxEntries int) error {
