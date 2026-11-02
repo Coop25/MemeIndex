@@ -1,8 +1,11 @@
 package client
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -62,5 +65,49 @@ func TestRestoreMaintenanceLockRejectsSecondImport(t *testing.T) {
 	s.handleBackupImport(w, r)
 	if w.Code != http.StatusConflict {
 		t.Fatalf("second import: got %d, want 409", w.Code)
+	}
+}
+
+// Backup parts are tens of gigabytes, so their upload route must be exempt
+// from the 1 MB body cap every other API request gets.
+func TestBackupPartUploadIsNotBodyCapped(t *testing.T) {
+	s, _, _ := newShareTestServer(t)
+	s.auth = newAuthService(DiscordAuthConfig{}, nil) // anonymous: auth middleware is a pass-through
+	sourceDir := t.TempDir()
+	source := &portableBackup{dataDir: sourceDir, job: backupJobStatus{State: "idle"}}
+	exportDir, err := writeTestExportDir(sourceDir, strings.Repeat("x", 3<<20), 2<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := source.installExport(exportDir); err != nil {
+		t.Fatal(err)
+	}
+	status := source.exportStatus()
+	manifest, err := os.ReadFile(filepath.Join(source.latestDir, status.Filename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.backup = &portableBackup{dataDir: t.TempDir(), job: backupJobStatus{State: "idle"}}
+	handler := s.Routes()
+
+	do := func(method, path string, body []byte) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, "https://example.com"+path, bytes.NewReader(body))
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+	if w := do(http.MethodPost, "/api/admin/backup/import/parts/manifest", manifest); w.Code != http.StatusOK {
+		t.Fatalf("stage manifest: %d %s", w.Code, w.Body.String())
+	}
+	part, err := os.ReadFile(filepath.Join(source.latestDir, status.Parts[0].Filename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := do(http.MethodPut, "/api/admin/backup/import/parts?file="+status.Parts[0].Filename, part)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"received_count":1`) {
+		t.Fatalf("upload 2 MB part: %d %s", w.Code, w.Body.String())
+	}
+	if w := do(http.MethodGet, "/api/admin/backup/download?file="+status.Parts[0].Filename, nil); w.Code != http.StatusNotFound {
+		t.Fatalf("download from a server with no backup: got %d, want 404", w.Code)
 	}
 }
