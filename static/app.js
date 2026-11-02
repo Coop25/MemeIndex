@@ -452,6 +452,7 @@ const adminBackupExport = document.querySelector("#admin-backup-export");
 const adminBackupDownloads = document.querySelector("#admin-backup-downloads");
 const adminBackupImport = document.querySelector("#admin-backup-import");
 const adminBackupFile = document.querySelector("#admin-backup-file");
+const adminBackupDiscard = document.querySelector("#admin-backup-discard");
 const adminBackupStatus = document.querySelector("#admin-backup-status");
 const adminViewTable = document.querySelector("#admin-view-table");
 const adminPagination = document.querySelector("#admin-pagination");
@@ -1548,6 +1549,7 @@ function renderAdminBackupStatus() {
   adminBackupExport.disabled = running || adminBackupImportBusy;
   adminBackupExport.textContent = running ? "Backup Running..." : "Create Backup";
   adminBackupImport.disabled = running || adminBackupImportBusy;
+  if (adminBackupDiscard) adminBackupDiscard.disabled = adminBackupImportBusy;
   renderAdminBackupDownloads(status);
 
   adminBackupStatus.classList.toggle("admin-backup-status-running", running);
@@ -1597,6 +1599,11 @@ function renderAdminBackupDownloads(status) {
     }))]
     : [];
   adminBackupDownloads.classList.toggle("hidden", files.length === 0);
+  // The status poller re-renders every few seconds; only rebuild the links
+  // when the backup changes, so a link is never swapped out mid-click.
+  const key = files.map((file) => file.filename).join("\n");
+  if (adminBackupDownloads.dataset.files === key) return;
+  adminBackupDownloads.dataset.files = key;
   adminBackupDownloads.innerHTML = files.map((file) => `
     <a class="secondary-button admin-backup-download" href="/api/admin/backup/download?file=${encodeURIComponent(file.filename)}"
       download="${escapeHTML(file.filename)}" title="${escapeHTML(file.filename)}">
@@ -1606,6 +1613,7 @@ function renderAdminBackupDownloads(status) {
 
 function adminBackupIncomingSuffix() {
   const incoming = state.admin.backupIncoming;
+  adminBackupDiscard?.classList.toggle("hidden", !incoming?.staged);
   if (!incoming?.staged || incoming.complete) return "";
   const missing = (incoming.parts || []).filter((part) => !part.received).map((part) => part.filename);
   return ` A restore of ${incoming.backup_id} is waiting on ${missing.length} of ${incoming.part_count} part(s): ` +
@@ -1773,6 +1781,13 @@ async function importSplitPortableBackup(files) {
   }
 
   const byName = new Map(files.map((file) => [file.name, file]));
+  const partNames = new Set(incoming.parts.map((part) => part.filename));
+  // Browsers save a repeat download as "name (1).ext", which no longer
+  // matches the manifest - say so rather than silently skipping the file.
+  const unmatched = files.filter((file) => !isBackupManifestFile(file) && !partNames.has(file.name)).map((file) => file.name);
+  const unmatchedNote = unmatched.length
+    ? ` Skipped ${unmatched.join(", ")}: not a part of ${incoming.backup_id} by name (rename a renamed download back to its original name).`
+    : "";
   const missing = incoming.parts.filter((part) => !part.received);
   const toUpload = [];
   for (const part of missing) {
@@ -1811,7 +1826,7 @@ async function importSplitPortableBackup(files) {
     if (!incoming.complete) {
       const stillMissing = incoming.parts.filter((part) => !part.received).map((part) => part.filename);
       adminBackupStatus.textContent = `Received ${incoming.received_count} of ${incoming.part_count} parts of ${incoming.backup_id}. ` +
-        `Still needed: ${stillMissing.join(", ")}. Choose those files when you have them; the parts already uploaded stay on the server.`;
+        `Still needed: ${stillMissing.join(", ")}. Choose those files when you have them; the parts already uploaded stay on the server.${unmatchedNote}`;
       showToast(`${incoming.received_count} of ${incoming.part_count} backup parts uploaded.`, "info", { title: "Backup & Restore" });
       return;
     }
@@ -11140,6 +11155,27 @@ adminBackupExport?.addEventListener("click", () => {
     showToast("Could not start the backup task.", "error", { title: "Backup & Restore" });
     fetchAdminBackupStatus().catch((statusError) => console.error(statusError));
   });
+});
+
+adminBackupDiscard?.addEventListener("click", async () => {
+  const incoming = state.admin.backupIncoming;
+  if (!incoming?.staged) return;
+  if (!window.confirm(`Discard the ${incoming.received_count} uploaded part(s) of ${incoming.backup_id}? ` +
+    "You would need to upload them again to restore this backup.")) {
+    return;
+  }
+  try {
+    const response = await fetch("/api/admin/backup/import/parts", { method: "DELETE" });
+    if (!(await expectAuthorized(response, "Could not discard the uploaded parts."))) {
+      adminBackupStatus.textContent = await readAPIErrorMessage(response, "Could not discard the uploaded parts.");
+      return;
+    }
+    showToast("Uploaded backup parts discarded.", "success", { title: "Backup & Restore" });
+    await fetchAdminBackupStatus();
+  } catch (error) {
+    console.error(error);
+    showToast("Could not discard the uploaded parts.", "error", { title: "Backup & Restore" });
+  }
 });
 
 adminBackupImport?.addEventListener("click", () => {

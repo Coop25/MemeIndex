@@ -19,9 +19,9 @@ import (
 
 // backupPartMaxBytes caps each downloadable piece of a backup so a large
 // library can be fetched over several sittings instead of one huge transfer
-// that has to finish in a single go. A var rather than a const so tests can
-// shrink it.
-var backupPartMaxBytes int64 = 25 << 30
+// that has to finish in a single go. Tests shrink it per backup through
+// portableBackup.partMaxBytes.
+const backupPartMaxBytes int64 = 25 << 30
 
 const (
 	backupPartsManifestKind = "memeindex-backup-parts"
@@ -394,17 +394,39 @@ func (b *portableBackup) discardIncoming() error {
 // importStagedParts restores the server from a fully uploaded split backup
 // and clears the staging area once the restore succeeds.
 func (b *portableBackup) importStagedParts(ctx context.Context) error {
+	source, closeParts, totalSize, err := b.openStagedParts()
+	if err != nil {
+		return err
+	}
+	// incomingMu is not held across the restore, which can take many
+	// minutes: the admin page polls incomingStatus throughout. Nothing can
+	// change the staged parts meanwhile, because the server's restore
+	// maintenance lock (runBackupRestore) refuses every staging write.
+	//
+	// Media is already compressed, so a genuine archive expands to roughly
+	// its own size; leave generous headroom over the default ceiling.
+	err = b.importArchiveWithLimit(ctx, source, defaultMaxExtractBytes+2*totalSize)
+	closeParts()
+	if err != nil {
+		return err
+	}
+	return b.discardIncoming()
+}
+
+// openStagedParts checks every part of the staged backup has arrived and
+// opens them as one stream.
+func (b *portableBackup) openStagedParts() (io.Reader, func(), int64, error) {
 	b.incomingMu.Lock()
 	defer b.incomingMu.Unlock()
 	status, manifest, err := b.incomingStatusLocked()
 	if err != nil {
-		return err
+		return nil, nil, 0, err
 	}
 	if manifest == nil {
-		return errors.New("no backup parts have been uploaded")
+		return nil, nil, 0, errors.New("no backup parts have been uploaded")
 	}
 	if !status.Complete {
-		return fmt.Errorf("backup is incomplete: %d of %d parts received", status.ReceivedCount, status.PartCount)
+		return nil, nil, 0, fmt.Errorf("backup is incomplete: %d of %d parts received", status.ReceivedCount, status.PartCount)
 	}
 	paths := make([]string, 0, len(manifest.Parts))
 	for _, part := range manifest.Parts {
@@ -412,14 +434,7 @@ func (b *portableBackup) importStagedParts(ctx context.Context) error {
 	}
 	source, closeParts, err := openPartFiles(paths)
 	if err != nil {
-		return err
+		return nil, nil, 0, err
 	}
-	// Media is already compressed, so a genuine archive expands to roughly
-	// its own size; leave generous headroom over the default ceiling.
-	err = b.importArchiveWithLimit(ctx, source, defaultMaxExtractBytes+2*manifest.TotalSizeBytes)
-	closeParts()
-	if err != nil {
-		return err
-	}
-	return os.RemoveAll(b.incomingDir())
+	return source, closeParts, manifest.TotalSizeBytes, nil
 }

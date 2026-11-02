@@ -432,7 +432,10 @@
                   <p>Importing replaces the current library and application database. Export this server first if you may need to undo the restore. For a split backup, choose the manifest together with its part files; parts can be added over several sittings and the restore starts once every part has arrived.</p>
                 </div>
                 <input id="admin-backup-file" class="hidden" type="file" multiple />
-                <button id="admin-backup-import" class="danger-button" type="button">Choose Backup to Import</button>
+                <div class="admin-backup-actions">
+                  <button id="admin-backup-import" class="danger-button" type="button">Choose Backup to Import</button>
+                  <button id="admin-backup-discard" class="secondary-button hidden" type="button">Discard Uploaded Parts</button>
+                </div>
               </article>
               <p id="admin-backup-status" class="status-text"></p>
             </section>

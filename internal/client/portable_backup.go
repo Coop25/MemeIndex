@@ -45,6 +45,15 @@ type portableBackup struct {
 	// its raw parts (see splitPartWriter), which installExport then names.
 	exportFunc func(context.Context) (string, error)
 	incomingMu sync.Mutex
+	// partMaxBytes overrides backupPartMaxBytes when set (tests only).
+	partMaxBytes int64
+}
+
+func (b *portableBackup) partLimit() int64 {
+	if b.partMaxBytes > 0 {
+		return b.partMaxBytes
+	}
+	return backupPartMaxBytes
 }
 
 type backupJobStatus struct {
@@ -287,7 +296,7 @@ func (b *portableBackup) installExport(exportDir string) error {
 		AppVersion:         BuildVersion(),
 		PartCount:          len(parts),
 		TotalSizeBytes:     total,
-		PartSizeLimitBytes: backupPartMaxBytes,
+		PartSizeLimitBytes: b.partLimit(),
 		Parts:              parts,
 		Instructions: fmt.Sprintf("This backup is split into %d part(s). To restore, open Admin > Backup & Restore and choose this manifest together with the part files; "+
 			"they can be uploaded over several sittings and the restore starts once every part has arrived. "+
@@ -368,7 +377,7 @@ func (b *portableBackup) export(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	output := &splitPartWriter{dir: outputDir, limit: backupPartMaxBytes}
+	output := &splitPartWriter{dir: outputDir, limit: b.partLimit()}
 	keep := false
 	defer func() {
 		_ = output.finishPart()
