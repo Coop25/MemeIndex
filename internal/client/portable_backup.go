@@ -31,7 +31,18 @@ import (
 // restrictions were added: an older format-2 archive has no
 // audiobook_tags.csv or app_user_audiobook_tag_restrictions.csv, which would
 // otherwise fail the same way partway through restore.
-const portableBackupFormatVersion = 3
+//
+// Bumped from 3 to 4 when audiobook listening stats and
+// audiobook_progress.finished_at were added. Unlike the earlier bumps,
+// format-3 archives (including every split backup v2.27.0 produced) are still
+// accepted: the new table is simply left empty and audiobook_progress is
+// loaded with its format-3 column list - see backupTable.sinceFormat and
+// legacyColumns.
+const portableBackupFormatVersion = 4
+
+// portableBackupOldestFormatVersion is the oldest archive format restore
+// still accepts.
+const portableBackupOldestFormatVersion = 3
 
 type portableBackup struct {
 	databaseURL string
@@ -77,6 +88,28 @@ type portableBackupManifest struct {
 type backupTable struct {
 	name    string
 	columns string
+	// sinceFormat, when set, is the first format version whose archives
+	// include this table. Restoring an older archive leaves the table empty
+	// instead of requiring its CSV.
+	sinceFormat int
+	// legacyColumns maps an older format version to the column list its
+	// archives wrote for this table, when that differs from columns.
+	legacyColumns map[int]string
+}
+
+// inFormat reports whether archives of the given format version carry this
+// table's CSV.
+func (t backupTable) inFormat(version int) bool {
+	return version >= t.sinceFormat
+}
+
+// columnsForFormat returns the column list an archive of the given format
+// version wrote for this table, which is what restore must COPY it with.
+func (t backupTable) columnsForFormat(version int) string {
+	if columns, ok := t.legacyColumns[version]; ok {
+		return columns
+	}
+	return t.columns
 }
 
 var portableBackupTables = []backupTable{
@@ -101,10 +134,13 @@ var portableBackupTables = []backupTable{
 	// just lost, same as it would be across a restart today.
 	{name: "audiobook_series", columns: "id, name, created_by_user_id, created_at"},
 	{name: "audiobooks", columns: "id, title, author, narrator, filename, mime_type, size_bytes, duration_seconds, storage_path, cover_path, chapters, uploaded_by_user_id, created_at, series_id, series_sequence"},
+	{name: "audiobook_listening_stats", columns: "user_id, audiobook_id, listen_date, seconds_listened", sinceFormat: 4},
 	{name: "audiobook_tags", columns: "audiobook_id, tag_id"},
 	{name: "audiobook_bookmarks", columns: "id, audiobook_id, user_id, position_seconds, label, created_at"},
 	{name: "audiobook_favorites", columns: "audiobook_id, user_id, created_at"},
-	{name: "audiobook_progress", columns: "audiobook_id, user_id, position_seconds, updated_at"},
+	{name: "audiobook_progress", columns: "audiobook_id, user_id, position_seconds, updated_at, finished_at", legacyColumns: map[int]string{
+		3: "audiobook_id, user_id, position_seconds, updated_at",
+	}},
 	{name: "audiobook_playback_sessions", columns: "audiobook_id, user_id, device_id, position_seconds, is_playing, stop_requested, updated_at"},
 }
 
@@ -640,10 +676,13 @@ func (b *portableBackup) importArchiveWithLimit(ctx context.Context, source io.R
 	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
 		return fmt.Errorf("invalid backup manifest: %w", err)
 	}
-	if manifest.FormatVersion != portableBackupFormatVersion {
+	if manifest.FormatVersion < portableBackupOldestFormatVersion || manifest.FormatVersion > portableBackupFormatVersion {
 		return fmt.Errorf("unsupported backup format version %d", manifest.FormatVersion)
 	}
 	for _, table := range portableBackupTables {
+		if !table.inFormat(manifest.FormatVersion) {
+			continue
+		}
 		if _, err := os.Stat(filepath.Join(staging, "database", table.name+".csv")); err != nil {
 			return fmt.Errorf("backup is missing database/%s.csv", table.name)
 		}
@@ -680,15 +719,18 @@ func (b *portableBackup) importArchiveWithLimit(ctx context.Context, source io.R
 		}
 	}()
 
-	if _, err := conn.Exec(ctx, "TRUNCATE TABLE meme_tags, user_favorites, reel_sessions, meme_audit_logs, tags, memes, app_user_readd_required, app_user_audiobook_tag_restrictions, app_users, audiobook_tags, audiobook_bookmarks, audiobook_favorites, audiobook_progress, audiobook_playback_sessions, audiobooks, audiobook_series RESTART IDENTITY CASCADE"); err != nil {
+	if _, err := conn.Exec(ctx, "TRUNCATE TABLE meme_tags, user_favorites, reel_sessions, meme_audit_logs, tags, memes, app_user_readd_required, app_user_audiobook_tag_restrictions, app_users, audiobook_tags, audiobook_bookmarks, audiobook_favorites, audiobook_progress, audiobook_playback_sessions, audiobook_listening_stats, audiobooks, audiobook_series RESTART IDENTITY CASCADE"); err != nil {
 		return fmt.Errorf("clear current database: %w", err)
 	}
 	for _, table := range portableBackupTables {
+		if !table.inFormat(manifest.FormatVersion) {
+			continue
+		}
 		csvFile, err := os.Open(filepath.Join(staging, "database", table.name+".csv"))
 		if err != nil {
 			return err
 		}
-		_, copyErr := conn.Conn().PgConn().CopyFrom(ctx, csvFile, fmt.Sprintf("COPY %s (%s) FROM STDIN WITH (FORMAT CSV, HEADER TRUE)", table.name, table.columns))
+		_, copyErr := conn.Conn().PgConn().CopyFrom(ctx, csvFile, fmt.Sprintf("COPY %s (%s) FROM STDIN WITH (FORMAT CSV, HEADER TRUE)", table.name, table.columnsForFormat(manifest.FormatVersion)))
 		_ = csvFile.Close()
 		if copyErr != nil {
 			return fmt.Errorf("restore table %s: %w", table.name, copyErr)
