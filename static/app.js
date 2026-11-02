@@ -1635,11 +1635,11 @@ async function fetchAdminBackupStatus() {
   }
 
   state.admin.backupStatus = await response.json();
+  await fetchAdminBackupIncoming().catch((error) => console.error(error));
   renderAdminBackupStatus();
   return state.admin.backupStatus;
 }
 
-  await fetchAdminBackupIncoming().catch((error) => console.error(error));
 async function startAdminBackup() {
   if (!adminBackupExport || state.admin.backupStatus?.state === "running") return;
   adminBackupExport.disabled = true;
@@ -1685,10 +1685,6 @@ function confirmBackupReplace(description) {
   if (typed.trim().toUpperCase() !== "REPLACE") {
     adminBackupStatus.textContent = "Import cancelled — confirmation text did not match.";
     showToast("Import cancelled.", "info", { title: "Backup & Restore" });
-    return;
-  }
-
-  adminBackupImportBusy = true;
     return false;
   }
   return true;
@@ -1705,8 +1701,8 @@ function isBackupPartFile(file) {
 async function finishBackupImport(response) {
   if (!(await expectAuthorized(response, "Failed to import backup."))) {
     adminBackupStatus.textContent = await readAPIErrorMessage(response, "Failed to import backup.");
-  renderAdminBackupStatus();
-  adminBackupStatus.textContent = "Importing backup. Keep this page open; large libraries can take several minutes...";
+    return;
+  }
   adminBackupStatus.textContent = "Backup imported successfully. Reloading the restored library...";
   showToast("Backup imported successfully.", "success", { title: "Backup & Restore" });
   window.setTimeout(forceFreshHTMLReload, 900);
@@ -1724,6 +1720,10 @@ async function importPortableBackup(files) {
   }
   const [file] = files;
   if (!confirmBackupReplace(file.name)) return;
+
+  adminBackupImportBusy = true;
+  renderAdminBackupStatus();
+  adminBackupStatus.textContent = "Importing backup. Keep this page open; large libraries can take several minutes...";
   try {
     const response = await fetch("/api/admin/backup/import", {
       method: "POST",
@@ -11189,6 +11189,7 @@ adminBackupFile?.addEventListener("change", () => {
     showToast("Could not import the backup.", "error", { title: "Backup & Restore" });
     adminBackupImportBusy = false;
     renderAdminBackupStatus();
+  }).finally(() => {
     adminBackupFile.value = "";
   });
 });
@@ -11491,7 +11492,6 @@ randomReelMedia?.addEventListener("click", async (event) => {
   if (!media || !event.target || !(event.target === media || media.contains(event.target))) {
     showRandomReelUI();
     syncRandomReelMediaControls();
-  }).finally(() => {
     return;
   }
 
