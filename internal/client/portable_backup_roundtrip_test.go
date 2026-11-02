@@ -1,9 +1,15 @@
 package client
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
+	"encoding/csv"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -104,6 +110,10 @@ func TestPortableBackupRoundTripThroughParts(t *testing.T) {
 		`INSERT INTO meme_tags (meme_id, tag_id) SELECT 'meme-1', id FROM tags WHERE name = 'cats'`,
 		fmt.Sprintf(`INSERT INTO audiobooks (id, title, filename, size_bytes, duration_seconds, storage_path, uploaded_by_user_id)
 		 VALUES ('book-1', 'A Book', 'book.m4b', 3000, 60, '%s', 'user-1')`, bookPath),
+		`INSERT INTO audiobook_progress (audiobook_id, user_id, position_seconds, updated_at, finished_at)
+		 VALUES ('book-1', 'user-1', 59, NOW(), '2026-10-01T12:00:00Z')`,
+		`INSERT INTO audiobook_listening_stats (user_id, audiobook_id, listen_date, seconds_listened)
+		 VALUES ('user-1', 'book-1', '2026-10-01', 1234.5)`,
 	} {
 		if _, err := pool.Exec(ctx, statement); err != nil {
 			t.Fatalf("seed: %v\n%s", err, statement)
@@ -134,8 +144,14 @@ func TestPortableBackupRoundTripThroughParts(t *testing.T) {
 		}
 	}
 
-	// Diverge from the backup: drop the meme and its file, add a stray tag.
-	for _, statement := range []string{`DELETE FROM memes WHERE id = 'meme-1'`, `INSERT INTO tags (name) VALUES ('stray')`} {
+	// Diverge from the backup: drop the meme and its file, add a stray tag,
+	// and lose the listening history.
+	for _, statement := range []string{
+		`DELETE FROM memes WHERE id = 'meme-1'`,
+		`INSERT INTO tags (name) VALUES ('stray')`,
+		`DELETE FROM audiobook_listening_stats`,
+		`UPDATE audiobook_progress SET finished_at = NULL`,
+	} {
 		if _, err := pool.Exec(ctx, statement); err != nil {
 			t.Fatal(err)
 		}
@@ -167,6 +183,21 @@ func TestPortableBackupRoundTripThroughParts(t *testing.T) {
 	if tagNames != "cats" || taggedMemes != 1 {
 		t.Fatalf("database not restored: tags=%q tagged memes=%d", tagNames, taggedMemes)
 	}
+	var finishedAt *time.Time
+	if err := pool.QueryRow(ctx, `SELECT finished_at FROM audiobook_progress WHERE audiobook_id = 'book-1' AND user_id = 'user-1'`).Scan(&finishedAt); err != nil {
+		t.Fatalf("read restored progress: %v", err)
+	}
+	if want := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC); finishedAt == nil || !finishedAt.Equal(want) {
+		t.Fatalf("finished_at not restored: got %v, want %v", finishedAt, want)
+	}
+	var listenDate string
+	var secondsListened float64
+	if err := pool.QueryRow(ctx, `SELECT listen_date::text, seconds_listened FROM audiobook_listening_stats WHERE user_id = 'user-1' AND audiobook_id = 'book-1'`).Scan(&listenDate, &secondsListened); err != nil {
+		t.Fatalf("listening stats not restored: %v", err)
+	}
+	if listenDate != "2026-10-01" || secondsListened != 1234.5 {
+		t.Fatalf("listening stats restored wrong: date=%s seconds=%v", listenDate, secondsListened)
+	}
 	for path, want := range map[string][]byte{filepath.Join(dataDir, "uploads", "meme-1.png"): memeBytes, bookPath: bookBytes} {
 		got, err := os.ReadFile(path)
 		if err != nil || !bytes.Equal(got, want) {
@@ -180,4 +211,150 @@ func TestPortableBackupRoundTripThroughParts(t *testing.T) {
 	if err != nil || len(snapshots) != 1 || !snapshots[0].IsDir() {
 		t.Fatalf("expected one pre-restore snapshot directory, got %v (err %v)", snapshots, err)
 	}
+}
+
+// TestPortableBackupRestoresFormat3Archive checks that a backup taken before
+// listening stats existed (format 3: no audiobook_listening_stats.csv, and
+// audiobook_progress without finished_at) still restores.
+func TestPortableBackupRestoresFormat3Archive(t *testing.T) {
+	databaseURL := newScratchBackupDatabase(t)
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	pool, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	bookPath := filepath.Join(dataDir, "audiobooks", "book-1", "book.m4b")
+	if err := os.MkdirAll(filepath.Dir(bookPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bookPath, []byte("m4b-audio"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		fmt.Sprintf(`INSERT INTO audiobooks (id, title, filename, size_bytes, duration_seconds, storage_path, uploaded_by_user_id)
+		 VALUES ('book-1', 'A Book', 'book.m4b', 9, 60, '%s', 'user-1')`, bookPath),
+		`INSERT INTO audiobook_progress (audiobook_id, user_id, position_seconds, updated_at, finished_at)
+		 VALUES ('book-1', 'user-1', 42, NOW(), NOW())`,
+		`INSERT INTO audiobook_listening_stats (user_id, audiobook_id, listen_date, seconds_listened)
+		 VALUES ('user-1', 'book-1', '2026-10-01', 10)`,
+	} {
+		if _, err := pool.Exec(ctx, statement); err != nil {
+			t.Fatalf("seed: %v\n%s", err, statement)
+		}
+	}
+
+	backup := newPortableBackup(databaseURL, dataDir)
+	exportDir, err := backup.export(ctx)
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	defer os.RemoveAll(exportDir)
+	parts, err := readExportParts(exportDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := make([]string, 0, len(parts))
+	for _, part := range parts {
+		paths = append(paths, filepath.Join(exportDir, part.Filename))
+	}
+	reader, closeParts, err := openPartFiles(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := downgradeArchiveToFormat3(t, reader)
+	closeParts()
+
+	if err := backup.importArchive(ctx, bytes.NewReader(archive)); err != nil {
+		t.Fatalf("restore format-3 archive: %v", err)
+	}
+	var position float64
+	var finishedAt *time.Time
+	if err := pool.QueryRow(ctx, `SELECT position_seconds, finished_at FROM audiobook_progress WHERE audiobook_id = 'book-1' AND user_id = 'user-1'`).Scan(&position, &finishedAt); err != nil {
+		t.Fatalf("read restored progress: %v", err)
+	}
+	if position != 42 || finishedAt != nil {
+		t.Fatalf("format-3 progress restored wrong: position=%v finished_at=%v", position, finishedAt)
+	}
+	var stats int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM audiobook_listening_stats`).Scan(&stats); err != nil {
+		t.Fatal(err)
+	}
+	if stats != 0 {
+		t.Fatalf("format-3 restore should leave listening stats empty, found %d rows", stats)
+	}
+}
+
+// downgradeArchiveToFormat3 rewrites a current export the way v2.27.0 would
+// have written it: format_version 3, no listening stats CSV, and
+// audiobook_progress without its trailing finished_at column.
+func downgradeArchiveToFormat3(t *testing.T, source io.Reader) []byte {
+	t.Helper()
+	gzr, err := gzip.NewReader(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := tar.NewReader(gzr)
+	var output bytes.Buffer
+	gzw := gzip.NewWriter(&output)
+	tw := tar.NewWriter(gzw)
+	for {
+		header, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch header.Name {
+		case "database/audiobook_listening_stats.csv":
+			continue
+		case "manifest.json":
+			var manifest map[string]any
+			if err := json.Unmarshal(payload, &manifest); err != nil {
+				t.Fatal(err)
+			}
+			manifest["format_version"] = 3
+			if payload, err = json.Marshal(manifest); err != nil {
+				t.Fatal(err)
+			}
+		case "database/audiobook_progress.csv":
+			records, err := csv.NewReader(bytes.NewReader(payload)).ReadAll()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(records) == 0 || records[0][len(records[0])-1] != "finished_at" {
+				t.Fatalf("expected finished_at to be the last progress column, got %v", records)
+			}
+			var rewritten bytes.Buffer
+			w := csv.NewWriter(&rewritten)
+			for _, record := range records {
+				if err := w.Write(record[:len(record)-1]); err != nil {
+					t.Fatal(err)
+				}
+			}
+			w.Flush()
+			payload = rewritten.Bytes()
+		}
+		header.Size = int64(len(payload))
+		if err := tw.WriteHeader(header); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gzw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return output.Bytes()
 }
