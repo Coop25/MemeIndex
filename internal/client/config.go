@@ -27,6 +27,12 @@ type Config struct {
 	MediaFetchProxy            string
 	RateLimitEnabled           bool
 	ClientIPHeader             string
+	// MigrationSourceEnabled lets this server issue migration tokens and
+	// stream its whole library to another server that presents one.
+	MigrationSourceEnabled bool
+	// MigrationImportEnabled lets this server pull a library from another
+	// server and replace its own with it.
+	MigrationImportEnabled bool
 	MediaFetchRetry            MediaFetchRetryConfig
 	TagSuggestions             TagSuggestionsConfig
 	DiscordAuth                DiscordAuthConfig
@@ -89,6 +95,8 @@ type rawConfig struct {
 	MediaFetchProxy                 string   `envconfig:"MEDIAFETCH_PROXY"`
 	RateLimitEnabled                bool     `envconfig:"RATE_LIMIT_ENABLED" default:"true"`
 	ClientIPHeader                  string   `envconfig:"CLIENT_IP_HEADER"`
+	MigrationSourceEnabled          bool     `envconfig:"MIGRATION_SOURCE_ENABLED" default:"false"`
+	MigrationImportEnabled          bool     `envconfig:"MIGRATION_IMPORT_ENABLED" default:"false"`
 	MediaFetchRetryIntervalSecs     int      `envconfig:"MEDIAFETCH_RETRY_INTERVAL_SECONDS" default:"300"`
 	MediaFetchRetryMaxAttempts      int      `envconfig:"MEDIAFETCH_RETRY_MAX_ATTEMPTS" default:"3"`
 	TagSuggestOllamaURL             string   `envconfig:"TAGSUGGEST_OLLAMA_URL"`
@@ -175,6 +183,8 @@ func LoadConfig() (Config, error) {
 		),
 		RateLimitEnabled: raw.RateLimitEnabled,
 		ClientIPHeader:   strings.TrimSpace(raw.ClientIPHeader),
+		MigrationSourceEnabled: raw.MigrationSourceEnabled,
+		MigrationImportEnabled: raw.MigrationImportEnabled,
 		MediaFetchRetry: MediaFetchRetryConfig{
 			Interval:    time.Duration(max(raw.MediaFetchRetryIntervalSecs, 1)) * time.Second,
 			MaxAttempts: max(raw.MediaFetchRetryMaxAttempts, 1),

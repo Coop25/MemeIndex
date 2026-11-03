@@ -437,6 +437,47 @@
                   <button id="admin-backup-discard" class="secondary-button hidden" type="button">Discard Uploaded Parts</button>
                 </div>
               </article>
+              <article id="admin-migration-source-card" class="admin-backup-card hidden">
+                <div>
+                  <p class="section-kicker">Migrate · Source</p>
+                  <h3>Let another server copy this one</h3>
+                  <p>Generate a token, then enter this server's address and the token on the destination server. The destination pulls everything directly from here: memes, thumbnails, audiobooks, users, and the rest of the database. The token works for 24 hours, and generating a new one replaces the old one.</p>
+                </div>
+                <div id="admin-migration-token-box" class="admin-migration-token hidden">
+                  <code id="admin-migration-token-value"></code>
+                  <button id="admin-migration-token-copy" class="secondary-button" type="button">Copy</button>
+                </div>
+                <div class="admin-backup-actions">
+                  <button id="admin-migration-token-create" class="primary-button" type="button">Generate Migration Token</button>
+                  <button id="admin-migration-token-revoke" class="secondary-button hidden" type="button">Revoke Token</button>
+                </div>
+                <p id="admin-migration-token-status" class="status-text"></p>
+              </article>
+              <article id="admin-migration-import-card" class="admin-backup-card admin-backup-danger hidden">
+                <div>
+                  <p class="section-kicker">Migrate · Destination</p>
+                  <h3>Replace this server from another server</h3>
+                  <p>Enter the source server's address (for example <code>192.168.1.20:8080</code>) and the token from its Backup &amp; Restore page. This server streams the source's whole library and replaces its own with it. Nothing is downloaded through your browser, so you can leave this page while it runs.</p>
+                </div>
+                <form id="admin-migration-form" class="admin-migration-form">
+                  <label class="field">
+                    <span>Source address</span>
+                    <input id="admin-migration-source" type="text" placeholder="192.168.1.20:8080" autocomplete="off" spellcheck="false" />
+                  </label>
+                  <label class="field">
+                    <span>Migration token</span>
+                    <input id="admin-migration-token" type="password" placeholder="mig_..." autocomplete="off" spellcheck="false" />
+                  </label>
+                  <div class="admin-backup-actions">
+                    <button id="admin-migration-start" class="danger-button" type="submit">Check &amp; Import</button>
+                    <button id="admin-migration-cancel" class="secondary-button hidden" type="button">Cancel Migration</button>
+                  </div>
+                </form>
+                <div id="admin-migration-progress" class="admin-migration-progress hidden">
+                  <div class="admin-migration-bar"><span id="admin-migration-bar-fill"></span></div>
+                  <p id="admin-migration-progress-text" class="status-text"></p>
+                </div>
+              </article>
               <p id="admin-backup-status" class="status-text"></p>
             </section>
             <div id="admin-view-table" class="admin-view-table"></div>

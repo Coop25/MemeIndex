@@ -4700,3 +4700,12 @@ body.audiobooks-only-access #mobile-add-vault {
 .audiobook-series-tile-share { position: absolute; top: 20px; right: 20px; z-index: 2; display: grid; width: 32px; height: 32px; padding: 0; place-items: center; border-radius: 50%; background: rgba(6,12,9,.72); border: 1px solid rgba(255,255,255,.14); color: white; backdrop-filter: blur(7px); }
 .audiobook-series-tile-share:hover { background: rgba(6,12,9,.9); }
 .audiobook-series-tile-share svg { width: 15px; height: 15px; }
+.admin-migration-form { display: grid; gap: 10px; }
+.admin-migration-token { display: flex; align-items: center; gap: 8px; padding: 10px; border: 1px solid var(--line-strong); border-radius: 9px; background: rgba(11,11,14,.72); }
+.admin-migration-token code { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; font-size: 12px; color: var(--text); user-select: all; }
+.admin-migration-progress { display: grid; gap: 6px; }
+.admin-migration-bar { height: 8px; overflow: hidden; border-radius: 99px; background: rgba(255,255,255,.07); }
+.admin-migration-bar span { display: block; height: 100%; width: 0; border-radius: inherit; background: var(--green-bright); transition: width .4s ease; }
+.admin-migration-bar.is-indeterminate span { width: 30%; animation: adminMigrationSlide 1.4s ease-in-out infinite; }
+.admin-migration-bar.is-failed span { background: var(--red); }
+@keyframes adminMigrationSlide { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
