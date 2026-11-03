@@ -42,6 +42,7 @@ const state = {
     remuxStatus: null,
     backupStatus: null,
     backupIncoming: null,
+    migration: null,
     dashboard: null,
     tagHygiene: {
       loaded: false,
@@ -454,6 +455,23 @@ const adminBackupImport = document.querySelector("#admin-backup-import");
 const adminBackupFile = document.querySelector("#admin-backup-file");
 const adminBackupDiscard = document.querySelector("#admin-backup-discard");
 const adminBackupStatus = document.querySelector("#admin-backup-status");
+const adminMigrationSourceCard = document.querySelector("#admin-migration-source-card");
+const adminMigrationTokenBox = document.querySelector("#admin-migration-token-box");
+const adminMigrationTokenValue = document.querySelector("#admin-migration-token-value");
+const adminMigrationTokenCopy = document.querySelector("#admin-migration-token-copy");
+const adminMigrationTokenCreate = document.querySelector("#admin-migration-token-create");
+const adminMigrationTokenRevoke = document.querySelector("#admin-migration-token-revoke");
+const adminMigrationTokenStatus = document.querySelector("#admin-migration-token-status");
+const adminMigrationImportCard = document.querySelector("#admin-migration-import-card");
+const adminMigrationForm = document.querySelector("#admin-migration-form");
+const adminMigrationSource = document.querySelector("#admin-migration-source");
+const adminMigrationToken = document.querySelector("#admin-migration-token");
+const adminMigrationStart = document.querySelector("#admin-migration-start");
+const adminMigrationCancel = document.querySelector("#admin-migration-cancel");
+const adminMigrationProgress = document.querySelector("#admin-migration-progress");
+const adminMigrationBar = adminMigrationProgress?.querySelector(".admin-migration-bar");
+const adminMigrationBarFill = document.querySelector("#admin-migration-bar-fill");
+const adminMigrationProgressText = document.querySelector("#admin-migration-progress-text");
 const adminViewTable = document.querySelector("#admin-view-table");
 const adminPagination = document.querySelector("#admin-pagination");
 const adminPagePrev = document.querySelector("#admin-page-prev");
@@ -1643,9 +1661,211 @@ async function fetchAdminBackupStatus() {
   }
 
   state.admin.backupStatus = await response.json();
-  await fetchAdminBackupIncoming().catch((error) => console.error(error));
+  await Promise.all([
+    fetchAdminBackupIncoming().catch((error) => console.error(error)),
+    fetchAdminMigration().catch((error) => console.error(error)),
+  ]);
   renderAdminBackupStatus();
   return state.admin.backupStatus;
+}
+
+// --- Server-to-server migration ---------------------------------------------
+// The source card hands out a token; the destination card pulls the source's
+// whole library with it. Both run on the servers, so this page only polls.
+
+let adminMigrationWatching = false;
+let adminMigrationSample = null;
+let adminMigrationRate = 0;
+
+async function fetchAdminMigration() {
+  const response = await fetch("/api/admin/migration", { cache: "no-store" });
+  if (!response.ok) {
+    state.admin.migration = null;
+    renderAdminMigration();
+    return null;
+  }
+  state.admin.migration = await response.json();
+  renderAdminMigration();
+  return state.admin.migration;
+}
+
+function renderAdminMigration() {
+  const overview = state.admin.migration;
+  adminMigrationSourceCard?.classList.toggle("hidden", !overview?.available || !overview.source_enabled);
+  adminMigrationImportCard?.classList.toggle("hidden", !overview?.available || !overview.import_enabled);
+  if (!overview) return;
+
+  const token = overview.token || {};
+  adminMigrationTokenRevoke?.classList.toggle("hidden", !token.active);
+  if (adminMigrationTokenCreate) {
+    adminMigrationTokenCreate.textContent = token.active ? "Generate New Token" : "Generate Migration Token";
+  }
+  if (!token.active) {
+    adminMigrationTokenBox?.classList.add("hidden");
+    if (adminMigrationTokenValue) adminMigrationTokenValue.textContent = "";
+  }
+  if (adminMigrationTokenStatus) {
+    adminMigrationTokenStatus.textContent = token.active
+      ? `A token is active until ${new Date(token.expires_at).toLocaleString()}.` +
+        (adminMigrationTokenBox?.classList.contains("hidden") ? " It is only shown once; generate a new one if you lost it." : " Copy it now; it will not be shown again.")
+      : "No migration token is active, so nothing can copy this server.";
+  }
+
+  renderAdminMigrationImport(overview.import || { state: "idle" });
+}
+
+function renderAdminMigrationImport(job) {
+  const running = job.state === "running";
+  if (adminMigrationStart) adminMigrationStart.disabled = running || adminBackupImportBusy;
+  if (adminMigrationSource) adminMigrationSource.disabled = running;
+  if (adminMigrationToken) adminMigrationToken.disabled = running;
+  adminMigrationCancel?.classList.toggle("hidden", !running || job.phase === "restoring");
+  adminMigrationProgress?.classList.toggle("hidden", job.state === "idle");
+  if (job.state === "idle" || !adminMigrationProgressText || !adminMigrationBarFill) return;
+
+  const received = Number(job.bytes_received) || 0;
+  const estimated = Number(job.estimated_bytes) || 0;
+  if (running && job.phase === "transferring") {
+    const now = Date.now();
+    if (adminMigrationSample && now > adminMigrationSample.at) {
+      const instant = (received - adminMigrationSample.bytes) / ((now - adminMigrationSample.at) / 1000);
+      adminMigrationRate = adminMigrationRate ? adminMigrationRate * 0.7 + instant * 0.3 : instant;
+    }
+    adminMigrationSample = { at: now, bytes: received };
+  } else {
+    adminMigrationSample = null;
+    adminMigrationRate = 0;
+  }
+
+  let percent = 0;
+  let indeterminate = false;
+  let text = "";
+  const source = job.source || "the source";
+  if (running) {
+    adminMigrationWatching = true;
+    switch (job.phase) {
+      case "snapshot":
+        indeterminate = true;
+        text = "Step 1 of 3: Saving a snapshot of this server so the import can be undone...";
+        break;
+      case "connecting":
+        indeterminate = true;
+        text = `Step 2 of 3: Connecting to ${source}...`;
+        break;
+      case "transferring": {
+        // The estimate is the source's media size; the archive also carries
+        // the database, so hold at 99% until the server says it is done.
+        percent = estimated > 0 ? Math.min(99, (received / estimated) * 100) : 0;
+        indeterminate = estimated <= 0;
+        const parts = [`Step 2 of 3: Receiving the library from ${source}: ${formatSize(received)}`];
+        if (estimated > 0) parts[0] += ` of ~${formatSize(estimated)} (${percent.toFixed(1)}%)`;
+        if (adminMigrationRate > 0) {
+          parts.push(`${formatSize(adminMigrationRate)}/s`);
+          if (estimated > received) parts.push(`about ${formatDurationShort((estimated - received) / adminMigrationRate)} left`);
+        }
+        text = parts.join(" · ");
+        break;
+      }
+      case "restoring":
+        percent = 100;
+        indeterminate = true;
+        text = `Step 3 of 3: All ${formatSize(received)} received. Loading the database and moving the media into place...`;
+        break;
+      default:
+        indeterminate = true;
+        text = "Migration running...";
+    }
+  } else if (job.state === "completed") {
+    percent = 100;
+    text = `Migration from ${source} finished: ${formatSize(received)} imported.`;
+    if (adminMigrationWatching) {
+      adminMigrationWatching = false;
+      text += " Reloading the restored library...";
+      showToast("Migration finished.", "success", { title: "Backup & Restore" });
+      window.setTimeout(forceFreshHTMLReload, 1500);
+    }
+  } else {
+    if (adminMigrationWatching) {
+      adminMigrationWatching = false;
+      showToast(job.state === "cancelled" ? "Migration cancelled." : "Migration failed.", job.state === "cancelled" ? "info" : "error", { title: "Backup & Restore" });
+    }
+    text = job.state === "cancelled" ? job.error : `Migration failed: ${job.error || "unknown error"}`;
+  }
+
+  adminMigrationBar?.classList.toggle("is-indeterminate", indeterminate);
+  adminMigrationBar?.classList.toggle("is-failed", job.state === "failed");
+  adminMigrationBarFill.style.width = indeterminate ? "" : `${percent}%`;
+  adminMigrationProgressText.textContent = text;
+}
+
+function formatDurationShort(seconds) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "a moment";
+  if (seconds < 90) return `${Math.round(seconds)}s`;
+  if (seconds < 5400) return `${Math.round(seconds / 60)} min`;
+  return `${(seconds / 3600).toFixed(1)} h`;
+}
+
+async function createAdminMigrationToken() {
+  const active = state.admin.migration?.token?.active;
+  if (active && !window.confirm("Generate a new token? The current token stops working immediately.")) return;
+  adminMigrationTokenCreate.disabled = true;
+  try {
+    const response = await fetch("/api/admin/migration/token", { method: "POST" });
+    if (!(await expectAuthorized(response, "Could not generate a migration token."))) {
+      if (adminMigrationTokenStatus) adminMigrationTokenStatus.textContent = await readAPIErrorMessage(response, "Could not generate a migration token.");
+      return;
+    }
+    const payload = await response.json();
+    adminMigrationTokenValue.textContent = payload.token;
+    adminMigrationTokenBox?.classList.remove("hidden");
+    await fetchAdminMigration();
+  } finally {
+    adminMigrationTokenCreate.disabled = false;
+  }
+}
+
+async function startAdminMigration() {
+  const source = adminMigrationSource?.value.trim() || "";
+  const token = adminMigrationToken?.value.trim() || "";
+  if (!source || !token) {
+    adminMigrationProgress?.classList.remove("hidden");
+    adminMigrationProgressText.textContent = "Enter both the source address and its migration token.";
+    return;
+  }
+  adminMigrationStart.disabled = true;
+  adminMigrationProgress?.classList.remove("hidden");
+  adminMigrationBar?.classList.add("is-indeterminate");
+  adminMigrationProgressText.textContent = `Checking ${source}...`;
+  try {
+    const body = JSON.stringify({ source, token });
+    const probe = await fetch("/api/admin/migration/probe", { method: "POST", headers: { "Content-Type": "application/json" }, body });
+    if (!(await expectAuthorized(probe, "Could not reach the source server."))) {
+      adminMigrationBar?.classList.remove("is-indeterminate");
+      adminMigrationProgressText.textContent = await readAPIErrorMessage(probe, "Could not reach the source server.");
+      return;
+    }
+    const { source: resolved, info } = await probe.json();
+    const summary = `${resolved} (MemeIndex ${info.app_version}): ${info.memes} memes, ${info.audiobooks} audiobooks, ` +
+      `${info.users} users, about ${formatSize(Number(info.estimated_bytes) || 0)}`;
+    adminMigrationProgressText.textContent = `Found ${summary}.`;
+    if (!confirmBackupReplace(`everything from ${summary}`)) {
+      adminMigrationBar?.classList.remove("is-indeterminate");
+      adminMigrationProgressText.textContent = "Migration not started.";
+      return;
+    }
+    const response = await fetch("/api/admin/migration/import", { method: "POST", headers: { "Content-Type": "application/json" }, body });
+    if (!(await expectAuthorized(response, "Could not start the migration."))) {
+      adminMigrationBar?.classList.remove("is-indeterminate");
+      adminMigrationProgressText.textContent = await readAPIErrorMessage(response, "Could not start the migration.");
+      return;
+    }
+    adminMigrationWatching = true;
+    if (adminMigrationToken) adminMigrationToken.value = "";
+    showToast("Migration started on the server.", "success", { title: "Backup & Restore" });
+    await fetchAdminMigration();
+  } finally {
+    renderAdminMigration();
+  }
 }
 
 async function startAdminBackup() {
@@ -11180,6 +11400,60 @@ adminBackupDiscard?.addEventListener("click", async () => {
 
 adminBackupImport?.addEventListener("click", () => {
   adminBackupFile?.click();
+});
+
+adminMigrationTokenCreate?.addEventListener("click", () => {
+  createAdminMigrationToken().catch((error) => {
+    console.error(error);
+    showToast("Could not generate a migration token.", "error", { title: "Backup & Restore" });
+  });
+});
+
+adminMigrationTokenRevoke?.addEventListener("click", async () => {
+  if (!window.confirm("Revoke the migration token? A destination using it right now keeps its current transfer, but cannot start a new one.")) return;
+  try {
+    const response = await fetch("/api/admin/migration/token", { method: "DELETE" });
+    if (!(await expectAuthorized(response, "Could not revoke the token."))) return;
+    await fetchAdminMigration();
+    showToast("Migration token revoked.", "success", { title: "Backup & Restore" });
+  } catch (error) {
+    console.error(error);
+    showToast("Could not revoke the token.", "error", { title: "Backup & Restore" });
+  }
+});
+
+adminMigrationTokenCopy?.addEventListener("click", async () => {
+  const token = adminMigrationTokenValue?.textContent || "";
+  if (!token) return;
+  try {
+    await navigator.clipboard.writeText(token);
+    showToast("Token copied.", "success", { title: "Backup & Restore" });
+  } catch {
+    window.getSelection()?.selectAllChildren(adminMigrationTokenValue);
+    showToast("Select the token and copy it manually.", "info", { title: "Backup & Restore" });
+  }
+});
+
+adminMigrationForm?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  startAdminMigration().catch((error) => {
+    console.error(error);
+    adminMigrationProgressText.textContent = "Could not start the migration.";
+    showToast("Could not start the migration.", "error", { title: "Backup & Restore" });
+  });
+});
+
+adminMigrationCancel?.addEventListener("click", async () => {
+  if (!window.confirm("Cancel the migration? This server stays as it was before the migration started.")) return;
+  try {
+    const response = await fetch("/api/admin/migration/import", { method: "DELETE" });
+    if (!(await expectAuthorized(response, "Could not cancel the migration."))) {
+      showToast(await readAPIErrorMessage(response, "Could not cancel the migration."), "error", { title: "Backup & Restore" });
+    }
+    await fetchAdminMigration();
+  } catch (error) {
+    console.error(error);
+  }
 });
 
 // Check the session with a HEAD request first so an expired login surfaces as

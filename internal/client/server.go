@@ -47,6 +47,11 @@ type Server struct {
 	// the running server. While it is set, maintenanceGuard rejects mutating
 	// requests with 503 so nothing reads or writes half-restored state.
 	restoring atomic.Bool
+	// migrationTokens and migration are the two halves of server-to-server
+	// migration (migration.go): tokens this server hands out as a source, and
+	// the job pulling another server's library in as a destination.
+	migrationTokens migrationTokenStore
+	migration       migrationImporter
 	// audiobookRemuxMu runs MP3 -> M4B audiobook remuxes one at a time (see
 	// remuxAudiobookMP3).
 	audiobookRemuxMu sync.Mutex
@@ -176,6 +181,12 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/api/admin/backup/import/parts", s.withAPIAuth(http.HandlerFunc(s.handleBackupImportParts), permissionManageUsers))
 	mux.Handle("/api/admin/backup/import/parts/manifest", s.withAPIAuth(http.HandlerFunc(s.handleBackupImportManifest), permissionManageUsers))
 	mux.Handle("/api/admin/backup/import/parts/restore", s.withAPIAuth(http.HandlerFunc(s.handleBackupImportPartsRestore), permissionManageUsers))
+	mux.Handle("/api/admin/migration", s.withAPIAuth(http.HandlerFunc(s.handleAdminMigration), permissionManageUsers))
+	mux.Handle("/api/admin/migration/token", s.withAPIAuth(http.HandlerFunc(s.handleAdminMigrationToken), permissionManageUsers))
+	mux.Handle("/api/admin/migration/probe", s.withAPIAuth(http.HandlerFunc(s.handleAdminMigrationProbe), permissionManageUsers))
+	mux.Handle("/api/admin/migration/import", s.withAPIAuth(http.HandlerFunc(s.handleAdminMigrationImport), permissionManageUsers))
+	mux.Handle("/api/migration/info", s.withMigrationToken(s.handleMigrationInfo))
+	mux.Handle("/api/migration/export", s.withMigrationToken(s.handleMigrationExport))
 	mux.Handle("/api/admin/audit-logs", s.withAPIAuth(http.HandlerFunc(s.handleAuditLogs), permissionManageUsers))
 	mux.Handle("/api/admin/tag-hygiene", s.withAPIAuth(http.HandlerFunc(s.handleTagHygiene), permissionManageUsers))
 	mux.Handle("/api/admin/tag-suggestions/status", s.withAPIAuth(http.HandlerFunc(s.handleTagSuggestionStatus), permissionManageUsers))
@@ -220,7 +231,7 @@ func (s *Server) Routes() http.Handler {
 // second import attempt still receives a precise 409 from handleBackupImport.
 func (s *Server) maintenanceGuard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.restoring.Load() && isMutatingMethod(r.Method) && r.URL.Path != "/api/admin/backup/import" && r.URL.Path != "/api/admin/backup/import/parts/restore" {
+		if s.restoring.Load() && isMutatingMethod(r.Method) && r.URL.Path != "/api/admin/backup/import" && r.URL.Path != "/api/admin/backup/import/parts/restore" && r.URL.Path != "/api/admin/migration/import" {
 			w.Header().Set("Retry-After", "30")
 			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 				"error": "MemeIndex is temporarily read-only while a backup restore finishes; retry shortly",

@@ -403,9 +403,6 @@ func (b *portableBackup) openLatestExport(filename string) (*os.File, backupJobS
 }
 
 func (b *portableBackup) export(ctx context.Context) (string, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
 	if err := os.MkdirAll(b.dataDir, 0o755); err != nil {
 		return "", err
 	}
@@ -414,26 +411,40 @@ func (b *portableBackup) export(ctx context.Context) (string, error) {
 		return "", err
 	}
 	output := &splitPartWriter{dir: outputDir, limit: b.partLimit()}
-	keep := false
-	defer func() {
+	if err := b.writeArchive(ctx, output); err != nil {
 		_ = output.finishPart()
-		if !keep {
-			_ = os.RemoveAll(outputDir)
-		}
-	}()
+		_ = os.RemoveAll(outputDir)
+		return "", err
+	}
+	if err := output.Close(); err != nil {
+		_ = os.RemoveAll(outputDir)
+		return "", err
+	}
+	return outputDir, nil
+}
 
+// writeArchive streams a complete .tar.gz backup of the server to output:
+// export() points it at part files on disk, and a server-to-server migration
+// points it straight at the HTTP response.
+func (b *portableBackup) writeArchive(ctx context.Context, output io.Writer) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if err := os.MkdirAll(b.dataDir, 0o755); err != nil {
+		return err
+	}
 	pool, err := pgxpool.New(ctx, b.databaseURL)
 	if err != nil {
-		return "", fmt.Errorf("connect to database: %w", err)
+		return fmt.Errorf("connect to database: %w", err)
 	}
 	defer pool.Close()
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
-		return "", fmt.Errorf("acquire database connection: %w", err)
+		return fmt.Errorf("acquire database connection: %w", err)
 	}
 	defer conn.Release()
 	if _, err := conn.Exec(ctx, "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY"); err != nil {
-		return "", fmt.Errorf("begin database snapshot: %w", err)
+		return fmt.Errorf("begin database snapshot: %w", err)
 	}
 	defer conn.Exec(context.Background(), "ROLLBACK")
 
@@ -443,10 +454,7 @@ func (b *portableBackup) export(ctx context.Context) (string, error) {
 		if err := tw.Close(); err != nil {
 			return err
 		}
-		if err := gz.Close(); err != nil {
-			return err
-		}
-		return output.Close()
+		return gz.Close()
 	}
 
 	manifest, err := json.MarshalIndent(portableBackupManifest{
@@ -455,11 +463,11 @@ func (b *portableBackup) export(ctx context.Context) (string, error) {
 		AppVersion:    BuildVersion(),
 	}, "", "  ")
 	if err != nil {
-		return "", err
+		return err
 	}
 	manifest = append(manifest, '\n')
 	if err := writeTarBytes(tw, "manifest.json", manifest); err != nil {
-		return "", err
+		return err
 	}
 
 	for _, table := range portableBackupTables {
@@ -468,28 +476,28 @@ func (b *portableBackup) export(ctx context.Context) (string, error) {
 		// PostgreSQL COPY needs a seek-free writer, while tar requires the size first.
 		csvFile, err := os.CreateTemp(b.dataDir, ".memeindex-table-*.csv")
 		if err != nil {
-			return "", err
+			return err
 		}
 		csvPath := csvFile.Name()
 		_, copyErr := conn.Conn().PgConn().CopyTo(ctx, csvFile, fmt.Sprintf("COPY (SELECT %s FROM %s) TO STDOUT WITH (FORMAT CSV, HEADER TRUE)", table.columns, table.name))
 		closeErr := csvFile.Close()
 		if copyErr != nil {
 			_ = os.Remove(csvPath)
-			return "", fmt.Errorf("export table %s: %w", table.name, copyErr)
+			return fmt.Errorf("export table %s: %w", table.name, copyErr)
 		}
 		if closeErr != nil {
 			_ = os.Remove(csvPath)
-			return "", closeErr
+			return closeErr
 		}
 		info, err := os.Stat(csvPath)
 		if err != nil {
 			_ = os.Remove(csvPath)
-			return "", err
+			return err
 		}
 		header.Size = info.Size()
 		if err := tw.WriteHeader(header); err != nil {
 			_ = os.Remove(csvPath)
-			return "", err
+			return err
 		}
 		csvFile, err = os.Open(csvPath)
 		if err == nil {
@@ -498,31 +506,31 @@ func (b *portableBackup) export(ctx context.Context) (string, error) {
 		}
 		_ = os.Remove(csvPath)
 		if err != nil {
-			return "", err
+			return err
 		}
 	}
 	rows, err := conn.Query(ctx, "SELECT stored_name FROM memes")
 	if err != nil {
-		return "", fmt.Errorf("verify snapshot uploads: %w", err)
+		return fmt.Errorf("verify snapshot uploads: %w", err)
 	}
 	for rows.Next() {
 		var storedName string
 		if err := rows.Scan(&storedName); err != nil {
 			rows.Close()
-			return "", err
+			return err
 		}
 		if !validStoredName(storedName) {
 			rows.Close()
-			return "", fmt.Errorf("database contains invalid stored file name %q", storedName)
+			return fmt.Errorf("database contains invalid stored file name %q", storedName)
 		}
 		if info, err := os.Stat(filepath.Join(b.dataDir, "uploads", storedName)); err != nil || !info.Mode().IsRegular() {
 			rows.Close()
-			return "", fmt.Errorf("meme file %q is missing from uploads", storedName)
+			return fmt.Errorf("meme file %q is missing from uploads", storedName)
 		}
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return "", err
+		return err
 	}
 	rows.Close()
 
@@ -534,34 +542,34 @@ func (b *portableBackup) export(ctx context.Context) (string, error) {
 	audiobooksDir := filepath.Join(b.dataDir, "audiobooks")
 	abRows, err := conn.Query(ctx, "SELECT storage_path, cover_path FROM audiobooks")
 	if err != nil {
-		return "", fmt.Errorf("verify snapshot audiobooks: %w", err)
+		return fmt.Errorf("verify snapshot audiobooks: %w", err)
 	}
 	for abRows.Next() {
 		var storagePath, coverPath string
 		if err := abRows.Scan(&storagePath, &coverPath); err != nil {
 			abRows.Close()
-			return "", err
+			return err
 		}
 		if err := requireAudiobookFileUnder(audiobooksDir, storagePath); err != nil {
 			abRows.Close()
-			return "", err
+			return err
 		}
 		if coverPath != "" {
 			if err := requireAudiobookFileUnder(audiobooksDir, coverPath); err != nil {
 				abRows.Close()
-				return "", err
+				return err
 			}
 		}
 	}
 	if err := abRows.Err(); err != nil {
 		abRows.Close()
-		return "", err
+		return err
 	}
 	abRows.Close()
 
 	for _, dir := range []string{"uploads", "thumbnails"} {
 		if err := addDirectoryToTar(tw, filepath.Join(b.dataDir, dir), dir); err != nil {
-			return "", err
+			return err
 		}
 	}
 	// audiobooks/tmp holds in-progress/resumable upload scratch files, which
@@ -569,16 +577,12 @@ func (b *portableBackup) export(ctx context.Context) (string, error) {
 	// are (see portableBackupTables above) - exclude it here too so a backup
 	// never carries half-written uploads.
 	if err := addDirectoryToTar(tw, audiobooksDir, "audiobooks", "tmp"); err != nil {
-		return "", err
+		return err
 	}
 	if _, err := conn.Exec(ctx, "COMMIT"); err != nil {
-		return "", fmt.Errorf("finish database snapshot: %w", err)
+		return fmt.Errorf("finish database snapshot: %w", err)
 	}
-	if err := closeArchive(); err != nil {
-		return "", err
-	}
-	keep = true
-	return outputDir, nil
+	return closeArchive()
 }
 
 // preRestoreDir holds automatic snapshots taken immediately before an import.
@@ -646,16 +650,26 @@ func (b *portableBackup) importArchive(ctx context.Context, source io.Reader) er
 }
 
 func (b *portableBackup) importArchiveWithLimit(ctx context.Context, source io.Reader, maxExtractBytes int64) error {
-	// Snapshot the current server before we replace it so a mistaken restore can be
-	// rolled back. Best-effort: a snapshot failure is logged loudly but must not
-	// block a deliberate restore. Runs before b.mu is taken because the export
-	// path locks b.mu itself.
+	b.snapshotForUndo(ctx)
+	return b.restoreArchive(ctx, source, maxExtractBytes, nil)
+}
+
+// snapshotForUndo snapshots the current server before a restore replaces it,
+// so a mistaken restore can be rolled back. Best-effort: a snapshot failure is
+// logged loudly but must not block a deliberate restore. It must run before
+// restoreArchive takes b.mu, because the export path locks b.mu itself.
+func (b *portableBackup) snapshotForUndo(ctx context.Context) {
 	if snapshotPath, err := b.snapshotBeforeRestore(ctx); err != nil {
 		log.Printf("WARNING: could not snapshot server before restore; proceeding without an undo point: %v", err)
 	} else {
 		log.Printf("pre-restore snapshot saved to %s", snapshotPath)
 	}
+}
 
+// restoreArchive replaces the server's database and media with the backup
+// read from source. extracted, when set, is called once the whole archive has
+// been read, just before the database is replaced.
+func (b *portableBackup) restoreArchive(ctx context.Context, source io.Reader, maxExtractBytes int64, extracted func()) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -666,6 +680,9 @@ func (b *portableBackup) importArchiveWithLimit(ctx context.Context, source io.R
 	defer os.RemoveAll(staging)
 	if err := extractPortableArchiveWithLimits(source, staging, maxExtractBytes, defaultMaxExtractEntries); err != nil {
 		return err
+	}
+	if extracted != nil {
+		extracted()
 	}
 
 	manifestBytes, err := os.ReadFile(filepath.Join(staging, "manifest.json"))
@@ -1050,6 +1067,10 @@ func extractPortableArchive(source io.Reader, destination string) error {
 }
 
 func extractPortableArchiveWithLimits(source io.Reader, destination string, maxBytes int64, maxEntries int) error {
+	// Clean first so the containment check below compares like with like: a
+	// data directory configured with forward slashes on Windows would never
+	// prefix-match the backslash paths filepath.Join produces.
+	destination = filepath.Clean(destination)
 	gz, err := gzip.NewReader(source)
 	if err != nil {
 		return errors.New("file is not a valid MemeIndex backup")
