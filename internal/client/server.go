@@ -222,7 +222,7 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/api/audiobooks/", s.withAPIAuth(http.HandlerFunc(s.handleAudiobookByID), permissionViewAudiobooks))
 	mux.Handle("/api/audiobook-series", s.withAPIAuth(http.HandlerFunc(s.handleAudiobookSeries), permissionViewAudiobooks))
 	mux.Handle("/api/audiobook-series/suggestions", s.withAPIAuth(http.HandlerFunc(s.handleAudiobookSeriesSuggestions), permissionViewAudiobooks))
-	mux.Handle("/api/audiobook-series/",s.withAPIAuth(http.HandlerFunc(s.handleAudiobookSeriesByID), permissionViewAudiobooks))
+	mux.Handle("/api/audiobook-series/", s.withAPIAuth(http.HandlerFunc(s.handleAudiobookSeriesByID), permissionViewAudiobooks))
 	mux.Handle("/audiobook-media/", s.withAudiobookMediaAuth(http.HandlerFunc(s.handleAudiobookMedia)))
 	mux.Handle("/audiobook-cover/", s.withAudiobookMediaAuth(http.HandlerFunc(s.handleAudiobookCover)))
 	return securityHeaders(http.NewCrossOriginProtection().Handler(s.maintenanceGuard(mux)))

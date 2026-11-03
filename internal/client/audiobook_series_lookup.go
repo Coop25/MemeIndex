@@ -86,7 +86,7 @@ func (l *audibleSeriesLookup) LookupSeries(ctx context.Context, title, author st
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("audible catalog returned %s", response.Status)
 	}
