@@ -58,6 +58,9 @@ type Server struct {
 	// audiobookRemuxProgress feeds the admin Audiobook Conversion tab
 	// (audiobook_remux_status.go).
 	audiobookRemuxProgress *audiobookRemuxProgress
+	// audiobookSeriesLookup overrides the catalog used for series suggestions
+	// (audiobook_series_lookup.go); nil means the shared Audible lookup.
+	audiobookSeriesLookup *cachedSeriesLookup
 
 	authLimiter       *rateLimiter
 	writeLimiter      *rateLimiter
@@ -218,7 +221,8 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/api/audiobooks/stats/overview", s.withAPIAuth(http.HandlerFunc(s.handleAudiobookStatsOverview), permissionViewAudiobooks))
 	mux.Handle("/api/audiobooks/", s.withAPIAuth(http.HandlerFunc(s.handleAudiobookByID), permissionViewAudiobooks))
 	mux.Handle("/api/audiobook-series", s.withAPIAuth(http.HandlerFunc(s.handleAudiobookSeries), permissionViewAudiobooks))
-	mux.Handle("/api/audiobook-series/", s.withAPIAuth(http.HandlerFunc(s.handleAudiobookSeriesByID), permissionViewAudiobooks))
+	mux.Handle("/api/audiobook-series/suggestions", s.withAPIAuth(http.HandlerFunc(s.handleAudiobookSeriesSuggestions), permissionViewAudiobooks))
+	mux.Handle("/api/audiobook-series/",s.withAPIAuth(http.HandlerFunc(s.handleAudiobookSeriesByID), permissionViewAudiobooks))
 	mux.Handle("/audiobook-media/", s.withAudiobookMediaAuth(http.HandlerFunc(s.handleAudiobookMedia)))
 	mux.Handle("/audiobook-cover/", s.withAudiobookMediaAuth(http.HandlerFunc(s.handleAudiobookCover)))
 	return securityHeaders(http.NewCrossOriginProtection().Handler(s.maintenanceGuard(mux)))

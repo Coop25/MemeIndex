@@ -75,19 +75,35 @@ func (s *Server) handleAudiobooks(w http.ResponseWriter, r *http.Request) {
 	case "finished":
 		filter.Finished = true
 	}
+	// Paging is opt-in: without ?limit= this still returns every match. With
+	// it, one extra row is fetched just to learn whether another page exists.
+	limit := min(parseQueryInt(r, "limit", 0), maxAudiobookPageSize)
+	if limit > 0 {
+		filter.Limit = limit + 1
+		filter.Offset = max(parseQueryInt(r, "offset", 0), 0)
+	}
 	items, err := s.audiobooks.ListAudiobooks(r.Context(), userID, filter)
 	if err != nil {
 		log.Printf("list audiobooks failed: %v", err)
 		http.Error(w, "failed to load audiobooks", http.StatusInternalServerError)
 		return
 	}
+	hasMore := limit > 0 && len(items) > limit
+	if hasMore {
+		items = items[:limit]
+	}
 
 	out := make([]map[string]any, 0, len(items))
 	for _, item := range items {
 		out = append(out, audiobookWithProgressJSON(item))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"audiobooks": out})
+	writeJSON(w, http.StatusOK, map[string]any{"audiobooks": out, "has_more": hasMore})
 }
+
+// maxAudiobookPageSize caps ?limit= on /api/audiobooks. It's generous because
+// the client re-requests everything it has already scrolled in (from offset
+// 0) when it refreshes the list after an edit, upload, or delete.
+const maxAudiobookPageSize = 1000
 
 // handleAudiobookByID serves /api/audiobooks/{id} and /api/audiobooks/{id}/progress.
 func (s *Server) handleAudiobookByID(w http.ResponseWriter, r *http.Request) {

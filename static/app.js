@@ -84,6 +84,8 @@ const state = {
   audiobooks: {
     items: [],
     loading: false,
+    appending: false,
+    hasMore: false,
     upload: null,
     player: null,
     filter: "",
@@ -244,6 +246,7 @@ const navAudiobooksItem = document.querySelector("#nav-audiobooks-item");
 const audiobooksView = document.querySelector("#audiobooks-view");
 const audiobooksStatus = document.querySelector("#audiobooks-status");
 const audiobooksGrid = document.querySelector("#audiobooks-grid");
+const audiobooksGridSentinel = document.querySelector("#audiobooks-grid-sentinel");
 const audiobooksEmpty = document.querySelector("#audiobooks-empty");
 const openAudiobookUploadButton = document.querySelector("#open-audiobook-upload");
 const audiobooksSubnav = document.querySelector("#audiobooks-subnav");
@@ -256,6 +259,7 @@ const audiobookStatsTotalTime = document.querySelector("#audiobook-stats-total-t
 const audiobookStatsStreak = document.querySelector("#audiobook-stats-streak");
 const audiobookStatsChart = document.querySelector("#audiobook-stats-chart");
 const audiobookStatsFinishedList = document.querySelector("#audiobook-stats-finished-list");
+const audiobookStatsFinishedSentinel = document.querySelector("#audiobook-stats-finished-sentinel");
 const audiobookStatsFinishedEmpty = document.querySelector("#audiobook-stats-finished-empty");
 const audiobooksActiveFilterLabel = document.querySelector("#audiobooks-active-filter-label");
 const openAudiobookSeriesManagerButton = document.querySelector("#open-audiobook-series-manager");
@@ -272,6 +276,14 @@ const audiobookSeriesManagerSelectedCount = document.querySelector("#audiobook-s
 const audiobookSeriesManagerShareButton = document.querySelector("#audiobook-series-manager-share");
 const audiobookSeriesAddInput = document.querySelector("#audiobook-series-add-input");
 const audiobookSeriesAddList = document.querySelector("#audiobook-series-add-list");
+const audiobookSeriesSuggestOpenButton = document.querySelector("#audiobook-series-suggest-open");
+const audiobookSeriesSuggestions = document.querySelector("#audiobook-series-suggestions");
+const audiobookSeriesSuggestCloseButton = document.querySelector("#audiobook-series-suggest-close");
+const audiobookSeriesSuggestAllInput = document.querySelector("#audiobook-series-suggest-all");
+const audiobookSeriesSuggestRunButton = document.querySelector("#audiobook-series-suggest-run");
+const audiobookSeriesSuggestStopButton = document.querySelector("#audiobook-series-suggest-stop");
+const audiobookSeriesSuggestStatus = document.querySelector("#audiobook-series-suggest-status");
+const audiobookSeriesSuggestList = document.querySelector("#audiobook-series-suggest-list");
 const audiobookSeriesManagerBooksList = document.querySelector("#audiobook-series-manager-books");
 const audiobookEditModal = document.querySelector("#audiobook-edit-modal");
 const audiobookEditForm = document.querySelector("#audiobook-edit-form");
@@ -4448,9 +4460,51 @@ function saveAudiobookUploadMarker(marker) {
   }
 }
 
-async function fetchAudiobooks() {
+// The books grid is fetched a page at a time; scrolling near the end asks for
+// the next one (fetchAudiobooks({ append: true })). The server's page cap
+// matches maxAudiobookPageSize in audiobook_handlers.go.
+const AUDIOBOOK_PAGE_SIZE = 48;
+const AUDIOBOOK_MAX_PAGE_SIZE = 1000;
+// Bumped by every fetch so a response for a list the user has already moved
+// away from (a slow page of "Favorites" landing after they picked a tag)
+// is dropped rather than overwriting the newer one.
+let audiobooksFetchSeq = 0;
+// Which list state.audiobooks.items currently holds, so a refresh knows
+// whether it's reloading the same list (keep what's scrolled in) or a new one.
+let audiobooksLoadedListKey = "";
+
+function audiobooksListKey() {
+  const { filter, seriesId, author, tag } = state.audiobooks;
+  return JSON.stringify([filter, seriesId, author, tag, state.filters.query]);
+}
+
+// fetchAudiobooks loads the first page of the current list, or with append
+// the next page after what's already loaded. A plain refresh of the list
+// already on screen (after an edit, upload, or delete) re-requests as many
+// books as were scrolled in, so it doesn't drop you back to page one.
+// Resolves true once the books are in state.audiobooks.items.
+async function fetchAudiobooks({ append = false } = {}) {
+  const listKey = audiobooksListKey();
+  if (append && (listKey !== audiobooksLoadedListKey || state.audiobooks.loading || !state.audiobooks.hasMore)) {
+    return false;
+  }
+  const seq = ++audiobooksFetchSeq;
+  const loadedCount = listKey === audiobooksLoadedListKey ? state.audiobooks.items.length : 0;
+  // Without IntersectionObserver nothing would ever ask for page two, so
+  // fall back to the whole list in one go.
+  const limit = !audiobookIncrementalRender
+    ? 0
+    : append
+      ? AUDIOBOOK_PAGE_SIZE
+      : Math.min(Math.max(loadedCount, AUDIOBOOK_PAGE_SIZE), AUDIOBOOK_MAX_PAGE_SIZE);
   state.audiobooks.loading = true;
-  if (audiobooksStatus) audiobooksStatus.textContent = "Loading audiobooks...";
+  state.audiobooks.appending = append;
+  if (append) {
+    syncAudiobooksGridSentinel();
+  } else if (audiobooksStatus) {
+    audiobooksStatus.textContent = "Loading audiobooks...";
+  }
+  let loaded = false;
   try {
     const params = new URLSearchParams();
     if (state.audiobooks.filter) params.set("filter", state.audiobooks.filter);
@@ -4458,21 +4512,48 @@ async function fetchAudiobooks() {
     if (state.audiobooks.author) params.set("author", state.audiobooks.author);
     if (state.audiobooks.tag) params.set("tag", state.audiobooks.tag);
     if (state.filters.query) params.set("q", state.filters.query);
+    if (limit > 0) params.set("limit", `${limit}`);
+    if (append) params.set("offset", `${state.audiobooks.items.length}`);
     const query = params.toString();
     const response = await fetch(`/api/audiobooks${query ? `?${query}` : ""}`, { credentials: "same-origin" });
     if (!(await expectAuthorized(response, "Could not load audiobooks."))) {
-      return;
+      return false;
     }
     const payload = await response.json();
-    state.audiobooks.items = payload.audiobooks || [];
+    if (seq !== audiobooksFetchSeq) return false;
+    const page = payload.audiobooks || [];
+    if (append) {
+      // Offsets shift if a book is added between page requests, which can
+      // repeat one that's already loaded - skip it rather than show it twice.
+      const seen = new Set(state.audiobooks.items.map((item) => item.id));
+      state.audiobooks.items.push(...page.filter((item) => !seen.has(item.id)));
+    } else {
+      state.audiobooks.items = page;
+    }
+    state.audiobooks.hasMore = !!payload.has_more;
+    audiobooksLoadedListKey = listKey;
     if (audiobooksStatus) audiobooksStatus.textContent = "";
+    loaded = true;
   } catch (error) {
     console.error(error);
-    if (audiobooksStatus) audiobooksStatus.textContent = "Could not load audiobooks.";
+    if (seq === audiobooksFetchSeq && !append && audiobooksStatus) {
+      audiobooksStatus.textContent = "Could not load audiobooks.";
+    }
   } finally {
-    state.audiobooks.loading = false;
-    renderAudiobooksGrid();
+    if (seq === audiobooksFetchSeq) {
+      state.audiobooks.loading = false;
+      state.audiobooks.appending = false;
+      if (!append) {
+        renderAudiobooksGrid();
+      } else if (state.audiobooks.view !== "series") {
+        appendAudiobooksGridEntries(Infinity);
+        if (!loaded && audiobooksGridSentinel) {
+          audiobooksGridSentinel.textContent = "Could not load more audiobooks. Scroll away and back to retry.";
+        }
+      }
+    }
   }
+  return loaded;
 }
 
 async function fetchAudiobookSeries() {
@@ -4503,6 +4584,7 @@ async function fetchAudiobookStatsOverview() {
       return;
     }
     state.audiobooks.stats = await response.json();
+    audiobookStatsFinishedLimit = AUDIOBOOK_RENDER_CHUNK;
   } catch (error) {
     console.error(error);
     state.audiobooks.stats = null;
@@ -4534,6 +4616,44 @@ async function toggleAudiobookStatsHistory(bookId) {
     }
   }
   renderAudiobookStatsView();
+}
+
+// Audiobook lists load a chunk at a time as you scroll, the way the meme grid
+// pages in: a sentinel just after each list asks for more whenever it nears
+// the viewport. The books grid fetches its next page from the server; the
+// series gallery and the Stats page's finished list arrive whole, so they
+// just draw the next chunk of what's already loaded.
+const AUDIOBOOK_RENDER_CHUNK = 48;
+const audiobookIncrementalRender = "IntersectionObserver" in window;
+
+// createAudiobookScrollLoader returns { recheck } (or null without
+// IntersectionObserver, in which case callers just render everything).
+// An observer only reports *changes* in intersection, so when a chunk is
+// appended and the sentinel is still in range (a tall window, a short list)
+// nothing would fire again - recheck re-observes to force a fresh report.
+function createAudiobookScrollLoader(sentinel, loadMore) {
+  if (!sentinel || !audiobookIncrementalRender) return null;
+  const observer = new IntersectionObserver((entries) => {
+    if (entries.some((entry) => entry.isIntersecting)) loadMore();
+  }, { root: null, rootMargin: "0px 0px 600px 0px", threshold: 0 });
+  observer.observe(sentinel);
+  return {
+    recheck() {
+      observer.unobserve(sentinel);
+      observer.observe(sentinel);
+    },
+  };
+}
+
+let audiobookStatsFinishedLimit = AUDIOBOOK_RENDER_CHUNK;
+let audiobookStatsFinishedLoader = null;
+
+function loadMoreAudiobookStatsFinished() {
+  const finished = state.audiobooks.stats?.finished_books || [];
+  if (audiobookStatsFinishedLimit >= finished.length) return;
+  audiobookStatsFinishedLimit += AUDIOBOOK_RENDER_CHUNK;
+  renderAudiobookStatsView();
+  audiobookStatsFinishedLoader?.recheck();
 }
 
 // renderAudiobookStatsView draws the whole Stats page from state.audiobooks.stats:
@@ -4573,8 +4693,11 @@ function renderAudiobookStatsView() {
   const finished = overview?.finished_books || [];
   audiobookStatsFinishedEmpty?.classList.toggle("hidden", finished.length !== 0);
   if (audiobookStatsFinishedList) {
+    audiobookStatsFinishedLoader ??= createAudiobookScrollLoader(audiobookStatsFinishedSentinel, loadMoreAudiobookStatsFinished);
+    const shown = audiobookStatsFinishedLoader ? finished.slice(0, audiobookStatsFinishedLimit) : finished;
+    audiobookStatsFinishedSentinel?.classList.toggle("hidden", shown.length >= finished.length);
     const openID = state.audiobooks.statsHistoryOpenID;
-    audiobookStatsFinishedList.innerHTML = finished.map((book) => {
+    audiobookStatsFinishedList.innerHTML = shown.map((book) => {
       const isOpen = book.id === openID;
       const history = state.audiobooks.statsHistoryByID[book.id];
       const failed = state.audiobooks.statsHistoryFailedIDs.has(book.id);
@@ -4682,32 +4805,24 @@ function audiobookSeriesCardHTML(series) {
   `;
 }
 
-function renderAudiobookSeriesGallery() {
-  if (!audiobooksGrid) return;
-  const series = state.audiobooks.series;
-  audiobooksGrid.classList.add("audiobooks-grid-series");
-  audiobooksGrid.innerHTML = series.map(audiobookSeriesCardHTML).join("");
-  audiobooksEmpty?.classList.toggle("hidden", series.length !== 0 || state.audiobooks.loading);
-
-  series.forEach((entry) => {
-    const card = audiobooksGrid.querySelector(`[data-series-id="${window.CSS?.escape ? CSS.escape(entry.id) : entry.id}"]`);
-    if (!card) return;
-    const openThisSeries = () => {
-      state.audiobooks.filter = "";
-      state.audiobooks.seriesId = entry.id;
-      state.audiobooks.view = "books";
-      // Pushed before navigateToView (which calls loadInitialMemes, and that
-      // always does its own replace-only sync) - otherwise that replace runs
-      // first, the URL already matches what this push would set, and the
-      // push's own "already there" short-circuit silently skips it.
-      syncAudiobooksURL({ push: true });
-      navigateToView("audiobooks");
-    };
-    card.querySelector("[data-series-open]")?.addEventListener("click", openThisSeries);
-    card.querySelector("[data-series-share]")?.addEventListener("click", (event) => {
-      event.stopPropagation();
-      shareAudiobookSeries(entry).catch((error) => console.error(error));
-    });
+function wireAudiobookSeriesCard(entry) {
+  const card = audiobooksGrid.querySelector(`[data-series-id="${window.CSS?.escape ? CSS.escape(entry.id) : entry.id}"]`);
+  if (!card) return;
+  const openThisSeries = () => {
+    state.audiobooks.filter = "";
+    state.audiobooks.seriesId = entry.id;
+    state.audiobooks.view = "books";
+    // Pushed before navigateToView (which calls loadInitialMemes, and that
+    // always does its own replace-only sync) - otherwise that replace runs
+    // first, the URL already matches what this push would set, and the
+    // push's own "already there" short-circuit silently skips it.
+    syncAudiobooksURL({ push: true });
+    navigateToView("audiobooks");
+  };
+  card.querySelector("[data-series-open]")?.addEventListener("click", openThisSeries);
+  card.querySelector("[data-series-share]")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    shareAudiobookSeries(entry).catch((error) => console.error(error));
   });
 }
 
@@ -4753,6 +4868,8 @@ function openAudiobookSeriesManager() {
 }
 
 function closeAudiobookSeriesManagePage() {
+  stopAudiobookSeriesSuggestScan();
+  audiobookSeriesSuggest.open = false;
   state.audiobooks.manageSeriesId = "";
   state.audiobooks.view = "books";
   syncAudiobooksURL({ push: true });
@@ -4775,6 +4892,9 @@ function renderAudiobookSeriesManagerView() {
 
 async function selectAudiobookSeriesToManage(seriesId) {
   state.audiobooks.manageSeriesId = seriesId;
+  // Picking a series means looking at it, not at the suggestions; a scan
+  // still running carries on and is there when the panel is reopened.
+  audiobookSeriesSuggest.open = false;
   audiobookSeriesAddQuery = "";
   if (audiobookSeriesAddInput) audiobookSeriesAddInput.value = "";
   syncAudiobooksURL({ push: true });
@@ -4855,8 +4975,15 @@ function audiobookSeriesManagerRailItemHTML(s, selected) {
 
 function renderAudiobookSeriesManagerDetail() {
   const series = state.audiobooks.series.find((s) => s.id === state.audiobooks.manageSeriesId);
-  audiobookSeriesManagerEmpty?.classList.toggle("hidden", !!series);
-  audiobookSeriesManagerSelected?.classList.toggle("hidden", !series);
+  // The suggestions panel takes over the detail side while it's open.
+  const suggesting = audiobookSeriesSuggest.open;
+  audiobookSeriesSuggestions?.classList.toggle("hidden", !suggesting);
+  audiobookSeriesManagerEmpty?.classList.toggle("hidden", !!series || suggesting);
+  audiobookSeriesManagerSelected?.classList.toggle("hidden", !series || suggesting);
+  if (suggesting) {
+    renderAudiobookSeriesSuggestions();
+    return;
+  }
   if (!series) return;
 
   if (audiobookSeriesManagerSelectedName) audiobookSeriesManagerSelectedName.textContent = series.name;
@@ -4959,39 +5086,379 @@ function audiobookSeriesAddCandidates(seriesId, query) {
     .sort((a, b) => audiobookDisplayTitle(a).localeCompare(audiobookDisplayTitle(b)));
 }
 
+// The add list can be the whole library, so it's drawn a chunk at a time and
+// the next chunk is appended as the list itself (its own scroll box) nears its
+// end. Re-rendering the same list - after adding a book, say - keeps as many
+// rows as were already scrolled in.
+let audiobookSeriesAddRows = [];
+let audiobookSeriesAddShown = 0;
+let audiobookSeriesAddListKey = "";
+
 function renderAudiobookSeriesAddList() {
   if (!audiobookSeriesAddList) return;
   const seriesId = state.audiobooks.manageSeriesId;
   const candidates = seriesId ? audiobookSeriesAddCandidates(seriesId, audiobookSeriesAddQuery) : [];
+  const listKey = JSON.stringify([seriesId, audiobookSeriesAddQuery.trim()]);
+  const keepShown = listKey === audiobookSeriesAddListKey ? audiobookSeriesAddShown : 0;
+  audiobookSeriesAddListKey = listKey;
+  audiobookSeriesAddRows = candidates;
+  audiobookSeriesAddShown = 0;
   if (!candidates.length) {
     audiobookSeriesAddList.innerHTML = `<p class="status-text audiobook-series-add-list-empty">${
       audiobookSeriesAddQuery.trim() ? "No matching books." : "Every book is already in this series."
     }</p>`;
     return;
   }
-  audiobookSeriesAddList.innerHTML = candidates.map((book) => {
-    const otherSeries = book.series_id ? state.audiobooks.series.find((s) => s.id === book.series_id) : null;
-    const cover = book.cover_url
-      ? `<img class="audiobook-series-add-row-cover" src="${escapeHTML(book.cover_url)}" alt="" loading="lazy" />`
-      : `<div class="audiobook-series-add-row-cover audiobook-series-add-row-cover-empty" aria-hidden="true"></div>`;
-    return `
-      <div class="audiobook-series-add-row" data-book-id="${escapeHTML(book.id)}">
-        ${cover}
-        <div class="audiobook-series-add-row-info">
-          <span class="audiobook-series-add-row-title">${escapeHTML(audiobookDisplayTitle(book))}</span>
-          ${book.author ? `<span class="audiobook-series-add-row-author">${escapeHTML(book.author)}</span>` : ""}
-          ${otherSeries ? `<span class="audiobook-manage-item-badge">In ${escapeHTML(otherSeries.name)}</span>` : ""}
-        </div>
-        <button type="button" class="audiobook-series-icon-button" data-add-book title="Add to series" aria-label="Add ${escapeHTML(audiobookDisplayTitle(book))} to series">+</button>
+  audiobookSeriesAddList.innerHTML = "";
+  appendAudiobookSeriesAddRows(Math.max(keepShown, AUDIOBOOK_RENDER_CHUNK));
+}
+
+function audiobookSeriesAddRowHTML(book) {
+  const otherSeries = book.series_id ? state.audiobooks.series.find((s) => s.id === book.series_id) : null;
+  const cover = book.cover_url
+    ? `<img class="audiobook-series-add-row-cover" src="${escapeHTML(book.cover_url)}" alt="" loading="lazy" />`
+    : `<div class="audiobook-series-add-row-cover audiobook-series-add-row-cover-empty" aria-hidden="true"></div>`;
+  return `
+    <div class="audiobook-series-add-row" data-book-id="${escapeHTML(book.id)}">
+      ${cover}
+      <div class="audiobook-series-add-row-info">
+        <span class="audiobook-series-add-row-title">${escapeHTML(audiobookDisplayTitle(book))}</span>
+        ${book.author ? `<span class="audiobook-series-add-row-author">${escapeHTML(book.author)}</span>` : ""}
+        ${otherSeries ? `<span class="audiobook-manage-item-badge">In ${escapeHTML(otherSeries.name)}</span>` : ""}
       </div>
-    `;
-  }).join("");
-  audiobookSeriesAddList.querySelectorAll("[data-add-book]").forEach((button) => {
+      <button type="button" class="audiobook-series-icon-button" data-add-book title="Add to series" aria-label="Add ${escapeHTML(audiobookDisplayTitle(book))} to series">+</button>
+    </div>
+  `;
+}
+
+function appendAudiobookSeriesAddRows(count) {
+  const seriesId = state.audiobooks.manageSeriesId;
+  const next = audiobookSeriesAddRows.slice(audiobookSeriesAddShown, audiobookSeriesAddShown + count);
+  if (!next.length) return;
+  audiobookSeriesAddList.insertAdjacentHTML("beforeend", next.map(audiobookSeriesAddRowHTML).join(""));
+  audiobookSeriesAddShown += next.length;
+  audiobookSeriesAddList.querySelectorAll("[data-add-book]:not([data-wired])").forEach((button) => {
+    button.dataset.wired = "";
     button.addEventListener("click", () => {
       const bookId = button.closest("[data-book-id]")?.dataset.bookId;
       if (bookId && seriesId) addAudiobookToSeries(seriesId, bookId).catch((error) => console.error(error));
     });
   });
+}
+
+audiobookSeriesAddList?.addEventListener("scroll", () => {
+  const list = audiobookSeriesAddList;
+  if (audiobookSeriesAddShown >= audiobookSeriesAddRows.length) return;
+  if (list.scrollTop + list.clientHeight >= list.scrollHeight - 300) {
+    appendAudiobookSeriesAddRows(AUDIOBOOK_RENDER_CHUNK);
+  }
+}, { passive: true });
+
+// ---------------------------------------------------------------------------
+// Series suggestions: the server looks each book up by title and author in
+// the Audible catalog (audiobook_series_lookup.go) and groups the library by
+// series, with each book's number. A scan goes a batch per request, and every
+// response covers everything checked so far, so it simply replaces the last
+// one. Nothing changes until a suggestion is applied, through the same series
+// endpoints the rest of the manager uses.
+// ---------------------------------------------------------------------------
+
+const audiobookSeriesSuggest = {
+  open: false,
+  scanning: false,
+  scanToken: 0,
+  result: null,
+  error: "",
+  // What the user changed on a card, by suggestion key, so it survives the
+  // re-render each scan batch brings: { name, skipped: Set, sequences: {} }.
+  edits: {},
+  applying: new Set(),
+  dismissed: new Set(),
+};
+
+function openAudiobookSeriesSuggestions() {
+  audiobookSeriesSuggest.open = true;
+  renderAudiobookSeriesManagerView();
+  if (!audiobookSeriesSuggest.result && !audiobookSeriesSuggest.scanning) {
+    scanAudiobookSeriesSuggestions().catch((error) => console.error(error));
+  }
+}
+
+function closeAudiobookSeriesSuggestions() {
+  stopAudiobookSeriesSuggestScan();
+  audiobookSeriesSuggest.open = false;
+  renderAudiobookSeriesManagerView();
+}
+
+function stopAudiobookSeriesSuggestScan() {
+  audiobookSeriesSuggest.scanToken++;
+  audiobookSeriesSuggest.scanning = false;
+}
+
+async function scanAudiobookSeriesSuggestions() {
+  const token = ++audiobookSeriesSuggest.scanToken;
+  audiobookSeriesSuggest.scanning = true;
+  audiobookSeriesSuggest.error = "";
+  // A fresh scan starts from clean cards: what was unticked or renamed last
+  // time belonged to suggestions that may have changed since.
+  audiobookSeriesSuggest.dismissed.clear();
+  audiobookSeriesSuggest.edits = {};
+  if (audiobookSeriesSuggestList) audiobookSeriesSuggestList.innerHTML = "";
+  renderAudiobookSeriesSuggestions();
+  const query = audiobookSeriesSuggestAllInput?.checked ? "?scope=all" : "";
+  let lastChecked = -1;
+  try {
+    while (token === audiobookSeriesSuggest.scanToken) {
+      const response = await fetch(`/api/audiobook-series/suggestions${query}`, { credentials: "same-origin" });
+      if (token !== audiobookSeriesSuggest.scanToken) return;
+      if (response.status === 401 || response.status === 403) {
+        await expectAuthorized(response, "");
+        return;
+      }
+      if (!response.ok) {
+        audiobookSeriesSuggest.error = response.status === 429
+          ? "Too many lookups at once - wait a moment, then scan again."
+          : "Could not look up series right now.";
+        break;
+      }
+      const payload = await response.json();
+      if (token !== audiobookSeriesSuggest.scanToken) return;
+      audiobookSeriesSuggest.result = payload;
+      renderAudiobookSeriesSuggestions();
+      // Keep going while books are left and the last batch got somewhere - a
+      // batch that checked nothing new means the catalog isn't answering.
+      if (!payload.remaining || payload.checked <= lastChecked) break;
+      lastChecked = payload.checked;
+    }
+  } catch (error) {
+    console.error(error);
+    if (token === audiobookSeriesSuggest.scanToken) audiobookSeriesSuggest.error = "Could not look up series right now.";
+  } finally {
+    if (token === audiobookSeriesSuggest.scanToken) {
+      audiobookSeriesSuggest.scanning = false;
+      renderAudiobookSeriesSuggestions();
+    }
+  }
+}
+
+function audiobookSeriesSuggestStatusText() {
+  const { scanning, result, error } = audiobookSeriesSuggest;
+  if (!result) return scanning ? "Looking up your books..." : error;
+  const { checked = 0, remaining = 0, failed = 0, not_found: notFound = 0 } = result;
+  if (scanning) return `Looking up your books... ${checked} checked, ${remaining} to go.`;
+  const parts = [`Checked ${checked} book${checked === 1 ? "" : "s"}.`];
+  if (notFound) parts.push(`${notFound} had no series in the catalog (standalones, or not listed there).`);
+  if (failed) parts.push(`${failed} couldn't be looked up right now.`);
+  if (remaining) parts.push(`${remaining} not checked yet - scan again to continue.`);
+  if (error) parts.push(error);
+  return parts.join(" ");
+}
+
+function visibleAudiobookSeriesSuggestions() {
+  return (audiobookSeriesSuggest.result?.suggestions || []).filter((s) => !audiobookSeriesSuggest.dismissed.has(s.key));
+}
+
+function audiobookSeriesSuggestionEdit(key) {
+  audiobookSeriesSuggest.edits[key] ??= { name: null, skipped: new Set(), sequences: {} };
+  return audiobookSeriesSuggest.edits[key];
+}
+
+function formatAudiobookSeriesNumber(value) {
+  return value === null || value === undefined ? "" : String(value);
+}
+
+function audiobookSeriesSuggestionHTML(suggestion) {
+  const edit = audiobookSeriesSuggestionEdit(suggestion.key);
+  const existing = suggestion.existing_series_id
+    ? state.audiobooks.series.find((s) => s.id === suggestion.existing_series_id)
+    : null;
+  const applying = audiobookSeriesSuggest.applying.has(suggestion.key);
+  const rows = suggestion.books.map((book) => {
+    const included = !edit.skipped.has(book.id);
+    const number = edit.sequences[book.id] ?? formatAudiobookSeriesNumber(book.sequence);
+    const cover = book.cover_url
+      ? `<img class="audiobook-series-add-row-cover" src="${escapeHTML(book.cover_url)}" alt="" loading="lazy" />`
+      : `<div class="audiobook-series-add-row-cover audiobook-series-add-row-cover-empty" aria-hidden="true"></div>`;
+    const current = book.current_series_id && book.current_series_id !== suggestion.existing_series_id
+      ? `<span class="audiobook-manage-item-badge">Now in ${escapeHTML(book.current_series_name || "another series")}${book.current_sequence !== null && book.current_sequence !== undefined ? ` #${escapeHTML(formatAudiobookSeriesNumber(book.current_sequence))}` : ""}</span>`
+      : "";
+    return `
+      <div class="audiobook-series-add-row audiobook-series-suggestion-book${included ? "" : " is-skipped"}" data-book-id="${escapeHTML(book.id)}">
+        <input type="checkbox" data-suggestion-include ${included ? "checked" : ""} aria-label="Include ${escapeHTML(audiobookDisplayTitle(book))}" />
+        ${cover}
+        <div class="audiobook-series-add-row-info">
+          <span class="audiobook-series-add-row-title">${escapeHTML(audiobookDisplayTitle(book))}</span>
+          ${book.author ? `<span class="audiobook-series-add-row-author">${escapeHTML(book.author)}</span>` : ""}
+          ${current}
+        </div>
+        <input type="number" step="any" min="0" class="audiobook-series-sequence-input" data-suggestion-sequence value="${escapeHTML(number)}" placeholder="#" title="Number in the series - left blank, it goes after the last one" aria-label="Number in series" />
+      </div>
+    `;
+  }).join("");
+  const name = edit.name ?? suggestion.name;
+  return `
+    <article class="audiobook-series-suggestion" data-suggestion-key="${escapeHTML(suggestion.key)}">
+      <div class="audiobook-series-suggestion-header">
+        <input type="text" class="audiobook-series-suggestion-name" data-suggestion-name maxlength="200" value="${escapeHTML(existing ? existing.name : name)}" ${existing ? "disabled" : ""} aria-label="Series name" />
+        <span class="audiobook-manage-item-badge">${existing ? "Your existing series" : "New series"}</span>
+      </div>
+      <div class="audiobook-series-suggestion-books">${rows}</div>
+      <div class="audiobook-series-suggestion-actions">
+        <button type="button" class="primary-button" data-suggestion-apply ${applying ? "disabled" : ""}>${applying ? "Applying..." : existing ? "Add to series" : "Create series"}</button>
+        <button type="button" class="ghost-button" data-suggestion-dismiss ${applying ? "disabled" : ""}>Dismiss</button>
+      </div>
+    </article>
+  `;
+}
+
+// Cards are kept by key across re-renders and only redrawn when their content
+// changed, so a scan batch landing doesn't throw away focus or a half-typed
+// number on the card being edited. The signature leaves the user's edits out
+// on purpose: the inputs already show those, and they're kept in .edits for
+// whenever the card does get redrawn.
+const audiobookSeriesSuggestCardSignatures = new WeakMap();
+
+function audiobookSeriesSuggestionSignature(suggestion) {
+  const existingName = state.audiobooks.series.find((s) => s.id === suggestion.existing_series_id)?.name || "";
+  return JSON.stringify([suggestion, existingName, audiobookSeriesSuggest.applying.has(suggestion.key)]);
+}
+
+function renderAudiobookSeriesSuggestions() {
+  if (!audiobookSeriesSuggestList) return;
+  const { scanning } = audiobookSeriesSuggest;
+  audiobookSeriesSuggestRunButton?.classList.toggle("hidden", scanning);
+  audiobookSeriesSuggestStopButton?.classList.toggle("hidden", !scanning);
+  if (audiobookSeriesSuggestRunButton) {
+    audiobookSeriesSuggestRunButton.textContent = audiobookSeriesSuggest.result?.remaining ? "Continue scan" : audiobookSeriesSuggest.result ? "Scan again" : "Scan library";
+  }
+  if (audiobookSeriesSuggestStatus) audiobookSeriesSuggestStatus.textContent = audiobookSeriesSuggestStatusText();
+
+  const suggestions = visibleAudiobookSeriesSuggestions();
+  const existingCards = new Map();
+  audiobookSeriesSuggestList.querySelectorAll("[data-suggestion-key]").forEach((card) => existingCards.set(card.dataset.suggestionKey, card));
+  audiobookSeriesSuggestList.querySelector("[data-suggestion-empty]")?.remove();
+
+  let previous = null;
+  for (const suggestion of suggestions) {
+    const signature = audiobookSeriesSuggestionSignature(suggestion);
+    let card = existingCards.get(suggestion.key);
+    existingCards.delete(suggestion.key);
+    if (!card || audiobookSeriesSuggestCardSignatures.get(card) !== signature) {
+      const template = document.createElement("template");
+      template.innerHTML = audiobookSeriesSuggestionHTML(suggestion).trim();
+      const fresh = template.content.firstElementChild;
+      audiobookSeriesSuggestCardSignatures.set(fresh, signature);
+      wireAudiobookSeriesSuggestionCard(fresh, suggestion);
+      if (card) card.replaceWith(fresh);
+      card = fresh;
+    }
+    const expectedNext = previous ? previous.nextElementSibling : audiobookSeriesSuggestList.firstElementChild;
+    if (card !== expectedNext) {
+      audiobookSeriesSuggestList.insertBefore(card, expectedNext);
+    }
+    previous = card;
+  }
+  existingCards.forEach((card) => card.remove());
+
+  if (!suggestions.length && audiobookSeriesSuggest.result && !scanning) {
+    audiobookSeriesSuggestList.insertAdjacentHTML("beforeend", `<p class="status-text audiobook-series-add-list-empty" data-suggestion-empty>No series to suggest${audiobookSeriesSuggestAllInput?.checked ? "" : " for books that aren't in one yet"}.</p>`);
+  }
+}
+
+function wireAudiobookSeriesSuggestionCard(card, suggestion) {
+  const edit = audiobookSeriesSuggestionEdit(suggestion.key);
+  card.querySelector("[data-suggestion-name]")?.addEventListener("input", (event) => {
+    edit.name = event.target.value;
+  });
+  card.querySelectorAll("[data-suggestion-include]").forEach((input) => {
+    input.addEventListener("change", () => {
+      const row = input.closest("[data-book-id]");
+      const bookId = row?.dataset.bookId;
+      if (!bookId) return;
+      if (input.checked) edit.skipped.delete(bookId); else edit.skipped.add(bookId);
+      row.classList.toggle("is-skipped", !input.checked);
+    });
+  });
+  card.querySelectorAll("[data-suggestion-sequence]").forEach((input) => {
+    input.addEventListener("input", () => {
+      const bookId = input.closest("[data-book-id]")?.dataset.bookId;
+      if (bookId) edit.sequences[bookId] = input.value;
+    });
+  });
+  card.querySelector("[data-suggestion-apply]")?.addEventListener("click", () => {
+    applyAudiobookSeriesSuggestion(suggestion.key).catch((error) => console.error(error));
+  });
+  card.querySelector("[data-suggestion-dismiss]")?.addEventListener("click", () => {
+    audiobookSeriesSuggest.dismissed.add(suggestion.key);
+    delete audiobookSeriesSuggest.edits[suggestion.key];
+    renderAudiobookSeriesSuggestions();
+  });
+}
+
+// findOrCreateAudiobookSeriesByName reuses a series of the same name (the
+// server treats names case-insensitively) rather than failing on a duplicate.
+async function findOrCreateAudiobookSeriesByName(name) {
+  const same = (series) => series.name.trim().toLowerCase() === name.trim().toLowerCase();
+  const found = state.audiobooks.series.find(same);
+  if (found) return found.id;
+  const response = await fetch("/api/audiobook-series", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  if (response.status === 409) {
+    await fetchAudiobookSeries();
+    const again = state.audiobooks.series.find(same);
+    if (again) return again.id;
+  }
+  if (!(await expectAuthorized(response, "Could not create series."))) {
+    throw new Error("create audiobook series failed");
+  }
+  return (await response.json()).id;
+}
+
+async function applyAudiobookSeriesSuggestion(key) {
+  const suggestion = visibleAudiobookSeriesSuggestions().find((s) => s.key === key);
+  if (!suggestion || audiobookSeriesSuggest.applying.has(key)) return;
+  const edit = audiobookSeriesSuggestionEdit(key);
+  const books = suggestion.books.filter((book) => !edit.skipped.has(book.id));
+  if (!books.length) {
+    showToast("Tick at least one book to add.", "error", { title: "Audiobook Series" });
+    return;
+  }
+  const name = (edit.name ?? suggestion.name).trim();
+  if (!suggestion.existing_series_id && !name) {
+    showToast("Give the series a name first.", "error", { title: "Audiobook Series" });
+    return;
+  }
+
+  audiobookSeriesSuggest.applying.add(key);
+  renderAudiobookSeriesSuggestions();
+  try {
+    const seriesId = suggestion.existing_series_id || await findOrCreateAudiobookSeriesByName(name);
+    const numbers = books.map((book) => parseFloat(edit.sequences[book.id] ?? formatAudiobookSeriesNumber(book.sequence)));
+    // A book with no number goes after everything else in the series.
+    let next = [
+      ...seriesManagerBooksFor(seriesId).map((book) => Number(book.series_sequence) || 0),
+      ...numbers.filter(Number.isFinite),
+    ].reduce((max, value) => Math.max(max, value), 0) + 1;
+    for (let i = 0; i < books.length; i++) {
+      const sequence = Number.isFinite(numbers[i]) ? numbers[i] : next++;
+      await setAudiobookSeriesRaw(books[i].id, seriesId, sequence);
+    }
+    audiobookSeriesSuggest.dismissed.add(key);
+    delete audiobookSeriesSuggest.edits[key];
+    const seriesName = state.audiobooks.series.find((s) => s.id === seriesId)?.name || name;
+    showToast(`Added ${books.length} book${books.length === 1 ? "" : "s"} to "${seriesName}".`, "success", { title: "Audiobook Series" });
+  } catch (error) {
+    console.error(error);
+    showToast("Could not apply that suggestion - some books may already have been added.", "error", { title: "Audiobook Series" });
+  } finally {
+    audiobookSeriesSuggest.applying.delete(key);
+    await refreshAudiobookSeriesManagePageData();
+    await fetchAudiobooks();
+  }
 }
 
 // Prefers the server-resolved public origin (MEMEINDEX_PUBLIC_BASE_URL) over
@@ -5317,17 +5784,78 @@ function audiobookCardHTML(item) {
   `;
 }
 
+// The main grid shows either books or (on the Series page) series tiles.
+// Books are paged from the server (see fetchAudiobooks) and every loaded one
+// is drawn; the series list arrives whole, so the gallery draws it a chunk
+// at a time instead. audiobooksGridLimit is that gallery chunk - it survives
+// re-renders while you stay on the Series page and resets once you leave it.
+let audiobooksGridLimit = AUDIOBOOK_RENDER_CHUNK;
+let audiobooksGridShown = 0;
+let audiobooksGridLoader = null;
+
+function audiobooksGridEntries() {
+  return state.audiobooks.view === "series" ? state.audiobooks.series : state.audiobooks.items;
+}
+
 function renderAudiobooksGrid() {
   if (!audiobooksGrid) return;
-  if (state.audiobooks.view === "series") {
-    renderAudiobookSeriesGallery();
+  audiobooksGridLoader ??= createAudiobookScrollLoader(audiobooksGridSentinel, loadMoreAudiobooksGrid);
+  const seriesMode = state.audiobooks.view === "series";
+  if (!seriesMode) audiobooksGridLimit = AUDIOBOOK_RENDER_CHUNK;
+  const entries = audiobooksGridEntries();
+  audiobooksGrid.classList.toggle("audiobooks-grid-series", seriesMode);
+  audiobooksGrid.innerHTML = "";
+  audiobooksGridShown = 0;
+  appendAudiobooksGridEntries(seriesMode && audiobooksGridLoader ? audiobooksGridLimit : Infinity);
+  audiobooksEmpty?.classList.toggle("hidden", entries.length !== 0 || state.audiobooks.loading);
+}
+
+// appendAudiobooksGridEntries adds entries [shown, upTo) to the end of the
+// grid without touching the cards already there, so a new chunk or page
+// doesn't reload covers or drop focus.
+function appendAudiobooksGridEntries(upTo) {
+  const seriesMode = state.audiobooks.view === "series";
+  const entries = audiobooksGridEntries();
+  const next = entries.slice(audiobooksGridShown, upTo);
+  audiobooksGrid.insertAdjacentHTML("beforeend", next.map(seriesMode ? audiobookSeriesCardHTML : audiobookCardHTML).join(""));
+  if (seriesMode) {
+    next.forEach(wireAudiobookSeriesCard);
+  } else {
+    wireAudiobookCards(next);
+  }
+  audiobooksGridShown += next.length;
+  syncAudiobooksGridSentinel();
+}
+
+function syncAudiobooksGridSentinel() {
+  if (!audiobooksGridSentinel) return;
+  const seriesMode = state.audiobooks.view === "series";
+  const more = seriesMode
+    ? audiobooksGridShown < state.audiobooks.series.length
+    : state.audiobooks.hasMore || state.audiobooks.appending;
+  const appending = !seriesMode && state.audiobooks.appending;
+  audiobooksGridSentinel.classList.toggle("hidden", !more);
+  audiobooksGridSentinel.classList.toggle("is-loading", appending);
+  audiobooksGridSentinel.textContent = appending ? "Loading more audiobooks..." : "";
+}
+
+function loadMoreAudiobooksGrid() {
+  if (!audiobooksGrid) return;
+  if (state.audiobooks.view !== "series") {
+    // Only re-check after a page actually landed - re-checking after a
+    // failure would retry in a tight loop while the sentinel sits in view.
+    fetchAudiobooks({ append: true }).then((loaded) => {
+      if (loaded) audiobooksGridLoader?.recheck();
+    });
     return;
   }
-  audiobooksGrid.classList.remove("audiobooks-grid-series");
-  const items = state.audiobooks.items;
-  audiobooksGrid.innerHTML = items.map(audiobookCardHTML).join("");
-  audiobooksEmpty?.classList.toggle("hidden", items.length !== 0 || state.audiobooks.loading);
+  if (audiobooksGridShown >= state.audiobooks.series.length) return;
+  audiobooksGridLimit = audiobooksGridShown + AUDIOBOOK_RENDER_CHUNK;
+  appendAudiobooksGridEntries(audiobooksGridLimit);
+  audiobooksGridLoader?.recheck();
+}
 
+function wireAudiobookCards(items) {
   items.forEach((item) => {
     const card = audiobooksGrid.querySelector(`[data-audiobook-id="${window.CSS?.escape ? CSS.escape(item.id) : item.id}"]`);
     if (!card) return;
@@ -6192,6 +6720,7 @@ function getAudiobookSyncWorker() {
     if (audiobookSyncTickCount % (AUDIOBOOK_PLAYBACK_ELSEWHERE_POLL_INTERVAL_MS / AUDIOBOOK_SYNC_TICK_MS) === 0) {
       pollAudiobookPlaybackElsewhere();
     }
+    tickAudiobookStreamRecovery();
     const audio = audiobookAudioEl;
     if (!audio || audio.paused) return;
     if (audiobookSyncTickCount % (AUDIOBOOK_PLAYBACK_HEARTBEAT_INTERVAL_MS / AUDIOBOOK_SYNC_TICK_MS) === 0) {
@@ -6469,6 +6998,14 @@ function getAudiobookAudioElement() {
   for (const type of ["waiting", "playing", "canplay", "canplaythrough", "seeking", "seeked", "stalled", "loadstart", "emptied"]) {
     audio.addEventListener(type, updateAudiobookBufferingUI);
   }
+  // Any sign of life keeps the stall check quiet - progress in particular, so
+  // a slow connection that's still delivering isn't mistaken for a dead one.
+  for (const type of ["play", "playing", "timeupdate", "progress", "seeked", "loadstart", "canplay"]) {
+    audio.addEventListener(type, noteAudiobookStreamActivity);
+  }
+  audio.addEventListener("playing", () => {
+    if (audiobookStreamRecovery) finishAudiobookStreamRecovery();
+  });
   // durationchange covers files whose real length isn't known yet at
   // loadedmetadata (e.g. an M4B with its moov atom at the end of the file,
   // needing an extra range request the browser hasn't made yet) - once it
@@ -6522,8 +7059,7 @@ function getAudiobookAudioElement() {
     // An emptied src (closing the player) also raises "error" on some
     // browsers - only a real load failure is worth telling anyone about.
     if (!audio.getAttribute("src")) return;
-    if (reloadAudiobookStreamAfterError(audio, wasPlaying)) return;
-    setAudiobookPlayerStatus("Playback error - check your connection, then press play to retry.");
+    handleAudiobookStreamError(audio, wasPlaying);
   });
   setupAudiobookMediaSessionHandlers(audio);
   audiobookAudioEl = audio;
@@ -6533,40 +7069,151 @@ function getAudiobookAudioElement() {
 // The server can replace a book's file mid-listen - an MP3 is swapped for its
 // lossless .m4b remux at the same URL - after which the element's next range
 // request is answered from a different, differently sized file and fails.
-// Reloading the source once, back at the same position, recovers without the
-// listener noticing more than a brief stall; a second failure soon after is a
-// real problem and is reported as before.
-const AUDIOBOOK_STREAM_RELOAD_WINDOW_MS = 30000;
-let audiobookStreamReloadedAt = 0;
+// Reloading the source, back at the same position, recovers without the
+// listener noticing more than a brief stall.
+//
+// A phone left playing overnight hits the same failure for a duller reason:
+// the connection drops (Wi-Fi power saving, a proxy closing a long-lived
+// request) and the first reload lands while the network is still gone. So the
+// reload keeps trying with a growing delay until the window runs out. The
+// browser doesn't always report this as an error either - it can sit in
+// "waiting" forever - so a stall with no data arriving counts as a failure too.
+// Everything runs off the shared worker tick (see getAudiobookSyncWorker)
+// because window timers are throttled hard once a locked phone goes quiet.
+const AUDIOBOOK_STREAM_RETRY_DELAYS_MS = [2000, 5000, 10000, 15000, 30000];
+const AUDIOBOOK_STREAM_RETRY_WINDOW_MS = 15 * 60 * 1000;
+const AUDIOBOOK_STREAM_ATTEMPT_TIMEOUT_MS = 30000;
+const AUDIOBOOK_STREAM_STALL_MS = 20000;
+const AUDIOBOOK_RECONNECTING_STATUS = "Connection lost - reconnecting...";
+const AUDIOBOOK_PLAYBACK_ERROR_STATUS = "Playback error - check your connection, then press play to retry.";
+let audiobookStreamRecovery = null;
+let audiobookStreamActivityAt = 0;
+// Where playback was when recovery gave up: a failed load resets currentTime,
+// so pressing play the next morning has nothing else to go on if the saved
+// position can't be fetched either.
+let audiobookStreamFailedAt = null;
 
-function reloadAudiobookStreamAfterError(audio, wasPlaying) {
+function noteAudiobookStreamActivity() {
+  audiobookStreamActivityAt = Date.now();
+}
+
+function cancelAudiobookStreamRecovery() {
+  audiobookStreamRecovery?.reload?.abort();
+  audiobookStreamRecovery = null;
+  clearAudiobookPlayerStatus(AUDIOBOOK_RECONNECTING_STATUS);
+}
+
+function resetAudiobookStreamRecovery() {
+  cancelAudiobookStreamRecovery();
+  audiobookStreamFailedAt = null;
+}
+
+function finishAudiobookStreamRecovery() {
+  audiobookStreamFailedAt = null;
+  cancelAudiobookStreamRecovery();
+}
+
+function beginAudiobookStreamRecovery(audio, wasPlaying, resumeAt = audio.currentTime) {
   const player = state.audiobooks.player;
   if (!player || !isAudiobookAudioForPlayer(audio, player)) return false;
-  if (Date.now() - audiobookStreamReloadedAt < AUDIOBOOK_STREAM_RELOAD_WINDOW_MS) return false;
-  audiobookStreamReloadedAt = Date.now();
+  audiobookStreamRecovery = {
+    playerId: player.id,
+    resumeAt,
+    wasPlaying,
+    startedAt: Date.now(),
+    attempt: 0,
+    nextAttemptAt: Date.now(),
+    reload: null,
+  };
+  setAudiobookPlayerStatus(AUDIOBOOK_RECONNECTING_STATUS);
+  tickAudiobookStreamRecovery();
+  return true;
+}
 
-  const playerId = player.id;
-  const resumeAt = audio.currentTime;
-  // Only this reload's outcome counts: if it fails too, the listener must not
-  // linger and fire on a later load (reopening the book), where it would seek
-  // and autoplay ahead of the open flow's own resume/other-device checks.
-  // A second loadstart means some other load replaced this one (the player
-  // was closed and a book opened).
+function handleAudiobookStreamError(audio, wasPlaying) {
+  const recovery = audiobookStreamRecovery;
+  if (recovery) {
+    const delays = AUDIOBOOK_STREAM_RETRY_DELAYS_MS;
+    recovery.nextAttemptAt = Date.now() + delays[Math.min(recovery.attempt - 1, delays.length - 1)];
+    return;
+  }
+  if (!beginAudiobookStreamRecovery(audio, wasPlaying)) setAudiobookPlayerStatus(AUDIOBOOK_PLAYBACK_ERROR_STATUS);
+}
+
+// retryAudiobookStreamNow is for a good moment to try right away: the listener
+// pressed play, or the network or the page just came back.
+function retryAudiobookStreamNow(audio, resumeAt = audiobookStreamFailedAt ?? audio.currentTime) {
+  const recovery = audiobookStreamRecovery;
+  if (!recovery) {
+    beginAudiobookStreamRecovery(audio, true, resumeAt);
+    return;
+  }
+  recovery.wasPlaying = true;
+  recovery.nextAttemptAt = Date.now();
+  tickAudiobookStreamRecovery();
+}
+
+function isAudiobookStreamStalled(audio) {
+  return !audio.paused && !audio.ended && !audio.error && !!audio.getAttribute("src")
+    && audio.readyState < HTMLMediaElement.HAVE_FUTURE_DATA
+    && Date.now() - audiobookStreamActivityAt >= AUDIOBOOK_STREAM_STALL_MS;
+}
+
+function tickAudiobookStreamRecovery() {
+  const audio = audiobookAudioEl;
+  if (!audio) return;
+  const recovery = audiobookStreamRecovery;
+  if (!recovery) {
+    if (isAudiobookStreamStalled(audio)) beginAudiobookStreamRecovery(audio, true);
+    return;
+  }
+  const player = state.audiobooks.player;
+  // Picking the book up on another device mid-outage means this one should
+  // stay quiet, not start playing over it once the network returns.
+  if (player?.id !== recovery.playerId || !isAudiobookAudioForPlayer(audio, player) || audiobookPlaybackElsewhereState) {
+    cancelAudiobookStreamRecovery();
+    return;
+  }
+  if (Date.now() < recovery.nextAttemptAt) return;
+  if (Date.now() - recovery.startedAt >= AUDIOBOOK_STREAM_RETRY_WINDOW_MS) {
+    audiobookStreamFailedAt = recovery.resumeAt;
+    cancelAudiobookStreamRecovery();
+    setAudiobookPlayerStatus(AUDIOBOOK_PLAYBACK_ERROR_STATUS);
+    return;
+  }
+  reloadAudiobookStream(audio, player, recovery);
+}
+
+function reloadAudiobookStream(audio, player, recovery) {
+  recovery.attempt += 1;
+  // Replaced with the backoff delay if this load fails with an error; left
+  // alone, it catches a load that never answers at all.
+  recovery.nextAttemptAt = Date.now() + AUDIOBOOK_STREAM_ATTEMPT_TIMEOUT_MS;
+  // Only the newest reload counts: a listener left behind by an earlier one
+  // could otherwise fire on a later load (reopening the book), seeking and
+  // autoplaying ahead of the open flow's own resume/other-device checks.
+  recovery.reload?.abort();
   const reload = new AbortController();
-  let loadStarts = 0;
-  audio.addEventListener("loadstart", () => {
-    loadStarts += 1;
-    if (loadStarts > 1) reload.abort();
-  }, { signal: reload.signal });
-  audio.addEventListener("error", () => reload.abort(), { signal: reload.signal });
+  recovery.reload = reload;
   audio.addEventListener("loadedmetadata", () => {
     reload.abort();
-    if (state.audiobooks.player?.id !== playerId || !isAudiobookAudioForPlayer(audio, state.audiobooks.player)) return;
-    audio.currentTime = resumeAt;
-    if (wasPlaying) audio.play().catch(() => setAudiobookPlayerStatus("Tap play to keep listening."));
+    audio.currentTime = recovery.resumeAt;
+    if (!recovery.wasPlaying) {
+      finishAudiobookStreamRecovery();
+      return;
+    }
+    // Recovery ends on "playing"; a failure here comes back through "error"
+    // or the attempt timeout, except a browser refusing to autoplay, which
+    // retrying can't fix.
+    audio.play().catch((error) => {
+      if (error?.name !== "NotAllowedError" || audiobookStreamRecovery !== recovery) return;
+      finishAudiobookStreamRecovery();
+      setAudiobookPlayerStatus("Tap play to keep listening.");
+    });
   }, { signal: reload.signal });
   audio.src = player.streamUrl;
-  return true;
+  setAudiobookPlayIcon(false);
+  updateAudiobookBufferingUI();
 }
 
 // --- Media Session (lock screen / notification drawer controls) -----------
@@ -6830,6 +7477,7 @@ async function openAudiobookPlayer(item) {
   }
   audio.pause();
   cancelSleepTimer({ silent: true });
+  resetAudiobookStreamRecovery();
   const chapters = normalizeAudiobookChapters(item.chapters || [], item.duration_seconds || 0);
   state.audiobooks.player = { id: item.id, streamUrl: item.stream_url, chapters, durationSeconds: item.duration_seconds || 0, bookmarks: [] };
 
@@ -7538,6 +8186,9 @@ function updateSleepTimerButtonUI() {
 function sleepTimerElapsed() {
   const chapterEnd = audiobookSleepTimer?.mode === "chapter" ? audiobookSleepTimer.chapterEnd : null;
   cancelSleepTimer({ silent: true });
+  // Playback that's mid-reconnect counts as paused, but must not come back
+  // after the listener asked it to stop.
+  cancelAudiobookStreamRecovery();
   const audio = audiobookAudioEl;
   if (audio && !audio.paused) {
     audio.pause();
@@ -7627,6 +8278,12 @@ async function resumeAudiobookPlaybackFromSavedPosition() {
   // again (a second press, a media-session/hardware play key) while this was
   // in flight - any of those make the fetched position no longer relevant.
   if (state.audiobooks.player?.id !== player.id || !audio.paused) return;
+  // A dead element won't start again from play() alone - the source has to be
+  // reloaded, which also covers pressing play mid-reconnect.
+  if (audio.error || audiobookStreamRecovery) {
+    retryAudiobookStreamNow(audio, position ?? undefined);
+    return;
+  }
   if (position !== null && Math.abs(position - audio.currentTime) > AUDIOBOOK_RESUME_POSITION_TOLERANCE_SECONDS) {
     const knownDuration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : player.durationSeconds || 0;
     if (!knownDuration || position < knownDuration - 1) {
@@ -7682,6 +8339,7 @@ function closeAudiobookPlayer() {
     audio.load();
   }
   audiobookSyncActive = false;
+  resetAudiobookStreamRecovery();
   audiobookTakeoverConfirmToken++;
   audiobookTakeoverConfirming = false;
   renderAudiobookPlaybackElsewhere(null);
@@ -10616,6 +11274,18 @@ audiobookSeriesAddInput?.addEventListener("input", () => {
   audiobookSeriesAddQuery = audiobookSeriesAddInput.value;
   renderAudiobookSeriesAddList();
 });
+audiobookSeriesSuggestOpenButton?.addEventListener("click", openAudiobookSeriesSuggestions);
+audiobookSeriesSuggestCloseButton?.addEventListener("click", closeAudiobookSeriesSuggestions);
+audiobookSeriesSuggestRunButton?.addEventListener("click", () => {
+  scanAudiobookSeriesSuggestions().catch((error) => console.error(error));
+});
+audiobookSeriesSuggestStopButton?.addEventListener("click", () => {
+  stopAudiobookSeriesSuggestScan();
+  renderAudiobookSeriesSuggestions();
+});
+audiobookSeriesSuggestAllInput?.addEventListener("change", () => {
+  if (!audiobookSeriesSuggest.scanning) scanAudiobookSeriesSuggestions().catch((error) => console.error(error));
+});
 
 audiobookEditForm?.addEventListener("submit", (event) => {
   submitAudiobookEdit(event).catch((error) => console.error(error));
@@ -10889,6 +11559,10 @@ document.addEventListener("visibilitychange", () => {
     saveAudiobookProgressNow();
     sendAudiobookPlaybackHeartbeat();
   }
+  if (!document.hidden && audiobookStreamRecovery) retryAudiobookStreamNow(audiobookAudioEl);
+});
+window.addEventListener("online", () => {
+  if (audiobookStreamRecovery) retryAudiobookStreamNow(audiobookAudioEl);
 });
 
 uploadModalClose.addEventListener("click", () => {
