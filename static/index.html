@@ -506,6 +506,7 @@
             </div>
             <p id="audiobooks-status" class="status-text"></p>
             <div id="audiobooks-grid" class="audiobooks-grid"></div>
+            <div id="audiobooks-grid-sentinel" class="meme-grid-sentinel hidden" aria-hidden="true"></div>
             <div id="audiobooks-empty" class="empty-state hidden">
               <div class="empty-cabinet" aria-hidden="true"><span></span><span></span></div>
               <h3>No audiobooks yet</h3>
@@ -526,10 +527,30 @@
                   <input id="audiobook-series-manager-name-input" type="text" placeholder="New series name" maxlength="200" required />
                   <button type="submit" class="secondary-button">Create</button>
                 </form>
+                <button id="audiobook-series-suggest-open" type="button" class="ghost-button audiobook-series-suggest-open" title="Look your books up by title and author to find the series they belong to">Suggest series from titles</button>
                 <p id="audiobook-series-manager-status" class="status-text"></p>
                 <div id="audiobook-series-manager-rail-list" class="audiobook-series-manager-rail-list"></div>
               </div>
               <div class="audiobook-series-manager-detail">
+                <div id="audiobook-series-suggestions" class="audiobook-series-suggestions hidden">
+                  <div class="audiobook-series-manager-selected-header">
+                    <div>
+                      <h3>Suggested series</h3>
+                      <p class="status-text">Each book is looked up by its title and author in the Audible catalog. Nothing changes until you apply a suggestion.</p>
+                    </div>
+                    <button id="audiobook-series-suggest-close" type="button" class="ghost-button">Close</button>
+                  </div>
+                  <div class="audiobook-series-suggest-controls">
+                    <label class="audiobook-series-suggest-scope">
+                      <input id="audiobook-series-suggest-all" type="checkbox" />
+                      Also check books already in a series
+                    </label>
+                    <button id="audiobook-series-suggest-run" type="button" class="secondary-button">Scan library</button>
+                    <button id="audiobook-series-suggest-stop" type="button" class="ghost-button hidden">Stop</button>
+                  </div>
+                  <p id="audiobook-series-suggest-status" class="status-text" aria-live="polite"></p>
+                  <div id="audiobook-series-suggest-list" class="audiobook-series-suggest-list"></div>
+                </div>
                 <div id="audiobook-series-manager-empty" class="audiobook-series-manager-empty">
                   <p>Select a series on the left, or create one, to manage its books.</p>
                 </div>
@@ -580,6 +601,7 @@
             <h3 class="audiobook-stats-section-heading">Finished books</h3>
             <p id="audiobook-stats-finished-empty" class="status-text hidden">No finished books yet.</p>
             <div id="audiobook-stats-finished-list" class="audiobook-stats-finished-list"></div>
+            <div id="audiobook-stats-finished-sentinel" class="meme-grid-sentinel hidden" aria-hidden="true"></div>
           </section>
           <div id="meme-grid-loader" class="loading-indicator loading-indicator-grid hidden" aria-live="polite" aria-hidden="true">
             <span class="loading-spinner" aria-hidden="true"></span>

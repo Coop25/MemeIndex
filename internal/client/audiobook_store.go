@@ -109,6 +109,11 @@ type audiobookListFilter struct {
 	// tag-restricted account (see authPermissions.AudiobookTagRestriction),
 	// applied in addition to whatever the caller is browsing by.
 	RestrictToTags []string
+	// Limit and Offset page through the result in its usual order. Limit 0
+	// means no limit - the whole matching list, which the series manager
+	// still relies on to offer every book as a candidate.
+	Limit  int
+	Offset int
 }
 
 // audiobookChapter is one chapter marker read from the file's own chapter
@@ -779,7 +784,13 @@ func (s *postgresAudiobookStore) ListAudiobooks(ctx context.Context, userID stri
 		args = append(args, filter.RestrictToTags)
 		_, _ = fmt.Fprintf(&query, " AND EXISTS (SELECT 1 FROM audiobook_tags at4 JOIN tags t4 ON t4.id = at4.tag_id WHERE at4.audiobook_id = a.id AND t4.name = ANY($%d::text[]))", len(args))
 	}
-	query.WriteString(" ORDER BY a.series_id NULLS LAST, a.series_sequence NULLS LAST, a.created_at DESC")
+	// a.id last so the order is total - otherwise rows tied on everything else
+	// could swap between two page queries and be skipped or shown twice.
+	query.WriteString(" ORDER BY a.series_id NULLS LAST, a.series_sequence NULLS LAST, a.created_at DESC, a.id")
+	if filter.Limit > 0 {
+		args = append(args, filter.Limit, max(filter.Offset, 0))
+		_, _ = fmt.Fprintf(&query, " LIMIT $%d OFFSET $%d", len(args)-1, len(args))
+	}
 
 	rows, err := s.pool.Query(ctx, query.String(), args...)
 	if err != nil {

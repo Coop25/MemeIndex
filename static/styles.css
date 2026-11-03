@@ -4620,6 +4620,22 @@ body.audiobook-mini-player-open .content-panel::after { display: block; height: 
 .audiobook-series-add-row-title { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .audiobook-series-add-row-author { overflow: hidden; color: var(--faint); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 
+.audiobook-series-suggest-open { width: 100%; }
+.audiobook-series-suggest-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 8px; }
+.audiobook-series-suggest-scope { display: flex; flex: 1 1 auto; align-items: center; gap: 7px; color: var(--muted); font-size: 13px; cursor: pointer; }
+.audiobook-series-suggest-list { display: flex; flex-direction: column; gap: 12px; margin-top: 10px; }
+.audiobook-series-suggestion { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: 11px; background: var(--panel-2); }
+.audiobook-series-suggestion-header { display: flex; align-items: center; gap: 10px; }
+.audiobook-series-suggestion-name { flex: 1 1 auto; min-width: 0; padding: 4px 6px; border: 1px solid var(--line); border-radius: 7px; background: rgba(0,0,0,.2); color: var(--text); font: inherit; font-size: 15px; font-weight: 600; }
+.audiobook-series-suggestion-name:focus { border-color: rgba(201,149,93,.56); outline: none; }
+.audiobook-series-suggestion-name:disabled { border-color: transparent; background: transparent; }
+.audiobook-series-suggestion-books { display: flex; flex-direction: column; gap: 6px; }
+.audiobook-series-suggestion-book { background: var(--panel); }
+.audiobook-series-suggestion-book input[type="checkbox"] { flex-shrink: 0; }
+.audiobook-series-suggestion-book.is-skipped { opacity: .5; }
+.audiobook-series-suggestion-book .audiobook-manage-item-badge { align-self: flex-start; }
+.audiobook-series-suggestion-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
 .audiobook-stats-view { display: flex; flex-direction: column; gap: 16px; padding: 4px 0 28px; }
 .audiobook-stats-summary { display: flex; flex-wrap: wrap; gap: 14px; }
 .audiobook-stats-tile { display: flex; flex-direction: column; gap: 4px; min-width: 150px; padding: 16px 18px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
