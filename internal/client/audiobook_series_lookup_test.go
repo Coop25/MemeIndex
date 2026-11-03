@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -178,5 +179,63 @@ func TestSuggestAudiobookSeriesMatchesExistingSeriesByName(t *testing.T) {
 	result := suggestAudiobookSeries(context.Background(), newCachedSeriesLookup(fake), books, existing, true)
 	if len(result.suggestions) != 1 || result.suggestions[0].existingSeriesID != "s-mist" || len(result.suggestions[0].books) != 2 {
 		t.Fatalf("suggestions = %+v", result.suggestions)
+	}
+}
+
+// An exact title later in the results beats an earlier subtitle-style match.
+func TestAudibleSeriesLookupPrefersExactTitle(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"products":[
+			{"title":"Dune Messiah","authors":[{"name":"Frank Herbert"}],"series":[{"asin":"D","title":"Dune Chronicles","sequence":"2"}]},
+			{"title":"Dune","authors":[{"name":"Frank Herbert"}],"series":[{"asin":"D","title":"Dune Chronicles","sequence":"1"}]}
+		]}`))
+	}))
+	defer server.Close()
+
+	lookup := &audibleSeriesLookup{client: server.Client(), baseURL: server.URL}
+	matches, err := lookup.LookupSeries(context.Background(), "Dune", "Frank Herbert")
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if len(matches) != 1 || matches[0].Sequence == nil || *matches[0].Sequence != 1 {
+		t.Fatalf("matches = %+v, want Dune Chronicles #1", matches)
+	}
+}
+
+func TestSuggestAudiobookSeriesLooksUpDuplicatesOnce(t *testing.T) {
+	fake := &fakeSeriesLookup{results: map[string][]audiobookSeriesMatch{
+		"Mistborn": {{Key: "mistborn", Name: "Mistborn", Sequence: floatPtr(1)}},
+	}}
+	books := []audiobookRecord{{ID: "a", Title: "Mistborn"}, {ID: "b", Title: "Mistborn"}}
+	result := suggestAudiobookSeries(context.Background(), newCachedSeriesLookup(fake), books, nil, false)
+	if fake.calls.Load() != 1 {
+		t.Fatalf("made %d catalog calls for two copies of one book, want 1", fake.calls.Load())
+	}
+	if len(result.suggestions) != 1 || len(result.suggestions[0].books) != 2 || result.checked != 2 {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+// Books whose lookups keep failing must not fill every batch: a full batch of
+// failures is followed by a scan that reaches the books behind them.
+func TestSuggestAudiobookSeriesTriesFailedBooksLast(t *testing.T) {
+	fake := &fakeSeriesLookup{results: map[string][]audiobookSeriesMatch{}, fail: map[string]bool{}}
+	var books []audiobookRecord
+	for i := range audiobookSeriesSuggestBatch {
+		title := fmt.Sprintf("Broken %d", i)
+		fake.fail[title] = true
+		books = append(books, audiobookRecord{ID: title, Title: title})
+	}
+	books = append(books, audiobookRecord{ID: "ok", Title: "Mistborn"})
+	fake.results["Mistborn"] = []audiobookSeriesMatch{{Key: "mistborn", Name: "Mistborn", Sequence: floatPtr(1)}}
+	lookup := newCachedSeriesLookup(fake)
+
+	first := suggestAudiobookSeries(context.Background(), lookup, books, nil, false)
+	if first.checked != 0 || first.remaining != len(books) {
+		t.Fatalf("first scan checked=%d remaining=%d", first.checked, first.remaining)
+	}
+	second := suggestAudiobookSeries(context.Background(), lookup, books, nil, false)
+	if second.checked != 1 || len(second.suggestions) != 1 {
+		t.Fatalf("second scan checked=%d suggestions=%d, want the book behind the failures checked", second.checked, len(second.suggestions))
 	}
 }

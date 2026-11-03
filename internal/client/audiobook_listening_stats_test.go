@@ -8,6 +8,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"memeindex/internal/dbschema"
 )
 
 // TestAudiobookListeningStreak covers the pure streak-counting logic, with no
@@ -62,6 +65,18 @@ func newTestAudiobookStore(t *testing.T) *postgresAudiobookStore {
 	dsn := strings.TrimSpace(os.Getenv("MEMEINDEX_TEST_DATABASE_URL"))
 	if dsn == "" {
 		t.Skip("set MEMEINDEX_TEST_DATABASE_URL to run the Postgres integration test")
+	}
+	// The audiobook tag tables reference the meme schema's tags table, which
+	// the app creates first (accessor's ensureSchema) - a fresh test database
+	// needs it too.
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		t.Fatalf("connect test database: %v", err)
+	}
+	err = dbschema.Apply(context.Background(), pool, "001_memes_core.sql")
+	pool.Close()
+	if err != nil {
+		t.Fatalf("apply meme schema: %v", err)
 	}
 	st, err := newAudiobookStore(context.Background(), dsn, t.TempDir())
 	if err != nil {

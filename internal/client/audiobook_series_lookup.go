@@ -98,10 +98,14 @@ func (l *audibleSeriesLookup) LookupSeries(ctx context.Context, title, author st
 	// Relevance order isn't proof it's the same book: a search for a book
 	// the catalog doesn't carry still returns its nearest neighbours. Only a
 	// listing whose title matches, and by the same author when we know who
-	// that is, counts.
+	// that is, counts. An exact title beats a subtitle-style match wherever it
+	// sits in the results, so "Dune" never lands on "Dune Messiah" listed
+	// first.
 	wantTitle := normalizeBookTitle(title)
-	for _, product := range payload.Products {
-		if !bookTitlesMatch(wantTitle, normalizeBookTitle(product.Title)) {
+	best := -1
+	for i, product := range payload.Products {
+		gotTitle := normalizeBookTitle(product.Title)
+		if !bookTitlesMatch(wantTitle, gotTitle) {
 			continue
 		}
 		if author != "" {
@@ -113,6 +117,16 @@ func (l *audibleSeriesLookup) LookupSeries(ctx context.Context, title, author st
 				continue
 			}
 		}
+		if gotTitle == wantTitle {
+			best = i
+			break
+		}
+		if best < 0 {
+			best = i
+		}
+	}
+	if best >= 0 {
+		product := payload.Products[best]
 		out := make([]audiobookSeriesMatch, 0, len(product.Series))
 		for _, series := range product.Series {
 			name := strings.TrimSpace(series.Title)
@@ -228,14 +242,17 @@ func authorsOverlap(author string, catalogAuthors []string) bool {
 
 // cachedSeriesLookup remembers answers so scanning a library again (or
 // continuing a scan that ran out of time) doesn't re-ask the catalog about
-// every book. Failures aren't cached, so they're retried next scan.
+// every book. Failures aren't cached, so they're retried next scan - only
+// noted, so a scan tries everything else before them again.
 type cachedSeriesLookup struct {
 	inner audiobookSeriesLookup
 	ttl   time.Duration
 	now   func() time.Time
 
-	mu      sync.Mutex
-	entries map[string]cachedSeriesLookupEntry
+	mu       sync.Mutex
+	entries  map[string]cachedSeriesLookupEntry
+	failedAt map[string]time.Time
+	prunedAt time.Time
 }
 
 type cachedSeriesLookupEntry struct {
@@ -243,10 +260,47 @@ type cachedSeriesLookupEntry struct {
 	at      time.Time
 }
 
-const audiobookSeriesLookupCacheTTL = 24 * time.Hour
+const (
+	audiobookSeriesLookupCacheTTL = 24 * time.Hour
+	// A lookup that failed within this long is tried after the others.
+	audiobookSeriesLookupFailureMemory = 15 * time.Minute
+)
 
 func newCachedSeriesLookup(inner audiobookSeriesLookup) *cachedSeriesLookup {
-	return &cachedSeriesLookup{inner: inner, ttl: audiobookSeriesLookupCacheTTL, now: time.Now, entries: map[string]cachedSeriesLookupEntry{}}
+	return &cachedSeriesLookup{
+		inner:    inner,
+		ttl:      audiobookSeriesLookupCacheTTL,
+		now:      time.Now,
+		entries:  map[string]cachedSeriesLookupEntry{},
+		failedAt: map[string]time.Time{},
+	}
+}
+
+func (c *cachedSeriesLookup) recentlyFailed(key string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	at, ok := c.failedAt[key]
+	return ok && c.now().Sub(at) < audiobookSeriesLookupFailureMemory
+}
+
+// pruneLocked drops expired answers and old failures, at most hourly, so the
+// process-wide cache doesn't keep every title it has ever seen. c.mu is held.
+func (c *cachedSeriesLookup) pruneLocked() {
+	now := c.now()
+	if now.Sub(c.prunedAt) < time.Hour {
+		return
+	}
+	c.prunedAt = now
+	for key, entry := range c.entries {
+		if now.Sub(entry.at) > c.ttl {
+			delete(c.entries, key)
+		}
+	}
+	for key, at := range c.failedAt {
+		if now.Sub(at) >= audiobookSeriesLookupFailureMemory {
+			delete(c.failedAt, key)
+		}
+	}
 }
 
 func seriesLookupCacheKey(title, author string) string {
@@ -269,12 +323,19 @@ func (c *cachedSeriesLookup) LookupSeries(ctx context.Context, title, author str
 		return matches, nil
 	}
 	matches, err := c.inner.LookupSeries(ctx, title, author)
+	key := seriesLookupCacheKey(title, author)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.pruneLocked()
 	if err != nil {
+		// Running out of the scan's own deadline says nothing about the book.
+		if ctx.Err() == nil {
+			c.failedAt[key] = c.now()
+		}
 		return nil, err
 	}
-	c.mu.Lock()
-	c.entries[seriesLookupCacheKey(title, author)] = cachedSeriesLookupEntry{matches: matches, at: c.now()}
-	c.mu.Unlock()
+	delete(c.failedAt, key)
+	c.entries[key] = cachedSeriesLookupEntry{matches: matches, at: c.now()}
 	return matches, nil
 }
 
@@ -329,16 +390,28 @@ func suggestAudiobookSeries(ctx context.Context, lookup *cachedSeriesLookup, boo
 		jobs = append(jobs, job{record: record, title: title, author: strings.TrimSpace(record.Author)})
 	}
 
+	// Books sharing a title and author (duplicate uploads, two editions) are
+	// one lookup, not one each.
 	matchesByBook := make([][]audiobookSeriesMatch, len(jobs))
 	done := make([]bool, len(jobs))
-	var uncached []int
+	jobsByKey := map[string][]int{}
+	var uncached []string
 	for i, j := range jobs {
 		if matches, ok := lookup.cached(j.title, j.author); ok {
 			matchesByBook[i], done[i] = matches, true
 			continue
 		}
-		uncached = append(uncached, i)
+		key := seriesLookupCacheKey(j.title, j.author)
+		if _, seen := jobsByKey[key]; !seen {
+			uncached = append(uncached, key)
+		}
+		jobsByKey[key] = append(jobsByKey[key], i)
 	}
+	// Books that just failed go to the back of the queue, so a run of lookups
+	// the catalog keeps rejecting can't fill every batch and stall the scan.
+	sort.SliceStable(uncached, func(a, b int) bool {
+		return !lookup.recentlyFailed(uncached[a]) && lookup.recentlyFailed(uncached[b])
+	})
 	if len(uncached) > audiobookSeriesSuggestBatch {
 		uncached = uncached[:audiobookSeriesSuggestBatch]
 	}
@@ -350,30 +423,33 @@ func suggestAudiobookSeries(ctx context.Context, lookup *cachedSeriesLookup, boo
 		mu     sync.Mutex
 		failed int
 	)
-	work := make(chan int)
+	work := make(chan string)
 	for range audiobookSeriesSuggestConcurrency {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for i := range work {
-				matches, err := lookup.LookupSeries(ctx, jobs[i].title, jobs[i].author)
+			for key := range work {
+				first := jobs[jobsByKey[key][0]]
+				matches, err := lookup.LookupSeries(ctx, first.title, first.author)
 				mu.Lock()
 				if err != nil {
 					if ctx.Err() == nil {
-						failed++
-						log.Printf("audiobook series lookup for %q failed: %v", jobs[i].title, err)
+						failed += len(jobsByKey[key])
+						log.Printf("audiobook series lookup for %q failed: %v", first.title, err)
 					}
 				} else {
-					matchesByBook[i], done[i] = matches, true
+					for _, i := range jobsByKey[key] {
+						matchesByBook[i], done[i] = matches, true
+					}
 				}
 				mu.Unlock()
 			}
 		}()
 	}
 feed:
-	for _, i := range uncached {
+	for _, key := range uncached {
 		select {
-		case work <- i:
+		case work <- key:
 		case <-ctx.Done():
 			break feed
 		}

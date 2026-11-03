@@ -5269,8 +5269,10 @@ function formatAudiobookSeriesNumber(value) {
 
 function audiobookSeriesSuggestionHTML(suggestion) {
   const edit = audiobookSeriesSuggestionEdit(suggestion.key);
+  // Apply adds to existing_series_id whenever the server sent one, so the
+  // card must say so even if the local series list hasn't caught up with it.
   const existing = suggestion.existing_series_id
-    ? state.audiobooks.series.find((s) => s.id === suggestion.existing_series_id)
+    ? state.audiobooks.series.find((s) => s.id === suggestion.existing_series_id) || { name: suggestion.name }
     : null;
   const applying = audiobookSeriesSuggest.applying.has(suggestion.key);
   const rows = suggestion.books.map((book) => {
@@ -11283,8 +11285,10 @@ audiobookSeriesSuggestStopButton?.addEventListener("click", () => {
   stopAudiobookSeriesSuggestScan();
   renderAudiobookSeriesSuggestions();
 });
+// A new scan supersedes one already running (its token moves on), so the
+// results always match the box as it is now.
 audiobookSeriesSuggestAllInput?.addEventListener("change", () => {
-  if (!audiobookSeriesSuggest.scanning) scanAudiobookSeriesSuggestions().catch((error) => console.error(error));
+  scanAudiobookSeriesSuggestions().catch((error) => console.error(error));
 });
 
 audiobookEditForm?.addEventListener("submit", (event) => {
