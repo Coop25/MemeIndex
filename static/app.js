@@ -198,6 +198,11 @@ const ADMIN_TABS = Object.freeze({
     title: "Audiobook Library", kicker: "Admin",
     copy: "Every audiobook on the server with its size, format, metadata gaps, and how much it is listened to.",
   },
+  "audiobook-series": {
+    group: "Audiobooks", label: "Series & Tags", superOnly: true, panel: "admin-audiobook-series-panel",
+    title: "Series & Tags", kicker: "Admin",
+    copy: "Rename, merge, and reorder audiobook series, and see which tags audiobooks and restricted accounts depend on.",
+  },
   "audiobook-conversion": {
     group: "Audiobooks", label: "MP3 Conversion", superOnly: true, panel: "admin-remux-panel",
     title: "Audiobook Conversion", kicker: "Admin",
@@ -4408,6 +4413,7 @@ function renderContentMode() {
   window.renderAdminStorage?.();
   window.renderAdminAudiobookLibrary?.();
   window.renderAdminUserActivity?.();
+  window.renderAdminAudiobookSeries?.();
   syncAdminTagQueuePolling();
   syncAdminLinkQueuePolling();
   syncAdminBackupPolling();
@@ -4529,6 +4535,7 @@ const ADMIN_TAB_LOADERS = {
   storage: { loading: "Loading storage...", run: () => window.loadAdminStorage(), fail: "Could not load storage." },
   "user-activity": { loading: "Loading user activity...", run: () => window.loadAdminUserActivity(), fail: "Could not load user activity." },
   "audiobook-library": { loading: "Loading audiobook library...", run: () => window.loadAdminAudiobookLibrary(), fail: "Could not load the audiobook library." },
+  "audiobook-series": { loading: "Loading series and tags...", run: () => window.loadAdminAudiobookSeries(), fail: "Could not load series and tags." },
   backup: { run: () => { renderAdminBackupStatus(); return fetchAdminBackupStatus(); } },
   "audiobook-conversion": { run: () => fetchAdminRemuxStatus() },
 };

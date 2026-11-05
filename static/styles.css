@@ -4839,3 +4839,20 @@ button.admin-health-row:hover, button.admin-health-row:focus-visible { backgroun
 .admin-user-activity-handle { color: var(--muted); }
 .audit-actor-chip { margin: 0 0 10px; }
 .audit-actor-chip .ghost-button { border-radius: 999px; }
+
+/* Series & Tags admin page */
+.admin-series-row { display: grid; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--line); min-width: 0; }
+.admin-series-main, .admin-series-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.admin-series-name { flex: 1 1 220px; min-width: 0; }
+.admin-series-count { color: var(--muted); font-size: 12px; }
+.admin-series-expanded { min-width: 0; padding-left: 12px; }
+.admin-series-books { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.admin-series-book { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
+.admin-series-book-title { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
+.admin-series-seq { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.admin-series-seq input { width: 80px; }
+.admin-series-error { color: #ff7a7a; font-size: 12px; flex-basis: 100%; }
+.admin-series-chips { white-space: normal !important; }
+.admin-series-chip { display: inline-block; margin: 2px 4px 2px 0; padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; font-size: 11px; }
+.admin-series-muted { color: var(--muted); }
+.admin-series-tag-table { min-width: 520px; }

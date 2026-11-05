@@ -653,3 +653,298 @@ function initAdminUserActivityPanel() {
   });
 }
 if (typeof document !== "undefined") initAdminUserActivityPanel();
+
+/* ======================= Series & Tags page ======================= */
+
+function seriesDeleteConfirmText(series) {
+  const name = (series && series.name) || "";
+  const n = Number(series && series.book_count) || 0;
+  return n > 0
+    ? `Delete “${name}”? Its ${n} books will no longer be in a series.`
+    : `Delete “${name}”?`;
+}
+
+function seriesMergeConfirmText(from, into) {
+  const n = Number(from && from.book_count) || 0;
+  const fromName = (from && from.name) || "";
+  return `Move ${n} books from “${fromName}” into “${(into && into.name) || ""}” and delete “${fromName}”?`;
+}
+
+// parseSeriesSequence returns the number in a sequence input, or NaN when it
+// is blank, not numeric, or negative. Decimals are allowed (7.5 novellas).
+function parseSeriesSequence(text) {
+  const trimmed = String(text == null ? "" : text).trim();
+  if (!/^\d+(\.\d+)?$/.test(trimmed)) return NaN;
+  return Number(trimmed);
+}
+
+function buildSeriesBooks(books, errors) {
+  const list = (Array.isArray(books) ? books : []).slice().sort((a, b) => {
+    const sa = a.series_sequence == null ? Infinity : Number(a.series_sequence);
+    const sb = b.series_sequence == null ? Infinity : Number(b.series_sequence);
+    if (sa !== sb) return sa < sb ? -1 : 1;
+    return String(a.title || "").localeCompare(String(b.title || ""));
+  });
+  if (!list.length) return adminPagesEmpty("No books in this series.");
+  const errs = errors || {};
+  return `<ul class="admin-series-books">${list.map((book) => {
+    const id = escapeHTML(String(book.id));
+    const seq = book.series_sequence == null ? "" : String(book.series_sequence);
+    const err = errs[book.id];
+    return `<li class="admin-series-book"><span class="admin-series-book-title">${escapeHTML(book.title || "Untitled")}</span>`
+      + `<label class="admin-series-seq"><span>Book #</span>`
+      + `<input type="number" step="0.5" min="0" inputmode="decimal" data-series-sequence="${id}" data-series-sequence-orig="${escapeHTML(seq)}" value="${escapeHTML(seq)}"${err ? ' aria-invalid="true"' : ""}></label>`
+      + (err ? `<span class="admin-series-error" role="alert">${escapeHTML(err)}</span>` : "")
+      + `</li>`;
+  }).join("")}</ul>`;
+}
+
+function buildSeriesList(series, expandedID, books, errors) {
+  const list = Array.isArray(series) ? series : [];
+  if (!list.length) return adminPagesEmpty("No audiobook series yet.");
+  return list.map((item) => {
+    const id = escapeHTML(String(item.id));
+    const name = escapeHTML(item.name || "");
+    const n = Number(item.book_count) || 0;
+    const expanded = String(item.id) === String(expandedID || "");
+    const options = list.filter((other) => other.id !== item.id)
+      .map((other) => `<option value="${escapeHTML(String(other.id))}">${escapeHTML(other.name || "")}</option>`).join("");
+    return `<article class="admin-series-row" data-series-id="${id}">`
+      + `<div class="admin-series-main">`
+      + `<input type="text" class="admin-series-name" maxlength="200" aria-label="Series name" data-series-name="${id}" value="${name}">`
+      + `<button type="button" class="secondary-button" data-series-rename="${id}">Rename</button>`
+      + `<span class="admin-series-count">${n} book${n === 1 ? "" : "s"}</span>`
+      + `<button type="button" class="secondary-button" data-series-toggle="${id}" aria-expanded="${expanded}">${expanded ? "Hide books" : "Books"}</button>`
+      + `</div>`
+      + `<div class="admin-series-actions">`
+      + `<select aria-label="Merge ${name} into another series" data-series-merge-target="${id}"><option value="">Merge into…</option>${options}</select>`
+      + `<button type="button" class="secondary-button" data-series-merge="${id}">Merge</button>`
+      + `<button type="button" class="danger-button" data-series-delete="${id}">Delete</button>`
+      + `</div>`
+      + (expanded ? `<div class="admin-series-expanded">${books ? buildSeriesBooks(books, errors) : adminPagesEmpty("Loading...")}</div>` : "")
+      + `</article>`;
+  }).join("");
+}
+
+function buildAudiobookTagUsage(tags) {
+  const list = Array.isArray(tags) ? tags : [];
+  if (!list.length) return adminPagesEmpty("No audiobook tags in use.");
+  const rows = list.map((t) => {
+    const tag = escapeHTML(t.tag || "");
+    const users = Array.isArray(t.restricted_users) ? t.restricted_users : [];
+    const chips = users.length
+      ? users.map((u) => `<span class="admin-series-chip">${escapeHTML(u.display_name || u.user_id || "")}</span>`).join("")
+      : `<span class="admin-series-muted">None</span>`;
+    return `<tr><td><button type="button" class="text-button" data-series-tag-hygiene="${tag}">${tag}</button></td>`
+      + `<td class="is-num">${Number(t.audiobooks) || 0}</td><td class="is-num">${Number(t.memes) || 0}</td>`
+      + `<td class="admin-series-chips">${chips}</td></tr>`;
+  }).join("");
+  return `<table class="admin-library-table admin-series-tag-table"><thead><tr><th>Tag</th><th class="is-num">Audiobooks</th><th class="is-num">Memes</th><th>Restricted accounts</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function adminSeriesState() {
+  const s = state.admin.audiobookSeries || (state.admin.audiobookSeries = {});
+  if (s.series === undefined) s.series = null;
+  if (s.tags === undefined) s.tags = null;
+  if (s.unavailable === undefined) s.unavailable = false;
+  if (s.expanded === undefined) s.expanded = "";
+  if (s.books === undefined) s.books = null;
+  if (!s.errors) s.errors = {};
+  if (s.status === undefined) s.status = "";
+  if (s.busy === undefined) s.busy = false;
+  return s;
+}
+
+function renderAdminAudiobookSeries() {
+  const panel = document.querySelector("#admin-audiobook-series-panel");
+  if (!panel) return;
+  const visible = isAdminView() && canManageUsers() && activeAdminTab() === "audiobook-series";
+  panel.classList.toggle("hidden", !visible);
+  if (!visible) return;
+  const s = adminSeriesState();
+  const set = (id, html) => { const el = document.querySelector(id); if (el) el.innerHTML = html; };
+  if (s.unavailable) {
+    set("#admin-series-list", adminPagesEmpty("Requires PostgreSQL"));
+    set("#admin-audiobook-tags", adminPagesEmpty("Requires PostgreSQL"));
+  } else {
+    set("#admin-series-list", s.series ? buildSeriesList(s.series, s.expanded, s.books, s.errors) : adminPagesEmpty(s.status || "Loading..."));
+    set("#admin-audiobook-tags", s.tags ? buildAudiobookTagUsage(s.tags) : adminPagesEmpty("Loading..."));
+  }
+  const status = document.querySelector("#admin-series-status");
+  if (status) status.textContent = s.status || "";
+  if (s.busy) panel.querySelectorAll("button").forEach((button) => { button.disabled = true; });
+}
+
+async function loadAdminSeriesBooks(s) {
+  if (!s.expanded) { s.books = null; return; }
+  const id = s.expanded;
+  const result = await adminPagesFetchJSON(`/api/audiobooks?series_id=${encodeURIComponent(id)}`, undefined, "Could not load this series' books.");
+  if (s.expanded !== id) return;
+  if (!result.ok) { s.status = result.error; s.books = []; return; }
+  s.books = (result.body && result.body.audiobooks) || [];
+}
+
+async function loadAdminAudiobookSeries() {
+  const s = adminSeriesState();
+  const [list, tags] = await Promise.all([
+    adminPagesFetchJSON("/api/audiobook-series", undefined, "Failed to load audiobook series."),
+    adminPagesFetchJSON("/api/admin/audiobook-tags", undefined, "Failed to load audiobook tags."),
+  ]);
+  const unavailable = list.status === 501 || (tags.ok && tags.body && tags.body.state === "unavailable")
+    || (list.ok && list.body && list.body.state === "unavailable");
+  s.unavailable = !!unavailable;
+  if (!unavailable) {
+    if (list.ok) s.series = (list.body && list.body.series) || [];
+    else s.status = list.error;
+    if (tags.ok) s.tags = (tags.body && tags.body.tags) || [];
+    else if (!s.status) s.status = tags.error;
+    if (s.expanded && !(s.series || []).some((x) => x.id === s.expanded)) { s.expanded = ""; s.books = null; }
+    if (s.expanded) await loadAdminSeriesBooks(s);
+  }
+  renderAdminAudiobookSeries();
+  return list.ok || unavailable;
+}
+
+// withSeriesBusy runs fn with the panel's buttons disabled; a thrown error is
+// reported in the status line. When fn reports a change, the lists (and the
+// library tab, if loaded) are refreshed.
+async function withSeriesBusy(fn) {
+  const s = adminSeriesState();
+  if (s.busy) return;
+  s.busy = true;
+  renderAdminAudiobookSeries();
+  try {
+    const changed = await fn(s);
+    if (changed) {
+      await loadAdminAudiobookSeries();
+      window.refreshAdminAudiobookLibrary?.();
+    }
+  } catch (error) {
+    console.error(error);
+    s.status = "Something went wrong. Check your connection and try again.";
+  } finally {
+    s.busy = false;
+    renderAdminAudiobookSeries();
+  }
+}
+
+function seriesConfirm(title, message, confirmLabel) {
+  return typeof confirmViaModal === "function"
+    ? confirmViaModal({ title, message, confirmLabel })
+    : Promise.resolve(window.confirm(message));
+}
+
+function findAdminSeries(s, id) {
+  return ((s && s.series) || []).find((x) => String(x.id) === String(id));
+}
+
+async function renameAdminSeries(s, id, name) {
+  const item = findAdminSeries(s, id);
+  const next = String(name || "").trim();
+  if (!item || !next) { s.status = "Enter a series name."; return false; }
+  if (next === item.name) { s.status = ""; return false; }
+  const result = await adminPagesFetchJSON(`/api/audiobook-series/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: next }),
+  }, "Failed to rename the series.");
+  if (!result.ok) { s.status = result.error; return false; }
+  s.status = "Series renamed.";
+  return true;
+}
+
+async function mergeAdminSeries(s, fromID, intoID) {
+  const from = findAdminSeries(s, fromID);
+  const into = findAdminSeries(s, intoID);
+  if (!from || !into) { s.status = "Choose a series to merge into."; return false; }
+  if (!(await seriesConfirm("Merge series", seriesMergeConfirmText(from, into), "Merge"))) return false;
+  const result = await adminPagesJSONPost(`/api/admin/audiobook-series/${encodeURIComponent(fromID)}/merge`, { into: intoID }, "Failed to merge the series.");
+  if (!result.ok) { s.status = result.error; return false; }
+  if (result.body && result.body.state === "unavailable") { s.status = "Requires PostgreSQL"; return false; }
+  const moved = Number(result.body && result.body.moved) || 0;
+  if (s.expanded === fromID) { s.expanded = intoID; s.books = null; }
+  s.status = `Moved ${moved} book${moved === 1 ? "" : "s"} into “${into.name}”.`;
+  return true;
+}
+
+async function deleteAdminSeries(s, id) {
+  const item = findAdminSeries(s, id);
+  if (!item) return false;
+  if (!(await seriesConfirm("Delete series", seriesDeleteConfirmText(item), "Delete"))) return false;
+  const result = await adminPagesFetchJSON(`/api/audiobook-series/${encodeURIComponent(id)}`, { method: "DELETE" }, "Failed to delete the series.");
+  if (!result.ok) { s.status = result.error; return false; }
+  if (s.expanded === id) { s.expanded = ""; s.books = null; }
+  s.status = "Series deleted.";
+  return true;
+}
+
+async function saveAdminSeriesSequence(s, bookID, rawValue, origValue) {
+  const value = parseSeriesSequence(rawValue);
+  if (Number.isNaN(value)) { s.errors[bookID] = "Enter a number (0 or more)."; return false; }
+  if (String(origValue) !== "" && Number(origValue) === value) { delete s.errors[bookID]; return false; }
+  const result = await adminPagesFetchJSON(`/api/audiobooks/${encodeURIComponent(bookID)}/series`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ seriesId: s.expanded, sequence: value }),
+  }, "Failed to save the sequence.");
+  if (!result.ok) { s.errors[bookID] = result.error; return false; }
+  delete s.errors[bookID];
+  s.status = "Sequence saved.";
+  return true;
+}
+
+// openAdminTagInHygiene jumps to Tag Hygiene with the tag in the merge-source
+// field. The field is static markup, so it can be filled right away.
+function openAdminTagInHygiene(tag) {
+  navigateAdminTab("tag-hygiene");
+  const input = document.querySelector("#admin-tag-merge-source");
+  if (input) input.value = tag;
+}
+
+function initAdminAudiobookSeriesPanel() {
+  const panel = document.querySelector("#admin-audiobook-series-panel");
+  if (!panel || panel.dataset.wired) return;
+  panel.dataset.wired = "1";
+  panel.addEventListener("click", (event) => {
+    const target = event.target.closest("button");
+    if (!target || target.disabled) return;
+    const s = adminSeriesState();
+    const attr = (name) => target.getAttribute(name);
+    if (target.hasAttribute("data-series-rename")) {
+      const id = attr("data-series-rename");
+      const input = panel.querySelector(`[data-series-name="${CSS.escape(id)}"]`);
+      withSeriesBusy((st) => renameAdminSeries(st, id, input ? input.value : ""));
+    } else if (target.hasAttribute("data-series-toggle")) {
+      const id = attr("data-series-toggle");
+      s.expanded = s.expanded === id ? "" : id;
+      s.books = null;
+      s.errors = {};
+      renderAdminAudiobookSeries();
+      withSeriesBusy(async (st) => { await loadAdminSeriesBooks(st); return false; });
+    } else if (target.hasAttribute("data-series-merge")) {
+      const id = attr("data-series-merge");
+      const select = panel.querySelector(`[data-series-merge-target="${CSS.escape(id)}"]`);
+      withSeriesBusy((st) => mergeAdminSeries(st, id, select ? select.value : ""));
+    } else if (target.hasAttribute("data-series-delete")) {
+      withSeriesBusy((st) => deleteAdminSeries(st, attr("data-series-delete")));
+    } else if (target.hasAttribute("data-series-tag-hygiene")) {
+      openAdminTagInHygiene(attr("data-series-tag-hygiene"));
+    }
+  });
+  panel.addEventListener("change", (event) => {
+    const input = event.target.closest("input[data-series-sequence]");
+    if (!input) return;
+    const bookID = input.getAttribute("data-series-sequence");
+    const orig = input.getAttribute("data-series-sequence-orig") || "";
+    withSeriesBusy((st) => saveAdminSeriesSequence(st, bookID, input.value, orig));
+  });
+  panel.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    const input = event.target.closest("input[data-series-name]");
+    if (!input) return;
+    event.preventDefault();
+    const id = input.getAttribute("data-series-name");
+    withSeriesBusy((st) => renameAdminSeries(st, id, input.value));
+  });
+}
+if (typeof document !== "undefined") initAdminAudiobookSeriesPanel();

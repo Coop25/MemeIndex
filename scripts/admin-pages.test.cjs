@@ -175,3 +175,84 @@ test("setting the audit actor resets paging", () => {
   assert.equal(st.admin.auditActor, null);
   assert.equal(st.admin.audit.offset, 0);
 });
+
+/* ---------- Series & Tags page ---------- */
+
+test("series delete confirm mentions book count", () => {
+  assert.equal(
+    context.seriesDeleteConfirmText({ name: "Dune", book_count: 6 }),
+    "Delete “Dune”? Its 6 books will no longer be in a series.",
+  );
+  assert.equal(context.seriesDeleteConfirmText({ name: "Empty", book_count: 0 }), "Delete “Empty”?");
+});
+
+test("series merge confirm text", () => {
+  assert.equal(
+    context.seriesMergeConfirmText({ name: "A", book_count: 3 }, { name: "B" }),
+    "Move 3 books from “A” into “B” and delete “A”?",
+  );
+});
+
+test("merge select excludes the series itself", () => {
+  const series = [
+    { id: "s1", name: "Alpha", book_count: 1 },
+    { id: "s2", name: "Beta", book_count: 2 },
+    { id: "s3", name: "Gamma", book_count: 0 },
+  ];
+  const html = context.buildSeriesList(series, "", []);
+  const selects = html.split('<select').slice(1);
+  assert.equal(selects.length, 3);
+  assert.ok(!selects[0].includes('value="s1"'));
+  assert.ok(selects[0].includes('value="s2"') && selects[0].includes('value="s3"'));
+  assert.ok(!selects[1].includes('value="s2"'));
+});
+
+test("expanded series lists books with sequence inputs", () => {
+  const html = context.buildSeriesList(
+    [{ id: "s1", name: "Alpha", book_count: 2 }], "s1",
+    [{ id: "b2", title: "Two", series_sequence: 2 }, { id: "b1", title: "One", series_sequence: 1.5 }],
+    { b1: "Enter a number." },
+  );
+  assert.ok(html.includes('data-series-sequence="b1"') && html.includes('step="0.5"'));
+  assert.ok(html.indexOf(">One<") < html.indexOf(">Two<"), "sorted by sequence");
+  assert.ok(html.includes("Enter a number."));
+});
+
+test("series names are escaped", () => {
+  const html = context.buildSeriesList(
+    [{ id: "s1", name: '<img src=x onerror=1>"', book_count: 1 }], "s1",
+    [{ id: "b1", title: "<script>x</script>", series_sequence: 1 }],
+  );
+  assert.ok(!html.includes("<img"));
+  assert.ok(!html.includes("<script>"));
+  assert.ok(html.includes("&lt;img"));
+});
+
+test("tag usage lists restricted users", () => {
+  const html = context.buildAudiobookTagUsage([
+    { tag: "scifi", audiobooks: 4, memes: 2, restricted_users: [{ user_id: "u1", display_name: "Ann <b>" }] },
+    { tag: "misc", audiobooks: 1, memes: 0, restricted_users: [] },
+  ]);
+  assert.ok(html.includes("Ann &lt;b&gt;"));
+  assert.ok(!html.includes("<b>"));
+  assert.ok(html.includes('data-series-tag-hygiene="scifi"'));
+  assert.ok(html.includes("data-series-tag-hygiene=\"misc\""));
+});
+
+test("sequence parsing validates numbers", () => {
+  assert.equal(context.parseSeriesSequence("2.5"), 2.5);
+  assert.equal(context.parseSeriesSequence(" 3 "), 3);
+  assert.ok(Number.isNaN(context.parseSeriesSequence("abc")));
+  assert.ok(Number.isNaN(context.parseSeriesSequence("")));
+  assert.ok(Number.isNaN(context.parseSeriesSequence("-1")));
+});
+
+test("series tab is wired once", () => {
+  const html = readFileSync(resolve(__dirname, "../static/index.html"), "utf8");
+  assert.equal((html.match(/id="admin-audiobook-series-panel"/g) || []).length, 1);
+  assert.equal((html.match(/id="admin-series-list"/g) || []).length, 1);
+  assert.equal((html.match(/id="admin-audiobook-tags"/g) || []).length, 1);
+  assert.match(appSource, /"audiobook-series": \{[^}]*group: "Audiobooks"[^}]*panel: "admin-audiobook-series-panel"/);
+  assert.ok(appSource.includes("window.loadAdminAudiobookSeries()"));
+  assert.ok(appSource.includes("window.renderAdminAudiobookSeries?.()"));
+});
