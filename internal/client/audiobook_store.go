@@ -238,6 +238,8 @@ type audiobookStore interface {
 	StaleUploads(ctx context.Context, olderThan time.Time) ([]audiobookUpload, error)
 	DiscardUpload(ctx context.Context, id string) error
 	AdminStats(ctx context.Context, now time.Time) (adminAudiobookStats, error)
+	AdminListening(ctx context.Context, now time.Time) ([]adminDaySeconds, []adminTopBook, []adminTopListener, error)
+	AdminHealthCounts(ctx context.Context) (adminAudiobookHealth, error)
 
 	ListAudiobooks(ctx context.Context, userID string, filter audiobookListFilter) ([]audiobookWithProgress, error)
 	GetAudiobook(ctx context.Context, id string) (audiobookRecord, error)

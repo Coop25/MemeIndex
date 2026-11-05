@@ -38,6 +38,7 @@ type Server struct {
 	users               authUserStore
 	audiobooks          audiobookStore
 	audiobookAdminStats audiobookAdminStatsCache
+	audiobookActivity   audiobookActivityCache
 	mediaClient         *mediafetch.Client
 	linkRetries         *linkRetryQueue
 	backup              *portableBackup
@@ -83,6 +84,8 @@ type adminDashboardResponse struct {
 	RecentActivity    []accessor.GlobalMemeAuditEntry `json:"recent_activity"`
 	BackupStatus      *backupJobStatus                `json:"backup_status,omitempty"`
 	AudiobookStats    *adminAudiobookStats            `json:"audiobook_stats,omitempty"`
+	AudiobookActivity *adminAudiobookActivity         `json:"audiobook_activity,omitempty"`
+	WorkQueues        adminWorkQueues                 `json:"work_queues"`
 	Disk              *adminDiskStats                 `json:"disk,omitempty"`
 	LastBackup        *adminLastBackup                `json:"last_backup,omitempty"`
 	TotalStorageBytes int64                           `json:"total_storage_bytes"`
@@ -1867,6 +1870,47 @@ func (s *Server) handleAdminDashboard(w http.ResponseWriter, r *http.Request) {
 	} else if audiobookStats != nil {
 		response.AudiobookStats = audiobookStats
 		response.TotalStorageBytes += audiobookStats.TotalBytes
+	}
+
+	response.WorkQueues.SuggestedTags = stats.PendingSuggestionMemes
+	if pending, err := s.managers.ListPendingDeletes(0, 1); err != nil {
+		log.Printf("admin dashboard pending deletes failed: %v", err)
+	} else {
+		response.WorkQueues.DeleteQueue = pending.Total
+	}
+	if s.linkRetries != nil {
+		retries := s.linkRetries.Snapshot()
+		response.WorkQueues.LinkRetries = len(retries.Queued)
+		response.WorkQueues.RejectedLinks = len(retries.Rejected)
+	}
+	if activity, err := s.cachedAudiobookActivity(r.Context()); err != nil {
+		log.Printf("admin dashboard audiobook activity failed: %v", err)
+	} else if activity != nil {
+		if len(activity.TopListeners) > 0 {
+			names := map[string]string{}
+			if s.users != nil {
+				if users, listErr := s.users.ListUsers(r.Context()); listErr != nil {
+					log.Printf("admin dashboard listener names failed: %v", listErr)
+				} else {
+					for _, user := range users {
+						name := strings.TrimSpace(user.DisplayName)
+						if name == "" {
+							name = strings.TrimSpace(user.Username)
+						}
+						names[user.UserID] = name
+					}
+				}
+			}
+			for index := range activity.TopListeners {
+				name := names[activity.TopListeners[index].UserID]
+				if name == "" {
+					name = activity.TopListeners[index].UserID
+				}
+				activity.TopListeners[index].DisplayName = name
+			}
+		}
+		response.AudiobookActivity = activity
+		response.WorkQueues.ConversionQueue = activity.Health.AwaitingConversion
 	}
 
 	diskStatus, diskHealthy := "Unknown", false
