@@ -3258,7 +3258,17 @@ async function mergeAdminTags(sourceTag, targetTag) {
 
   const payload = await response.json();
   setAdminViewStatus("");
-  showToast(`Merged ${payload.source_tag || normalizedSource} into ${payload.target_tag || normalizedTarget} across ${Number(payload.affected_memes || 0)} meme${Number(payload.affected_memes || 0) === 1 ? "" : "s"}.`, "success", { title: "Tag Hygiene", duration: 3400 });
+  const mergedMemes = Number(payload.affected_memes || 0);
+  const mergedAudiobooks = Number(payload.audiobooks_affected || 0);
+  const movedRestrictions = Number(payload.restrictions_moved || 0);
+  let mergeMessage = `Merged ${payload.source_tag || normalizedSource} into ${payload.target_tag || normalizedTarget} across ${mergedMemes} meme${mergedMemes === 1 ? "" : "s"}`;
+  if (mergedAudiobooks > 0) {
+    mergeMessage += ` and ${mergedAudiobooks} audiobook${mergedAudiobooks === 1 ? "" : "s"}`;
+  }
+  if (movedRestrictions > 0) {
+    mergeMessage += ` (${movedRestrictions} account restriction${movedRestrictions === 1 ? "" : "s"} moved)`;
+  }
+  showToast(`${mergeMessage}.`, "success", { title: "Tag Hygiene", duration: 3400 });
   if (adminTagMergeSource) {
     adminTagMergeSource.value = "";
   }

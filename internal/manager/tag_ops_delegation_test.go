@@ -26,6 +26,8 @@ type tagOpsFakeStore struct {
 	mergeSource   string
 	mergeTarget   string
 	mergeAffected int
+	mergeAudiobooks   int
+	mergeRestrictions int
 
 	untagged      int
 	untaggedIDs   []string
@@ -37,10 +39,10 @@ type tagOpsFakeStore struct {
 	usage map[string]int
 }
 
-func (s *tagOpsFakeStore) MergeTag(sourceTag, targetTag string, _ accessor.AuditActor) (int, error) {
+func (s *tagOpsFakeStore) MergeTag(sourceTag, targetTag string, _ accessor.AuditActor) (accessor.TagMergeCounts, error) {
 	s.mergeCalls++
 	s.mergeSource, s.mergeTarget = sourceTag, targetTag
-	return s.mergeAffected, nil
+	return accessor.TagMergeCounts{Memes: s.mergeAffected, Audiobooks: s.mergeAudiobooks, Restrictions: s.mergeRestrictions}, nil
 }
 
 func (s *tagOpsFakeStore) UntaggedWithoutSuggestionsCount() (int, error) {
@@ -85,6 +87,8 @@ func newTagOpsFakeStore() *tagOpsFakeStore {
 func TestMergeTagsDelegatesToStore(t *testing.T) {
 	store := newTagOpsFakeStore()
 	store.mergeAffected = 4
+	store.mergeAudiobooks = 2
+	store.mergeRestrictions = 1
 	m := NewMemeManager(store)
 
 	result, err := m.MergeTags("  Buisness ", "BUSINESS", accessor.AuditActor{UserID: "admin"})
@@ -101,7 +105,7 @@ func TestMergeTagsDelegatesToStore(t *testing.T) {
 	if store.callCount() != 0 {
 		t.Fatalf("whole-archive scan was used %d times, want 0", store.callCount())
 	}
-	if result.AffectedMemes != 4 || result.SourceTag != "buisness" || result.TargetTag != "business" {
+	if result.AffectedMemes != 4 || result.AudiobooksAffected != 2 || result.RestrictionsMoved != 1 || result.SourceTag != "buisness" || result.TargetTag != "business" {
 		t.Fatalf("result = %+v", result)
 	}
 }

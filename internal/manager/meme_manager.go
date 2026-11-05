@@ -755,6 +755,10 @@ type TagMergeResult struct {
 	SourceTag     string `json:"source_tag"`
 	TargetTag     string `json:"target_tag"`
 	AffectedMemes int    `json:"affected_memes"`
+	// AudiobooksAffected and RestrictionsMoved count audiobook tag links and
+	// account audiobook-tag restrictions re-pointed onto the target tag.
+	AudiobooksAffected int `json:"audiobooks_affected"`
+	RestrictionsMoved  int `json:"restrictions_moved"`
 }
 
 func (m *MemeManager) GetStoredMemeTagSuggestions(id string) (MemeTagSuggestionResult, error) {
@@ -1447,14 +1451,20 @@ func (m *MemeManager) MergeTags(sourceTag string, targetTag string, actor access
 	// Fast path: one transaction that repoints tag links in bulk, instead of
 	// rewriting every affected meme (each of which re-swept the tags table).
 	if tm, ok := m.store.(accessor.TagMaintenanceStore); ok {
-		affected, err := tm.MergeTag(sourceTag, targetTag, actor)
+		counts, err := tm.MergeTag(sourceTag, targetTag, actor)
 		if err != nil {
 			return TagMergeResult{}, err
 		}
-		if affected > 0 {
+		if counts.Memes > 0 {
 			m.invalidateAdminReadCache()
 		}
-		return TagMergeResult{SourceTag: sourceTag, TargetTag: targetTag, AffectedMemes: affected}, nil
+		return TagMergeResult{
+			SourceTag:          sourceTag,
+			TargetTag:          targetTag,
+			AffectedMemes:      counts.Memes,
+			AudiobooksAffected: counts.Audiobooks,
+			RestrictionsMoved:  counts.Restrictions,
+		}, nil
 	}
 
 	memes := m.store.List("", "", false, "")

@@ -147,8 +147,10 @@ type BulkMemeStore interface {
 type TagMaintenanceStore interface {
 	// MergeTag repoints every meme_tags link from sourceTag onto targetTag,
 	// creating targetTag if needed and deleting sourceTag, in one transaction.
-	// It returns the number of memes that carried sourceTag.
-	MergeTag(sourceTag, targetTag string, actor AuditActor) (int, error)
+	// Audiobook tag links and account audiobook-tag
+	// restrictions are re-pointed too. It returns how many memes, audiobooks
+	// and restrictions carried sourceTag.
+	MergeTag(sourceTag, targetTag string, actor AuditActor) (TagMergeCounts, error)
 }
 
 // TagSuggestionQueryStore resolves the tag-suggestion admin panel's counts and
