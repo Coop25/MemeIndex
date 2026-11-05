@@ -76,14 +76,18 @@ type adminSystemHealth struct {
 
 type adminDashboardResponse struct {
 	manager.AdminDashboardStats
-	UserCount      int                             `json:"user_count"`
-	ActiveUsers30D int                             `json:"active_users_30d"`
-	NewUsers30D    int                             `json:"new_users_30d"`
-	ActiveShares   int                             `json:"active_share_count"`
-	RecentActivity []accessor.GlobalMemeAuditEntry `json:"recent_activity"`
-	BackupStatus   *backupJobStatus                `json:"backup_status,omitempty"`
-	SystemHealth   []adminSystemHealth             `json:"system_health"`
-	GeneratedAt    time.Time                       `json:"generated_at"`
+	UserCount         int                             `json:"user_count"`
+	ActiveUsers30D    int                             `json:"active_users_30d"`
+	NewUsers30D       int                             `json:"new_users_30d"`
+	ActiveShares      int                             `json:"active_share_count"`
+	RecentActivity    []accessor.GlobalMemeAuditEntry `json:"recent_activity"`
+	BackupStatus      *backupJobStatus                `json:"backup_status,omitempty"`
+	AudiobookStats    *adminAudiobookStats            `json:"audiobook_stats,omitempty"`
+	Disk              *adminDiskStats                 `json:"disk,omitempty"`
+	LastBackup        *adminLastBackup                `json:"last_backup,omitempty"`
+	TotalStorageBytes int64                           `json:"total_storage_bytes"`
+	SystemHealth      []adminSystemHealth             `json:"system_health"`
+	GeneratedAt       time.Time                       `json:"generated_at"`
 }
 
 func NewServer(config Config, memeManager *manager.MemeManager) *Server {
@@ -1857,6 +1861,36 @@ func (s *Server) handleAdminDashboard(w http.ResponseWriter, r *http.Request) {
 	} else {
 		response.SystemHealth = append(response.SystemHealth, adminSystemHealth{Name: "Backup Service", Status: "Requires PostgreSQL", Healthy: false})
 	}
+	response.TotalStorageBytes = stats.TotalSizeBytes
+	if audiobookStats, err := s.cachedAudiobookAdminStats(r.Context()); err != nil {
+		log.Printf("admin dashboard audiobook stats failed: %v", err)
+	} else if audiobookStats != nil {
+		response.AudiobookStats = audiobookStats
+		response.TotalStorageBytes += audiobookStats.TotalBytes
+	}
+
+	diskStatus, diskHealthy := "Unknown", false
+	if disk, ok := diskUsage(s.config.DataDir); ok {
+		response.Disk = &disk
+		diskStatus, diskHealthy = formatAdminBytes(disk.FreeBytes)+" free", !disk.Low
+		if disk.Low {
+			diskStatus = "Low: " + diskStatus
+		}
+	}
+	response.SystemHealth = append(response.SystemHealth, adminSystemHealth{Name: "Disk", Status: diskStatus, Healthy: diskHealthy})
+
+	backupStatus, backupHealthy := "None yet", false
+	if s.backup != nil {
+		if last, err := s.backup.lastCompletedBackup(response.GeneratedAt); err != nil {
+			log.Printf("admin dashboard last backup failed: %v", err)
+			backupStatus = "Unknown"
+		} else if last != nil {
+			response.LastBackup = last
+			backupStatus, backupHealthy = formatAdminAge(response.GeneratedAt.Sub(last.CompletedAt)), !last.Stale
+		}
+	}
+	response.SystemHealth = append(response.SystemHealth, adminSystemHealth{Name: "Last Backup", Status: backupStatus, Healthy: backupHealthy})
+
 	response.SystemHealth = append(response.SystemHealth,
 		adminSystemHealth{Name: "Image Processing", Status: "Available", Healthy: s.managers.ThumbnailDir() != ""},
 		adminSystemHealth{Name: "Tag Suggestions", Status: map[bool]string{true: "Configured", false: "Optional / disabled"}[s.config.TagSuggestions.Enabled()], Healthy: true},
