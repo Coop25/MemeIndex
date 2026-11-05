@@ -19,6 +19,7 @@ const state = {
   },
   admin: {
     tab: "dashboard",
+    storage: { data: null, scan: null, selected: new Set(), busy: false, status: "" },
     audit: {
       offset: 0,
       limit: 100,
@@ -179,6 +180,11 @@ const ADMIN_TABS = Object.freeze({
     group: "Operations", label: "Backup & Restore", superOnly: true, panel: "admin-backup-panel",
     title: "Backup & Restore", kicker: "Admin",
     copy: "Move the complete meme library and its database to another MemeIndex Docker instance.",
+  },
+  storage: {
+    group: "Operations", label: "Storage", superOnly: true, panel: "admin-storage-panel",
+    title: "Storage", kicker: "Admin",
+    copy: "See what is using disk space, find files the database no longer references, and clear abandoned uploads.",
   },
   "audiobook-conversion": {
     group: "Operations", label: "MP3 Conversion", superOnly: true, panel: "admin-remux-panel",
@@ -4373,6 +4379,7 @@ function renderContentMode() {
   renderAdminTagQueueStatus();
   renderAdminLinkRetryStatus();
   renderAdminRemuxStatus();
+  window.renderAdminStorage?.();
   syncAdminTagQueuePolling();
   syncAdminLinkQueuePolling();
   syncAdminBackupPolling();
@@ -4491,6 +4498,7 @@ const ADMIN_TAB_LOADERS = {
   "tag-review": { run: () => fetchAdminTagQueueStatus() },
   "link-retries": { run: () => fetchAdminLinkRetryStatus() },
   "rejected-links": { run: () => fetchAdminLinkRetryStatus() },
+  storage: { loading: "Loading storage...", run: () => window.loadAdminStorage(), fail: "Could not load storage." },
   backup: { run: () => { renderAdminBackupStatus(); return fetchAdminBackupStatus(); } },
   "audiobook-conversion": { run: () => fetchAdminRemuxStatus() },
 };

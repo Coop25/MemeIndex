@@ -429,6 +429,36 @@
               <p id="admin-users-status" class="status-text"></p>
               <div id="admin-users-list" class="users-list"></div>
             </section>
+            <section id="admin-storage-panel" class="admin-storage-panel hidden">
+              <div class="admin-storage-toolbar">
+                <p id="admin-storage-status" class="status-text" role="status"></p>
+                <div class="admin-storage-actions">
+                  <button id="admin-storage-refresh" class="ghost-button" type="button">Refresh</button>
+                  <button id="admin-storage-scan" class="ghost-button" type="button">Scan for orphans</button>
+                </div>
+              </div>
+              <div class="admin-storage-grid">
+                <section class="admin-dashboard-section"><div class="admin-dashboard-section-head"><p class="section-kicker">Usage</p><h3>Disk usage</h3></div><div id="admin-storage-dirs"></div></section>
+                <section class="admin-dashboard-section"><div class="admin-dashboard-section-head"><p class="section-kicker">Biggest</p><h3>Largest files</h3></div><div id="admin-storage-largest"></div></section>
+                <section class="admin-dashboard-section"><div class="admin-dashboard-section-head"><p class="section-kicker">Cleanup</p><h3>Orphaned files</h3></div><div id="admin-storage-orphans"></div></section>
+                <section class="admin-dashboard-section"><div class="admin-dashboard-section-head"><p class="section-kicker">Audiobooks</p><h3>Unfinished uploads</h3></div><div id="admin-storage-uploads"></div></section>
+              </div>
+            </section>
+            <section id="admin-storage-panel" class="admin-storage-panel hidden">
+              <div class="admin-storage-toolbar">
+                <p id="admin-storage-status" class="status-text" role="status"></p>
+                <div class="admin-storage-actions">
+                  <button id="admin-storage-refresh" class="ghost-button" type="button">Refresh</button>
+                  <button id="admin-storage-scan" class="ghost-button" type="button">Scan for orphans</button>
+                </div>
+              </div>
+              <div class="admin-storage-grid">
+                <section class="admin-dashboard-section"><div class="admin-dashboard-section-head"><p class="section-kicker">Usage</p><h3>Disk usage</h3></div><div id="admin-storage-dirs"></div></section>
+                <section class="admin-dashboard-section"><div class="admin-dashboard-section-head"><p class="section-kicker">Biggest</p><h3>Largest files</h3></div><div id="admin-storage-largest"></div></section>
+                <section class="admin-dashboard-section"><div class="admin-dashboard-section-head"><p class="section-kicker">Cleanup</p><h3>Orphaned files</h3></div><div id="admin-storage-orphans"></div></section>
+                <section class="admin-dashboard-section"><div class="admin-dashboard-section-head"><p class="section-kicker">Audiobooks</p><h3>Unfinished uploads</h3></div><div id="admin-storage-uploads"></div></section>
+              </div>
+            </section>
             <section id="admin-backup-panel" class="admin-backup-panel hidden">
               <article class="admin-backup-card">
                 <div>
@@ -1383,5 +1413,7 @@
     <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="false"></div>
 
     <script src="/static/app.js" defer></script>
+    <script src="/static/admin-pages.js" defer></script>
+    <script src="/static/admin-pages.js" defer></script>
   </body>
 </html>
