@@ -2339,3 +2339,24 @@ func scanMemeRow(row interface{ Scan(dest ...any) error }) (Meme, error) {
 	meme.AutoSuggestDisabled = autoSuggestDisabled
 	return meme, nil
 }
+
+// AllStoredFiles returns every meme row, hidden and pending-delete included.
+func (s *PostgresStore) AllStoredFiles() ([]StoredFile, error) {
+	rows, err := s.pool.Query(context.Background(), `
+		SELECT id, original_name, stored_name, file_path, COALESCE(hidden_from_app, FALSE)
+		FROM memes
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]StoredFile, 0)
+	for rows.Next() {
+		var f StoredFile
+		if err := rows.Scan(&f.ID, &f.Title, &f.StoredName, &f.FilePath, &f.Hidden); err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}

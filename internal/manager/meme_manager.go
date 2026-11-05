@@ -2371,3 +2371,14 @@ func absInt(value int) int {
 	}
 	return value
 }
+
+// StoredMemeFiles lists the on-disk file names of every meme row, including
+// hidden and pending-delete ones. It errors when the store cannot enumerate
+// them, so a caller deciding what is safe to delete fails closed.
+func (m *MemeManager) StoredMemeFiles() ([]accessor.StoredFile, error) {
+	store, ok := m.store.(accessor.StoredFileStore)
+	if !ok {
+		return nil, errors.New("meme store cannot list stored files")
+	}
+	return store.AllStoredFiles()
+}

@@ -240,6 +240,10 @@ type audiobookStore interface {
 	AdminStats(ctx context.Context, now time.Time) (adminAudiobookStats, error)
 	AdminListening(ctx context.Context, now time.Time) ([]adminDaySeconds, []adminTopBook, []adminTopListener, error)
 	AdminHealthCounts(ctx context.Context) (adminAudiobookHealth, error)
+	// ListStoragePaths and ListUploadTempPaths report every file location the
+	// database references, for the admin storage orphan scan.
+	ListStoragePaths(ctx context.Context) ([]audiobookStoragePath, error)
+	ListUploadTempPaths(ctx context.Context) ([]string, error)
 
 	ListAudiobooks(ctx context.Context, userID string, filter audiobookListFilter) ([]audiobookWithProgress, error)
 	GetAudiobook(ctx context.Context, id string) (audiobookRecord, error)
@@ -1743,4 +1747,12 @@ func scanAudiobookInt64List(ctx context.Context, tx pgx.Tx, sql string, args ...
 		out = append(out, id)
 	}
 	return out, rows.Err()
+}
+
+// audiobookStoragePath is one audiobook's on-disk file locations.
+type audiobookStoragePath struct {
+	ID          string
+	Title       string
+	StoragePath string
+	CoverPath   string
 }

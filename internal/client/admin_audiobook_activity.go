@@ -247,3 +247,39 @@ func (s *Server) cachedAudiobookActivity(ctx context.Context) (*adminAudiobookAc
 	out := cloneAdminAudiobookActivity(activity)
 	return &out, nil
 }
+
+// ListStoragePaths returns the stored file and cover path of every audiobook.
+func (s *postgresAudiobookStore) ListStoragePaths(ctx context.Context) ([]audiobookStoragePath, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id, title, storage_path, cover_path FROM audiobooks`)
+	if err != nil {
+		return nil, fmt.Errorf("list audiobook storage paths: %w", err)
+	}
+	defer rows.Close()
+	out := []audiobookStoragePath{}
+	for rows.Next() {
+		var p audiobookStoragePath
+		if err := rows.Scan(&p.ID, &p.Title, &p.StoragePath, &p.CoverPath); err != nil {
+			return nil, fmt.Errorf("scan audiobook storage path: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// ListUploadTempPaths returns the temp file of every in-progress upload.
+func (s *postgresAudiobookStore) ListUploadTempPaths(ctx context.Context) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `SELECT temp_path FROM audiobook_uploads`)
+	if err != nil {
+		return nil, fmt.Errorf("list audiobook upload temp paths: %w", err)
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, fmt.Errorf("scan audiobook upload temp path: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}

@@ -213,3 +213,21 @@ type ReelSessionPersistence interface {
 	DeleteReelSession(sessionID string) error
 	CleanupStaleReelSessions(before time.Time) error
 }
+
+// StoredFile names the on-disk files of one meme row, hidden and
+// pending-delete rows included.
+type StoredFile struct {
+	ID         string
+	Title      string
+	StoredName string
+	FilePath   string
+	Hidden     bool
+}
+
+// StoredFileStore lists every meme row regardless of visibility. The admin
+// storage scan uses it to decide which files under uploads/ and thumbnails/
+// are referenced: the visible-only listings would make a hidden or
+// pending-delete meme's files look orphaned.
+type StoredFileStore interface {
+	AllStoredFiles() ([]StoredFile, error)
+}

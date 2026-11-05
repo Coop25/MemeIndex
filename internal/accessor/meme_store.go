@@ -1031,3 +1031,15 @@ func detectContentType(header textproto.MIMEHeader, explicitContentType, filenam
 
 	return "application/octet-stream"
 }
+
+// AllStoredFiles returns every meme's file names (the JSON store has no hidden
+// state).
+func (s *MemeStore) AllStoredFiles() ([]StoredFile, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]StoredFile, 0, len(s.memes))
+	for _, meme := range s.memes {
+		out = append(out, StoredFile{ID: meme.ID, Title: meme.OriginalName, StoredName: meme.StoredName, FilePath: meme.FilePath})
+	}
+	return out, nil
+}
