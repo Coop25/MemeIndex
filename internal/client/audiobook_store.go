@@ -282,6 +282,13 @@ type audiobookStore interface {
 	ListSeries(ctx context.Context, restrictToTags []string) ([]audiobookSeries, error)
 	RenameSeries(ctx context.Context, id, name string) (audiobookSeries, error)
 	DeleteSeries(ctx context.Context, id string) error
+	// MergeSeries moves every book of fromID into intoID (keeping sequence
+	// numbers) and deletes fromID, in one transaction. It returns the number
+	// of books moved, or ErrAudiobookSeriesNotFound if either series is missing.
+	MergeSeries(ctx context.Context, fromID, intoID string) (int, error)
+	// AdminAudiobookTagUsage lists tags used by at least one audiobook, with
+	// audiobook and meme counts, most-used first (admin use only).
+	AdminAudiobookTagUsage(ctx context.Context) ([]adminAudiobookTagUsage, error)
 	SetAudiobookSeries(ctx context.Context, audiobookID string, seriesID *string, sequence *float64) (audiobookRecord, error)
 
 	// BackfillMetadata re-probes already-stored audiobooks that are still

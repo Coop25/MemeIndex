@@ -201,6 +201,8 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/api/admin/migration/import", s.withAPIAuth(http.HandlerFunc(s.handleAdminMigrationImport), permissionManageUsers))
 	mux.Handle("/api/migration/info", s.withMigrationToken(s.handleMigrationInfo))
 	mux.Handle("/api/migration/export", s.withMigrationToken(s.handleMigrationExport))
+	mux.Handle("/api/admin/audiobook-series/", s.withAPIAuth(http.HandlerFunc(s.handleAdminAudiobookSeries), permissionManageUsers))
+	mux.Handle("/api/admin/audiobook-tags", s.withAPIAuth(http.HandlerFunc(s.handleAdminAudiobookTags), permissionManageUsers))
 	mux.Handle("/api/admin/audit-logs", s.withAPIAuth(http.HandlerFunc(s.handleAuditLogs), permissionManageUsers))
 	mux.Handle("/api/admin/tag-hygiene", s.withAPIAuth(http.HandlerFunc(s.handleTagHygiene), permissionManageUsers))
 	mux.Handle("/api/admin/tag-suggestions/status", s.withAPIAuth(http.HandlerFunc(s.handleTagSuggestionStatus), permissionManageUsers))
