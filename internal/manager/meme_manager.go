@@ -54,7 +54,7 @@ type MemeManager struct {
 
 	// adminReadMu guards short-lived memoization of the two admin read models
 	// that each require a full store scan. This is a burst coalescer, not a
-	// freshness cache: entries expire after adminReadCacheTTL and are dropped
+	// freshness cache: entries expire after AdminReadCacheTTL and are dropped
 	// outright on ReloadAfterRestore. Deep copies are handed out so callers
 	// (which rewrite asset paths per request) never touch the stored value.
 	adminReadMu            sync.Mutex
@@ -67,7 +67,7 @@ type MemeManager struct {
 	tagHygieneWorkerStart  sync.Once
 }
 
-const adminReadCacheTTL = 5 * time.Second
+const AdminReadCacheTTL = 5 * time.Second
 
 // Recomputing the tag-hygiene report is a full O(n^2) pass over every distinct
 // tag name, so it runs on a background worker rather than the admin request
@@ -887,12 +887,12 @@ func (m *MemeManager) ResetTagSuggestionsAndRequeueUntagged(actor accessor.Audit
 	return result, nil
 }
 
-// AdminDashboard returns the admin overview stats, memoized for adminReadCacheTTL
+// AdminDashboard returns the admin overview stats, memoized for AdminReadCacheTTL
 // so repeated loads (and the merge-then-refresh burst) do not each trigger a full
 // store scan. Callers receive an independent deep copy.
 func (m *MemeManager) AdminDashboard() AdminDashboardStats {
 	m.adminReadMu.Lock()
-	if m.adminDashboardCache != nil && time.Since(m.adminDashboardCachedAt) < adminReadCacheTTL {
+	if m.adminDashboardCache != nil && time.Since(m.adminDashboardCachedAt) < AdminReadCacheTTL {
 		cached := cloneAdminDashboardStats(*m.adminDashboardCache)
 		m.adminReadMu.Unlock()
 		return cached

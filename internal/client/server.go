@@ -32,16 +32,17 @@ import (
 )
 
 type Server struct {
-	config      Config
-	managers    *manager.MemeManager
-	auth        *authService
-	users       authUserStore
-	audiobooks  audiobookStore
-	mediaClient *mediafetch.Client
-	linkRetries *linkRetryQueue
-	backup      *portableBackup
-	shareSecret []byte
-	draining    atomic.Bool
+	config              Config
+	managers            *manager.MemeManager
+	auth                *authService
+	users               authUserStore
+	audiobooks          audiobookStore
+	audiobookAdminStats audiobookAdminStatsCache
+	mediaClient         *mediafetch.Client
+	linkRetries         *linkRetryQueue
+	backup              *portableBackup
+	shareSecret         []byte
+	draining            atomic.Bool
 	// restoring is set for the full duration of a portable-backup import, which
 	// truncates the database and swaps the uploads/thumbnails directories under
 	// the running server. While it is set, maintenanceGuard rejects mutating

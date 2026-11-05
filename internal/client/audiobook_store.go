@@ -237,6 +237,7 @@ type audiobookStore interface {
 	AbortUpload(ctx context.Context, id, userID string) (audiobookUpload, error)
 	StaleUploads(ctx context.Context, olderThan time.Time) ([]audiobookUpload, error)
 	DiscardUpload(ctx context.Context, id string) error
+	AdminStats(ctx context.Context, now time.Time) (adminAudiobookStats, error)
 
 	ListAudiobooks(ctx context.Context, userID string, filter audiobookListFilter) ([]audiobookWithProgress, error)
 	GetAudiobook(ctx context.Context, id string) (audiobookRecord, error)
