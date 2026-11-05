@@ -174,3 +174,20 @@ test("upload chart output is unchanged by default labels", () => {
   assert.match(html, /uploads in 30 days/);
   assert.match(html, /Uploads: 2/);
 });
+
+test("tab badges prefer live sources, then work_queues, then existing state", () => {
+  const wq = { delete_queue: 9, suggested_tags: 8, link_retries: 7, rejected_links: 6, conversion_queue: 0 };
+  const fresh = { queue: { total: 0, loaded: false }, tagReview: { total: 0, loaded: false }, linkRetryStatus: null, dashboard: { work_queues: { ...wq } } };
+  assert.deepEqual({ ...context.computeAdminTabBadgeCounts(fresh) }, { tagReview: 8, linkRetries: 7, rejectedLinks: 6, deleteQueue: 9 });
+  const live = { queue: { total: 2, loaded: true }, tagReview: { total: 0, loaded: true }, linkRetryStatus: { queued: [1], rejected: [] }, dashboard: { work_queues: { ...wq } } };
+  assert.deepEqual({ ...context.computeAdminTabBadgeCounts(live) }, { tagReview: 0, linkRetries: 1, rejectedLinks: 0, deleteQueue: 2 });
+  const none = { queue: { total: 4, loaded: false }, tagReview: { total: 3 }, linkRetryStatus: null, dashboard: null };
+  assert.deepEqual({ ...context.computeAdminTabBadgeCounts(none) }, { tagReview: 3, linkRetries: 0, rejectedLinks: 0, deleteQueue: 4 });
+});
+
+test("loaded tab counts are written back into dashboard work_queues", () => {
+  const admin = { dashboard: { work_queues: { delete_queue: 5 } } };
+  context.syncAdminWorkQueue(admin, "delete_queue", 1);
+  assert.equal(admin.dashboard.work_queues.delete_queue, 1);
+  assert.doesNotThrow(() => context.syncAdminWorkQueue({ dashboard: null }, "delete_queue", 1));
+});

@@ -26,12 +26,14 @@ const state = {
       hasMore: false,
     },
     queue: {
+      loaded: false,
       offset: 0,
       limit: 25,
       total: 0,
       hasMore: false,
     },
     tagReview: {
+      loaded: false,
       offset: 0,
       limit: 50,
       total: 0,
@@ -716,24 +718,7 @@ function setAdminPanelLoading(loading) {
 // adminTabBadgeCounts derives the "needs attention" number shown on a few tabs
 // from data the workspace already polls.
 function adminTabBadgeCounts() {
-  const linkStatus = state.admin.linkRetryStatus || {};
-  const queued = Array.isArray(linkStatus.queued) ? linkStatus.queued.length : 0;
-  const rejected = Array.isArray(linkStatus.rejected) ? linkStatus.rejected.length : 0;
-  const queues = state.admin.dashboard?.work_queues;
-  if (queues) {
-    return {
-      tagReview: Number(queues.suggested_tags) || 0,
-      linkRetries: Number(queues.link_retries) || 0,
-      rejectedLinks: Number(queues.rejected_links) || 0,
-      deleteQueue: Number(queues.delete_queue) || 0,
-    };
-  }
-  return {
-    tagReview: Number(state.admin.tagReview?.total || 0) || 0,
-    linkRetries: queued,
-    rejectedLinks: rejected,
-    deleteQueue: Number(state.admin.queue?.total || 0) || 0,
-  };
+  return computeAdminTabBadgeCounts(state.admin);
 }
 
 let adminTabRailWired = false;
@@ -1543,6 +1528,9 @@ async function fetchDeleteQueue() {
   const payload = await response.json();
   deleteQueueState = payload.memes || [];
   queueState.total = Number(payload.total || 0);
+  queueState.loaded = true;
+  syncAdminWorkQueue(state.admin, "delete_queue", queueState.total);
+  renderAdminTabRail();
   queueState.hasMore = !!payload.has_more;
   renderDeleteQueue();
   syncAdminPagination();
@@ -3047,6 +3035,26 @@ function buildAdminDashboardMetrics(dashboard) {
   return metrics;
 }
 
+// Badge counts prefer each tab's live source once loaded, and fall back to the
+// dashboard's work_queues before that, then to the existing state.
+function computeAdminTabBadgeCounts(admin) {
+  const queues = admin.dashboard?.work_queues || null;
+  const linkStatus = admin.linkRetryStatus;
+  const pick = (liveLoaded, live, key) => (liveLoaded || !queues ? live : Number(queues[key]) || 0);
+  return {
+    tagReview: pick(!!admin.tagReview?.loaded, Number(admin.tagReview?.total || 0) || 0, "suggested_tags"),
+    linkRetries: pick(!!linkStatus, Array.isArray(linkStatus?.queued) ? linkStatus.queued.length : 0, "link_retries"),
+    rejectedLinks: pick(!!linkStatus, Array.isArray(linkStatus?.rejected) ? linkStatus.rejected.length : 0, "rejected_links"),
+    deleteQueue: pick(!!admin.queue?.loaded, Number(admin.queue?.total || 0) || 0, "delete_queue"),
+  };
+}
+
+// syncAdminWorkQueue writes a freshly loaded tab count into the cached dashboard
+// so the dashboard strip agrees when it is shown again.
+function syncAdminWorkQueue(admin, key, value) {
+  if (admin.dashboard?.work_queues) admin.dashboard.work_queues[key] = Math.max(0, Number(value) || 0);
+}
+
 // Work-queue chips and audiobook-health counts link to other admin tabs. `canOpen`
 // lets the caller render a plain count when the target tab does not exist (yet).
 const ADMIN_WORK_QUEUE_CHIPS = Object.freeze([
@@ -3461,6 +3469,9 @@ async function fetchAdminTagQueueStatus() {
   state.admin.tagReview.offset = reviewOffset;
   state.admin.tagReview.limit = reviewLimit;
   state.admin.tagReview.total = reviewTotal;
+  state.admin.tagReview.loaded = true;
+  syncAdminWorkQueue(state.admin, "suggested_tags", reviewTotal);
+  renderAdminTabRail();
   state.admin.tagReview.hasMore = !!payload?.pending_review_has_more;
   state.admin.tagQueueStatus = payload || null;
   renderAdminTagQueueStatus();
@@ -3479,6 +3490,11 @@ async function fetchAdminLinkRetryStatus() {
 
   const payload = await response.json();
   state.admin.linkRetryStatus = payload || null;
+  if (payload) {
+    syncAdminWorkQueue(state.admin, "link_retries", Array.isArray(payload.queued) ? payload.queued.length : 0);
+    syncAdminWorkQueue(state.admin, "rejected_links", Array.isArray(payload.rejected) ? payload.rejected.length : 0);
+  }
+  renderAdminTabRail();
   renderAdminLinkRetryStatus();
   return state.admin.linkRetryStatus;
 }
