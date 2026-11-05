@@ -114,3 +114,20 @@ test("index.html has one library panel", () => {
   assert.equal((html.match(/id="admin-audiobook-library-panel"/g) || []).length, 1);
   assert.equal((html.match(/id="admin-library-filter"/g) || []).length, 1);
 });
+
+test("dashboard preset resets page and data but keeps sort", () => {
+  const next = context.adminLibraryPresetState({ filter: "", sort: "size", dir: "asc", page: 3, data: { items: [1] }, busy: true, status: "x" }, "no-cover");
+  assert.equal(next.filter, "no-cover");
+  assert.equal(next.page, 1);
+  assert.equal(next.data, null);
+  assert.equal(next.sort, "size");
+  assert.equal(next.dir, "asc");
+  assert.equal(next.busy, false);
+  assert.equal(context.adminLibraryPresetState(undefined, "no-series").page, 1);
+});
+
+test("library refresh hook exists and app.js saves refresh it and presets reset the page", () => {
+  assert.equal(typeof context.refreshAdminAudiobookLibrary, "function");
+  assert.ok(appSource.includes("window.refreshAdminAudiobookLibrary?.()"));
+  assert.ok(appSource.includes("adminLibraryPresetState(state.admin.audiobookLibrary"));
+});

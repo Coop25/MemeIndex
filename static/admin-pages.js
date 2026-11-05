@@ -372,6 +372,19 @@ function adminLibraryState() {
 
 let adminLibraryRequestToken = 0;
 
+// adminLibraryPresetState is the library state when another page (the
+// dashboard health counts) opens the tab with a filter: keep sort/dir, but
+// restart at page 1 with no stale rows.
+function adminLibraryPresetState(existing, filter) {
+  return { ...(existing || {}), filter, page: 1, data: null, busy: false, status: "" };
+}
+
+// refreshAdminAudiobookLibrary reloads the table after an edit, only when the
+// library tab is the one on screen.
+function refreshAdminAudiobookLibrary() {
+  if (isAdminView() && canManageUsers() && activeAdminTab() === "audiobook-library") reloadAdminAudiobookLibrary();
+}
+
 function renderAdminAudiobookLibrary() {
   const panel = document.querySelector("#admin-audiobook-library-panel");
   if (!panel) return;
@@ -450,8 +463,14 @@ async function openAdminLibraryAudiobook(id) {
   openAudiobookEditModal(result.body);
 }
 
-function reloadAdminAudiobookLibrary() {
-  loadAdminAudiobookLibrary().catch((error) => console.error(error));
+// focusSelector, when given, is re-focused after the table re-renders so
+// keyboard users stay on the control they used.
+function reloadAdminAudiobookLibrary(focusSelector) {
+  loadAdminAudiobookLibrary().catch((error) => console.error(error)).then(() => {
+    if (!focusSelector) return;
+    const el = document.querySelector("#admin-audiobook-library-panel " + focusSelector);
+    if (el && typeof el.focus === "function") el.focus();
+  });
 }
 
 function initAdminAudiobookLibraryPanel() {
@@ -467,7 +486,7 @@ function initAdminAudiobookLibraryPanel() {
       if (s.sort === col) s.dir = s.dir === "asc" ? "desc" : "asc";
       else { s.sort = col; s.dir = ADMIN_LIBRARY_DESC_FIRST.includes(col) ? "desc" : "asc"; }
       s.page = 1;
-      reloadAdminAudiobookLibrary();
+      reloadAdminAudiobookLibrary(`[data-library-sort="${col}"]`);
     } else if (target.hasAttribute("data-admin-audiobook-id")) {
       openAdminLibraryAudiobook(target.getAttribute("data-admin-audiobook-id")).catch((error) => {
         console.error(error);

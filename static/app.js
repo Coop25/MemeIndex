@@ -3264,7 +3264,9 @@ function renderAdminDashboard() {
 
   adminDashboardPanel.querySelectorAll("[data-admin-open-tab]").forEach((button) => button.addEventListener("click", () => {
     if (button.dataset.adminLibraryFilter != null) {
-      state.admin.audiobookLibrary = { ...(state.admin.audiobookLibrary || {}), filter: button.dataset.adminLibraryFilter };
+      state.admin.audiobookLibrary = typeof window.adminLibraryPresetState === "function"
+        ? window.adminLibraryPresetState(state.admin.audiobookLibrary, button.dataset.adminLibraryFilter)
+        : { ...(state.admin.audiobookLibrary || {}), filter: button.dataset.adminLibraryFilter, page: 1, data: null };
     }
     navigateAdminTab(button.dataset.adminOpenTab);
   }));
@@ -6391,6 +6393,7 @@ async function submitAudiobookEdit(event) {
 
   setAudiobookEditFormBusy(true);
   if (audiobookEditStatus) audiobookEditStatus.textContent = "Saving...";
+  let savedAny = false;
   try {
     const metadataResponse = await fetch(`/api/audiobooks/${encodeURIComponent(item.id)}`, {
       method: "PATCH",
@@ -6399,6 +6402,7 @@ async function submitAudiobookEdit(event) {
       body: JSON.stringify({ title, author, narrator }),
     });
     if (!(await expectAuthorized(metadataResponse, "Could not update audiobook."))) return;
+    savedAny = true;
 
     let coverURL = item.cover_url || "";
     if (audiobookEditPendingCoverFile) {
@@ -6437,6 +6441,8 @@ async function submitAudiobookEdit(event) {
     if (audiobookEditStatus) audiobookEditStatus.textContent = "Could not update audiobook.";
   } finally {
     setAudiobookEditFormBusy(false);
+    // Metadata/cover may have changed even if a later step failed; keep the admin library table in step.
+    if (savedAny) window.refreshAdminAudiobookLibrary?.();
   }
 }
 
