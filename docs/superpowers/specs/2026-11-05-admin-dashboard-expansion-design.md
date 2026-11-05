@@ -30,7 +30,8 @@ need attention, who is using the server, and when the last backup completed.
   `static/admin-pages.js`, loaded with `defer` after `app.js` and reusing its
   globals (`escapeHTML`, `formatSize`, `formatRelativeTime`,
   `formatDateTimeZoned`, `ADMIN_TABS` rendering, `state.admin`). The service
-  worker's precache list must include the new file. Dashboard changes stay in
+  worker precaches only PWA icons/manifest, not scripts, so it needs no
+  change. Dashboard changes stay in
   `app.js` next to `renderAdminDashboard`.
 - New admin tabs register in `ADMIN_TABS` (single source of truth for the rail,
   header copy, and loading).
@@ -236,7 +237,9 @@ Orphans:
 - `backups/` and `downloads/` are never scanned for deletion.
 - Deletion requires a confirm dialog listing count and total bytes, re-checks
   each path is still inside its allowed directory and still unreferenced, and
-  writes one audit-log entry per batch (actor, count, bytes).
+  writes one server log line per batch (actor, count, bytes). The audit log
+  table is meme-scoped (`meme_id NOT NULL`), so storage cleanup is not an
+  audit-log entry.
 
 In-progress uploads: table of `audiobook_uploads` — title, uploader, received /
 total bytes, last updated, Discard button (confirm). Note that the sweeper
@@ -287,8 +290,9 @@ delete; add what is missing):
 - Merge A into B: `POST /api/admin/audiobook-series/{id}/merge` with
   `{ "into": "<id>" }` — moves books (keeping their sequence numbers), deletes
   A, in one transaction.
-- Delete: allowed only when the series has no books (existing DELETE, with a
-  server-side empty check added if absent).
+- Delete: existing DELETE, unchanged — books in the series become unassigned
+  (`ON DELETE SET NULL`). It is a user-facing feature, so the admin page
+  confirms with the book count rather than blocking non-empty series.
 - Reorder: edit sequence numbers inline; saved via the existing per-book
   update endpoint.
 
@@ -306,7 +310,7 @@ page links to it rather than adding a second merge tool.
 - Pages show the standard `status-text` error line on fetch failure and keep
   any previously loaded data.
 - Destructive actions (orphan delete, upload discard, series merge/delete)
-  confirm first, report per-item results, and write audit entries.
+  confirm first, report per-item results, and log the actor server-side.
 
 ## Testing
 
