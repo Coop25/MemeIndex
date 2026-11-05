@@ -10,7 +10,9 @@ const context = vm.createContext({});
 // Exercise the actual browser helpers without bootstrapping the authenticated app.
 const escapeStart = source.indexOf("function escapeHTML(");
 vm.runInContext(source.slice(escapeStart, source.indexOf("\nfunction ", escapeStart + 1)), context);
-const chartStart = source.indexOf("function adminChartTooltipAttributes(");
+const sizeStart = source.indexOf("function formatSize(");
+vm.runInContext(source.slice(sizeStart, source.indexOf("\n}", sizeStart) + 2), context);
+const chartStart = source.indexOf("function dashboardTrend(");
 vm.runInContext(source.slice(chartStart, source.indexOf("function renderAdminDashboard(", chartStart)), context);
 
 test("application JavaScript parses", () => {
@@ -81,4 +83,49 @@ test("tag names are escaped in both tooltip attributes and legend text", () => {
   const html = context.buildAdminTopTags([{ tag: '\"><img src=x onerror=alert(1)>', count: 1 }]);
   assert.doesNotMatch(html, /<img/);
   assert.match(html, /&quot;&gt;&lt;img/);
+});
+
+test("storage card totals memes and audiobooks", () => {
+  const metrics = context.buildAdminDashboardMetrics({
+    total_size_bytes: 1024, total_storage_bytes: 3072,
+    audiobook_stats: { total_bytes: 2048, count: 2, duration_seconds: 7200, added_last_30_days: 1, series: [] },
+    metric_series: [], counts: {},
+  });
+  const storage = metrics.find((metric) => /^Storage/.test(metric.label));
+  assert.equal(storage.value, context.formatSize(3072));
+  assert.match(storage.note, /Audiobooks/);
+  assert.match(storage.note, new RegExp(`Memes ${context.formatSize(1024)}`));
+  const books = metrics.find((metric) => metric.label === "Audiobooks");
+  assert.equal(books.value, "2");
+  assert.match(books.note, /^2 h total/);
+  assert.match(books.note, /\+1 in 30 days/);
+});
+
+test("audiobook card hidden without stats", () => {
+  const metrics = context.buildAdminDashboardMetrics({ counts: {}, metric_series: [] });
+  assert.equal(metrics.some((metric) => metric.label === "Audiobooks"), false);
+});
+
+test("disk card shows Unknown and low", () => {
+  const unknown = context.buildAdminDashboardMetrics({ counts: {}, metric_series: [] }).find((metric) => metric.label === "Disk");
+  assert.equal(unknown.value, "Unknown");
+  const low = context.buildAdminDashboardMetrics({ counts: {}, metric_series: [], disk: { total_bytes: 100, free_bytes: 5, used_bytes: 95, low: true } }).find((metric) => metric.label === "Disk");
+  assert.equal(low.accent, "red");
+  assert.equal(low.meter, 0.95);
+  assert.match(low.value, /free$/);
+});
+
+test("empty dashboard produces no NaN", () => {
+  const metrics = context.buildAdminDashboardMetrics({ counts: {}, metric_series: [] });
+  assert.doesNotMatch(JSON.stringify(metrics), /NaN/);
+});
+
+test("combined storage series adds audiobook bytes by date", () => {
+  const metrics = context.buildAdminDashboardMetrics({
+    total_size_bytes: 10, total_storage_bytes: 15, counts: {},
+    metric_series: [{ date: "2026-01-01", storage_bytes: 5 }, { date: "2026-01-02", storage_bytes: 10 }],
+    audiobook_stats: { total_bytes: 5, count: 1, duration_seconds: 0, added_last_30_days: 0, series: [{ date: "2026-01-02", count: 1, bytes: 5 }] },
+  });
+  const storage = metrics.find((metric) => /^Storage/.test(metric.label));
+  assert.deepEqual(Array.from(storage.series, (entry) => entry.storage_bytes), [5, 15]);
 });

@@ -2980,6 +2980,56 @@ function buildAdminTopTags(tags) {
   `;
 }
 
+function buildAdminDashboardMetrics(dashboard) {
+  const counts = dashboard.counts || {};
+  const number = (value) => Number(value || 0);
+  const uploadTrend = dashboardTrend(dashboard.uploaded_last_30_days, dashboard.uploaded_previous_30_days);
+  const storageTrend = dashboardTrend(dashboard.bytes_last_30_days, dashboard.bytes_previous_30_days);
+  const audiobooks = dashboard.audiobook_stats || null;
+  const memeBytes = number(dashboard.total_size_bytes);
+  const metricSeries = Array.isArray(dashboard.metric_series) ? dashboard.metric_series : [];
+  let storageSeries = metricSeries;
+  if (audiobooks && Array.isArray(audiobooks.series) && audiobooks.series.length) {
+    const bytesByDate = new Map(audiobooks.series.map((entry) => [entry.date, number(entry.bytes)]));
+    let carried = 0;
+    storageSeries = metricSeries.map((entry) => {
+      if (bytesByDate.has(entry.date)) carried = bytesByDate.get(entry.date);
+      return { ...entry, storage_bytes: number(entry.storage_bytes) + carried };
+    });
+  }
+  const metrics = [
+    { icon: "M", label: "Total Memes", value: number(counts.total).toLocaleString(), note: uploadTrend.label, trend: uploadTrend.direction, accent: "green", seriesKey: "memes", seriesLabel: "Cumulative meme count", series: metricSeries },
+    { icon: "#", label: "Tags", value: number(dashboard.unique_tags).toLocaleString(), note: `${number(dashboard.total_tag_assignments).toLocaleString()} assignments`, trend: "flat", accent: "purple", seriesKey: "tags", seriesLabel: "Cumulative unique tag count", series: metricSeries },
+    { icon: "U", label: "Users", value: number(dashboard.user_count).toLocaleString(), note: `${number(dashboard.active_users_30d)} active in 30 days`, trend: number(dashboard.new_users_30d) > 0 ? "up" : "flat", accent: "blue", seriesKey: "users", seriesLabel: "Cumulative user count", series: metricSeries },
+    {
+      icon: "S", label: "Storage Used",
+      value: formatSize(audiobooks ? number(dashboard.total_storage_bytes) : memeBytes),
+      note: audiobooks ? `Memes ${formatSize(memeBytes)} · Audiobooks ${formatSize(number(audiobooks.total_bytes))}` : storageTrend.label,
+      trend: audiobooks ? "flat" : storageTrend.direction, accent: "amber",
+      seriesKey: "storage_bytes", seriesLabel: "Cumulative storage used", series: storageSeries,
+      valueFormatter: (value) => `${formatSize(value)} (${value.toLocaleString()} bytes)`,
+    },
+  ];
+  if (audiobooks) {
+    const hours = Math.round(number(audiobooks.duration_seconds) / 3600);
+    metrics.push({ icon: "A", label: "Audiobooks", value: number(audiobooks.count).toLocaleString(), note: `${hours.toLocaleString()} h total · +${number(audiobooks.added_last_30_days).toLocaleString()} in 30 days`, trend: number(audiobooks.added_last_30_days) > 0 ? "up" : "flat", accent: "purple" });
+  }
+  metrics.push(
+    { icon: "F", label: "Favorites", value: number(counts.favorites).toLocaleString(), note: "Across all users", trend: "flat", accent: "red", seriesKey: "favorites", seriesLabel: "Cumulative favorite assignments", series: metricSeries },
+    { icon: "L", label: "Active Share Links", value: number(dashboard.active_share_count).toLocaleString(), note: "Public links available now", trend: "flat", accent: "cyan" },
+  );
+  const disk = dashboard.disk || null;
+  const diskTotal = disk ? number(disk.total_bytes) : 0;
+  metrics.push({
+    icon: "D", label: "Disk",
+    value: disk ? `${formatSize(number(disk.free_bytes))} free` : "Unknown",
+    note: disk ? `of ${formatSize(diskTotal)}` : "Disk usage unavailable",
+    trend: "flat", accent: disk && disk.low ? "red" : "slate",
+    meter: disk && diskTotal > 0 ? Math.min(1, Math.max(0, number(disk.used_bytes) / diskTotal)) : null,
+  });
+  return metrics;
+}
+
 function renderAdminDashboard() {
   if (!adminDashboardPanel || !adminDashboardGrid || !adminDashboardTags || !adminDashboardRecent || !adminDashboardUploadChart || !adminDashboardHealth || !adminDashboardActivity) return;
 
@@ -2996,23 +3046,14 @@ function renderAdminDashboard() {
     return;
   }
 
-  const counts = dashboard.counts || {};
-  const uploadTrend = dashboardTrend(dashboard.uploaded_last_30_days, dashboard.uploaded_previous_30_days);
-  const storageTrend = dashboardTrend(dashboard.bytes_last_30_days, dashboard.bytes_previous_30_days);
-  const metrics = [
-    { icon: "M", label: "Total Memes", value: Number(counts.total || 0).toLocaleString(), note: uploadTrend.label, trend: uploadTrend.direction, accent: "green", seriesKey: "memes", seriesLabel: "Cumulative meme count" },
-    { icon: "#", label: "Tags", value: Number(dashboard.unique_tags || 0).toLocaleString(), note: `${Number(dashboard.total_tag_assignments || 0).toLocaleString()} assignments`, trend: "flat", accent: "purple", seriesKey: "tags", seriesLabel: "Cumulative unique tag count" },
-    { icon: "U", label: "Users", value: Number(dashboard.user_count || 0).toLocaleString(), note: `${Number(dashboard.active_users_30d || 0)} active in 30 days`, trend: Number(dashboard.new_users_30d || 0) > 0 ? "up" : "flat", accent: "blue", seriesKey: "users", seriesLabel: "Cumulative user count" },
-    { icon: "S", label: "Storage Used", value: formatSize(Number(dashboard.total_size_bytes || 0)), note: storageTrend.label, trend: storageTrend.direction, accent: "amber", seriesKey: "storage_bytes", seriesLabel: "Cumulative storage used", valueFormatter: (value) => `${formatSize(value)} (${value.toLocaleString()} bytes)` },
-    { icon: "F", label: "Favorites", value: Number(counts.favorites || 0).toLocaleString(), note: "Across all users", trend: "flat", accent: "red", seriesKey: "favorites", seriesLabel: "Cumulative favorite assignments" },
-    { icon: "L", label: "Active Share Links", value: Number(dashboard.active_share_count || 0).toLocaleString(), note: "Public links available now", trend: "flat", accent: "cyan" },
-  ];
+  const metrics = buildAdminDashboardMetrics(dashboard);
   adminDashboardGrid.innerHTML = metrics.map((metric) => `
     <article class="admin-dashboard-card" data-accent="${metric.accent}">
       <div class="admin-dashboard-card-head"><span class="admin-dashboard-card-icon">${metric.icon}</span><span class="admin-dashboard-label">${escapeHTML(metric.label)}</span></div>
       <strong class="admin-dashboard-value">${escapeHTML(metric.value)}</strong>
       <span class="admin-dashboard-note" data-trend="${metric.trend}">${metric.trend === "up" ? "&#8593; " : metric.trend === "down" ? "&#8595; " : ""}${escapeHTML(metric.note)}</span>
-      ${metric.seriesKey ? buildAdminMetricSparkline(dashboard.metric_series, metric.seriesKey, metric.seriesLabel, metric.valueFormatter) : ""}
+      ${metric.seriesKey ? buildAdminMetricSparkline(metric.series, metric.seriesKey, metric.seriesLabel, metric.valueFormatter) : ""}
+      ${metric.meter != null ? `<div class="admin-disk-meter" role="meter" aria-label="Disk used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(metric.meter * 100)}"><i style="width:${(metric.meter * 100).toFixed(1)}%"></i></div>` : ""}
     </article>
   `).join("");
 
