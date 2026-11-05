@@ -929,7 +929,7 @@ func (s *PostgresStore) SuggestTags(prefix string, limit int) []string {
 		WHERE $1 = '' OR t.name LIKE '%' || $1 || '%'
 		GROUP BY t.id, t.name
 		ORDER BY COUNT(mt.meme_id) DESC, t.name
-		LIMIT $3
+		LIMIT $2
 	`, prefix, limit)
 	if err != nil {
 		return nil
@@ -2005,7 +2005,7 @@ func (s *PostgresStore) ListMemeAudit(id string, limit int) ([]MemeAuditEntry, e
 		FROM meme_audit_logs
 		WHERE meme_id = $1
 		ORDER BY created_at DESC, id DESC
-		LIMIT $3
+		LIMIT $2
 	`, strings.TrimSpace(id), limit)
 	if err != nil {
 		return nil, err

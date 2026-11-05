@@ -54,3 +54,58 @@ func TestListAuditFeedFilterByActor(t *testing.T) {
 		t.Fatalf("unfiltered total = %d err %v, want >= 3", all.Total, err)
 	}
 }
+
+func newRegressionStore(t *testing.T) *PostgresStore {
+	t.Helper()
+	dsn := strings.TrimSpace(os.Getenv("MEMEINDEX_TEST_DATABASE_URL"))
+	if dsn == "" {
+		t.Skip("set MEMEINDEX_TEST_DATABASE_URL to run the Postgres integration test")
+	}
+	store, err := NewPostgresStore(context.Background(), dsn, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewPostgresStore: %v", err)
+	}
+	t.Cleanup(store.Close)
+	return store
+}
+
+func TestSuggestTagsReturnsPrefixMatches(t *testing.T) {
+	store := newRegressionStore(t)
+	token := "sugg" + randToken(t)
+	if _, err := store.Create(CreateInput{
+		File:        strings.NewReader("suggest bytes " + token),
+		Header:      textproto.MIMEHeader{"Content-Type": []string{"image/png"}},
+		Filename:    token + ".png",
+		ContentType: "image/png",
+		Tags:        []string{token + "-one", token + "-two"},
+		Actor:       AuditActor{UserID: "u-sugg", Username: "sugg"},
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	got := store.SuggestTags(token, 10)
+	if len(got) != 2 {
+		t.Fatalf("SuggestTags(%q) = %v, want 2 tags", token, got)
+	}
+}
+
+func TestListMemeAuditReturnsEntries(t *testing.T) {
+	store := newRegressionStore(t)
+	token := "mAudit" + randToken(t)
+	meme, err := store.Create(CreateInput{
+		File:        strings.NewReader("audit bytes " + token),
+		Header:      textproto.MIMEHeader{"Content-Type": []string{"image/png"}},
+		Filename:    token + ".png",
+		ContentType: "image/png",
+		Actor:       AuditActor{UserID: "u-maudit", Username: "maudit"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	entries, err := store.ListMemeAudit(meme.ID, 10)
+	if err != nil {
+		t.Fatalf("ListMemeAudit: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Actor.UserID != "u-maudit" {
+		t.Fatalf("entries = %+v, want the upload entry", entries)
+	}
+}
