@@ -2,12 +2,17 @@ package client
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
+	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -290,4 +295,406 @@ func (s *Server) collectStorageReferences(ctx context.Context) (storageReference
 		add(t, filepath.Join(audiobooksDir, "tmp"))
 	}
 	return refs, missing, nil
+}
+
+// storageReportTTL is how long GET /api/admin/storage serves a cached report;
+// measuring walks the whole data dir.
+const storageReportTTL = 5 * time.Minute
+
+// storageLargestLimit caps the largest-files table.
+const storageLargestLimit = 25
+
+// storageDeleteMaxPaths bounds one orphan delete batch.
+const storageDeleteMaxPaths = 10000
+
+type storageLargeFile struct {
+	Kind  string `json:"kind"` // meme|audiobook
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Bytes int64  `json:"bytes"`
+	Owner string `json:"owner"`
+}
+
+type adminUploadInProgress struct {
+	ID            string    `json:"id"`
+	Title         string    `json:"title"`
+	UserID        string    `json:"user_id"`
+	DisplayName   string    `json:"display_name"`
+	ReceivedBytes int64     `json:"received_bytes"`
+	TotalBytes    int64     `json:"total_bytes"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+type adminStorageReport struct {
+	Dirs        []storageDirUsage       `json:"dirs"`
+	Disk        *adminDiskStats         `json:"disk"`
+	Largest     []storageLargeFile      `json:"largest"`
+	Uploads     []adminUploadInProgress `json:"uploads"`
+	GeneratedAt time.Time               `json:"generated_at"`
+}
+
+// adminStorageState lives on Server. The report is a cache; scan is the
+// allow-list for orphan deletes: only a path the last successful scan
+// reported may ever be removed.
+type adminStorageState struct {
+	reportMu    sync.Mutex
+	report      adminStorageReport
+	reportAt    time.Time
+	reportValid bool
+
+	scanMu sync.Mutex
+	scan   map[string]orphanFile // nil until a scan succeeds
+
+	// deleteMu runs orphan delete batches one at a time.
+	deleteMu sync.Mutex
+}
+
+func (st *adminStorageState) invalidateReport() {
+	st.reportMu.Lock()
+	st.reportValid = false
+	st.reportMu.Unlock()
+}
+
+// setScan replaces the allow-list; nil clears it (nothing deletable).
+func (st *adminStorageState) setScan(orphans []orphanFile) {
+	var allow map[string]orphanFile
+	if orphans != nil {
+		allow = make(map[string]orphanFile, len(orphans))
+		for _, o := range orphans {
+			allow[o.Path] = o
+		}
+	}
+	st.scanMu.Lock()
+	st.scan = allow
+	st.scanMu.Unlock()
+}
+
+// scanAllowed reports whether path was in the last successful scan.
+func (st *adminStorageState) scanAllowed(path string) (allowed, scanned bool) {
+	st.scanMu.Lock()
+	defer st.scanMu.Unlock()
+	if st.scan == nil {
+		return false, false
+	}
+	_, ok := st.scan[path]
+	return ok, true
+}
+
+func (st *adminStorageState) forgetScanned(path string) {
+	st.scanMu.Lock()
+	delete(st.scan, path)
+	st.scanMu.Unlock()
+}
+
+func (s *Server) handleAdminStorage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	report, err := s.cachedStorageReport(r.Context(), r.URL.Query().Get("refresh") == "1")
+	if err != nil {
+		log.Printf("admin storage report failed: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "storage report failed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, report)
+}
+
+func (s *Server) cachedStorageReport(ctx context.Context, refresh bool) (adminStorageReport, error) {
+	st := &s.storage
+	st.reportMu.Lock()
+	defer st.reportMu.Unlock()
+	if !refresh && st.reportValid && time.Since(st.reportAt) < storageReportTTL {
+		return st.report, nil
+	}
+	report, err := s.buildStorageReport(ctx)
+	if err != nil {
+		return adminStorageReport{}, err
+	}
+	st.report, st.reportAt, st.reportValid = report, time.Now(), true
+	return report, nil
+}
+
+func (s *Server) buildStorageReport(ctx context.Context) (adminStorageReport, error) {
+	report := adminStorageReport{Largest: []storageLargeFile{}, Uploads: []adminUploadInProgress{}, GeneratedAt: time.Now().UTC()}
+	dirs, err := measureStorage(s.config.DataDir)
+	if err != nil {
+		return report, err
+	}
+	report.Dirs = dirs
+	if disk, ok := diskUsage(s.config.DataDir); ok {
+		report.Disk = &disk
+	}
+	names := s.adminUserNames(ctx)
+	owner := func(userID string) string {
+		if name := names[userID]; name != "" {
+			return name
+		}
+		return userID
+	}
+
+	if files, err := s.managers.StoredMemeFiles(); err != nil {
+		log.Printf("admin storage meme sizes failed: %v", err)
+	} else {
+		for _, f := range files {
+			report.Largest = append(report.Largest, storageLargeFile{Kind: "meme", ID: f.ID, Name: f.Title, Bytes: f.SizeBytes})
+		}
+	}
+	if s.audiobooks != nil {
+		if books, err := s.audiobooks.ListStoragePaths(ctx); err != nil {
+			log.Printf("admin storage audiobook sizes failed: %v", err)
+		} else {
+			for _, b := range books {
+				report.Largest = append(report.Largest, storageLargeFile{Kind: "audiobook", ID: b.ID, Name: b.Title, Bytes: b.SizeBytes, Owner: owner(b.UploadedBy)})
+			}
+		}
+		if uploads, err := s.audiobooks.ListInProgressUploads(ctx); err != nil {
+			log.Printf("admin storage uploads failed: %v", err)
+		} else {
+			for _, u := range uploads {
+				report.Uploads = append(report.Uploads, adminUploadInProgress{
+					ID: u.ID, Title: u.Title, UserID: u.UserID, DisplayName: owner(u.UserID),
+					ReceivedBytes: u.ReceivedBytes, TotalBytes: u.TotalBytes, UpdatedAt: u.UpdatedAt,
+				})
+			}
+		}
+	}
+	sort.SliceStable(report.Largest, func(i, j int) bool {
+		if report.Largest[i].Bytes != report.Largest[j].Bytes {
+			return report.Largest[i].Bytes > report.Largest[j].Bytes
+		}
+		return report.Largest[i].ID < report.Largest[j].ID
+	})
+	if len(report.Largest) > storageLargestLimit {
+		report.Largest = report.Largest[:storageLargestLimit]
+	}
+	return report, nil
+}
+
+// adminUserNames maps user IDs to display names (falling back to username).
+func (s *Server) adminUserNames(ctx context.Context) map[string]string {
+	names := map[string]string{}
+	if s.users == nil {
+		return names
+	}
+	users, err := s.users.ListUsers(ctx)
+	if err != nil {
+		log.Printf("admin storage user names failed: %v", err)
+		return names
+	}
+	for _, user := range users {
+		name := strings.TrimSpace(user.DisplayName)
+		if name == "" {
+			name = strings.TrimSpace(user.Username)
+		}
+		names[user.UserID] = name
+	}
+	return names
+}
+
+func (s *Server) handleStorageOrphanScan(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	refs, missing, err := s.collectStorageReferences(r.Context())
+	var orphans []orphanFile
+	if err == nil {
+		orphans, err = findOrphans(s.config.DataDir, refs, time.Now())
+	}
+	if err != nil {
+		// A failed scan clears the allow-list: nothing is deletable until a
+		// scan succeeds again.
+		s.storage.setScan(nil)
+		log.Printf("admin storage orphan scan failed: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "storage scan failed"})
+		return
+	}
+	s.storage.setScan(orphans)
+	writeJSON(w, http.StatusOK, map[string]any{"orphans": orphans, "missing": missing, "scanned_at": time.Now().UTC()})
+}
+
+type orphanDeleteResult struct {
+	Path    string `json:"path"`
+	Deleted bool   `json:"deleted"`
+	Error   string `json:"error"`
+}
+
+// handleStorageOrphanDelete is the only place files are removed by path.
+// The whole batch is refused (409) while a backup or restore holds the
+// backup lock, and (500) if references cannot be re-collected. Each path is
+// then checked by checkOrphanDeletable and removed with os.Remove (never
+// RemoveAll).
+func (s *Server) handleStorageOrphanDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		Paths []string `json:"paths"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<20)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	if len(body.Paths) > storageDeleteMaxPaths {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("at most %d paths per request", storageDeleteMaxPaths)})
+		return
+	}
+
+	s.storage.deleteMu.Lock()
+	defer s.storage.deleteMu.Unlock()
+	// A backup reads, and a restore replaces, the files being deleted.
+	if s.backup != nil {
+		if !s.backup.mu.TryLock() {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "backup or restore in progress"})
+			return
+		}
+		defer s.backup.mu.Unlock()
+	}
+
+	// Re-check under the lock: a file referenced (or rewritten) since the
+	// scan must not be deleted.
+	refs, _, err := s.collectStorageReferences(r.Context())
+	var fresh []orphanFile
+	if err == nil {
+		fresh, err = findOrphans(s.config.DataDir, refs, time.Now())
+	}
+	if err != nil {
+		log.Printf("admin storage orphan delete: reference check failed, nothing deleted: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not verify file references; nothing was deleted"})
+		return
+	}
+	freshSet := make(map[string]struct{}, len(fresh))
+	for _, o := range fresh {
+		freshSet[o.Path] = struct{}{}
+	}
+	root := normalizeStoragePath(s.config.DataDir)
+	resolvedRoot, rootErr := filepath.EvalSymlinks(root)
+
+	results := make([]orphanDeleteResult, 0, len(body.Paths))
+	seen := make(map[string]struct{}, len(body.Paths))
+	var deleted int
+	var freed int64
+	for _, raw := range body.Paths {
+		res := orphanDeleteResult{Path: raw}
+		path, size, reason := s.checkOrphanDeletable(raw, root, resolvedRoot, rootErr, freshSet, seen)
+		if reason != "" {
+			res.Error = reason
+		} else if err := os.Remove(path); err != nil {
+			res.Error = "remove failed: " + err.Error()
+		} else {
+			res.Deleted = true
+			deleted++
+			freed += size
+			s.storage.forgetScanned(path)
+		}
+		results = append(results, res)
+	}
+	if deleted > 0 {
+		s.storage.invalidateReport()
+	}
+	log.Printf("storage cleanup by %s: %d files, %d bytes", storageActorName(r), deleted, freed)
+	writeJSON(w, http.StatusOK, map[string]any{"results": results, "bytes_freed": freed})
+}
+
+// checkOrphanDeletable applies every per-path guard, in order, and returns
+// the cleaned path and its size, or a non-empty refusal reason:
+//  1. non-empty, absolute, filepath.Clean'ed, not repeated in the batch
+//  2. in the last successful scan's orphan set (the allow-list)
+//  3. in the fresh orphan set computed under the backup lock from freshly
+//     collected references (still unreferenced, past the grace period, a
+//     regular file directly inside a scanned dir)
+//  4. inside the data dir: filepath.Rel(dataDir, p) does not start with ".."
+//  5. its parent directory, symlinks resolved, is exactly the expected one
+//     under the resolved data dir (no symlinked directory leads elsewhere)
+//  6. Lstat says a regular file (not a symlink, directory or special file)
+func (s *Server) checkOrphanDeletable(raw, root, resolvedRoot string, rootErr error, fresh, seen map[string]struct{}) (string, int64, string) {
+	if strings.TrimSpace(raw) == "" {
+		return "", 0, "empty path"
+	}
+	if !filepath.IsAbs(raw) {
+		return "", 0, "path must be absolute"
+	}
+	path := filepath.Clean(raw)
+	if _, dup := seen[path]; dup {
+		return "", 0, "duplicate path in request"
+	}
+	seen[path] = struct{}{}
+	allowed, scanned := s.storage.scanAllowed(path)
+	if !scanned {
+		return "", 0, "no orphan scan has been run"
+	}
+	if !allowed {
+		return "", 0, "not in the last orphan scan"
+	}
+	if _, ok := fresh[path]; !ok {
+		return "", 0, "no longer an orphan (referenced, recently modified, or gone)"
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == "." || filepath.IsAbs(rel) || strings.HasPrefix(rel, "..") {
+		return "", 0, "outside the data directory"
+	}
+	if rootErr != nil {
+		return "", 0, "cannot resolve the data directory"
+	}
+	parent, err := filepath.EvalSymlinks(filepath.Dir(path))
+	if err != nil || parent != filepath.Join(resolvedRoot, filepath.Dir(rel)) {
+		return "", 0, "parent directory resolves outside its expected location"
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", 0, "cannot stat file"
+	}
+	if !info.Mode().IsRegular() {
+		return "", 0, "not a regular file"
+	}
+	return path, info.Size(), ""
+}
+
+func storageActorName(r *http.Request) string {
+	actor := currentAuditActor(r)
+	for _, name := range []string{actor.Username, actor.DisplayName, actor.UserID} {
+		if name = strings.TrimSpace(name); name != "" {
+			return name
+		}
+	}
+	return "unknown"
+}
+
+// handleAdminAudiobookUpload serves DELETE /api/admin/audiobooks/uploads/{id}:
+// an admin discarding any user's in-progress upload.
+func (s *Server) handleAdminAudiobookUpload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/api/admin/audiobooks/uploads/")
+	if id == "" || strings.Contains(id, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	if s.audiobooks == nil {
+		writeJSON(w, http.StatusOK, map[string]string{"state": "unavailable"})
+		return
+	}
+	upload, err := s.audiobooks.GetUploadByID(r.Context(), id)
+	if errors.Is(err, ErrAudiobookUploadNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "upload not found"})
+		return
+	}
+	if err != nil {
+		log.Printf("admin audiobook upload lookup failed: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload lookup failed"})
+		return
+	}
+	if err := s.discardAudiobookUpload(r.Context(), upload); err != nil {
+		log.Printf("admin audiobook upload discard failed: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "discard failed"})
+		return
+	}
+	s.storage.invalidateReport()
+	log.Printf("audiobooks: upload %s discarded by %s (%d/%d bytes)", upload.ID, storageActorName(r), upload.ReceivedBytes, upload.TotalBytes)
+	w.WriteHeader(http.StatusNoContent)
 }

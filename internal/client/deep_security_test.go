@@ -251,6 +251,8 @@ func TestActualRoutesDenyViewerAdministrativeActions(t *testing.T) {
 		{"POST", "/api/admin/backup/export"}, {"DELETE", "/api/admin/shares"}, {"GET", "/api/admin/audit-logs"},
 		{"POST", "/api/admin/tag-suggestions/reset"}, {"POST", "/api/memes/save-link"}, {"POST", "/api/memes"},
 		{"DELETE", "/api/memes/" + meme.ID}, {"PATCH", "/api/memes/" + meme.ID + "/tag-suggestions"},
+		{"GET", "/api/admin/storage"}, {"POST", "/api/admin/storage/orphans/scan"},
+		{"POST", "/api/admin/storage/orphans/delete"}, {"DELETE", "/api/admin/audiobooks/uploads/x"},
 	} {
 		r := httptest.NewRequest(endpoint.method, "https://example.com"+endpoint.path, strings.NewReader(`{}`))
 		w := httptest.NewRecorder()

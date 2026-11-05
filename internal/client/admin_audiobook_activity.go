@@ -250,7 +250,7 @@ func (s *Server) cachedAudiobookActivity(ctx context.Context) (*adminAudiobookAc
 
 // ListStoragePaths returns the stored file and cover path of every audiobook.
 func (s *postgresAudiobookStore) ListStoragePaths(ctx context.Context) ([]audiobookStoragePath, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id, title, storage_path, cover_path FROM audiobooks`)
+	rows, err := s.pool.Query(ctx, `SELECT id, title, storage_path, cover_path, size_bytes, uploaded_by_user_id FROM audiobooks`)
 	if err != nil {
 		return nil, fmt.Errorf("list audiobook storage paths: %w", err)
 	}
@@ -258,7 +258,7 @@ func (s *postgresAudiobookStore) ListStoragePaths(ctx context.Context) ([]audiob
 	out := []audiobookStoragePath{}
 	for rows.Next() {
 		var p audiobookStoragePath
-		if err := rows.Scan(&p.ID, &p.Title, &p.StoragePath, &p.CoverPath); err != nil {
+		if err := rows.Scan(&p.ID, &p.Title, &p.StoragePath, &p.CoverPath, &p.SizeBytes, &p.UploadedBy); err != nil {
 			return nil, fmt.Errorf("scan audiobook storage path: %w", err)
 		}
 		out = append(out, p)

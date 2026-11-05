@@ -236,6 +236,11 @@ type audiobookStore interface {
 	CompleteUpload(ctx context.Context, id, userID string, durationSeconds float64) (audiobookRecord, error)
 	AbortUpload(ctx context.Context, id, userID string) (audiobookUpload, error)
 	StaleUploads(ctx context.Context, olderThan time.Time) ([]audiobookUpload, error)
+	// ListInProgressUploads returns every user's unfinished upload, most
+	// recently updated first; GetUploadByID looks one up without the owner
+	// check GetUpload applies (admin use only).
+	ListInProgressUploads(ctx context.Context) ([]audiobookUpload, error)
+	GetUploadByID(ctx context.Context, id string) (audiobookUpload, error)
 	DiscardUpload(ctx context.Context, id string) error
 	AdminStats(ctx context.Context, now time.Time) (adminAudiobookStats, error)
 	AdminListening(ctx context.Context, now time.Time) ([]adminDaySeconds, []adminTopBook, []adminTopListener, error)
@@ -433,13 +438,20 @@ func (s *postgresAudiobookStore) CreateUpload(ctx context.Context, seed audioboo
 }
 
 func (s *postgresAudiobookStore) GetUpload(ctx context.Context, id, userID string) (audiobookUpload, error) {
+	return s.getUpload(ctx, `WHERE id = $1 AND user_id = $2`, id, userID)
+}
+
+func (s *postgresAudiobookStore) GetUploadByID(ctx context.Context, id string) (audiobookUpload, error) {
+	return s.getUpload(ctx, `WHERE id = $1`, id)
+}
+
+func (s *postgresAudiobookStore) getUpload(ctx context.Context, where string, args ...any) (audiobookUpload, error) {
 	var upload audiobookUpload
 	var rangesJSON []byte
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, user_id, title, author, filename, mime_type, total_bytes, received_bytes, received_ranges, temp_path, created_at, updated_at
 		FROM audiobook_uploads
-		WHERE id = $1 AND user_id = $2
-	`, id, userID).Scan(
+		`+where, args...).Scan(
 		&upload.ID, &upload.UserID, &upload.Title, &upload.Author, &upload.Filename, &upload.MimeType,
 		&upload.TotalBytes, &upload.ReceivedBytes, &rangesJSON, &upload.TempPath, &upload.CreatedAt, &upload.UpdatedAt,
 	)
@@ -708,13 +720,20 @@ func (s *postgresAudiobookStore) DiscardUpload(ctx context.Context, id string) e
 // and left a temp file behind. The caller removes the temp file and the row
 // via DiscardUpload once it has acted on each one.
 func (s *postgresAudiobookStore) StaleUploads(ctx context.Context, olderThan time.Time) ([]audiobookUpload, error) {
+	return s.listUploads(ctx, "stale", `WHERE updated_at < $1`, olderThan)
+}
+
+func (s *postgresAudiobookStore) ListInProgressUploads(ctx context.Context) ([]audiobookUpload, error) {
+	return s.listUploads(ctx, "in-progress", `ORDER BY updated_at DESC, id`)
+}
+
+func (s *postgresAudiobookStore) listUploads(ctx context.Context, label, clause string, args ...any) ([]audiobookUpload, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, user_id, title, author, filename, mime_type, total_bytes, received_bytes, temp_path, created_at, updated_at
 		FROM audiobook_uploads
-		WHERE updated_at < $1
-	`, olderThan)
+		`+clause, args...)
 	if err != nil {
-		return nil, fmt.Errorf("list stale audiobook uploads: %w", err)
+		return nil, fmt.Errorf("list %s audiobook uploads: %w", label, err)
 	}
 	defer rows.Close()
 
@@ -725,12 +744,12 @@ func (s *postgresAudiobookStore) StaleUploads(ctx context.Context, olderThan tim
 			&upload.ID, &upload.UserID, &upload.Title, &upload.Author, &upload.Filename, &upload.MimeType,
 			&upload.TotalBytes, &upload.ReceivedBytes, &upload.TempPath, &upload.CreatedAt, &upload.UpdatedAt,
 		); err != nil {
-			return nil, fmt.Errorf("scan stale audiobook upload: %w", err)
+			return nil, fmt.Errorf("scan %s audiobook upload: %w", label, err)
 		}
 		out = append(out, upload)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate stale audiobook uploads: %w", err)
+		return nil, fmt.Errorf("iterate %s audiobook uploads: %w", label, err)
 	}
 	return out, nil
 }
@@ -1755,4 +1774,6 @@ type audiobookStoragePath struct {
 	Title       string
 	StoragePath string
 	CoverPath   string
+	SizeBytes   int64
+	UploadedBy  string
 }

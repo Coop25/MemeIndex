@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -1256,27 +1257,35 @@ func (s *Server) startAudiobookUploadCleanupSweeper() {
 				continue
 			}
 			for _, upload := range stale {
-				// Hold the same lock a concurrent chunk append/complete/abort
-				// would hold, so the sweep can't delete the temp file (or the
-				// row) out from under a request that is still writing to it.
-				lock := lockAudiobookUpload(upload.ID)
-				lock.Lock()
-				if err := os.Remove(upload.TempPath); err != nil && !os.IsNotExist(err) {
-					log.Printf("remove stale audiobook upload temp file failed: %v", err)
-					lock.Unlock()
-					continue
-				}
-				if err := s.audiobooks.DiscardUpload(context.Background(), upload.ID); err != nil {
+				if err := s.discardAudiobookUpload(context.Background(), upload); err != nil {
 					log.Printf("discard stale audiobook upload failed: %v", err)
-					lock.Unlock()
 					continue
 				}
-				lock.Unlock()
-				audiobookUploadLocks.Delete(upload.ID)
 				log.Printf("audiobooks: reclaimed stale upload %s (%d/%d bytes)", upload.ID, upload.ReceivedBytes, upload.TotalBytes)
 			}
 		}
 	}()
+}
+
+// discardAudiobookUpload removes an in-progress upload's temp file and row.
+// It holds the same lock a concurrent chunk append/complete/abort would hold,
+// so it can't delete the temp file (or the row) out from under a request that
+// is still writing to it. Used by the stale-upload sweeper and the admin
+// discard endpoint.
+func (s *Server) discardAudiobookUpload(ctx context.Context, upload audiobookUpload) error {
+	lock := lockAudiobookUpload(upload.ID)
+	lock.Lock()
+	if err := os.Remove(upload.TempPath); err != nil && !os.IsNotExist(err) {
+		lock.Unlock()
+		return fmt.Errorf("remove audiobook upload temp file: %w", err)
+	}
+	if err := s.audiobooks.DiscardUpload(ctx, upload.ID); err != nil {
+		lock.Unlock()
+		return err
+	}
+	lock.Unlock()
+	audiobookUploadLocks.Delete(upload.ID)
+	return nil
 }
 
 // backfillAudiobookMetadata catches up any audiobook stored before cover

@@ -1039,7 +1039,7 @@ func (s *MemeStore) AllStoredFiles() ([]StoredFile, error) {
 	defer s.mu.RUnlock()
 	out := make([]StoredFile, 0, len(s.memes))
 	for _, meme := range s.memes {
-		out = append(out, StoredFile{ID: meme.ID, Title: meme.OriginalName, StoredName: meme.StoredName, FilePath: meme.FilePath})
+		out = append(out, StoredFile{ID: meme.ID, Title: meme.OriginalName, StoredName: meme.StoredName, FilePath: meme.FilePath, SizeBytes: meme.SizeBytes})
 	}
 	return out, nil
 }

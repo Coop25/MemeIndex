@@ -222,6 +222,7 @@ type StoredFile struct {
 	StoredName string
 	FilePath   string
 	Hidden     bool
+	SizeBytes  int64
 }
 
 // StoredFileStore lists every meme row regardless of visibility. The admin

@@ -63,6 +63,9 @@ type Server struct {
 	// audiobookSeriesLookup overrides the catalog used for series suggestions
 	// (audiobook_series_lookup.go); nil means the shared Audible lookup.
 	audiobookSeriesLookup *cachedSeriesLookup
+	// storage caches the admin storage report and holds the last orphan scan,
+	// the allow-list for orphan deletes (admin_storage.go).
+	storage adminStorageState
 
 	authLimiter       *rateLimiter
 	writeLimiter      *rateLimiter
@@ -209,6 +212,10 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/api/admin/shares", s.withAPIAuth(http.HandlerFunc(s.handleAdminShares), permissionManageUsers))
 	mux.Handle("/api/admin/shares/", s.withAPIAuth(http.HandlerFunc(s.handleAdminShares), permissionManageUsers))
 	mux.Handle("/api/admin/audiobook-remux/status", s.withAPIAuth(http.HandlerFunc(s.handleAudiobookRemuxStatus), permissionManageUsers))
+	mux.Handle("/api/admin/storage", s.withAPIAuth(http.HandlerFunc(s.handleAdminStorage), permissionManageUsers))
+	mux.Handle("/api/admin/storage/orphans/scan", s.withAPIAuth(http.HandlerFunc(s.handleStorageOrphanScan), permissionManageUsers))
+	mux.Handle("/api/admin/storage/orphans/delete", s.withAPIAuth(http.HandlerFunc(s.handleStorageOrphanDelete), permissionManageUsers))
+	mux.Handle("/api/admin/audiobooks/uploads/", s.withAPIAuth(http.HandlerFunc(s.handleAdminAudiobookUpload), permissionManageUsers))
 	mux.Handle("/uploads/", s.withProtectedAssetAuth(http.StripPrefix("/uploads/", http.FileServer(http.Dir(s.managers.UploadDir())))))
 	if thumbnailDir := s.managers.ThumbnailDir(); strings.TrimSpace(thumbnailDir) != "" {
 		mux.Handle("/thumbnails/", s.withProtectedAssetAuth(http.StripPrefix("/thumbnails/", http.FileServer(http.Dir(thumbnailDir)))))
