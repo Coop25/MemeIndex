@@ -232,3 +232,14 @@ type StoredFile struct {
 type StoredFileStore interface {
 	AllStoredFiles() ([]StoredFile, error)
 }
+
+// AuditActionCountStore counts audit events per actor. Only stores that keep an
+// audit log implement it.
+type AuditActionCountStore interface {
+	CountAuditActionsByActor(action string) (map[string]int, error)
+}
+
+// FavoriteCountStore counts favorites per user.
+type FavoriteCountStore interface {
+	CountFavoritesByUser() (map[string]int, error)
+}

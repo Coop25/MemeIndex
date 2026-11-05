@@ -246,6 +246,7 @@ type audiobookStore interface {
 	AdminListening(ctx context.Context, now time.Time) ([]adminDaySeconds, []adminTopBook, []adminTopListener, error)
 	AdminHealthCounts(ctx context.Context) (adminAudiobookHealth, error)
 	AdminListAudiobooks(ctx context.Context, query adminAudiobookQuery) ([]adminAudiobookRow, int, error)
+	AdminUserAudiobookTotals(ctx context.Context, since time.Time) (map[string]adminUserAudiobookTotals, error)
 	// ListStoragePaths and ListUploadTempPaths report every file location the
 	// database references, for the admin storage orphan scan.
 	ListStoragePaths(ctx context.Context) ([]audiobookStoragePath, error)
@@ -1777,4 +1778,83 @@ type audiobookStoragePath struct {
 	CoverPath   string
 	SizeBytes   int64
 	UploadedBy  string
+}
+
+// adminUserAudiobookTotals is one user's audiobook activity for the admin
+// User Activity page.
+type adminUserAudiobookTotals struct {
+	Uploaded       int
+	Seconds30d     float64
+	SecondsAllTime float64
+	Finished       int
+}
+
+// AdminUserAudiobookTotals returns per-user uploads, listening seconds (all
+// time and since `since`, by listen_date) and finished-book counts.
+func (s *postgresAudiobookStore) AdminUserAudiobookTotals(ctx context.Context, since time.Time) (map[string]adminUserAudiobookTotals, error) {
+	totals := map[string]adminUserAudiobookTotals{}
+
+	uploads, err := s.pool.Query(ctx, `SELECT uploaded_by_user_id, COUNT(*) FROM audiobooks WHERE uploaded_by_user_id <> '' GROUP BY uploaded_by_user_id`)
+	if err != nil {
+		return nil, fmt.Errorf("audiobook uploads by user: %w", err)
+	}
+	for uploads.Next() {
+		var id string
+		var n int
+		if err := uploads.Scan(&id, &n); err != nil {
+			uploads.Close()
+			return nil, fmt.Errorf("scan audiobook uploads: %w", err)
+		}
+		t := totals[id]
+		t.Uploaded = n
+		totals[id] = t
+	}
+	uploads.Close()
+	if err := uploads.Err(); err != nil {
+		return nil, fmt.Errorf("iterate audiobook uploads: %w", err)
+	}
+
+	listening, err := s.pool.Query(ctx, `
+		SELECT user_id, COALESCE(SUM(seconds_listened), 0),
+			COALESCE(SUM(seconds_listened) FILTER (WHERE listen_date >= $1), 0)
+		FROM audiobook_listening_stats GROUP BY user_id`, since.UTC().Format("2006-01-02"))
+	if err != nil {
+		return nil, fmt.Errorf("audiobook listening by user: %w", err)
+	}
+	for listening.Next() {
+		var id string
+		var all, recent float64
+		if err := listening.Scan(&id, &all, &recent); err != nil {
+			listening.Close()
+			return nil, fmt.Errorf("scan audiobook listening: %w", err)
+		}
+		t := totals[id]
+		t.SecondsAllTime, t.Seconds30d = all, recent
+		totals[id] = t
+	}
+	listening.Close()
+	if err := listening.Err(); err != nil {
+		return nil, fmt.Errorf("iterate audiobook listening: %w", err)
+	}
+
+	finished, err := s.pool.Query(ctx, `SELECT user_id, COUNT(*) FROM audiobook_progress WHERE finished_at IS NOT NULL GROUP BY user_id`)
+	if err != nil {
+		return nil, fmt.Errorf("audiobook finished by user: %w", err)
+	}
+	for finished.Next() {
+		var id string
+		var n int
+		if err := finished.Scan(&id, &n); err != nil {
+			finished.Close()
+			return nil, fmt.Errorf("scan audiobook finished: %w", err)
+		}
+		t := totals[id]
+		t.Finished = n
+		totals[id] = t
+	}
+	finished.Close()
+	if err := finished.Err(); err != nil {
+		return nil, fmt.Errorf("iterate audiobook finished: %w", err)
+	}
+	return totals, nil
 }

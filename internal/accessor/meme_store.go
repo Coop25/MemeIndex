@@ -1043,3 +1043,15 @@ func (s *MemeStore) AllStoredFiles() ([]StoredFile, error) {
 	}
 	return out, nil
 }
+
+// CountFavoritesByUser returns each user's favorite count from favorites.json.
+func (s *MemeStore) CountFavoritesByUser() (map[string]int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	counts := make(map[string]int, len(s.favoritesByUser))
+	for userID, favorites := range s.favoritesByUser {
+		counts[userID] = len(favorites)
+	}
+	return counts, nil
+}

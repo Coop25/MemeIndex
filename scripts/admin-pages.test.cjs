@@ -131,3 +131,47 @@ test("library refresh hook exists and app.js saves refresh it and presets reset 
   assert.ok(appSource.includes("window.refreshAdminAudiobookLibrary?.()"));
   assert.ok(appSource.includes("adminLibraryPresetState(state.admin.audiobookLibrary"));
 });
+
+test("user activity sorts by listening hours", () => {
+  const users = [
+    { user_id: "a", display_name: "Ann", seconds_all_time: 3600, seconds_30d: 60 },
+    { user_id: "b", display_name: "Bob", seconds_all_time: 36000, seconds_30d: 10 },
+    { user_id: "c", display_name: "Cy", seconds_all_time: 7200, seconds_30d: 5 },
+  ];
+  const html = context.buildUserActivityTable(users, { sort: "hours", dir: "desc" });
+  const order = ["Bob", "Cy", "Ann"].map((name) => html.indexOf(`>${name}<`));
+  assert.ok(order.every((i) => i >= 0), "all names rendered");
+  assert.ok(order[0] < order[1] && order[1] < order[2]);
+  const asc = context.buildUserActivityTable(users, { sort: "hours", dir: "asc" });
+  assert.ok(asc.indexOf(">Ann<") < asc.indexOf(">Bob<"));
+  assert.match(html, /data-user-activity-id="b"/);
+});
+
+test("user activity escapes names and shows empty state", () => {
+  const html = context.buildUserActivityTable([{ user_id: "x", display_name: "<img onerror=1>" }], { sort: "name", dir: "asc" });
+  assert.ok(!html.includes("<img"));
+  assert.match(context.buildUserActivityTable([], { sort: "name", dir: "asc" }), /admin-pages-empty/);
+});
+
+test("user activity tab, panel, actor chip and actor param are wired once", () => {
+  const html = readFileSync(resolve(__dirname, "../static/index.html"), "utf8");
+  assert.equal((html.match(/id="admin-user-activity-panel"/g) || []).length, 1);
+  assert.match(appSource, /"user-activity": \{[^}]*panel: "admin-user-activity-panel"/);
+  assert.match(appSource, /sibling: "user-activity"/);
+  assert.ok(appSource.includes("window.loadAdminUserActivity()"));
+  assert.ok(appSource.includes("window.renderAdminUserActivity?.()"));
+  assert.ok(appSource.includes("data-clear-audit-actor"));
+  assert.ok(appSource.includes('params.set("actor"'));
+});
+
+test("setting the audit actor resets paging", () => {
+  const st = { admin: { audit: { offset: 200, total: 500, hasMore: true }, auditActor: null } };
+  context.state = st;
+  context.setAdminAuditActor({ user_id: "u1", display_name: "Ann" });
+  assert.equal(st.admin.auditActor.user_id, "u1");
+  assert.equal(st.admin.audit.offset, 0);
+  st.admin.audit.offset = 100;
+  context.setAdminAuditActor(null);
+  assert.equal(st.admin.auditActor, null);
+  assert.equal(st.admin.audit.offset, 0);
+});

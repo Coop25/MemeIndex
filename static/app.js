@@ -26,6 +26,8 @@ const state = {
       total: 0,
       hasMore: false,
     },
+    // {user_id, display_name} while Audit Logs is filtered to one user.
+    auditActor: null,
     queue: {
       loaded: false,
       offset: 0,
@@ -132,9 +134,14 @@ const ADMIN_TABS = Object.freeze({
     copy: "A quick pulse-check on backlog size, tag coverage, recent uploads, and the tags that define your archive.",
   },
   users: {
-    group: "Overview", label: "Users", superOnly: true, panel: "admin-users-panel",
+    group: "Overview", label: "Users", superOnly: true, panel: "admin-users-panel", sibling: "user-activity",
     title: "User Access", kicker: "Admin",
     copy: "Manage users and permissions from one place.",
+  },
+  "user-activity": {
+    group: "Overview", label: "User Activity", superOnly: true, panel: "admin-user-activity-panel", sibling: "users",
+    title: "User Activity", kicker: "Admin",
+    copy: "Who uploads, favorites, and listens - and when each account was last active.",
   },
   shares: {
     group: "Overview", label: "Shared Memes", superOnly: true, panel: "admin-view-table",
@@ -1586,6 +1593,7 @@ async function fetchAuditLogs() {
     offset: `${auditState.offset}`,
     limit: `${auditState.limit}`,
   });
+  if (state.admin.auditActor && isAdminView() && activeAdminTab() === "audit-logs") params.set("actor", state.admin.auditActor.user_id);
   const response = await fetch(`/api/admin/audit-logs?${params.toString()}`);
   if (!(await expectAuthorized(response, "Failed to load audit logs."))) {
     return null;
@@ -3952,8 +3960,19 @@ function renderAuditLogs() {
   if (!target) return;
 
   target.innerHTML = "";
+  const auditActor = state.admin.auditActor;
+  if (auditActor && target === adminViewTable) {
+    const chip = document.createElement("div");
+    chip.className = "audit-actor-chip";
+    chip.innerHTML = `<button type="button" class="ghost-button" data-clear-audit-actor aria-label="Clear user filter">Showing activity for ${escapeHTML(auditActor.display_name)} <span aria-hidden="true">×</span></button>`;
+    chip.querySelector("[data-clear-audit-actor]").addEventListener("click", () => {
+      setAdminAuditActor(null);
+      loadInitialMemes().catch((error) => console.error(error));
+    });
+    target.appendChild(chip);
+  }
   if (auditLogState.length === 0) {
-    target.innerHTML = `<p class="users-empty">No audit activity recorded yet.</p>`;
+    target.insertAdjacentHTML("beforeend", `<p class="users-empty">${auditActor ? "No audit activity recorded for this user." : "No audit activity recorded yet."}</p>`);
     return;
   }
 
@@ -4388,6 +4407,7 @@ function renderContentMode() {
   renderAdminRemuxStatus();
   window.renderAdminStorage?.();
   window.renderAdminAudiobookLibrary?.();
+  window.renderAdminUserActivity?.();
   syncAdminTagQueuePolling();
   syncAdminLinkQueuePolling();
   syncAdminBackupPolling();
@@ -4507,6 +4527,7 @@ const ADMIN_TAB_LOADERS = {
   "link-retries": { run: () => fetchAdminLinkRetryStatus() },
   "rejected-links": { run: () => fetchAdminLinkRetryStatus() },
   storage: { loading: "Loading storage...", run: () => window.loadAdminStorage(), fail: "Could not load storage." },
+  "user-activity": { loading: "Loading user activity...", run: () => window.loadAdminUserActivity(), fail: "Could not load user activity." },
   "audiobook-library": { loading: "Loading audiobook library...", run: () => window.loadAdminAudiobookLibrary(), fail: "Could not load the audiobook library." },
   backup: { run: () => { renderAdminBackupStatus(); return fetchAdminBackupStatus(); } },
   "audiobook-conversion": { run: () => fetchAdminRemuxStatus() },

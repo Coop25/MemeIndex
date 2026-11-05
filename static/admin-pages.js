@@ -507,3 +507,149 @@ function initAdminAudiobookLibraryPanel() {
   });
 }
 if (typeof document !== "undefined") initAdminAudiobookLibraryPanel();
+
+/* ======================= User Activity page ======================= */
+
+const ADMIN_USER_ACTIVITY_COLUMNS = [
+  { key: "name", label: "User", text: true, value: (u) => String(u.display_name || u.username || u.user_id || "").toLowerCase() },
+  { key: "memes", label: "Memes uploaded", num: true, value: (u) => Number(u.memes_uploaded) || 0 },
+  { key: "books", label: "Audiobooks uploaded", num: true, value: (u) => Number(u.audiobooks_uploaded) || 0 },
+  { key: "favorites", label: "Favorites", num: true, value: (u) => Number(u.favorites) || 0 },
+  { key: "hours30", label: "Hours (30d)", num: true, value: (u) => Number(u.seconds_30d) || 0 },
+  { key: "hours", label: "Hours (all time)", num: true, value: (u) => Number(u.seconds_all_time) || 0 },
+  { key: "finished", label: "Books finished", num: true, value: (u) => Number(u.books_finished) || 0 },
+  { key: "last_active", label: "Last active", value: (u) => Number(u.last_active_at) || 0 },
+];
+
+function adminUserActivityHours(seconds) {
+  return ((Number(seconds) || 0) / 3600).toFixed(1);
+}
+
+function adminUserActivityLastActive(unixSeconds) {
+  const sec = Number(unixSeconds) || 0;
+  return sec > 0 ? formatRelativeTime(new Date(sec * 1000)) : "Never";
+}
+
+// buildUserActivityTable renders the per-user table, sorted client-side.
+// sort is {sort, dir}; unknown keys fall back to the name column.
+function buildUserActivityTable(users, sort) {
+  const list = Array.isArray(users) ? users.slice() : [];
+  if (!list.length) return adminPagesEmpty("No users yet.");
+  const key = (sort && sort.sort) || "name";
+  const dir = sort && sort.dir === "asc" ? 1 : -1;
+  const col = ADMIN_USER_ACTIVITY_COLUMNS.find((c) => c.key === key) || ADMIN_USER_ACTIVITY_COLUMNS[0];
+  list.sort((a, b) => {
+    const av = col.value(a);
+    const bv = col.value(b);
+    if (av < bv) return -dir;
+    if (av > bv) return dir;
+    return 0;
+  });
+  const head = ADMIN_USER_ACTIVITY_COLUMNS.map((c) => {
+    const active = c.key === col.key;
+    const aria = active ? (dir === 1 ? "ascending" : "descending") : "none";
+    const arrow = aria === "ascending" ? " ▲" : aria === "descending" ? " ▼" : "";
+    return `<th scope="col"${c.num ? ' class="is-num"' : ""} aria-sort="${aria}"><button type="button" class="admin-library-sort" data-user-activity-sort="${c.key}">${escapeHTML(c.label)}<span aria-hidden="true">${arrow}</span></button></th>`;
+  }).join("");
+  const body = list.map((u) => {
+    const id = escapeHTML(String(u.user_id));
+    const name = u.display_name || u.username || u.user_id || "Unknown";
+    const handle = u.username ? ` <span class="admin-user-activity-handle">@${escapeHTML(u.username)}</span>` : "";
+    return `<tr>
+      <td data-col="name"><button type="button" class="text-button admin-library-open" data-user-activity-id="${id}" data-user-activity-name="${escapeHTML(String(name))}">${escapeHTML(String(name))}</button>${handle}</td>
+      <td data-col="memes" class="is-num">${escapeHTML(String(u.memes_uploaded || 0))}</td>
+      <td data-col="books" class="is-num">${escapeHTML(String(u.audiobooks_uploaded || 0))}</td>
+      <td data-col="favorites" class="is-num">${escapeHTML(String(u.favorites || 0))}</td>
+      <td data-col="hours30" class="is-num">${escapeHTML(adminUserActivityHours(u.seconds_30d))}</td>
+      <td data-col="hours" class="is-num">${escapeHTML(adminUserActivityHours(u.seconds_all_time))}</td>
+      <td data-col="finished" class="is-num">${escapeHTML(String(u.books_finished || 0))}</td>
+      <td data-col="last_active">${escapeHTML(adminUserActivityLastActive(u.last_active_at))}</td>
+    </tr>`;
+  }).join("");
+  return `<table class="admin-library-table admin-user-activity-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+
+// setAdminAuditActor sets (or, with null, clears) the user the Audit Logs tab
+// is filtered to, and returns its paging to the first page.
+function setAdminAuditActor(actor) {
+  state.admin.auditActor = actor && actor.user_id
+    ? { user_id: String(actor.user_id), display_name: String(actor.display_name || actor.user_id) }
+    : null;
+  if (state.admin.audit) state.admin.audit.offset = 0;
+}
+
+function adminUserActivityState() {
+  const s = state.admin.userActivity || (state.admin.userActivity = {});
+  if (!s.sort) s.sort = "last_active";
+  if (!s.dir) s.dir = "desc";
+  if (s.data === undefined) s.data = null;
+  if (s.status === undefined) s.status = "";
+  return s;
+}
+
+let adminUserActivityRequestToken = 0;
+
+function renderAdminUserActivity() {
+  const panel = document.querySelector("#admin-user-activity-panel");
+  if (!panel) return;
+  const visible = isAdminView() && canManageUsers() && activeAdminTab() === "user-activity";
+  panel.classList.toggle("hidden", !visible);
+  if (!visible) return;
+  const s = adminUserActivityState();
+  const table = document.querySelector("#admin-user-activity-table");
+  if (table) {
+    table.innerHTML = s.data
+      ? buildUserActivityTable(s.data.users, s)
+      : adminPagesEmpty(s.status || "Loading...");
+  }
+  const status = document.querySelector("#admin-user-activity-status");
+  if (status) status.textContent = s.status || (s.data ? `${(s.data.users || []).length} users` : "");
+}
+
+async function loadAdminUserActivity() {
+  const s = adminUserActivityState();
+  const token = ++adminUserActivityRequestToken;
+  s.status = "";
+  let result;
+  try {
+    result = await adminPagesFetchJSON("/api/admin/user-activity", undefined, "Failed to load user activity.");
+  } catch (error) {
+    console.error(error);
+    result = { ok: false, error: "Failed to load user activity." };
+  }
+  if (token !== adminUserActivityRequestToken) return true; // a newer request owns the panel
+  if (!result.ok) {
+    s.status = result.error;
+    renderAdminUserActivity();
+    return false;
+  }
+  s.data = result.body;
+  renderAdminUserActivity();
+  return true;
+}
+
+function initAdminUserActivityPanel() {
+  const panel = document.querySelector("#admin-user-activity-panel");
+  if (!panel || panel.dataset.wired) return;
+  panel.dataset.wired = "1";
+  panel.addEventListener("click", (event) => {
+    const target = event.target.closest("button");
+    if (!target || target.disabled) return;
+    const s = adminUserActivityState();
+    if (target.hasAttribute("data-user-activity-sort")) {
+      const col = target.getAttribute("data-user-activity-sort");
+      if (s.sort === col) s.dir = s.dir === "asc" ? "desc" : "asc";
+      else { s.sort = col; s.dir = col === "name" ? "asc" : "desc"; }
+      renderAdminUserActivity();
+      const again = panel.querySelector(`[data-user-activity-sort="${col}"]`);
+      if (again) again.focus();
+    } else if (target.hasAttribute("data-user-activity-id")) {
+      setAdminAuditActor({
+        user_id: target.getAttribute("data-user-activity-id"),
+        display_name: target.getAttribute("data-user-activity-name"),
+      });
+      navigateAdminTab("audit-logs");
+    }
+  });
+}
+if (typeof document !== "undefined") initAdminUserActivityPanel();

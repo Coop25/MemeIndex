@@ -4833,3 +4833,9 @@ button.admin-health-row:hover, button.admin-health-row:focus-visible { backgroun
 .admin-library-open { text-align: left; }
 .admin-library-ok { color: var(--green-bright); }
 .admin-library-gap { color: #e5a23c; }
+
+/* Admin: User Activity page (reuses the audiobook library table styles) */
+.admin-user-activity-table { min-width: 760px; }
+.admin-user-activity-handle { color: var(--muted); }
+.audit-actor-chip { margin: 0 0 10px; }
+.audit-actor-chip .ghost-button { border-radius: 999px; }

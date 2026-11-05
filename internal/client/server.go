@@ -216,6 +216,7 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/api/admin/storage/orphans/scan", s.withAPIAuth(http.HandlerFunc(s.handleStorageOrphanScan), permissionManageUsers))
 	mux.Handle("/api/admin/storage/orphans/delete", s.withAPIAuth(http.HandlerFunc(s.handleStorageOrphanDelete), permissionManageUsers))
 	mux.Handle("/api/admin/audiobooks", s.withAPIAuth(http.HandlerFunc(s.handleAdminAudiobooks), permissionManageUsers))
+	mux.Handle("/api/admin/user-activity", s.withAPIAuth(http.HandlerFunc(s.handleAdminUserActivity), permissionManageUsers))
 	mux.Handle("/api/admin/audiobooks/uploads/", s.withAPIAuth(http.HandlerFunc(s.handleAdminAudiobookUpload), permissionManageUsers))
 	mux.Handle("/uploads/", s.withProtectedAssetAuth(http.StripPrefix("/uploads/", http.FileServer(http.Dir(s.managers.UploadDir())))))
 	if thumbnailDir := s.managers.ThumbnailDir(); strings.TrimSpace(thumbnailDir) != "" {

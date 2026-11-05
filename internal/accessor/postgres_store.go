@@ -2362,3 +2362,32 @@ func (s *PostgresStore) AllStoredFiles() ([]StoredFile, error) {
 	}
 	return out, rows.Err()
 }
+
+// CountAuditActionsByActor returns how many audit events with the given action
+// each actor has recorded, keyed by actor_user_id.
+func (s *PostgresStore) CountAuditActionsByActor(action string) (map[string]int, error) {
+	return s.countByUser(`SELECT actor_user_id, COUNT(*) FROM meme_audit_logs WHERE action = $1 GROUP BY actor_user_id`, action)
+}
+
+// CountFavoritesByUser returns how many memes each user has favorited.
+func (s *PostgresStore) CountFavoritesByUser() (map[string]int, error) {
+	return s.countByUser(`SELECT user_id, COUNT(*) FROM user_favorites GROUP BY user_id`)
+}
+
+func (s *PostgresStore) countByUser(query string, args ...any) (map[string]int, error) {
+	rows, err := s.pool.Query(context.Background(), query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	counts := map[string]int{}
+	for rows.Next() {
+		var id string
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		counts[id] = n
+	}
+	return counts, rows.Err()
+}

@@ -2382,3 +2382,23 @@ func (m *MemeManager) StoredMemeFiles() ([]accessor.StoredFile, error) {
 	}
 	return store.AllStoredFiles()
 }
+
+// CountAuditActionsByActor counts audit events with the given action per actor.
+// Stores without an audit log yield an empty map, not an error.
+func (m *MemeManager) CountAuditActionsByActor(action string) (map[string]int, error) {
+	store, ok := m.store.(accessor.AuditActionCountStore)
+	if !ok {
+		return map[string]int{}, nil
+	}
+	return store.CountAuditActionsByActor(action)
+}
+
+// CountFavoritesByUser counts favorites per user, or an empty map when the
+// store cannot report it.
+func (m *MemeManager) CountFavoritesByUser() (map[string]int, error) {
+	store, ok := m.store.(accessor.FavoriteCountStore)
+	if !ok {
+		return map[string]int{}, nil
+	}
+	return store.CountFavoritesByUser()
+}
