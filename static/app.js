@@ -791,6 +791,37 @@ function setupAdminTabRail() {
   });
 }
 
+// Counts last drawn on the rail, so pollers only touch the DOM when one changes.
+let adminAppliedBadgeCounts = null;
+
+// refreshAdminTabBadges patches the badge spans in place. Unlike
+// renderAdminTabRail it never rebuilds the rail, so keyboard focus is untouched.
+function refreshAdminTabBadges() {
+  if (!adminTabList) return;
+  const next = adminTabBadgeCounts();
+  if (!adminBadgeCountsChanged(adminAppliedBadgeCounts, next)) return;
+  adminAppliedBadgeCounts = next;
+  adminTabButtons().forEach((button) => {
+    const config = ADMIN_TABS[button.dataset.adminTab];
+    if (!config?.badge) return;
+    const count = next[config.badge] || 0;
+    let badge = button.querySelector(".admin-tab-badge");
+    if (count > 0) {
+      if (!badge) {
+        badge = document.createElement("span");
+        badge.className = "admin-tab-badge";
+        badge.setAttribute("aria-hidden", "true");
+        button.append(badge);
+      }
+      badge.textContent = count > 99 ? "99+" : String(count);
+      button.setAttribute("aria-label", `${config.label}, ${count} need attention`);
+    } else {
+      badge?.remove();
+      button.setAttribute("aria-label", config.label);
+    }
+  });
+}
+
 // renderAdminTabRail rebuilds the grouped tab rail from ADMIN_TABS, applying APG
 // tab semantics (roving tabindex, aria-selected) and attention badges.
 function renderAdminTabRail() {
@@ -798,6 +829,7 @@ function renderAdminTabRail() {
   setupAdminTabRail();
   const active = activeAdminTab();
   const badges = adminTabBadgeCounts();
+  adminAppliedBadgeCounts = badges;
   const canManage = canManageUsers();
   const hadFocus = adminTabList.contains(document.activeElement);
 
@@ -1530,7 +1562,7 @@ async function fetchDeleteQueue() {
   queueState.total = Number(payload.total || 0);
   queueState.loaded = true;
   syncAdminWorkQueue(state.admin, "delete_queue", queueState.total);
-  renderAdminTabRail();
+  refreshAdminTabBadges();
   queueState.hasMore = !!payload.has_more;
   renderDeleteQueue();
   syncAdminPagination();
@@ -3049,6 +3081,12 @@ function computeAdminTabBadgeCounts(admin) {
   };
 }
 
+function adminBadgeCountsChanged(previous, next) {
+  if (!previous || !next) return true;
+  const keys = new Set([...Object.keys(previous), ...Object.keys(next)]);
+  return [...keys].some((key) => (previous[key] || 0) !== (next[key] || 0));
+}
+
 // syncAdminWorkQueue writes a freshly loaded tab count into the cached dashboard
 // so the dashboard strip agrees when it is shown again.
 function syncAdminWorkQueue(admin, key, value) {
@@ -3471,7 +3509,7 @@ async function fetchAdminTagQueueStatus() {
   state.admin.tagReview.total = reviewTotal;
   state.admin.tagReview.loaded = true;
   syncAdminWorkQueue(state.admin, "suggested_tags", reviewTotal);
-  renderAdminTabRail();
+  refreshAdminTabBadges();
   state.admin.tagReview.hasMore = !!payload?.pending_review_has_more;
   state.admin.tagQueueStatus = payload || null;
   renderAdminTagQueueStatus();
@@ -3494,7 +3532,7 @@ async function fetchAdminLinkRetryStatus() {
     syncAdminWorkQueue(state.admin, "link_retries", Array.isArray(payload.queued) ? payload.queued.length : 0);
     syncAdminWorkQueue(state.admin, "rejected_links", Array.isArray(payload.rejected) ? payload.rejected.length : 0);
   }
-  renderAdminTabRail();
+  refreshAdminTabBadges();
   renderAdminLinkRetryStatus();
   return state.admin.linkRetryStatus;
 }

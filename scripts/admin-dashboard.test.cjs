@@ -191,3 +191,10 @@ test("loaded tab counts are written back into dashboard work_queues", () => {
   assert.equal(admin.dashboard.work_queues.delete_queue, 1);
   assert.doesNotThrow(() => context.syncAdminWorkQueue({ dashboard: null }, "delete_queue", 1));
 });
+
+test("badge change detection only reports real count differences", () => {
+  const a = { tagReview: 1, linkRetries: 0, rejectedLinks: 0, deleteQueue: 2 };
+  assert.equal(context.adminBadgeCountsChanged(a, { ...a }), false);
+  assert.equal(context.adminBadgeCountsChanged(a, { ...a, deleteQueue: 3 }), true);
+  assert.equal(context.adminBadgeCountsChanged(null, a), true);
+});
