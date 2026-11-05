@@ -55,3 +55,9 @@ test("upload rows expose a discard button with the id", () => {
   const html = context.buildStorageUploads([{ id: "u1", title: "Book", display_name: "Ann", received_bytes: 5, total_bytes: 10, updated_at: "2026-01-01T00:00:00Z" }]);
   assert.match(html, /data-discard-upload="u1"/);
 });
+
+test("index.html has one admin-pages script tag and one storage panel", () => {
+  const html = readFileSync(resolve(__dirname, "../static/index.html"), "utf8");
+  assert.equal((html.match(/<script[^>]+admin-pages.js/g) || []).length, 1);
+  assert.equal((html.match(/id="admin-storage-panel"/g) || []).length, 1);
+});

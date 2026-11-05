@@ -15,7 +15,7 @@
 // {ok, status, body, error}. Auth redirects are handled by expectAuthorized;
 // other failures carry the server's error text when it sent one.
 async function adminPagesFetchJSON(url, options, failureMessage) {
-  const response = await fetch(url, options);
+  const response = await fetch(url, { credentials: "same-origin", ...options });
   if (!(await expectAuthorized(response, failureMessage))) {
     return { ok: false, status: response.status, body: null, error: failureMessage };
   }
@@ -227,14 +227,12 @@ async function discardStorageUpload(s, id) {
     ? await confirmViaModal({ title: "Discard upload", message, confirmLabel: "Discard" })
     : window.confirm(message);
   if (!ok) return;
-  const response = await fetch(`/api/admin/audiobooks/uploads/${encodeURIComponent(id)}`, { method: "DELETE" });
-  if (!(await expectAuthorized(response, "Failed to discard the upload."))) return;
-  let body = null;
-  if (response.status !== 204) { try { body = await response.json(); } catch (error) { body = null; } }
-  if (!response.ok) {
-    s.status = (body && body.error) || "Failed to discard the upload.";
+  const result = await adminPagesFetchJSON(`/api/admin/audiobooks/uploads/${encodeURIComponent(id)}`, { method: "DELETE" }, "Failed to discard the upload.");
+  if (!result.ok) {
+    s.status = result.error;
     return;
   }
+  const body = result.body;
   s.status = body && body.state === "unavailable" ? "Audiobook uploads are unavailable on this server." : "Upload discarded.";
   await loadAdminStorage({ refresh: true });
 }
