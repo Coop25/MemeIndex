@@ -182,3 +182,43 @@ func TestAdminDashboardWorkQueues(t *testing.T) {
 		t.Errorf("audiobook_activity present without postgres: %s", body.Activity)
 	}
 }
+
+// partialFailureStore fails health counts and conversions but serves listening.
+type partialFailureStore struct {
+	audiobookStore
+	failListening bool
+}
+
+func (p partialFailureStore) AdminListening(context.Context, time.Time) ([]adminDaySeconds, []adminTopBook, []adminTopListener, error) {
+	if p.failListening {
+		return nil, nil, nil, os.ErrInvalid
+	}
+	return []adminDaySeconds{{Date: "2026-11-05", Seconds: 42}}, nil, nil, nil
+}
+
+func (p partialFailureStore) AdminHealthCounts(context.Context) (adminAudiobookHealth, error) {
+	return adminAudiobookHealth{}, os.ErrInvalid
+}
+
+func (p partialFailureStore) ListStoredMP3s(context.Context) ([]audiobookStoredMP3, error) {
+	return nil, os.ErrInvalid
+}
+
+func TestCachedAudiobookActivityPartialFailure(t *testing.T) {
+	s := &Server{audiobooks: partialFailureStore{}}
+	got, err := s.cachedAudiobookActivity(context.Background())
+	if err != nil || got == nil {
+		t.Fatalf("got %v, err %v; want partial activity", got, err)
+	}
+	if len(got.DailySeconds) != 1 || got.DailySeconds[0].Seconds != 42 {
+		t.Errorf("daily = %+v, want listening kept", got.DailySeconds)
+	}
+	if got.Health != (adminAudiobookHealth{}) {
+		t.Errorf("health = %+v, want zeroed", got.Health)
+	}
+
+	s = &Server{audiobooks: partialFailureStore{failListening: true}}
+	if got, err := s.cachedAudiobookActivity(context.Background()); err == nil {
+		t.Errorf("all parts failed: got %v, want error", got)
+	}
+}

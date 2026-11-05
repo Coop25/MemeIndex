@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"sync"
 	"time"
@@ -218,20 +219,30 @@ func (s *Server) cachedAudiobookActivity(ctx context.Context) (*adminAudiobookAc
 		out := cloneAdminAudiobookActivity(c.activity)
 		return &out, nil
 	}
-	daily, books, listeners, err := s.audiobooks.AdminListening(ctx, time.Now())
-	if err != nil {
-		return nil, err
+	var activity adminAudiobookActivity
+	failures := 0
+	if daily, books, listeners, err := s.audiobooks.AdminListening(ctx, time.Now()); err != nil {
+		failures++
+		log.Printf("admin dashboard audiobook listening failed: %v", err)
+		activity.DailySeconds, activity.TopBooks, activity.TopListeners = []adminDaySeconds{}, []adminTopBook{}, []adminTopListener{}
+	} else {
+		activity.DailySeconds, activity.TopBooks, activity.TopListeners = daily, books, listeners
 	}
-	health, err := s.audiobooks.AdminHealthCounts(ctx)
-	if err != nil {
-		return nil, err
+	if health, err := s.audiobooks.AdminHealthCounts(ctx); err != nil {
+		failures++
+		log.Printf("admin dashboard audiobook health failed: %v", err)
+	} else {
+		activity.Health = health
 	}
-	failed, err := s.failedRemuxAudiobookIDs(ctx)
-	if err != nil {
-		return nil, err
+	if failed, err := s.failedRemuxAudiobookIDs(ctx); err != nil {
+		failures++
+		log.Printf("admin dashboard failed conversions failed: %v", err)
+	} else {
+		activity.Health.FailedConversion = len(failed)
 	}
-	health.FailedConversion = len(failed)
-	activity := adminAudiobookActivity{DailySeconds: daily, TopBooks: books, TopListeners: listeners, Health: health}
+	if failures == 3 {
+		return nil, fmt.Errorf("all audiobook activity queries failed")
+	}
 	c.activity, c.cachedAt, c.valid = activity, time.Now(), true
 	out := cloneAdminAudiobookActivity(activity)
 	return &out, nil
