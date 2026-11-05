@@ -660,14 +660,14 @@ function seriesDeleteConfirmText(series) {
   const name = (series && series.name) || "";
   const n = Number(series && series.book_count) || 0;
   return n > 0
-    ? `Delete “${name}”? Its ${n} books will no longer be in a series.`
+    ? `Delete “${name}”? Its ${n} ${n === 1 ? "book" : "books"} will no longer be in a series.`
     : `Delete “${name}”?`;
 }
 
 function seriesMergeConfirmText(from, into) {
   const n = Number(from && from.book_count) || 0;
   const fromName = (from && from.name) || "";
-  return `Move ${n} books from “${fromName}” into “${(into && into.name) || ""}” and delete “${fromName}”?`;
+  return `Move ${n} ${n === 1 ? "book" : "books"} from “${fromName}” into “${(into && into.name) || ""}” and delete “${fromName}”?`;
 }
 
 // parseSeriesSequence returns the number in a sequence input, or NaN when it
@@ -784,7 +784,7 @@ async function loadAdminSeriesBooks(s) {
   s.books = (result.body && result.body.audiobooks) || [];
 }
 
-async function loadAdminAudiobookSeries() {
+async function loadAdminAudiobookSeries({ keepStatus = false } = {}) {
   const s = adminSeriesState();
   const [list, tags] = await Promise.all([
     adminPagesFetchJSON("/api/audiobook-series", undefined, "Failed to load audiobook series."),
@@ -793,6 +793,7 @@ async function loadAdminAudiobookSeries() {
   const unavailable = list.status === 501 || (tags.ok && tags.body && tags.body.state === "unavailable")
     || (list.ok && list.body && list.body.state === "unavailable");
   s.unavailable = !!unavailable;
+  if (!keepStatus && (unavailable || (list.ok && tags.ok))) s.status = "";
   if (!unavailable) {
     if (list.ok) s.series = (list.body && list.body.series) || [];
     else s.status = list.error;
@@ -816,7 +817,7 @@ async function withSeriesBusy(fn) {
   try {
     const changed = await fn(s);
     if (changed) {
-      await loadAdminAudiobookSeries();
+      await loadAdminAudiobookSeries({ keepStatus: true });
       window.refreshAdminAudiobookLibrary?.();
     }
   } catch (error) {

@@ -184,6 +184,7 @@ test("series delete confirm mentions book count", () => {
     "Delete “Dune”? Its 6 books will no longer be in a series.",
   );
   assert.equal(context.seriesDeleteConfirmText({ name: "Empty", book_count: 0 }), "Delete “Empty”?");
+  assert.equal(context.seriesDeleteConfirmText({ name: "One", book_count: 1 }), "Delete “One”? Its 1 book will no longer be in a series.");
 });
 
 test("series merge confirm text", () => {
@@ -191,6 +192,7 @@ test("series merge confirm text", () => {
     context.seriesMergeConfirmText({ name: "A", book_count: 3 }, { name: "B" }),
     "Move 3 books from “A” into “B” and delete “A”?",
   );
+  assert.equal(context.seriesMergeConfirmText({ name: "A", book_count: 1 }, { name: "B" }), "Move 1 book from “A” into “B” and delete “A”?");
 });
 
 test("merge select excludes the series itself", () => {
