@@ -1845,7 +1845,7 @@ func (s *Server) handleAdminDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	response.SystemHealth = append(response.SystemHealth, adminSystemHealth{Name: "Database", Status: databaseStatus, Healthy: usersHealthy})
 
-	if activity, err := s.managers.ListAuditFeed(0, 10); err != nil {
+	if activity, err := s.managers.ListAuditFeed(0, 10, ""); err != nil {
 		log.Printf("admin dashboard activity failed: %v", err)
 		response.SystemHealth = append(response.SystemHealth, adminSystemHealth{Name: "Activity Tracking", Status: "Unavailable", Healthy: false})
 	} else {
@@ -2185,7 +2185,7 @@ func (s *Server) handleAuditLogs(w http.ResponseWriter, r *http.Request) {
 
 	offset := parseQueryInt(r, "offset", 0)
 	limit := parseQueryInt(r, "limit", 100)
-	events, err := s.managers.ListAuditFeed(offset, limit)
+	events, err := s.managers.ListAuditFeed(offset, limit, strings.TrimSpace(r.URL.Query().Get("actor")))
 	if err != nil {
 		log.Printf("list audit logs failed: %v", err)
 		http.Error(w, "failed to load audit logs", http.StatusInternalServerError)

@@ -929,7 +929,7 @@ func (s *PostgresStore) SuggestTags(prefix string, limit int) []string {
 		WHERE $1 = '' OR t.name LIKE '%' || $1 || '%'
 		GROUP BY t.id, t.name
 		ORDER BY COUNT(mt.meme_id) DESC, t.name
-		LIMIT $2
+		LIMIT $3
 	`, prefix, limit)
 	if err != nil {
 		return nil
@@ -2005,7 +2005,7 @@ func (s *PostgresStore) ListMemeAudit(id string, limit int) ([]MemeAuditEntry, e
 		FROM meme_audit_logs
 		WHERE meme_id = $1
 		ORDER BY created_at DESC, id DESC
-		LIMIT $2
+		LIMIT $3
 	`, strings.TrimSpace(id), limit)
 	if err != nil {
 		return nil, err
@@ -2033,7 +2033,8 @@ func (s *PostgresStore) ListMemeAudit(id string, limit int) ([]MemeAuditEntry, e
 	return out, rows.Err()
 }
 
-func (s *PostgresStore) ListAuditFeed(offset int, limit int) (PagedAuditFeed, error) {
+func (s *PostgresStore) ListAuditFeed(offset int, limit int, actorUserID string) (PagedAuditFeed, error) {
+	actorUserID = strings.TrimSpace(actorUserID) // empty matches every actor
 	if offset < 0 {
 		offset = 0
 	}
@@ -2045,7 +2046,7 @@ func (s *PostgresStore) ListAuditFeed(offset int, limit int) (PagedAuditFeed, er
 	}
 
 	var total int
-	if err := s.pool.QueryRow(context.Background(), `SELECT COUNT(*) FROM meme_audit_logs`).Scan(&total); err != nil {
+	if err := s.pool.QueryRow(context.Background(), `SELECT COUNT(*) FROM meme_audit_logs WHERE ($1 = '' OR actor_user_id = $1)`, actorUserID).Scan(&total); err != nil {
 		return PagedAuditFeed{}, err
 	}
 
@@ -2065,10 +2066,11 @@ func (s *PostgresStore) ListAuditFeed(offset int, limit int) (PagedAuditFeed, er
 			COALESCE(m.file_path, '') AS meme_file_path
 		FROM meme_audit_logs l
 		LEFT JOIN memes m ON m.id = l.meme_id
+		WHERE ($1 = '' OR l.actor_user_id = $1)
 		ORDER BY l.created_at DESC, l.id DESC
-		OFFSET $1
-		LIMIT $2
-	`, offset, limit)
+		OFFSET $2
+		LIMIT $3
+	`, actorUserID, offset, limit)
 	if err != nil {
 		return PagedAuditFeed{}, err
 	}

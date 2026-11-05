@@ -1960,12 +1960,12 @@ func (m *MemeManager) ListMemeAudit(id string, limit int) ([]accessor.MemeAuditE
 	return store.ListMemeAudit(strings.TrimSpace(id), limit)
 }
 
-func (m *MemeManager) ListAuditFeed(offset int, limit int) (accessor.PagedAuditFeed, error) {
+func (m *MemeManager) ListAuditFeed(offset int, limit int, actorUserID string) (accessor.PagedAuditFeed, error) {
 	store, ok := m.store.(accessor.AuditLogStore)
 	if !ok {
 		return accessor.PagedAuditFeed{}, nil
 	}
-	return store.ListAuditFeed(offset, limit)
+	return store.ListAuditFeed(offset, limit, actorUserID)
 }
 
 func (m *MemeManager) ListPendingDeletes(offset int, limit int) (accessor.PagedPendingDeletes, error) {

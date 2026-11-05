@@ -144,7 +144,7 @@ func (p pendingDeleteStore) ListPendingDeletes(offset, limit int) (accessor.Page
 	return accessor.PagedPendingDeletes{Total: p.pending}, nil
 }
 
-func (p pendingDeleteStore) ListAuditFeed(offset, limit int) (accessor.PagedAuditFeed, error) {
+func (p pendingDeleteStore) ListAuditFeed(offset, limit int, actorUserID string) (accessor.PagedAuditFeed, error) {
 	return accessor.PagedAuditFeed{}, nil
 }
 

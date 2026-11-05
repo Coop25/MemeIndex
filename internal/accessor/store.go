@@ -97,7 +97,7 @@ type MemeShareStore interface {
 
 type AuditLogStore interface {
 	ListMemeAudit(id string, limit int) ([]MemeAuditEntry, error)
-	ListAuditFeed(offset int, limit int) (PagedAuditFeed, error)
+	ListAuditFeed(offset int, limit int, actorUserID string) (PagedAuditFeed, error)
 	ListPendingDeletes(offset int, limit int) (PagedPendingDeletes, error)
 	ApprovePendingDelete(id string, actor AuditActor) error
 	RejectPendingDelete(id string, actor AuditActor) error
