@@ -271,3 +271,220 @@ function initAdminStoragePanel() {
   });
 }
 if (typeof document !== "undefined") initAdminStoragePanel();
+
+/* ======================= Audiobook Library page ======================= */
+
+const ADMIN_LIBRARY_COLUMNS = [
+  { key: "title", label: "Title" },
+  { key: "author", label: "Author" },
+  { key: "format", label: "Format" },
+  { key: "size", label: "Size", num: true },
+  { key: "duration", label: "Duration", num: true },
+  { key: "uploader", label: "Uploader" },
+  { key: "created_at", label: "Added" },
+  { key: "cover", label: "Cover", flag: true },
+  { key: "chapters", label: "Chapters", flag: true },
+  { key: "series", label: "Series", flag: true },
+  { key: "listeners", label: "Listeners (30d)", num: true },
+  { key: "hours", label: "Hours listened", num: true },
+];
+
+function adminLibraryDuration(seconds) {
+  const total = Math.round(Number(seconds) || 0);
+  if (total <= 0) return "—";
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
+function adminLibraryFlag(ok, name) {
+  return ok
+    ? `<span class="admin-library-ok" aria-label="Has ${name}">✓</span>`
+    : `<span class="admin-library-gap" aria-label="No ${name}">—</span>`;
+}
+
+// buildAudiobookLibraryTable renders the sortable table. sort is {sort, dir}.
+// Flag columns (cover/chapters/series) are not sortable by the API.
+function buildAudiobookLibraryTable(rows, sort) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) return adminPagesEmpty("No audiobooks match this filter.");
+  const active = sort && sort.sort;
+  const head = ADMIN_LIBRARY_COLUMNS.map((col) => {
+    const cls = `${col.num ? "is-num" : ""}${col.flag ? "is-flag" : ""}`;
+    const classAttr = cls ? ` class="${cls}"` : "";
+    if (col.flag) return `<th scope="col"${classAttr}>${escapeHTML(col.label)}</th>`;
+    const aria = active === col.key ? (sort.dir === "asc" ? "ascending" : "descending") : "none";
+    const arrow = aria === "ascending" ? " ▲" : aria === "descending" ? " ▼" : "";
+    return `<th scope="col"${classAttr} aria-sort="${aria}"><button type="button" class="admin-library-sort" data-library-sort="${col.key}">${escapeHTML(col.label)}<span aria-hidden="true">${arrow}</span></button></th>`;
+  }).join("");
+  const body = list.map((item) => {
+    const id = escapeHTML(String(item.id));
+    const added = item.created_at ? formatRelativeTime(item.created_at) : "";
+    return `<tr>
+      <td data-col="title"><button type="button" class="text-button admin-library-open" data-admin-audiobook-id="${id}">${escapeHTML(item.title || "Untitled")}</button></td>
+      <td data-col="author">${escapeHTML(item.author || "—")}</td>
+      <td data-col="format">${escapeHTML(item.format || "—")}</td>
+      <td data-col="size" class="is-num">${escapeHTML(formatSize(item.size_bytes || 0))}</td>
+      <td data-col="duration" class="is-num">${escapeHTML(adminLibraryDuration(item.duration_seconds))}</td>
+      <td data-col="uploader">${escapeHTML(item.uploader_name || item.uploader_id || "—")}</td>
+      <td data-col="created_at">${escapeHTML(added)}</td>
+      <td data-col="cover" class="is-flag">${adminLibraryFlag(item.has_cover, "cover")}</td>
+      <td data-col="chapters" class="is-flag">${adminLibraryFlag(item.has_chapters, "chapters")}</td>
+      <td data-col="series" class="is-flag">${adminLibraryFlag(item.has_series, "series")}</td>
+      <td data-col="listeners" class="is-num">${escapeHTML(String(item.active_listeners || 0))}</td>
+      <td data-col="hours" class="is-num">${escapeHTML(((item.seconds_listened || 0) / 3600).toFixed(1))}</td>
+    </tr>`;
+  }).join("");
+  return `<table class="admin-library-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+
+function audiobookLibraryPageInfo(data) {
+  const size = Math.max(1, (data && data.page_size) || 50);
+  const total = Math.max(0, (data && data.total) || 0);
+  const page = Math.max(1, (data && data.page) || 1);
+  const pages = Math.max(1, Math.ceil(total / size));
+  return { page, pages, label: `Page ${page} of ${pages}`, hasPrev: page > 1, hasNext: page < pages };
+}
+
+function audiobookLibraryQuery(s) {
+  const params = new URLSearchParams();
+  params.set("sort", s.sort);
+  params.set("dir", s.dir);
+  if (s.filter) params.set("filter", s.filter);
+  params.set("page", String(s.page || 1));
+  return params.toString();
+}
+
+// Numeric/date columns read best largest-first on first click; text ascending.
+const ADMIN_LIBRARY_DESC_FIRST = ["size", "duration", "created_at", "listeners", "hours"];
+
+function adminLibraryState() {
+  const admin = state.admin;
+  const s = admin.audiobookLibrary || (admin.audiobookLibrary = {});
+  if (s.filter == null) s.filter = "";
+  if (!s.sort) s.sort = "created_at";
+  if (!s.dir) s.dir = "desc";
+  if (!s.page) s.page = 1;
+  if (s.data === undefined) s.data = null;
+  if (s.status === undefined) s.status = "";
+  return s;
+}
+
+let adminLibraryRequestToken = 0;
+
+function renderAdminAudiobookLibrary() {
+  const panel = document.querySelector("#admin-audiobook-library-panel");
+  if (!panel) return;
+  const visible = isAdminView() && canManageUsers() && activeAdminTab() === "audiobook-library";
+  panel.classList.toggle("hidden", !visible);
+  if (!visible) return;
+  const s = adminLibraryState();
+  const unavailable = !!(s.data && s.data.state === "unavailable");
+  const set = (id, html) => { const el = document.querySelector(id); if (el) el.innerHTML = html; };
+  const filter = document.querySelector("#admin-library-filter");
+  if (filter) { filter.value = s.filter; filter.disabled = unavailable; }
+  const pager = document.querySelector("#admin-library-pager");
+  if (unavailable) {
+    set("#admin-library-table", adminPagesEmpty("Requires PostgreSQL"));
+    if (pager) pager.classList.add("hidden");
+  } else if (!s.data) {
+    set("#admin-library-table", adminPagesEmpty(s.status || "Loading..."));
+    if (pager) pager.classList.add("hidden");
+  } else {
+    set("#admin-library-table", buildAudiobookLibraryTable(s.data.items, s));
+    const info = audiobookLibraryPageInfo(s.data);
+    if (pager) pager.classList.toggle("hidden", info.pages <= 1);
+    const label = document.querySelector("#admin-library-page-label");
+    if (label) label.textContent = info.label;
+    const prev = document.querySelector("#admin-library-prev");
+    const next = document.querySelector("#admin-library-next");
+    if (prev) prev.disabled = !info.hasPrev || s.busy;
+    if (next) next.disabled = !info.hasNext || s.busy;
+  }
+  const status = document.querySelector("#admin-library-status");
+  if (status) {
+    status.textContent = s.status || (s.data && s.data.state !== "unavailable" && s.data.total != null
+      ? `${s.data.total} audiobook${s.data.total === 1 ? "" : "s"}` : "");
+  }
+}
+
+async function loadAdminAudiobookLibrary() {
+  const s = adminLibraryState();
+  const token = ++adminLibraryRequestToken;
+  s.busy = true;
+  s.status = "";
+  renderAdminAudiobookLibrary();
+  let result;
+  try {
+    result = await adminPagesFetchJSON(`/api/admin/audiobooks?${audiobookLibraryQuery(s)}`, undefined, "Failed to load the audiobook library.");
+  } catch (error) {
+    console.error(error);
+    result = { ok: false, error: "Failed to load the audiobook library." };
+  }
+  if (token !== adminLibraryRequestToken) return true; // a newer request owns the panel
+  s.busy = false;
+  if (!result.ok) {
+    s.status = result.error;
+    renderAdminAudiobookLibrary();
+    return false;
+  }
+  s.data = result.body;
+  renderAdminAudiobookLibrary();
+  return true;
+}
+
+// openAdminLibraryAudiobook fetches the full record (the list rows are
+// summaries) and hands it to the shared audiobook edit modal in app.js.
+async function openAdminLibraryAudiobook(id) {
+  const s = adminLibraryState();
+  s.status = "Opening...";
+  renderAdminAudiobookLibrary();
+  const result = await adminPagesFetchJSON(`/api/audiobooks/${encodeURIComponent(id)}`, undefined, "Could not open the audiobook.");
+  if (!result.ok || !result.body) {
+    s.status = result.error || "Could not open the audiobook.";
+    renderAdminAudiobookLibrary();
+    return;
+  }
+  s.status = "";
+  renderAdminAudiobookLibrary();
+  openAudiobookEditModal(result.body);
+}
+
+function reloadAdminAudiobookLibrary() {
+  loadAdminAudiobookLibrary().catch((error) => console.error(error));
+}
+
+function initAdminAudiobookLibraryPanel() {
+  const panel = document.querySelector("#admin-audiobook-library-panel");
+  if (!panel || panel.dataset.wired) return;
+  panel.dataset.wired = "1";
+  panel.addEventListener("click", (event) => {
+    const target = event.target.closest("button");
+    if (!target || target.disabled) return;
+    const s = adminLibraryState();
+    if (target.hasAttribute("data-library-sort")) {
+      const col = target.getAttribute("data-library-sort");
+      if (s.sort === col) s.dir = s.dir === "asc" ? "desc" : "asc";
+      else { s.sort = col; s.dir = ADMIN_LIBRARY_DESC_FIRST.includes(col) ? "desc" : "asc"; }
+      s.page = 1;
+      reloadAdminAudiobookLibrary();
+    } else if (target.hasAttribute("data-admin-audiobook-id")) {
+      openAdminLibraryAudiobook(target.getAttribute("data-admin-audiobook-id")).catch((error) => {
+        console.error(error);
+        s.status = "Could not open the audiobook.";
+        renderAdminAudiobookLibrary();
+      });
+    } else if (target.id === "admin-library-prev" || target.id === "admin-library-next") {
+      s.page = Math.max(1, (s.page || 1) + (target.id === "admin-library-next" ? 1 : -1));
+      reloadAdminAudiobookLibrary();
+    }
+  });
+  panel.addEventListener("change", (event) => {
+    if (event.target.id !== "admin-library-filter") return;
+    const s = adminLibraryState();
+    s.filter = event.target.value;
+    s.page = 1;
+    reloadAdminAudiobookLibrary();
+  });
+}
+if (typeof document !== "undefined") initAdminAudiobookLibraryPanel();

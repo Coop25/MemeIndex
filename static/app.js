@@ -47,7 +47,7 @@ const state = {
     backupIncoming: null,
     migration: null,
     dashboard: null,
-    audiobookLibrary: { filter: "" },
+    audiobookLibrary: { filter: "", sort: "created_at", dir: "desc", page: 1, data: null, busy: false, status: "" },
     tagHygiene: {
       loaded: false,
       ready: false,
@@ -186,14 +186,19 @@ const ADMIN_TABS = Object.freeze({
     title: "Storage", kicker: "Admin",
     copy: "See what is using disk space, find files the database no longer references, and clear abandoned uploads.",
   },
+  "audiobook-library": {
+    group: "Audiobooks", label: "Library", superOnly: true, panel: "admin-audiobook-library-panel",
+    title: "Audiobook Library", kicker: "Admin",
+    copy: "Every audiobook on the server with its size, format, metadata gaps, and how much it is listened to.",
+  },
   "audiobook-conversion": {
-    group: "Operations", label: "MP3 Conversion", superOnly: true, panel: "admin-remux-panel",
+    group: "Audiobooks", label: "MP3 Conversion", superOnly: true, panel: "admin-remux-panel",
     title: "Audiobook Conversion", kicker: "Admin",
     copy: "MP3 audiobooks are copied, without re-encoding, into .m4b files so chapter jumps and seeking land exactly. Books stay playable throughout.",
   },
 });
 const ADMIN_TAB_IDS = Object.freeze(Object.keys(ADMIN_TABS));
-const ADMIN_TAB_GROUPS = Object.freeze(["Overview", "Tags", "Imports", "Operations"]);
+const ADMIN_TAB_GROUPS = Object.freeze(["Overview", "Tags", "Imports", "Operations", "Audiobooks"]);
 const ADMIN_DEFAULT_TAB = "dashboard";
 
 function isValidAdminTab(tab) {
@@ -4380,6 +4385,7 @@ function renderContentMode() {
   renderAdminLinkRetryStatus();
   renderAdminRemuxStatus();
   window.renderAdminStorage?.();
+  window.renderAdminAudiobookLibrary?.();
   syncAdminTagQueuePolling();
   syncAdminLinkQueuePolling();
   syncAdminBackupPolling();
@@ -4499,6 +4505,7 @@ const ADMIN_TAB_LOADERS = {
   "link-retries": { run: () => fetchAdminLinkRetryStatus() },
   "rejected-links": { run: () => fetchAdminLinkRetryStatus() },
   storage: { loading: "Loading storage...", run: () => window.loadAdminStorage(), fail: "Could not load storage." },
+  "audiobook-library": { loading: "Loading audiobook library...", run: () => window.loadAdminAudiobookLibrary(), fail: "Could not load the audiobook library." },
   backup: { run: () => { renderAdminBackupStatus(); return fetchAdminBackupStatus(); } },
   "audiobook-conversion": { run: () => fetchAdminRemuxStatus() },
 };

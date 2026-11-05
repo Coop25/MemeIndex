@@ -609,11 +609,12 @@ body.admin-mode .admin-link-queue-panel,
 body.admin-mode .admin-tag-hygiene-panel,
 body.admin-mode .admin-users-panel,
 body.admin-mode .admin-storage-panel,
+body.admin-mode .admin-library-panel,
 body.admin-mode .admin-backup-panel,
 body.admin-mode .admin-view-table { grid-row: 2; }
 body.admin-mode .admin-pagination { grid-row: 3; }
 body.admin-mode #admin-view-status:not(:empty) { width: fit-content; max-width: 100%; margin: 0 0 -4px auto; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: rgba(20,20,24,.96); }
-.admin-view-table, .admin-users-panel, .admin-tag-queue-panel, .admin-tag-hygiene-panel, .admin-backup-panel, .admin-storage-panel { min-width: 0; }
+.admin-view-table, .admin-users-panel, .admin-tag-queue-panel, .admin-tag-hygiene-panel, .admin-backup-panel, .admin-storage-panel, .admin-library-panel { min-width: 0; }
 .admin-users-panel, .admin-tag-queue-panel, .admin-tag-hygiene-panel {
   padding: 16px;
   border-color: rgba(255,255,255,.095);
@@ -716,6 +717,7 @@ body.admin-mode #admin-view-status:not(:empty) { width: fit-content; max-width: 
   body.admin-mode .admin-tag-hygiene-panel,
   body.admin-mode .admin-users-panel,
   body.admin-mode .admin-storage-panel,
+  body.admin-mode .admin-library-panel,
   body.admin-mode .admin-backup-panel,
   body.admin-mode .admin-view-table { grid-row: 3; }
   body.admin-mode .admin-pagination { grid-row: 4; }
@@ -4809,3 +4811,25 @@ button.admin-health-row:hover, button.admin-health-row:focus-visible { backgroun
   .admin-storage-row .admin-storage-bar { grid-column: 1 / -1; grid-row: 2; }
   .admin-storage-orphan { grid-template-columns: auto minmax(0,1fr) auto; }
 }
+
+/* Audiobook Library admin page */
+.admin-library-panel { display: grid; gap: 12px; min-width: 0; }
+.admin-library-panel.hidden { display: none; }
+.admin-library-toolbar { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
+.admin-library-filter-field { min-width: 200px; }
+.admin-library-toolbar .status-text { flex: 1 1 200px; min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.admin-library-scroll { min-width: 0; max-width: 100%; overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; }
+.admin-library-scroll > .admin-pages-empty { margin: 14px; }
+.admin-library-table { width: 100%; min-width: 980px; border-collapse: collapse; font-size: 12px; }
+.admin-library-table th, .admin-library-table td { padding: 9px 12px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+.admin-library-table td[data-col="title"] { min-width: 180px; max-width: 280px; white-space: normal; overflow-wrap: anywhere; }
+.admin-library-table td[data-col="author"], .admin-library-table td[data-col="uploader"] { max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
+.admin-library-table th { background: rgba(255,255,255,.018); color: var(--muted); font-weight: 600; }
+.admin-library-table tbody tr:hover { background: rgba(255,255,255,.025); }
+.admin-library-table .is-num { text-align: right; }
+.admin-library-table .is-flag { text-align: center; }
+.admin-library-sort { min-height: 32px; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.admin-library-sort:hover { color: var(--green-bright); }
+.admin-library-open { text-align: left; }
+.admin-library-ok { color: var(--green-bright); }
+.admin-library-gap { color: #e5a23c; }

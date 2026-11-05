@@ -444,6 +444,28 @@
                 <section class="admin-dashboard-section"><div class="admin-dashboard-section-head"><p class="section-kicker">Audiobooks</p><h3>Unfinished uploads</h3></div><div id="admin-storage-uploads"></div></section>
               </div>
             </section>
+            <section id="admin-audiobook-library-panel" class="admin-library-panel hidden">
+              <div class="admin-library-toolbar">
+                <label class="field admin-library-filter-field">
+                  <span>Show</span>
+                  <select id="admin-library-filter">
+                    <option value="">All audiobooks</option>
+                    <option value="no-cover">Missing cover</option>
+                    <option value="no-chapters">Missing chapters</option>
+                    <option value="no-series">Not in a series</option>
+                    <option value="not-converted">Not converted to M4B</option>
+                    <option value="conversion-failed">Conversion failed</option>
+                  </select>
+                </label>
+                <p id="admin-library-status" class="status-text" role="status"></p>
+              </div>
+              <div id="admin-library-table" class="admin-library-scroll"></div>
+              <div id="admin-library-pager" class="admin-pagination hidden" aria-label="Audiobook library pages">
+                <button id="admin-library-prev" class="meme-page-button" type="button" aria-label="Previous page" disabled><span aria-hidden="true">&lt;</span></button>
+                <p id="admin-library-page-label" class="meme-page-label" aria-live="polite">Page 1</p>
+                <button id="admin-library-next" class="meme-page-button" type="button" aria-label="Next page" disabled><span aria-hidden="true">&gt;</span></button>
+              </div>
+            </section>
             <section id="admin-backup-panel" class="admin-backup-panel hidden">
               <article class="admin-backup-card">
                 <div>
