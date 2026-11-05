@@ -129,3 +129,48 @@ test("combined storage series adds audiobook bytes by date", () => {
   const storage = metrics.find((metric) => /^Storage/.test(metric.label));
   assert.deepEqual(Array.from(storage.series, (entry) => entry.storage_bytes), [5, 15]);
 });
+
+test("work queue chips link to their tabs", () => {
+  const html = context.buildAdminWorkQueues({ delete_queue: 3, suggested_tags: 0, link_retries: 2, rejected_links: 0, conversion_queue: 7 });
+  const chips = [...html.matchAll(/<button[^>]*class="admin-queue-chip"[^>]*>/g)].map((m) => m[0]);
+  assert.equal(chips.length, 5);
+  for (const tab of ["delete-queue", "tag-review", "link-retries", "rejected-links", "audiobook-conversion"]) {
+    assert.ok(chips.some((chip) => chip.includes(`data-admin-open-tab="${tab}"`)), tab);
+  }
+  assert.ok(chips.find((c) => c.includes('"tag-review"')).includes('data-empty="true"'));
+  assert.ok(chips.find((c) => c.includes('"delete-queue"')).includes('data-empty="false"'));
+  assert.doesNotMatch(context.buildAdminWorkQueues(null), /NaN/);
+  const noTab = context.buildAdminWorkQueues({ delete_queue: 1 }, () => false);
+  assert.doesNotMatch(noTab, /data-admin-open-tab/);
+});
+
+test("health buttons carry library filters", () => {
+  const html = context.buildAdminAudiobookHealth({ awaiting_conversion: 1, failed_conversion: 2, missing_cover: 3, missing_chapters: 0, missing_series: 5 });
+  for (const f of ["no-cover", "no-chapters", "no-series", "not-converted", "conversion-failed"]) {
+    assert.match(html, new RegExp(`data-admin-library-filter="${f}"`));
+  }
+  assert.match(html, /data-admin-open-tab="audiobook-library"/);
+  const plain = context.buildAdminAudiobookHealth({ missing_cover: 3 }, () => false);
+  assert.doesNotMatch(plain, /<button|data-admin-open-tab/);
+  assert.doesNotMatch(plain, /NaN/);
+});
+
+test("listening chart handles empty activity", () => {
+  const html = context.buildAdminListening({ daily_seconds: [], top_books: [], top_listeners: [] });
+  assert.doesNotMatch(html, /NaN/);
+  assert.match(html, /No listening yet/);
+  const full = context.buildAdminListening({
+    daily_seconds: [{ date: "2026-01-01", seconds: 600 }, { date: "2026-01-02", seconds: 0 }],
+    top_books: [{ id: "b<1>", title: "<b>Book</b>", seconds: 3700 }],
+    top_listeners: [{ user_id: "u", display_name: "Al & Co", seconds: 90 }],
+  });
+  assert.doesNotMatch(full, /NaN|<b>Book/);
+  assert.match(full, /Minutes: 10/);
+  assert.match(full, /Al &amp; Co/);
+});
+
+test("upload chart output is unchanged by default labels", () => {
+  const html = context.buildAdminUploadChart([{ date: "2026-01-01", uploads: 2 }]);
+  assert.match(html, /uploads in 30 days/);
+  assert.match(html, /Uploads: 2/);
+});

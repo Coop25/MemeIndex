@@ -44,6 +44,7 @@ const state = {
     backupIncoming: null,
     migration: null,
     dashboard: null,
+    audiobookLibrary: { filter: "" },
     tagHygiene: {
       loaded: false,
       ready: false,
@@ -718,6 +719,15 @@ function adminTabBadgeCounts() {
   const linkStatus = state.admin.linkRetryStatus || {};
   const queued = Array.isArray(linkStatus.queued) ? linkStatus.queued.length : 0;
   const rejected = Array.isArray(linkStatus.rejected) ? linkStatus.rejected.length : 0;
+  const queues = state.admin.dashboard?.work_queues;
+  if (queues) {
+    return {
+      tagReview: Number(queues.suggested_tags) || 0,
+      linkRetries: Number(queues.link_retries) || 0,
+      rejectedLinks: Number(queues.rejected_links) || 0,
+      deleteQueue: Number(queues.delete_queue) || 0,
+    };
+  }
   return {
     tagReview: Number(state.admin.tagReview?.total || 0) || 0,
     linkRetries: queued,
@@ -2928,9 +2938,16 @@ function buildAdminMetricSparkline(series, key, label, valueFormatter = (value) 
   `;
 }
 
-function buildAdminUploadChart(series) {
+function buildAdminUploadChart(series, options = {}) {
+  const {
+    emptyText = "Upload history will appear here.",
+    summaryLabel = "uploads in 30 days",
+    ariaLabel = "Daily uploads over the last 30 days",
+    valueName = "Uploads",
+    gradientId = "admin-upload-fill",
+  } = options;
   const points = Array.isArray(series) ? series : [];
-  if (!points.length) return `<p class="users-empty">Upload history will appear here.</p>`;
+  if (!points.length) return `<p class="users-empty">${escapeHTML(emptyText)}</p>`;
   const width = 720;
   const height = 205;
   const max = Math.max(1, ...points.map((entry) => Number(entry.uploads || 0)));
@@ -2943,13 +2960,13 @@ function buildAdminUploadChart(series) {
   const area = `0,${height} ${line} ${width},${height}`;
   const total = points.reduce((sum, entry) => sum + Number(entry.uploads || 0), 0);
   return `
-    <div class="admin-chart-summary"><strong>${escapeHTML(String(total))}</strong><span>uploads in 30 days</span></div>
-    <svg class="admin-upload-svg" viewBox="0 0 ${width} ${height}" role="group" aria-label="Daily uploads over the last 30 days">
-      <defs><linearGradient id="admin-upload-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#65ca73" stop-opacity=".42"/><stop offset="1" stop-color="#65ca73" stop-opacity="0"/></linearGradient></defs>
+    <div class="admin-chart-summary"><strong>${escapeHTML(String(total))}</strong><span>${escapeHTML(summaryLabel)}</span></div>
+    <svg class="admin-upload-svg" viewBox="0 0 ${width} ${height}" role="group" aria-label="${escapeHTML(ariaLabel)}">
+      <defs><linearGradient id="${gradientId}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#65ca73" stop-opacity=".42"/><stop offset="1" stop-color="#65ca73" stop-opacity="0"/></linearGradient></defs>
       <path class="admin-chart-grid" d="M0 35H720M0 85H720M0 135H720M0 185H720" />
-      <polygon points="${area}" fill="url(#admin-upload-fill)" />
+      <polygon points="${area}" fill="url(#${gradientId})" />
       <polyline points="${line}" fill="none" stroke="#72d17c" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
-      ${buildAdminChartPoints(points, coordinates, width, height, (entry) => `Uploads: ${Number(entry.uploads || 0).toLocaleString()}`)}
+      ${buildAdminChartPoints(points, coordinates, width, height, (entry) => `${valueName}: ${Number(entry.uploads || 0).toLocaleString()}`)}
     </svg>
     <div class="admin-chart-axis"><span>${escapeHTML(points[0]?.date || "")}</span><span>${escapeHTML(points[Math.floor(points.length / 2)]?.date || "")}</span><span>${escapeHTML(points[points.length - 1]?.date || "")}</span></div>
   `;
@@ -3030,6 +3047,82 @@ function buildAdminDashboardMetrics(dashboard) {
   return metrics;
 }
 
+// Work-queue chips and audiobook-health counts link to other admin tabs. `canOpen`
+// lets the caller render a plain count when the target tab does not exist (yet).
+const ADMIN_WORK_QUEUE_CHIPS = Object.freeze([
+  { key: "delete_queue", tab: "delete-queue", label: "Delete queue" },
+  { key: "suggested_tags", tab: "tag-review", label: "Suggested tags" },
+  { key: "link_retries", tab: "link-retries", label: "Link retries" },
+  { key: "rejected_links", tab: "rejected-links", label: "Rejected links" },
+  { key: "conversion_queue", tab: "audiobook-conversion", label: "MP3 conversion" },
+]);
+
+function buildAdminWorkQueues(queues, canOpen = () => true) {
+  const source = queues || {};
+  return ADMIN_WORK_QUEUE_CHIPS.map((chip) => {
+    const count = Math.max(0, Number(source[chip.key]) || 0);
+    const inner = `<strong>${escapeHTML(count.toLocaleString())}</strong><span>${escapeHTML(chip.label)}</span>`;
+    const empty = count === 0;
+    if (!canOpen(chip.tab)) return `<div class="admin-queue-chip" data-empty="${empty}">${inner}</div>`;
+    return `<button type="button" class="admin-queue-chip" data-admin-open-tab="${escapeHTML(chip.tab)}" data-empty="${empty}">${inner}</button>`;
+  }).join("");
+}
+
+function formatListeningDuration(seconds) {
+  const total = Math.max(0, Math.round(Number(seconds) || 0));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  if (hours) return `${hours}h ${minutes}m`;
+  if (minutes) return `${minutes}m`;
+  return `${total}s`;
+}
+
+function buildAdminListening(activity) {
+  const source = activity || {};
+  const daily = Array.isArray(source.daily_seconds) ? source.daily_seconds : [];
+  const books = Array.isArray(source.top_books) ? source.top_books : [];
+  const listeners = Array.isArray(source.top_listeners) ? source.top_listeners : [];
+  const totalSeconds = daily.reduce((sum, entry) => sum + (Number(entry.seconds) || 0), 0);
+  const chart = totalSeconds > 0
+    ? buildAdminUploadChart(daily.map((entry) => ({ date: entry.date, uploads: Math.round((Number(entry.seconds) || 0) / 60) })), {
+      summaryLabel: "minutes listened in 30 days",
+      ariaLabel: "Daily listening minutes over the last 30 days",
+      valueName: "Minutes",
+      gradientId: "admin-listening-fill",
+    })
+    : `<p class="users-empty">No listening yet.</p>`;
+  const list = (rows) => rows.length
+    ? `<ol class="admin-rank-list">${rows.map((row) => `<li><span title="${escapeHTML(row.label)}">${escapeHTML(row.label)}</span><strong>${escapeHTML(formatListeningDuration(row.seconds))}</strong></li>`).join("")}</ol>`
+    : `<p class="users-empty">No listening yet.</p>`;
+  return `
+    <div class="admin-dashboard-upload-chart admin-listening-chart">${chart}</div>
+    <div class="admin-rank-columns">
+      <div><h4>Top books</h4>${list(books.map((book) => ({ label: book.title || "Untitled", seconds: book.seconds })))}</div>
+      <div><h4>Top listeners</h4>${list(listeners.map((who) => ({ label: who.display_name || "Unknown", seconds: who.seconds })))}</div>
+    </div>
+  `;
+}
+
+const ADMIN_AUDIOBOOK_HEALTH_ROWS = Object.freeze([
+  { key: "awaiting_conversion", filter: "not-converted", label: "Awaiting conversion" },
+  { key: "failed_conversion", filter: "conversion-failed", label: "Failed conversion" },
+  { key: "missing_cover", filter: "no-cover", label: "Missing cover" },
+  { key: "missing_chapters", filter: "no-chapters", label: "Missing chapters" },
+  { key: "missing_series", filter: "no-series", label: "Missing series" },
+]);
+
+function buildAdminAudiobookHealth(health, canOpen = () => true) {
+  const source = health || {};
+  const linked = canOpen("audiobook-library");
+  return `<div class="admin-audiobook-health-list">${ADMIN_AUDIOBOOK_HEALTH_ROWS.map((row) => {
+    const count = Math.max(0, Number(source[row.key]) || 0);
+    const inner = `<span>${escapeHTML(row.label)}</span><strong data-empty="${count === 0}">${escapeHTML(count.toLocaleString())}</strong>`;
+    return linked
+      ? `<button type="button" class="admin-health-row" data-admin-open-tab="audiobook-library" data-admin-library-filter="${row.filter}">${inner}</button>`
+      : `<div class="admin-health-row">${inner}</div>`;
+  }).join("")}</div>`;
+}
+
 function renderAdminDashboard() {
   if (!adminDashboardPanel || !adminDashboardGrid || !adminDashboardTags || !adminDashboardRecent || !adminDashboardUploadChart || !adminDashboardHealth || !adminDashboardActivity) return;
 
@@ -3058,6 +3151,19 @@ function renderAdminDashboard() {
   `).join("");
 
   adminDashboardUploadChart.innerHTML = buildAdminUploadChart(dashboard.upload_series);
+
+  const canOpenTab = (tab) => isValidAdminTab(tab);
+  const queuesNode = document.querySelector("#admin-dashboard-queues");
+  if (queuesNode) queuesNode.innerHTML = buildAdminWorkQueues(dashboard.work_queues, canOpenTab);
+  const audiobookActivity = dashboard.audiobook_activity || null;
+  const audiobookRow = document.querySelector("#admin-dashboard-audiobooks");
+  if (audiobookRow) audiobookRow.classList.toggle("hidden", !audiobookActivity);
+  if (audiobookActivity) {
+    const listeningNode = document.querySelector("#admin-dashboard-listening");
+    const audiobookHealthNode = document.querySelector("#admin-dashboard-audiobook-health");
+    if (listeningNode) listeningNode.innerHTML = buildAdminListening(audiobookActivity);
+    if (audiobookHealthNode) audiobookHealthNode.innerHTML = buildAdminAudiobookHealth(audiobookActivity.health, canOpenTab);
+  }
 
   adminDashboardTags.innerHTML = buildAdminTopTags(dashboard.top_tags);
   bindAdminChartTooltips(adminDashboardPanel);
@@ -3099,6 +3205,12 @@ function renderAdminDashboard() {
     `).join("");
   }
 
+  adminDashboardPanel.querySelectorAll("[data-admin-open-tab]").forEach((button) => button.addEventListener("click", () => {
+    if (button.dataset.adminLibraryFilter != null) {
+      state.admin.audiobookLibrary = { ...(state.admin.audiobookLibrary || {}), filter: button.dataset.adminLibraryFilter };
+    }
+    navigateAdminTab(button.dataset.adminOpenTab);
+  }));
   document.querySelectorAll("[data-admin-meme-id]").forEach((button) => button.addEventListener("click", () => openAdminMemeByID(button.dataset.adminMemeId)));
   document.querySelectorAll("[data-admin-tag]").forEach((button) => button.addEventListener("click", () => {
     state.filters.tag = button.dataset.adminTag || "";

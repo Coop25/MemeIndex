@@ -4739,3 +4739,40 @@ body.audiobooks-only-access #mobile-add-vault {
 .admin-migration-bar.is-indeterminate span { width: 30%; animation: adminMigrationSlide 1.4s ease-in-out infinite; }
 .admin-migration-bar.is-failed span { background: var(--red); }
 @keyframes adminMigrationSlide { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+
+/* Work queues, listening activity, and audiobook health */
+.admin-dashboard-queues { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
+.admin-queue-chip { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; padding: 10px 13px; border: 1px solid var(--line); border-radius: 11px; background: var(--panel); color: var(--text); font: inherit; text-align: left; }
+.admin-queue-chip strong { font-size: 20px; font-weight: 750; font-variant-numeric: tabular-nums; }
+.admin-queue-chip span { min-width: 0; overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.admin-queue-chip[data-empty="false"] { border-color: rgba(215,161,94,.45); }
+.admin-queue-chip[data-empty="false"] strong { color: #d7a15e; }
+.admin-queue-chip[data-empty="true"] strong { color: var(--faint); }
+button.admin-queue-chip { cursor: pointer; }
+button.admin-queue-chip:hover, button.admin-queue-chip:focus-visible { border-color: var(--line-strong); background: var(--panel-2); }
+.admin-dashboard-audiobooks { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(280px, .72fr); gap: 12px; }
+.admin-dashboard-audiobooks.hidden { display: none; }
+.admin-listening-chart { min-height: 0; }
+.admin-rank-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 12px; }
+.admin-rank-columns > div { min-width: 0; }
+.admin-rank-columns h4 { margin: 0 0 6px; color: var(--muted); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
+.admin-rank-list { display: grid; margin: 0; padding: 0; list-style: none; }
+.admin-rank-list li { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 26px; border-bottom: 1px solid rgba(255,255,255,.045); font-size: 12px; }
+.admin-rank-list li span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.admin-rank-list li strong { flex: none; color: var(--muted); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.admin-audiobook-health-list { display: grid; }
+.admin-health-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 34px; padding: 0 2px; border: 0; border-bottom: 1px solid rgba(255,255,255,.045); background: none; color: var(--text); font: inherit; font-size: 12px; text-align: left; }
+.admin-health-row span { min-width: 0; overflow-wrap: anywhere; }
+.admin-health-row strong { flex: none; color: #d7a15e; font-variant-numeric: tabular-nums; }
+.admin-health-row strong[data-empty="true"] { color: var(--faint); }
+button.admin-health-row { cursor: pointer; }
+button.admin-health-row:hover, button.admin-health-row:focus-visible { background: rgba(255,255,255,.04); }
+@media (max-width: 1100px) {
+  .admin-dashboard-queues { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .admin-dashboard-audiobooks { grid-template-columns: 1fr; }
+}
+@media (max-width: 760px) {
+  .admin-dashboard-queues { grid-template-columns: 1fr 1fr; gap: 8px; }
+  .admin-queue-chip:last-child:nth-child(odd) { grid-column: 1 / -1; }
+  .admin-rank-columns { grid-template-columns: 1fr; }
+}
