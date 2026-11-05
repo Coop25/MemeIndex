@@ -245,6 +245,7 @@ type audiobookStore interface {
 	AdminStats(ctx context.Context, now time.Time) (adminAudiobookStats, error)
 	AdminListening(ctx context.Context, now time.Time) ([]adminDaySeconds, []adminTopBook, []adminTopListener, error)
 	AdminHealthCounts(ctx context.Context) (adminAudiobookHealth, error)
+	AdminListAudiobooks(ctx context.Context, query adminAudiobookQuery) ([]adminAudiobookRow, int, error)
 	// ListStoragePaths and ListUploadTempPaths report every file location the
 	// database references, for the admin storage orphan scan.
 	ListStoragePaths(ctx context.Context) ([]audiobookStoragePath, error)
