@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
+	"sort"
 	"testing"
 	"time"
 )
@@ -87,6 +90,57 @@ func TestAdminAudiobooksFilterNotConverted(t *testing.T) {
 	_, body = getLibrary(t, ts, "?filter=conversion-failed")
 	if body.Total != 0 || len(body.Items) != 0 {
 		t.Fatalf("failed body %+v", body)
+	}
+}
+
+func TestAdminAudiobooksNotConvertedExcludesFailed(t *testing.T) {
+	ts, store := libraryTestServer(t)
+	ctx := context.Background()
+	dir := t.TempDir()
+	var mp3IDs, mp3Paths []string
+	for _, name := range []string{"a.mp3", "b.mp3", "c.mp3"} {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		id := insertActivityBook(t, store, name, "c.jpg", "[]", "")
+		if _, err := store.pool.Exec(ctx, `UPDATE audiobooks SET storage_path = $2, mime_type = 'audio/mpeg' WHERE id = $1`, id, p); err != nil {
+			t.Fatal(err)
+		}
+		mp3IDs = append(mp3IDs, id)
+		mp3Paths = append(mp3Paths, p)
+	}
+	insertActivityBook(t, store, "M4B", "c.jpg", "[]", "") // already converted
+	recordAudiobookRemuxFailure(mp3Paths[0], os.ErrInvalid)
+
+	_, body := getLibrary(t, ts, "?filter=not-converted")
+	got := []string{}
+	for _, it := range body.Items {
+		got = append(got, it.ID)
+	}
+	want := []string{mp3IDs[1], mp3IDs[2]}
+	sort.Strings(got)
+	sort.Strings(want)
+	if body.Total != 2 || len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("not-converted total %d ids %v, want %v", body.Total, got, want)
+	}
+	// Paging placeholders must follow the filter args.
+	_, paged := getLibrary(t, ts, "?filter=not-converted&page_size=1&page=2")
+	if paged.Total != 2 || len(paged.Items) != 1 {
+		t.Fatalf("paged not-converted %+v", paged)
+	}
+
+	_, failed := getLibrary(t, ts, "?filter=conversion-failed")
+	if failed.Total != 1 || len(failed.Items) != 1 || failed.Items[0].ID != mp3IDs[0] {
+		t.Fatalf("conversion-failed %+v", failed)
+	}
+
+	activity, err := ts.s.cachedAudiobookActivity(ctx)
+	if err != nil || activity == nil {
+		t.Fatalf("activity %v err %v", activity, err)
+	}
+	if activity.Health.AwaitingConversion != body.Total {
+		t.Errorf("dashboard awaiting = %d, not-converted total = %d", activity.Health.AwaitingConversion, body.Total)
 	}
 }
 

@@ -68,12 +68,13 @@ var adminAudiobookSortSQL = map[string]string{
 }
 
 // adminAudiobookFilterSQL holds the WHERE fragments. conversion-failed needs
-// the failed id set, bound as $1.
+// the failed id set, bound as $1; not-converted ("awaiting conversion") is the
+// MP3s minus those permanently failed, matching the dashboard count.
 var adminAudiobookFilterSQL = map[string]string{
 	"no-cover":          "a.cover_path = ''",
 	"no-chapters":       "a.chapters = '[]'::jsonb",
 	"no-series":         "a.series_id IS NULL",
-	"not-converted":     adminAudiobookMP3Predicate,
+	"not-converted":     "(" + adminAudiobookMP3Predicate + ") AND NOT (a.id = ANY($1))",
 	"conversion-failed": "a.id = ANY($1)",
 }
 
@@ -104,7 +105,7 @@ func (s *postgresAudiobookStore) AdminListAudiobooks(ctx context.Context, q admi
 			return nil, 0, fmt.Errorf("unknown audiobook filter %q", q.Filter)
 		}
 		where = "WHERE " + frag
-		if q.Filter == "conversion-failed" {
+		if q.Filter == "conversion-failed" || q.Filter == "not-converted" {
 			ids := q.FailedIDs
 			if ids == nil {
 				ids = []string{}
@@ -200,7 +201,7 @@ func (s *Server) handleAdminAudiobooks(w http.ResponseWriter, r *http.Request) {
 		Limit:  pageSize,
 		Offset: (page - 1) * pageSize,
 	}
-	if filter == "conversion-failed" {
+	if filter == "conversion-failed" || filter == "not-converted" {
 		ids, err := s.failedRemuxAudiobookIDs(r.Context())
 		if err != nil {
 			log.Printf("admin audiobook failed conversions failed: %v", err)

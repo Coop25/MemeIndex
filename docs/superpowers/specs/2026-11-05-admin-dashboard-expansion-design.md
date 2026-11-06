@@ -258,7 +258,9 @@ users with progress in 30d), total hours listened.
 
 Sort: any column. Filters: `no-cover`, `no-chapters`, `no-series`,
 `not-converted`, `conversion-failed` (the same set the Phase 2 health panel
-links to; the dashboard passes `filter` when opening the tab). Paging reuses
+links to; the dashboard passes `filter` when opening the tab).
+`not-converted` means awaiting conversion: MP3s excluding those with a
+permanent remux-failure marker, so its total matches the dashboard count. Paging reuses
 the admin table pager (`admin-page-prev/next`). Row click opens the existing
 audiobook edit modal — no new editing UI.
 
