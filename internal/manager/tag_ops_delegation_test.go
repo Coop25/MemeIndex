@@ -91,7 +91,7 @@ func TestMergeTagsDelegatesToStore(t *testing.T) {
 	store.mergeRestrictions = 1
 	m := NewMemeManager(store)
 
-	result, err := m.MergeTags("  Buisness ", "BUSINESS", accessor.AuditActor{UserID: "admin"})
+	result, err := m.MergeTags("  Bizness ", "BUSINESS", accessor.AuditActor{UserID: "admin"})
 	if err != nil {
 		t.Fatalf("MergeTags: %v", err)
 	}
@@ -99,13 +99,13 @@ func TestMergeTagsDelegatesToStore(t *testing.T) {
 	if store.mergeCalls != 1 {
 		t.Fatalf("MergeTag called %d times, want 1", store.mergeCalls)
 	}
-	if store.mergeSource != "buisness" || store.mergeTarget != "business" {
-		t.Fatalf("merge args = %q -> %q, want normalized buisness -> business", store.mergeSource, store.mergeTarget)
+	if store.mergeSource != "bizness" || store.mergeTarget != "business" {
+		t.Fatalf("merge args = %q -> %q, want normalized bizness -> business", store.mergeSource, store.mergeTarget)
 	}
 	if store.callCount() != 0 {
 		t.Fatalf("whole-archive scan was used %d times, want 0", store.callCount())
 	}
-	if result.AffectedMemes != 4 || result.AudiobooksAffected != 2 || result.RestrictionsMoved != 1 || result.SourceTag != "buisness" || result.TargetTag != "business" {
+	if result.AffectedMemes != 4 || result.AudiobooksAffected != 2 || result.RestrictionsMoved != 1 || result.SourceTag != "bizness" || result.TargetTag != "business" {
 		t.Fatalf("result = %+v", result)
 	}
 }

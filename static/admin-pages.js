@@ -150,6 +150,9 @@ function renderAdminStorage() {
   set("#admin-storage-uploads", s.data ? buildStorageUploads(data.uploads) : "");
   const status = document.querySelector("#admin-storage-status");
   if (status) status.textContent = s.status || (data.generated_at ? `Updated ${formatRelativeTime(data.generated_at)}.` : "");
+  // The toolbar buttons are static markup, not rebuilt above, so they must be
+  // re-enabled explicitly once the panel is no longer busy.
+  panel.querySelectorAll("#admin-storage-refresh, #admin-storage-scan").forEach((button) => { button.disabled = !!s.busy; });
   if (s.busy) panel.querySelectorAll("button").forEach((button) => { button.disabled = true; });
 }
 

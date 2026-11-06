@@ -294,3 +294,29 @@ test("storage load failure shows the error and a later success clears it", async
   await vm.runInContext("loadAdminStorage()", context);
   assert.equal(vm.runInContext("adminStorageState().status", context), "Deleted 1 file, freed 1 KB.");
 });
+
+test("storage toolbar buttons are re-enabled after a busy render", () => {
+  // Fresh context: the test above stubs renderAdminStorage in the shared one.
+  const ctx = vm.createContext({ URLSearchParams });
+  vm.runInContext(appSource.slice(escapeStart, appSource.indexOf("\nfunction ", escapeStart + 1)), ctx);
+  vm.runInContext(appSource.slice(sizeStart, appSource.indexOf("\n}", sizeStart) + 2), ctx);
+  vm.runInContext(appSource.slice(relStart, appSource.indexOf("\n}", relStart) + 2), ctx);
+  vm.runInContext(pagesSource, ctx);
+  vm.runInContext(`
+    var refresh = { id: "admin-storage-refresh", disabled: false };
+    var scan = { id: "admin-storage-scan", disabled: false };
+    var panel = {
+      classList: { toggle() {} },
+      querySelectorAll(selector) { return selector === "button" || selector.includes("#admin-storage-refresh") ? [refresh, scan] : []; },
+    };
+    var document = { querySelector: (sel) => (sel === "#admin-storage-panel" ? panel : null) };
+    var state = { admin: {} };
+    function isAdminView() { return true; }
+    function canManageUsers() { return true; }
+    function activeAdminTab() { return "storage"; }
+  `, ctx);
+  vm.runInContext("adminStorageState().busy = true; renderAdminStorage();", ctx);
+  assert.equal(vm.runInContext("refresh.disabled && scan.disabled", ctx), true);
+  vm.runInContext("adminStorageState().busy = false; renderAdminStorage();", ctx);
+  assert.equal(vm.runInContext("refresh.disabled || scan.disabled", ctx), false);
+});
