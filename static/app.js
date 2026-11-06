@@ -19,19 +19,24 @@ const state = {
   },
   admin: {
     tab: "dashboard",
+    storage: { data: null, scan: null, selected: new Set(), busy: false, status: "" },
     audit: {
       offset: 0,
       limit: 100,
       total: 0,
       hasMore: false,
     },
+    // {user_id, display_name} while Audit Logs is filtered to one user.
+    auditActor: null,
     queue: {
+      loaded: false,
       offset: 0,
       limit: 25,
       total: 0,
       hasMore: false,
     },
     tagReview: {
+      loaded: false,
       offset: 0,
       limit: 50,
       total: 0,
@@ -44,6 +49,7 @@ const state = {
     backupIncoming: null,
     migration: null,
     dashboard: null,
+    audiobookLibrary: { filter: "", sort: "created_at", dir: "desc", page: 1, data: null, busy: false, status: "" },
     tagHygiene: {
       loaded: false,
       ready: false,
@@ -128,9 +134,14 @@ const ADMIN_TABS = Object.freeze({
     copy: "A quick pulse-check on backlog size, tag coverage, recent uploads, and the tags that define your archive.",
   },
   users: {
-    group: "Overview", label: "Users", superOnly: true, panel: "admin-users-panel",
+    group: "Overview", label: "Users", superOnly: true, panel: "admin-users-panel", sibling: "user-activity",
     title: "User Access", kicker: "Admin",
     copy: "Manage users and permissions from one place.",
+  },
+  "user-activity": {
+    group: "Overview", label: "User Activity", superOnly: true, panel: "admin-user-activity-panel", sibling: "users",
+    title: "User Activity", kicker: "Admin",
+    copy: "Who uploads, favorites, and listens - and when each account was last active.",
   },
   shares: {
     group: "Overview", label: "Shared Memes", superOnly: true, panel: "admin-view-table",
@@ -177,14 +188,29 @@ const ADMIN_TABS = Object.freeze({
     title: "Backup & Restore", kicker: "Admin",
     copy: "Move the complete meme library and its database to another MemeIndex Docker instance.",
   },
+  storage: {
+    group: "Operations", label: "Storage", superOnly: true, panel: "admin-storage-panel",
+    title: "Storage", kicker: "Admin",
+    copy: "See what is using disk space, find files the database no longer references, and clear abandoned uploads.",
+  },
+  "audiobook-library": {
+    group: "Audiobooks", label: "Library", superOnly: true, panel: "admin-audiobook-library-panel",
+    title: "Audiobook Library", kicker: "Admin",
+    copy: "Every audiobook on the server with its size, format, metadata gaps, and how much it is listened to.",
+  },
+  "audiobook-series": {
+    group: "Audiobooks", label: "Series & Tags", superOnly: true, panel: "admin-audiobook-series-panel",
+    title: "Series & Tags", kicker: "Admin",
+    copy: "Rename, merge, and reorder audiobook series, and see which tags audiobooks and restricted accounts depend on.",
+  },
   "audiobook-conversion": {
-    group: "Operations", label: "MP3 Conversion", superOnly: true, panel: "admin-remux-panel",
+    group: "Audiobooks", label: "MP3 Conversion", superOnly: true, panel: "admin-remux-panel",
     title: "Audiobook Conversion", kicker: "Admin",
     copy: "MP3 audiobooks are copied, without re-encoding, into .m4b files so chapter jumps and seeking land exactly. Books stay playable throughout.",
   },
 });
 const ADMIN_TAB_IDS = Object.freeze(Object.keys(ADMIN_TABS));
-const ADMIN_TAB_GROUPS = Object.freeze(["Overview", "Tags", "Imports", "Operations"]);
+const ADMIN_TAB_GROUPS = Object.freeze(["Overview", "Tags", "Imports", "Operations", "Audiobooks"]);
 const ADMIN_DEFAULT_TAB = "dashboard";
 
 function isValidAdminTab(tab) {
@@ -715,15 +741,7 @@ function setAdminPanelLoading(loading) {
 // adminTabBadgeCounts derives the "needs attention" number shown on a few tabs
 // from data the workspace already polls.
 function adminTabBadgeCounts() {
-  const linkStatus = state.admin.linkRetryStatus || {};
-  const queued = Array.isArray(linkStatus.queued) ? linkStatus.queued.length : 0;
-  const rejected = Array.isArray(linkStatus.rejected) ? linkStatus.rejected.length : 0;
-  return {
-    tagReview: Number(state.admin.tagReview?.total || 0) || 0,
-    linkRetries: queued,
-    rejectedLinks: rejected,
-    deleteQueue: Number(state.admin.queue?.total || 0) || 0,
-  };
+  return computeAdminTabBadgeCounts(state.admin);
 }
 
 let adminTabRailWired = false;
@@ -796,6 +814,37 @@ function setupAdminTabRail() {
   });
 }
 
+// Counts last drawn on the rail, so pollers only touch the DOM when one changes.
+let adminAppliedBadgeCounts = null;
+
+// refreshAdminTabBadges patches the badge spans in place. Unlike
+// renderAdminTabRail it never rebuilds the rail, so keyboard focus is untouched.
+function refreshAdminTabBadges() {
+  if (!adminTabList) return;
+  const next = adminTabBadgeCounts();
+  if (!adminBadgeCountsChanged(adminAppliedBadgeCounts, next)) return;
+  adminAppliedBadgeCounts = next;
+  adminTabButtons().forEach((button) => {
+    const config = ADMIN_TABS[button.dataset.adminTab];
+    if (!config?.badge) return;
+    const count = next[config.badge] || 0;
+    let badge = button.querySelector(".admin-tab-badge");
+    if (count > 0) {
+      if (!badge) {
+        badge = document.createElement("span");
+        badge.className = "admin-tab-badge";
+        badge.setAttribute("aria-hidden", "true");
+        button.append(badge);
+      }
+      badge.textContent = count > 99 ? "99+" : String(count);
+      button.setAttribute("aria-label", `${config.label}, ${count} need attention`);
+    } else {
+      badge?.remove();
+      button.setAttribute("aria-label", config.label);
+    }
+  });
+}
+
 // renderAdminTabRail rebuilds the grouped tab rail from ADMIN_TABS, applying APG
 // tab semantics (roving tabindex, aria-selected) and attention badges.
 function renderAdminTabRail() {
@@ -803,6 +852,7 @@ function renderAdminTabRail() {
   setupAdminTabRail();
   const active = activeAdminTab();
   const badges = adminTabBadgeCounts();
+  adminAppliedBadgeCounts = badges;
   const canManage = canManageUsers();
   const hadFocus = adminTabList.contains(document.activeElement);
 
@@ -1533,6 +1583,9 @@ async function fetchDeleteQueue() {
   const payload = await response.json();
   deleteQueueState = payload.memes || [];
   queueState.total = Number(payload.total || 0);
+  queueState.loaded = true;
+  syncAdminWorkQueue(state.admin, "delete_queue", queueState.total);
+  refreshAdminTabBadges();
   queueState.hasMore = !!payload.has_more;
   renderDeleteQueue();
   syncAdminPagination();
@@ -1545,6 +1598,7 @@ async function fetchAuditLogs() {
     offset: `${auditState.offset}`,
     limit: `${auditState.limit}`,
   });
+  if (state.admin.auditActor && isAdminView() && activeAdminTab() === "audit-logs") params.set("actor", state.admin.auditActor.user_id);
   const response = await fetch(`/api/admin/audit-logs?${params.toString()}`);
   if (!(await expectAuthorized(response, "Failed to load audit logs."))) {
     return null;
@@ -2928,9 +2982,16 @@ function buildAdminMetricSparkline(series, key, label, valueFormatter = (value) 
   `;
 }
 
-function buildAdminUploadChart(series) {
+function buildAdminUploadChart(series, options = {}) {
+  const {
+    emptyText = "Upload history will appear here.",
+    summaryLabel = "uploads in 30 days",
+    ariaLabel = "Daily uploads over the last 30 days",
+    valueName = "Uploads",
+    gradientId = "admin-upload-fill",
+  } = options;
   const points = Array.isArray(series) ? series : [];
-  if (!points.length) return `<p class="users-empty">Upload history will appear here.</p>`;
+  if (!points.length) return `<p class="users-empty">${escapeHTML(emptyText)}</p>`;
   const width = 720;
   const height = 205;
   const max = Math.max(1, ...points.map((entry) => Number(entry.uploads || 0)));
@@ -2943,13 +3004,13 @@ function buildAdminUploadChart(series) {
   const area = `0,${height} ${line} ${width},${height}`;
   const total = points.reduce((sum, entry) => sum + Number(entry.uploads || 0), 0);
   return `
-    <div class="admin-chart-summary"><strong>${escapeHTML(String(total))}</strong><span>uploads in 30 days</span></div>
-    <svg class="admin-upload-svg" viewBox="0 0 ${width} ${height}" role="group" aria-label="Daily uploads over the last 30 days">
-      <defs><linearGradient id="admin-upload-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#65ca73" stop-opacity=".42"/><stop offset="1" stop-color="#65ca73" stop-opacity="0"/></linearGradient></defs>
+    <div class="admin-chart-summary"><strong>${escapeHTML(String(total))}</strong><span>${escapeHTML(summaryLabel)}</span></div>
+    <svg class="admin-upload-svg" viewBox="0 0 ${width} ${height}" role="group" aria-label="${escapeHTML(ariaLabel)}">
+      <defs><linearGradient id="${gradientId}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#65ca73" stop-opacity=".42"/><stop offset="1" stop-color="#65ca73" stop-opacity="0"/></linearGradient></defs>
       <path class="admin-chart-grid" d="M0 35H720M0 85H720M0 135H720M0 185H720" />
-      <polygon points="${area}" fill="url(#admin-upload-fill)" />
+      <polygon points="${area}" fill="url(#${gradientId})" />
       <polyline points="${line}" fill="none" stroke="#72d17c" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
-      ${buildAdminChartPoints(points, coordinates, width, height, (entry) => `Uploads: ${Number(entry.uploads || 0).toLocaleString()}`)}
+      ${buildAdminChartPoints(points, coordinates, width, height, (entry) => `${valueName}: ${Number(entry.uploads || 0).toLocaleString()}`)}
     </svg>
     <div class="admin-chart-axis"><span>${escapeHTML(points[0]?.date || "")}</span><span>${escapeHTML(points[Math.floor(points.length / 2)]?.date || "")}</span><span>${escapeHTML(points[points.length - 1]?.date || "")}</span></div>
   `;
@@ -2980,6 +3041,158 @@ function buildAdminTopTags(tags) {
   `;
 }
 
+function buildAdminDashboardMetrics(dashboard) {
+  const counts = dashboard.counts || {};
+  const number = (value) => Number(value || 0);
+  const uploadTrend = dashboardTrend(dashboard.uploaded_last_30_days, dashboard.uploaded_previous_30_days);
+  const storageTrend = dashboardTrend(dashboard.bytes_last_30_days, dashboard.bytes_previous_30_days);
+  const audiobooks = dashboard.audiobook_stats || null;
+  const memeBytes = number(dashboard.total_size_bytes);
+  const metricSeries = Array.isArray(dashboard.metric_series) ? dashboard.metric_series : [];
+  let storageSeries = metricSeries;
+  if (audiobooks && Array.isArray(audiobooks.series) && audiobooks.series.length) {
+    const bytesByDate = new Map(audiobooks.series.map((entry) => [entry.date, number(entry.bytes)]));
+    let carried = 0;
+    storageSeries = metricSeries.map((entry) => {
+      if (bytesByDate.has(entry.date)) carried = bytesByDate.get(entry.date);
+      return { ...entry, storage_bytes: number(entry.storage_bytes) + carried };
+    });
+  }
+  const metrics = [
+    { icon: "M", label: "Total Memes", value: number(counts.total).toLocaleString(), note: uploadTrend.label, trend: uploadTrend.direction, accent: "green", seriesKey: "memes", seriesLabel: "Cumulative meme count", series: metricSeries },
+    { icon: "#", label: "Tags", value: number(dashboard.unique_tags).toLocaleString(), note: `${number(dashboard.total_tag_assignments).toLocaleString()} assignments`, trend: "flat", accent: "purple", seriesKey: "tags", seriesLabel: "Cumulative unique tag count", series: metricSeries },
+    { icon: "U", label: "Users", value: number(dashboard.user_count).toLocaleString(), note: `${number(dashboard.active_users_30d)} active in 30 days`, trend: number(dashboard.new_users_30d) > 0 ? "up" : "flat", accent: "blue", seriesKey: "users", seriesLabel: "Cumulative user count", series: metricSeries },
+    {
+      icon: "S", label: "Storage Used",
+      value: formatSize(audiobooks ? number(dashboard.total_storage_bytes) : memeBytes),
+      note: audiobooks ? `Memes ${formatSize(memeBytes)} · Audiobooks ${formatSize(number(audiobooks.total_bytes))}` : storageTrend.label,
+      trend: audiobooks ? "flat" : storageTrend.direction, accent: "amber",
+      seriesKey: "storage_bytes", seriesLabel: "Cumulative storage used", series: storageSeries,
+      valueFormatter: (value) => `${formatSize(value)} (${value.toLocaleString()} bytes)`,
+    },
+  ];
+  if (audiobooks) {
+    const hours = Math.round(number(audiobooks.duration_seconds) / 3600);
+    metrics.push({ icon: "A", label: "Audiobooks", value: number(audiobooks.count).toLocaleString(), note: `${hours.toLocaleString()} h total · +${number(audiobooks.added_last_30_days).toLocaleString()} in 30 days`, trend: number(audiobooks.added_last_30_days) > 0 ? "up" : "flat", accent: "purple" });
+  }
+  metrics.push(
+    { icon: "F", label: "Favorites", value: number(counts.favorites).toLocaleString(), note: "Across all users", trend: "flat", accent: "red", seriesKey: "favorites", seriesLabel: "Cumulative favorite assignments", series: metricSeries },
+    { icon: "L", label: "Active Share Links", value: number(dashboard.active_share_count).toLocaleString(), note: "Public links available now", trend: "flat", accent: "cyan" },
+  );
+  const disk = dashboard.disk || null;
+  const diskTotal = disk ? number(disk.total_bytes) : 0;
+  metrics.push({
+    icon: "D", label: "Disk",
+    value: disk ? `${formatSize(number(disk.free_bytes))} free` : "Unknown",
+    note: disk ? `of ${formatSize(diskTotal)}` : "Disk usage unavailable",
+    trend: "flat", accent: disk && disk.low ? "red" : "slate",
+    meter: disk && diskTotal > 0 ? Math.min(1, Math.max(0, number(disk.used_bytes) / diskTotal)) : null,
+  });
+  return metrics;
+}
+
+// Badge counts prefer each tab's live source once loaded, and fall back to the
+// dashboard's work_queues before that, then to the existing state.
+function computeAdminTabBadgeCounts(admin) {
+  const queues = admin.dashboard?.work_queues || null;
+  const linkStatus = admin.linkRetryStatus;
+  const pick = (liveLoaded, live, key) => (liveLoaded || !queues ? live : Number(queues[key]) || 0);
+  return {
+    tagReview: pick(!!admin.tagReview?.loaded, Number(admin.tagReview?.total || 0) || 0, "suggested_tags"),
+    linkRetries: pick(!!linkStatus, Array.isArray(linkStatus?.queued) ? linkStatus.queued.length : 0, "link_retries"),
+    rejectedLinks: pick(!!linkStatus, Array.isArray(linkStatus?.rejected) ? linkStatus.rejected.length : 0, "rejected_links"),
+    deleteQueue: pick(!!admin.queue?.loaded, Number(admin.queue?.total || 0) || 0, "delete_queue"),
+  };
+}
+
+function adminBadgeCountsChanged(previous, next) {
+  if (!previous || !next) return true;
+  const keys = new Set([...Object.keys(previous), ...Object.keys(next)]);
+  return [...keys].some((key) => (previous[key] || 0) !== (next[key] || 0));
+}
+
+// syncAdminWorkQueue writes a freshly loaded tab count into the cached dashboard
+// so the dashboard strip agrees when it is shown again.
+function syncAdminWorkQueue(admin, key, value) {
+  if (admin.dashboard?.work_queues) admin.dashboard.work_queues[key] = Math.max(0, Number(value) || 0);
+}
+
+// Work-queue chips and audiobook-health counts link to other admin tabs. `canOpen`
+// lets the caller render a plain count when the target tab does not exist (yet).
+const ADMIN_WORK_QUEUE_CHIPS = Object.freeze([
+  { key: "delete_queue", tab: "delete-queue", label: "Delete queue" },
+  { key: "suggested_tags", tab: "tag-review", label: "Suggested tags" },
+  { key: "link_retries", tab: "link-retries", label: "Link retries" },
+  { key: "rejected_links", tab: "rejected-links", label: "Rejected links" },
+  { key: "conversion_queue", tab: "audiobook-conversion", label: "MP3 conversion" },
+]);
+
+function buildAdminWorkQueues(queues, canOpen = () => true) {
+  const source = queues || {};
+  return ADMIN_WORK_QUEUE_CHIPS.map((chip) => {
+    const count = Math.max(0, Number(source[chip.key]) || 0);
+    const inner = `<strong>${escapeHTML(count.toLocaleString())}</strong><span>${escapeHTML(chip.label)}</span>`;
+    const empty = count === 0;
+    if (!canOpen(chip.tab)) return `<div class="admin-queue-chip" data-empty="${empty}">${inner}</div>`;
+    return `<button type="button" class="admin-queue-chip" data-admin-open-tab="${escapeHTML(chip.tab)}" data-empty="${empty}">${inner}</button>`;
+  }).join("");
+}
+
+function formatListeningDuration(seconds) {
+  const total = Math.max(0, Math.round(Number(seconds) || 0));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  if (hours) return `${hours}h ${minutes}m`;
+  if (minutes) return `${minutes}m`;
+  return `${total}s`;
+}
+
+function buildAdminListening(activity) {
+  const source = activity || {};
+  const daily = Array.isArray(source.daily_seconds) ? source.daily_seconds : [];
+  const books = Array.isArray(source.top_books) ? source.top_books : [];
+  const listeners = Array.isArray(source.top_listeners) ? source.top_listeners : [];
+  const totalSeconds = daily.reduce((sum, entry) => sum + (Number(entry.seconds) || 0), 0);
+  const chart = totalSeconds > 0
+    ? buildAdminUploadChart(daily.map((entry) => ({ date: entry.date, uploads: Math.round((Number(entry.seconds) || 0) / 60) })), {
+      summaryLabel: "minutes listened in 30 days",
+      ariaLabel: "Daily listening minutes over the last 30 days",
+      valueName: "Minutes",
+      gradientId: "admin-listening-fill",
+    })
+    : `<p class="users-empty">No listening yet.</p>`;
+  const list = (rows) => rows.length
+    ? `<ol class="admin-rank-list">${rows.map((row) => `<li><span title="${escapeHTML(row.label)}">${escapeHTML(row.label)}</span><strong>${escapeHTML(formatListeningDuration(row.seconds))}</strong></li>`).join("")}</ol>`
+    : `<p class="users-empty">No listening yet.</p>`;
+  return `
+    <div class="admin-dashboard-upload-chart admin-listening-chart">${chart}</div>
+    <div class="admin-rank-columns">
+      <div><h4>Top books</h4>${list(books.map((book) => ({ label: book.title || "Untitled", seconds: book.seconds })))}</div>
+      <div><h4>Top listeners</h4>${list(listeners.map((who) => ({ label: who.display_name || "Unknown", seconds: who.seconds })))}</div>
+    </div>
+  `;
+}
+
+const ADMIN_AUDIOBOOK_HEALTH_ROWS = Object.freeze([
+  { key: "awaiting_conversion", filter: "not-converted", label: "Awaiting conversion" },
+  { key: "failed_conversion", filter: "conversion-failed", label: "Failed conversion" },
+  { key: "missing_cover", filter: "no-cover", label: "Missing cover" },
+  { key: "missing_chapters", filter: "no-chapters", label: "Missing chapters" },
+  { key: "missing_series", filter: "no-series", label: "Missing series" },
+]);
+
+function buildAdminAudiobookHealth(health, canOpen = () => true) {
+  const source = health || {};
+  const linked = canOpen("audiobook-library");
+  return `<div class="admin-audiobook-health-list">${ADMIN_AUDIOBOOK_HEALTH_ROWS.map((row) => {
+    const count = Math.max(0, Number(source[row.key]) || 0);
+    const inner = `<span>${escapeHTML(row.label)}</span><strong data-empty="${count === 0}">${escapeHTML(count.toLocaleString())}</strong>`;
+    return linked
+      ? `<button type="button" class="admin-health-row" data-admin-open-tab="audiobook-library" data-admin-library-filter="${row.filter}">${inner}</button>`
+      : `<div class="admin-health-row">${inner}</div>`;
+  }).join("")}</div>`;
+}
+
 function renderAdminDashboard() {
   if (!adminDashboardPanel || !adminDashboardGrid || !adminDashboardTags || !adminDashboardRecent || !adminDashboardUploadChart || !adminDashboardHealth || !adminDashboardActivity) return;
 
@@ -2996,27 +3209,31 @@ function renderAdminDashboard() {
     return;
   }
 
-  const counts = dashboard.counts || {};
-  const uploadTrend = dashboardTrend(dashboard.uploaded_last_30_days, dashboard.uploaded_previous_30_days);
-  const storageTrend = dashboardTrend(dashboard.bytes_last_30_days, dashboard.bytes_previous_30_days);
-  const metrics = [
-    { icon: "M", label: "Total Memes", value: Number(counts.total || 0).toLocaleString(), note: uploadTrend.label, trend: uploadTrend.direction, accent: "green", seriesKey: "memes", seriesLabel: "Cumulative meme count" },
-    { icon: "#", label: "Tags", value: Number(dashboard.unique_tags || 0).toLocaleString(), note: `${Number(dashboard.total_tag_assignments || 0).toLocaleString()} assignments`, trend: "flat", accent: "purple", seriesKey: "tags", seriesLabel: "Cumulative unique tag count" },
-    { icon: "U", label: "Users", value: Number(dashboard.user_count || 0).toLocaleString(), note: `${Number(dashboard.active_users_30d || 0)} active in 30 days`, trend: Number(dashboard.new_users_30d || 0) > 0 ? "up" : "flat", accent: "blue", seriesKey: "users", seriesLabel: "Cumulative user count" },
-    { icon: "S", label: "Storage Used", value: formatSize(Number(dashboard.total_size_bytes || 0)), note: storageTrend.label, trend: storageTrend.direction, accent: "amber", seriesKey: "storage_bytes", seriesLabel: "Cumulative storage used", valueFormatter: (value) => `${formatSize(value)} (${value.toLocaleString()} bytes)` },
-    { icon: "F", label: "Favorites", value: Number(counts.favorites || 0).toLocaleString(), note: "Across all users", trend: "flat", accent: "red", seriesKey: "favorites", seriesLabel: "Cumulative favorite assignments" },
-    { icon: "L", label: "Active Share Links", value: Number(dashboard.active_share_count || 0).toLocaleString(), note: "Public links available now", trend: "flat", accent: "cyan" },
-  ];
+  const metrics = buildAdminDashboardMetrics(dashboard);
   adminDashboardGrid.innerHTML = metrics.map((metric) => `
     <article class="admin-dashboard-card" data-accent="${metric.accent}">
       <div class="admin-dashboard-card-head"><span class="admin-dashboard-card-icon">${metric.icon}</span><span class="admin-dashboard-label">${escapeHTML(metric.label)}</span></div>
       <strong class="admin-dashboard-value">${escapeHTML(metric.value)}</strong>
       <span class="admin-dashboard-note" data-trend="${metric.trend}">${metric.trend === "up" ? "&#8593; " : metric.trend === "down" ? "&#8595; " : ""}${escapeHTML(metric.note)}</span>
-      ${metric.seriesKey ? buildAdminMetricSparkline(dashboard.metric_series, metric.seriesKey, metric.seriesLabel, metric.valueFormatter) : ""}
+      ${metric.seriesKey ? buildAdminMetricSparkline(metric.series, metric.seriesKey, metric.seriesLabel, metric.valueFormatter) : ""}
+      ${metric.meter != null ? `<div class="admin-disk-meter" role="meter" aria-label="Disk used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(metric.meter * 100)}"><i style="width:${(metric.meter * 100).toFixed(1)}%"></i></div>` : ""}
     </article>
   `).join("");
 
   adminDashboardUploadChart.innerHTML = buildAdminUploadChart(dashboard.upload_series);
+
+  const canOpenTab = (tab) => isValidAdminTab(tab);
+  const queuesNode = document.querySelector("#admin-dashboard-queues");
+  if (queuesNode) queuesNode.innerHTML = buildAdminWorkQueues(dashboard.work_queues, canOpenTab);
+  const audiobookActivity = dashboard.audiobook_activity || null;
+  const audiobookRow = document.querySelector("#admin-dashboard-audiobooks");
+  if (audiobookRow) audiobookRow.classList.toggle("hidden", !audiobookActivity);
+  if (audiobookActivity) {
+    const listeningNode = document.querySelector("#admin-dashboard-listening");
+    const audiobookHealthNode = document.querySelector("#admin-dashboard-audiobook-health");
+    if (listeningNode) listeningNode.innerHTML = buildAdminListening(audiobookActivity);
+    if (audiobookHealthNode) audiobookHealthNode.innerHTML = buildAdminAudiobookHealth(audiobookActivity.health, canOpenTab);
+  }
 
   adminDashboardTags.innerHTML = buildAdminTopTags(dashboard.top_tags);
   bindAdminChartTooltips(adminDashboardPanel);
@@ -3058,6 +3275,14 @@ function renderAdminDashboard() {
     `).join("");
   }
 
+  adminDashboardPanel.querySelectorAll("[data-admin-open-tab]").forEach((button) => button.addEventListener("click", () => {
+    if (button.dataset.adminLibraryFilter != null) {
+      state.admin.audiobookLibrary = typeof window.adminLibraryPresetState === "function"
+        ? window.adminLibraryPresetState(state.admin.audiobookLibrary, button.dataset.adminLibraryFilter)
+        : { ...(state.admin.audiobookLibrary || {}), filter: button.dataset.adminLibraryFilter, page: 1, data: null };
+    }
+    navigateAdminTab(button.dataset.adminOpenTab);
+  }));
   document.querySelectorAll("[data-admin-meme-id]").forEach((button) => button.addEventListener("click", () => openAdminMemeByID(button.dataset.adminMemeId)));
   document.querySelectorAll("[data-admin-tag]").forEach((button) => button.addEventListener("click", () => {
     state.filters.tag = button.dataset.adminTag || "";
@@ -3258,7 +3483,17 @@ async function mergeAdminTags(sourceTag, targetTag) {
 
   const payload = await response.json();
   setAdminViewStatus("");
-  showToast(`Merged ${payload.source_tag || normalizedSource} into ${payload.target_tag || normalizedTarget} across ${Number(payload.affected_memes || 0)} meme${Number(payload.affected_memes || 0) === 1 ? "" : "s"}.`, "success", { title: "Tag Hygiene", duration: 3400 });
+  const mergedMemes = Number(payload.affected_memes || 0);
+  const mergedAudiobooks = Number(payload.audiobooks_affected || 0);
+  const movedRestrictions = Number(payload.restrictions_moved || 0);
+  let mergeMessage = `Merged ${payload.source_tag || normalizedSource} into ${payload.target_tag || normalizedTarget} across ${mergedMemes} meme${mergedMemes === 1 ? "" : "s"}`;
+  if (mergedAudiobooks > 0) {
+    mergeMessage += ` and ${mergedAudiobooks} audiobook${mergedAudiobooks === 1 ? "" : "s"}`;
+  }
+  if (movedRestrictions > 0) {
+    mergeMessage += ` (${movedRestrictions} account restriction${movedRestrictions === 1 ? "" : "s"} moved)`;
+  }
+  showToast(`${mergeMessage}.`, "success", { title: "Tag Hygiene", duration: 3400 });
   if (adminTagMergeSource) {
     adminTagMergeSource.value = "";
   }
@@ -3298,6 +3533,9 @@ async function fetchAdminTagQueueStatus() {
   state.admin.tagReview.offset = reviewOffset;
   state.admin.tagReview.limit = reviewLimit;
   state.admin.tagReview.total = reviewTotal;
+  state.admin.tagReview.loaded = true;
+  syncAdminWorkQueue(state.admin, "suggested_tags", reviewTotal);
+  refreshAdminTabBadges();
   state.admin.tagReview.hasMore = !!payload?.pending_review_has_more;
   state.admin.tagQueueStatus = payload || null;
   renderAdminTagQueueStatus();
@@ -3316,6 +3554,11 @@ async function fetchAdminLinkRetryStatus() {
 
   const payload = await response.json();
   state.admin.linkRetryStatus = payload || null;
+  if (payload) {
+    syncAdminWorkQueue(state.admin, "link_retries", Array.isArray(payload.queued) ? payload.queued.length : 0);
+    syncAdminWorkQueue(state.admin, "rejected_links", Array.isArray(payload.rejected) ? payload.rejected.length : 0);
+  }
+  refreshAdminTabBadges();
   renderAdminLinkRetryStatus();
   return state.admin.linkRetryStatus;
 }
@@ -3722,8 +3965,19 @@ function renderAuditLogs() {
   if (!target) return;
 
   target.innerHTML = "";
+  const auditActor = state.admin.auditActor;
+  if (auditActor && target === adminViewTable) {
+    const chip = document.createElement("div");
+    chip.className = "audit-actor-chip";
+    chip.innerHTML = `<button type="button" class="ghost-button" data-clear-audit-actor aria-label="Clear user filter">Showing activity for ${escapeHTML(auditActor.display_name)} <span aria-hidden="true">×</span></button>`;
+    chip.querySelector("[data-clear-audit-actor]").addEventListener("click", () => {
+      setAdminAuditActor(null);
+      loadInitialMemes().catch((error) => console.error(error));
+    });
+    target.appendChild(chip);
+  }
   if (auditLogState.length === 0) {
-    target.innerHTML = `<p class="users-empty">No audit activity recorded yet.</p>`;
+    target.insertAdjacentHTML("beforeend", `<p class="users-empty">${auditActor ? "No audit activity recorded for this user." : "No audit activity recorded yet."}</p>`);
     return;
   }
 
@@ -4156,6 +4410,10 @@ function renderContentMode() {
   renderAdminTagQueueStatus();
   renderAdminLinkRetryStatus();
   renderAdminRemuxStatus();
+  window.renderAdminStorage?.();
+  window.renderAdminAudiobookLibrary?.();
+  window.renderAdminUserActivity?.();
+  window.renderAdminAudiobookSeries?.();
   syncAdminTagQueuePolling();
   syncAdminLinkQueuePolling();
   syncAdminBackupPolling();
@@ -4274,6 +4532,10 @@ const ADMIN_TAB_LOADERS = {
   "tag-review": { run: () => fetchAdminTagQueueStatus() },
   "link-retries": { run: () => fetchAdminLinkRetryStatus() },
   "rejected-links": { run: () => fetchAdminLinkRetryStatus() },
+  storage: { loading: "Loading storage...", run: () => window.loadAdminStorage(), fail: "Could not load storage." },
+  "user-activity": { loading: "Loading user activity...", run: () => window.loadAdminUserActivity(), fail: "Could not load user activity." },
+  "audiobook-library": { loading: "Loading audiobook library...", run: () => window.loadAdminAudiobookLibrary(), fail: "Could not load the audiobook library." },
+  "audiobook-series": { loading: "Loading series and tags...", run: () => window.loadAdminAudiobookSeries(), fail: "Could not load series and tags." },
   backup: { run: () => { renderAdminBackupStatus(); return fetchAdminBackupStatus(); } },
   "audiobook-conversion": { run: () => fetchAdminRemuxStatus() },
 };
@@ -6159,6 +6421,7 @@ async function submitAudiobookEdit(event) {
 
   setAudiobookEditFormBusy(true);
   if (audiobookEditStatus) audiobookEditStatus.textContent = "Saving...";
+  let savedAny = false;
   try {
     const metadataResponse = await fetch(`/api/audiobooks/${encodeURIComponent(item.id)}`, {
       method: "PATCH",
@@ -6167,6 +6430,7 @@ async function submitAudiobookEdit(event) {
       body: JSON.stringify({ title, author, narrator }),
     });
     if (!(await expectAuthorized(metadataResponse, "Could not update audiobook."))) return;
+    savedAny = true;
 
     let coverURL = item.cover_url || "";
     if (audiobookEditPendingCoverFile) {
@@ -6205,6 +6469,8 @@ async function submitAudiobookEdit(event) {
     if (audiobookEditStatus) audiobookEditStatus.textContent = "Could not update audiobook.";
   } finally {
     setAudiobookEditFormBusy(false);
+    // Metadata/cover may have changed even if a later step failed; keep the admin library table in step.
+    if (savedAny) window.refreshAdminAudiobookLibrary?.();
   }
 }
 

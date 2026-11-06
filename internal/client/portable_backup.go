@@ -1129,3 +1129,49 @@ func extractPortableArchiveWithLimits(source io.Reader, destination string, maxB
 	}
 	return nil
 }
+
+// adminLastBackup summarises the newest completed backup for the dashboard.
+type adminLastBackup struct {
+	CompletedAt time.Time `json:"completed_at"`
+	SizeBytes   int64     `json:"size_bytes"`
+	Stale       bool      `json:"stale"`
+}
+
+// adminBackupStaleAfter is how old the newest backup may get before the
+// dashboard flags it.
+const adminBackupStaleAfter = 7 * 24 * time.Hour
+
+// lastCompletedBackup finds the newest backup directory whose manifest is
+// valid and whose parts are all present. It returns nil when there is none.
+func (b *portableBackup) lastCompletedBackup(now time.Time) (*adminLastBackup, error) {
+	entries, err := os.ReadDir(b.backupDir())
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var latest *backupPartsManifest
+	for _, entry := range entries {
+		if !entry.IsDir() || !backupIDPattern.MatchString(entry.Name()) {
+			continue
+		}
+		dir := filepath.Join(b.backupDir(), entry.Name())
+		manifest, err := readBackupPartsManifest(filepath.Join(dir, backupManifestFilename(entry.Name())))
+		if err != nil || manifest.BackupID != entry.Name() || !backupPartsPresent(dir, manifest.Parts) {
+			continue
+		}
+		if latest == nil || manifest.CreatedAt.After(latest.CreatedAt) {
+			m := manifest
+			latest = &m
+		}
+	}
+	if latest == nil {
+		return nil, nil
+	}
+	return &adminLastBackup{
+		CompletedAt: latest.CreatedAt,
+		SizeBytes:   latest.TotalSizeBytes,
+		Stale:       now.Sub(latest.CreatedAt) > adminBackupStaleAfter,
+	}, nil
+}

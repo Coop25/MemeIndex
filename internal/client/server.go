@@ -32,16 +32,18 @@ import (
 )
 
 type Server struct {
-	config      Config
-	managers    *manager.MemeManager
-	auth        *authService
-	users       authUserStore
-	audiobooks  audiobookStore
-	mediaClient *mediafetch.Client
-	linkRetries *linkRetryQueue
-	backup      *portableBackup
-	shareSecret []byte
-	draining    atomic.Bool
+	config              Config
+	managers            *manager.MemeManager
+	auth                *authService
+	users               authUserStore
+	audiobooks          audiobookStore
+	audiobookAdminStats audiobookAdminStatsCache
+	audiobookActivity   audiobookActivityCache
+	mediaClient         *mediafetch.Client
+	linkRetries         *linkRetryQueue
+	backup              *portableBackup
+	shareSecret         []byte
+	draining            atomic.Bool
 	// restoring is set for the full duration of a portable-backup import, which
 	// truncates the database and swaps the uploads/thumbnails directories under
 	// the running server. While it is set, maintenanceGuard rejects mutating
@@ -61,6 +63,9 @@ type Server struct {
 	// audiobookSeriesLookup overrides the catalog used for series suggestions
 	// (audiobook_series_lookup.go); nil means the shared Audible lookup.
 	audiobookSeriesLookup *cachedSeriesLookup
+	// storage caches the admin storage report and holds the last orphan scan,
+	// the allow-list for orphan deletes (admin_storage.go).
+	storage adminStorageState
 
 	authLimiter       *rateLimiter
 	writeLimiter      *rateLimiter
@@ -75,14 +80,20 @@ type adminSystemHealth struct {
 
 type adminDashboardResponse struct {
 	manager.AdminDashboardStats
-	UserCount      int                             `json:"user_count"`
-	ActiveUsers30D int                             `json:"active_users_30d"`
-	NewUsers30D    int                             `json:"new_users_30d"`
-	ActiveShares   int                             `json:"active_share_count"`
-	RecentActivity []accessor.GlobalMemeAuditEntry `json:"recent_activity"`
-	BackupStatus   *backupJobStatus                `json:"backup_status,omitempty"`
-	SystemHealth   []adminSystemHealth             `json:"system_health"`
-	GeneratedAt    time.Time                       `json:"generated_at"`
+	UserCount         int                             `json:"user_count"`
+	ActiveUsers30D    int                             `json:"active_users_30d"`
+	NewUsers30D       int                             `json:"new_users_30d"`
+	ActiveShares      int                             `json:"active_share_count"`
+	RecentActivity    []accessor.GlobalMemeAuditEntry `json:"recent_activity"`
+	BackupStatus      *backupJobStatus                `json:"backup_status,omitempty"`
+	AudiobookStats    *adminAudiobookStats            `json:"audiobook_stats,omitempty"`
+	AudiobookActivity *adminAudiobookActivity         `json:"audiobook_activity,omitempty"`
+	WorkQueues        adminWorkQueues                 `json:"work_queues"`
+	Disk              *adminDiskStats                 `json:"disk,omitempty"`
+	LastBackup        *adminLastBackup                `json:"last_backup,omitempty"`
+	TotalStorageBytes int64                           `json:"total_storage_bytes"`
+	SystemHealth      []adminSystemHealth             `json:"system_health"`
+	GeneratedAt       time.Time                       `json:"generated_at"`
 }
 
 func NewServer(config Config, memeManager *manager.MemeManager) *Server {
@@ -190,6 +201,8 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/api/admin/migration/import", s.withAPIAuth(http.HandlerFunc(s.handleAdminMigrationImport), permissionManageUsers))
 	mux.Handle("/api/migration/info", s.withMigrationToken(s.handleMigrationInfo))
 	mux.Handle("/api/migration/export", s.withMigrationToken(s.handleMigrationExport))
+	mux.Handle("/api/admin/audiobook-series/", s.withAPIAuth(http.HandlerFunc(s.handleAdminAudiobookSeries), permissionManageUsers))
+	mux.Handle("/api/admin/audiobook-tags", s.withAPIAuth(http.HandlerFunc(s.handleAdminAudiobookTags), permissionManageUsers))
 	mux.Handle("/api/admin/audit-logs", s.withAPIAuth(http.HandlerFunc(s.handleAuditLogs), permissionManageUsers))
 	mux.Handle("/api/admin/tag-hygiene", s.withAPIAuth(http.HandlerFunc(s.handleTagHygiene), permissionManageUsers))
 	mux.Handle("/api/admin/tag-suggestions/status", s.withAPIAuth(http.HandlerFunc(s.handleTagSuggestionStatus), permissionManageUsers))
@@ -201,6 +214,12 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/api/admin/shares", s.withAPIAuth(http.HandlerFunc(s.handleAdminShares), permissionManageUsers))
 	mux.Handle("/api/admin/shares/", s.withAPIAuth(http.HandlerFunc(s.handleAdminShares), permissionManageUsers))
 	mux.Handle("/api/admin/audiobook-remux/status", s.withAPIAuth(http.HandlerFunc(s.handleAudiobookRemuxStatus), permissionManageUsers))
+	mux.Handle("/api/admin/storage", s.withAPIAuth(http.HandlerFunc(s.handleAdminStorage), permissionManageUsers))
+	mux.Handle("/api/admin/storage/orphans/scan", s.withAPIAuth(http.HandlerFunc(s.handleStorageOrphanScan), permissionManageUsers))
+	mux.Handle("/api/admin/storage/orphans/delete", s.withAPIAuth(http.HandlerFunc(s.handleStorageOrphanDelete), permissionManageUsers))
+	mux.Handle("/api/admin/audiobooks", s.withAPIAuth(http.HandlerFunc(s.handleAdminAudiobooks), permissionManageUsers))
+	mux.Handle("/api/admin/user-activity", s.withAPIAuth(http.HandlerFunc(s.handleAdminUserActivity), permissionManageUsers))
+	mux.Handle("/api/admin/audiobooks/uploads/", s.withAPIAuth(http.HandlerFunc(s.handleAdminAudiobookUpload), permissionManageUsers))
 	mux.Handle("/uploads/", s.withProtectedAssetAuth(http.StripPrefix("/uploads/", http.FileServer(http.Dir(s.managers.UploadDir())))))
 	if thumbnailDir := s.managers.ThumbnailDir(); strings.TrimSpace(thumbnailDir) != "" {
 		mux.Handle("/thumbnails/", s.withProtectedAssetAuth(http.StripPrefix("/thumbnails/", http.FileServer(http.Dir(thumbnailDir)))))
@@ -1829,7 +1848,7 @@ func (s *Server) handleAdminDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	response.SystemHealth = append(response.SystemHealth, adminSystemHealth{Name: "Database", Status: databaseStatus, Healthy: usersHealthy})
 
-	if activity, err := s.managers.ListAuditFeed(0, 10); err != nil {
+	if activity, err := s.managers.ListAuditFeed(0, 10, ""); err != nil {
 		log.Printf("admin dashboard activity failed: %v", err)
 		response.SystemHealth = append(response.SystemHealth, adminSystemHealth{Name: "Activity Tracking", Status: "Unavailable", Healthy: false})
 	} else {
@@ -1856,6 +1875,78 @@ func (s *Server) handleAdminDashboard(w http.ResponseWriter, r *http.Request) {
 	} else {
 		response.SystemHealth = append(response.SystemHealth, adminSystemHealth{Name: "Backup Service", Status: "Requires PostgreSQL", Healthy: false})
 	}
+	response.TotalStorageBytes = stats.TotalSizeBytes
+	audiobookStatsOK := true
+	if audiobookStats, err := s.cachedAudiobookAdminStats(r.Context()); err != nil {
+		audiobookStatsOK = false
+		log.Printf("admin dashboard audiobook stats failed: %v", err)
+	} else if audiobookStats != nil {
+		response.AudiobookStats = audiobookStats
+		response.TotalStorageBytes += audiobookStats.TotalBytes
+	}
+
+	response.WorkQueues.SuggestedTags = stats.PendingSuggestionMemes
+	if pending, err := s.managers.ListPendingDeletes(0, 1); err != nil {
+		log.Printf("admin dashboard pending deletes failed: %v", err)
+	} else {
+		response.WorkQueues.DeleteQueue = pending.Total
+	}
+	if s.linkRetries != nil {
+		retries := s.linkRetries.Snapshot()
+		response.WorkQueues.LinkRetries = len(retries.Queued)
+		response.WorkQueues.RejectedLinks = len(retries.Rejected)
+	}
+	audiobookHealth := adminSystemHealth{Name: "Audiobooks", Status: "Operational", Healthy: true}
+	activity, activityErr := s.cachedAudiobookActivity(r.Context())
+	if activityErr != nil {
+		log.Printf("admin dashboard audiobook activity failed: %v", activityErr)
+	} else if activity != nil {
+		if len(activity.TopListeners) > 0 {
+			names := s.adminUserNames(r.Context())
+			for index := range activity.TopListeners {
+				name := names[activity.TopListeners[index].UserID]
+				if name == "" {
+					name = activity.TopListeners[index].UserID
+				}
+				activity.TopListeners[index].DisplayName = name
+			}
+		}
+		response.AudiobookActivity = activity
+		response.WorkQueues.ConversionQueue = activity.Health.AwaitingConversion
+		if activity.Partial {
+			audiobookHealth = adminSystemHealth{Name: "Audiobooks", Status: "Degraded", Healthy: false}
+		}
+	}
+	if activityErr != nil || !audiobookStatsOK {
+		audiobookHealth = adminSystemHealth{Name: "Audiobooks", Status: "Unavailable", Healthy: false}
+	}
+	if s.audiobooks != nil {
+		response.SystemHealth = append(response.SystemHealth, audiobookHealth)
+	}
+
+	diskStatus, diskHealthy := "Unknown", false
+	if disk, ok := diskUsage(s.config.DataDir); ok {
+		response.Disk = &disk
+		diskStatus, diskHealthy = formatAdminBytes(disk.FreeBytes)+" free", !disk.Low
+		if disk.Low {
+			diskStatus = "Low: " + diskStatus
+		}
+	}
+	response.SystemHealth = append(response.SystemHealth, adminSystemHealth{Name: "Disk", Status: diskStatus, Healthy: diskHealthy})
+
+	backupStatus, backupHealthy := "Requires PostgreSQL", false
+	if s.backup != nil {
+		backupStatus = "None yet"
+		if last, err := s.backup.lastCompletedBackup(response.GeneratedAt); err != nil {
+			log.Printf("admin dashboard last backup failed: %v", err)
+			backupStatus = "Unknown"
+		} else if last != nil {
+			response.LastBackup = last
+			backupStatus, backupHealthy = formatAdminAge(response.GeneratedAt.Sub(last.CompletedAt)), !last.Stale
+		}
+	}
+	response.SystemHealth = append(response.SystemHealth, adminSystemHealth{Name: "Last Backup", Status: backupStatus, Healthy: backupHealthy})
+
 	response.SystemHealth = append(response.SystemHealth,
 		adminSystemHealth{Name: "Image Processing", Status: "Available", Healthy: s.managers.ThumbnailDir() != ""},
 		adminSystemHealth{Name: "Tag Suggestions", Status: map[bool]string{true: "Configured", false: "Optional / disabled"}[s.config.TagSuggestions.Enabled()], Healthy: true},
@@ -2098,7 +2189,7 @@ func (s *Server) handleAuditLogs(w http.ResponseWriter, r *http.Request) {
 
 	offset := parseQueryInt(r, "offset", 0)
 	limit := parseQueryInt(r, "limit", 100)
-	events, err := s.managers.ListAuditFeed(offset, limit)
+	events, err := s.managers.ListAuditFeed(offset, limit, strings.TrimSpace(r.URL.Query().Get("actor")))
 	if err != nil {
 		log.Printf("list audit logs failed: %v", err)
 		http.Error(w, "failed to load audit logs", http.StatusInternalServerError)

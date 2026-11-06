@@ -320,6 +320,7 @@
             </section>
             <section id="admin-dashboard-panel" class="admin-dashboard-panel hidden">
               <div id="admin-dashboard-grid" class="admin-dashboard-grid"></div>
+              <div id="admin-dashboard-queues" class="admin-dashboard-queues" aria-label="Work queues"></div>
               <div class="admin-dashboard-analytics">
                 <section class="admin-dashboard-section admin-dashboard-chart-card">
                   <div class="admin-dashboard-section-head">
@@ -339,6 +340,21 @@
                     <div><p class="section-kicker">Runtime</p><h3>System health</h3></div>
                   </div>
                   <div id="admin-dashboard-health" class="admin-dashboard-health"></div>
+                </section>
+              </div>
+              <div id="admin-dashboard-audiobooks" class="admin-dashboard-audiobooks hidden">
+                <section class="admin-dashboard-section admin-dashboard-listening-card">
+                  <div class="admin-dashboard-section-head">
+                    <div><p class="section-kicker">Audiobooks</p><h3>Listening activity</h3></div>
+                    <span class="admin-dashboard-range">Last 30 days</span>
+                  </div>
+                  <div id="admin-dashboard-listening" class="admin-dashboard-listening"></div>
+                </section>
+                <section class="admin-dashboard-section admin-dashboard-audiobook-health-card">
+                  <div class="admin-dashboard-section-head">
+                    <div><p class="section-kicker">Audiobooks</p><h3>Library health</h3></div>
+                  </div>
+                  <div id="admin-dashboard-audiobook-health"></div>
                 </section>
               </div>
               <div class="admin-dashboard-bottom">
@@ -412,6 +428,54 @@
               </form>
               <p id="admin-users-status" class="status-text"></p>
               <div id="admin-users-list" class="users-list"></div>
+            </section>
+            <section id="admin-storage-panel" class="admin-storage-panel hidden">
+              <div class="admin-storage-toolbar">
+                <p id="admin-storage-status" class="status-text" role="status"></p>
+                <div class="admin-storage-actions">
+                  <button id="admin-storage-refresh" class="ghost-button" type="button">Refresh</button>
+                  <button id="admin-storage-scan" class="ghost-button" type="button">Scan for orphans</button>
+                </div>
+              </div>
+              <div class="admin-storage-grid">
+                <section class="admin-dashboard-section"><div class="admin-dashboard-section-head"><p class="section-kicker">Usage</p><h3>Disk usage</h3></div><div id="admin-storage-dirs"></div></section>
+                <section class="admin-dashboard-section"><div class="admin-dashboard-section-head"><p class="section-kicker">Biggest</p><h3>Largest files</h3></div><div id="admin-storage-largest"></div></section>
+                <section class="admin-dashboard-section"><div class="admin-dashboard-section-head"><p class="section-kicker">Cleanup</p><h3>Orphaned files</h3></div><div id="admin-storage-orphans"></div></section>
+                <section class="admin-dashboard-section"><div class="admin-dashboard-section-head"><p class="section-kicker">Audiobooks</p><h3>Unfinished uploads</h3></div><div id="admin-storage-uploads"></div></section>
+              </div>
+            </section>
+            <section id="admin-audiobook-library-panel" class="admin-library-panel hidden">
+              <div class="admin-library-toolbar">
+                <label class="field admin-library-filter-field">
+                  <span>Show</span>
+                  <select id="admin-library-filter">
+                    <option value="">All audiobooks</option>
+                    <option value="no-cover">Missing cover</option>
+                    <option value="no-chapters">Missing chapters</option>
+                    <option value="no-series">Not in a series</option>
+                    <option value="not-converted">Awaiting conversion to M4B</option>
+                    <option value="conversion-failed">Conversion failed</option>
+                  </select>
+                </label>
+                <p id="admin-library-status" class="status-text" role="status"></p>
+              </div>
+              <div id="admin-library-table" class="admin-library-scroll"></div>
+              <div id="admin-library-pager" class="admin-pagination hidden" aria-label="Audiobook library pages">
+                <button id="admin-library-prev" class="meme-page-button" type="button" aria-label="Previous page" disabled><span aria-hidden="true">&lt;</span></button>
+                <p id="admin-library-page-label" class="meme-page-label" aria-live="polite">Page 1</p>
+                <button id="admin-library-next" class="meme-page-button" type="button" aria-label="Next page" disabled><span aria-hidden="true">&gt;</span></button>
+              </div>
+            </section>
+            <section id="admin-user-activity-panel" class="admin-library-panel admin-user-activity-panel hidden">
+              <div class="admin-library-toolbar">
+                <p id="admin-user-activity-status" class="status-text" role="status"></p>
+              </div>
+              <div id="admin-user-activity-table" class="admin-library-scroll"></div>
+            </section>
+            <section id="admin-audiobook-series-panel" class="admin-library-panel admin-series-panel hidden">
+              <p id="admin-series-status" class="status-text" role="status"></p>
+              <section class="admin-dashboard-section"><div class="admin-dashboard-section-head"><p class="section-kicker">Organize</p><h3>Series</h3></div><div id="admin-series-list"></div></section>
+              <section class="admin-dashboard-section"><div class="admin-dashboard-section-head"><p class="section-kicker">Dependencies</p><h3>Audiobook tags</h3></div><div id="admin-audiobook-tags" class="admin-library-scroll"></div></section>
             </section>
             <section id="admin-backup-panel" class="admin-backup-panel hidden">
               <article class="admin-backup-card">
@@ -1367,5 +1431,6 @@
     <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="false"></div>
 
     <script src="/static/app.js" defer></script>
+    <script src="/static/admin-pages.js" defer></script>
   </body>
 </html>

@@ -97,7 +97,7 @@ type MemeShareStore interface {
 
 type AuditLogStore interface {
 	ListMemeAudit(id string, limit int) ([]MemeAuditEntry, error)
-	ListAuditFeed(offset int, limit int) (PagedAuditFeed, error)
+	ListAuditFeed(offset int, limit int, actorUserID string) (PagedAuditFeed, error)
 	ListPendingDeletes(offset int, limit int) (PagedPendingDeletes, error)
 	ApprovePendingDelete(id string, actor AuditActor) error
 	RejectPendingDelete(id string, actor AuditActor) error
@@ -147,8 +147,10 @@ type BulkMemeStore interface {
 type TagMaintenanceStore interface {
 	// MergeTag repoints every meme_tags link from sourceTag onto targetTag,
 	// creating targetTag if needed and deleting sourceTag, in one transaction.
-	// It returns the number of memes that carried sourceTag.
-	MergeTag(sourceTag, targetTag string, actor AuditActor) (int, error)
+	// Audiobook tag links and account audiobook-tag
+	// restrictions are re-pointed too. It returns how many memes, audiobooks
+	// and restrictions carried sourceTag.
+	MergeTag(sourceTag, targetTag string, actor AuditActor) (TagMergeCounts, error)
 }
 
 // TagSuggestionQueryStore resolves the tag-suggestion admin panel's counts and
@@ -210,4 +212,34 @@ type ReelSessionPersistence interface {
 	SaveReelSession(sessionID string, session ReelSessionRecord) error
 	DeleteReelSession(sessionID string) error
 	CleanupStaleReelSessions(before time.Time) error
+}
+
+// StoredFile names the on-disk files of one meme row, hidden and
+// pending-delete rows included.
+type StoredFile struct {
+	ID         string
+	Title      string
+	StoredName string
+	FilePath   string
+	Hidden     bool
+	SizeBytes  int64
+}
+
+// StoredFileStore lists every meme row regardless of visibility. The admin
+// storage scan uses it to decide which files under uploads/ and thumbnails/
+// are referenced: the visible-only listings would make a hidden or
+// pending-delete meme's files look orphaned.
+type StoredFileStore interface {
+	AllStoredFiles() ([]StoredFile, error)
+}
+
+// AuditActionCountStore counts audit events per actor. Only stores that keep an
+// audit log implement it.
+type AuditActionCountStore interface {
+	CountAuditActionsByActor(action string) (map[string]int, error)
+}
+
+// FavoriteCountStore counts favorites per user.
+type FavoriteCountStore interface {
+	CountFavoritesByUser() (map[string]int, error)
 }

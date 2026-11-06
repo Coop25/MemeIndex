@@ -54,7 +54,7 @@ type MemeManager struct {
 
 	// adminReadMu guards short-lived memoization of the two admin read models
 	// that each require a full store scan. This is a burst coalescer, not a
-	// freshness cache: entries expire after adminReadCacheTTL and are dropped
+	// freshness cache: entries expire after AdminReadCacheTTL and are dropped
 	// outright on ReloadAfterRestore. Deep copies are handed out so callers
 	// (which rewrite asset paths per request) never touch the stored value.
 	adminReadMu            sync.Mutex
@@ -67,7 +67,7 @@ type MemeManager struct {
 	tagHygieneWorkerStart  sync.Once
 }
 
-const adminReadCacheTTL = 5 * time.Second
+const AdminReadCacheTTL = 5 * time.Second
 
 // Recomputing the tag-hygiene report is a full O(n^2) pass over every distinct
 // tag name, so it runs on a background worker rather than the admin request
@@ -755,6 +755,10 @@ type TagMergeResult struct {
 	SourceTag     string `json:"source_tag"`
 	TargetTag     string `json:"target_tag"`
 	AffectedMemes int    `json:"affected_memes"`
+	// AudiobooksAffected and RestrictionsMoved count audiobook tag links and
+	// account audiobook-tag restrictions re-pointed onto the target tag.
+	AudiobooksAffected int `json:"audiobooks_affected"`
+	RestrictionsMoved  int `json:"restrictions_moved"`
 }
 
 func (m *MemeManager) GetStoredMemeTagSuggestions(id string) (MemeTagSuggestionResult, error) {
@@ -883,12 +887,12 @@ func (m *MemeManager) ResetTagSuggestionsAndRequeueUntagged(actor accessor.Audit
 	return result, nil
 }
 
-// AdminDashboard returns the admin overview stats, memoized for adminReadCacheTTL
+// AdminDashboard returns the admin overview stats, memoized for AdminReadCacheTTL
 // so repeated loads (and the merge-then-refresh burst) do not each trigger a full
 // store scan. Callers receive an independent deep copy.
 func (m *MemeManager) AdminDashboard() AdminDashboardStats {
 	m.adminReadMu.Lock()
-	if m.adminDashboardCache != nil && time.Since(m.adminDashboardCachedAt) < adminReadCacheTTL {
+	if m.adminDashboardCache != nil && time.Since(m.adminDashboardCachedAt) < AdminReadCacheTTL {
 		cached := cloneAdminDashboardStats(*m.adminDashboardCache)
 		m.adminReadMu.Unlock()
 		return cached
@@ -1447,14 +1451,20 @@ func (m *MemeManager) MergeTags(sourceTag string, targetTag string, actor access
 	// Fast path: one transaction that repoints tag links in bulk, instead of
 	// rewriting every affected meme (each of which re-swept the tags table).
 	if tm, ok := m.store.(accessor.TagMaintenanceStore); ok {
-		affected, err := tm.MergeTag(sourceTag, targetTag, actor)
+		counts, err := tm.MergeTag(sourceTag, targetTag, actor)
 		if err != nil {
 			return TagMergeResult{}, err
 		}
-		if affected > 0 {
+		if counts.Memes > 0 {
 			m.invalidateAdminReadCache()
 		}
-		return TagMergeResult{SourceTag: sourceTag, TargetTag: targetTag, AffectedMemes: affected}, nil
+		return TagMergeResult{
+			SourceTag:          sourceTag,
+			TargetTag:          targetTag,
+			AffectedMemes:      counts.Memes,
+			AudiobooksAffected: counts.Audiobooks,
+			RestrictionsMoved:  counts.Restrictions,
+		}, nil
 	}
 
 	memes := m.store.List("", "", false, "")
@@ -1950,12 +1960,12 @@ func (m *MemeManager) ListMemeAudit(id string, limit int) ([]accessor.MemeAuditE
 	return store.ListMemeAudit(strings.TrimSpace(id), limit)
 }
 
-func (m *MemeManager) ListAuditFeed(offset int, limit int) (accessor.PagedAuditFeed, error) {
+func (m *MemeManager) ListAuditFeed(offset int, limit int, actorUserID string) (accessor.PagedAuditFeed, error) {
 	store, ok := m.store.(accessor.AuditLogStore)
 	if !ok {
 		return accessor.PagedAuditFeed{}, nil
 	}
-	return store.ListAuditFeed(offset, limit)
+	return store.ListAuditFeed(offset, limit, actorUserID)
 }
 
 func (m *MemeManager) ListPendingDeletes(offset int, limit int) (accessor.PagedPendingDeletes, error) {
@@ -2360,4 +2370,35 @@ func absInt(value int) int {
 		return -value
 	}
 	return value
+}
+
+// StoredMemeFiles lists the on-disk file names of every meme row, including
+// hidden and pending-delete ones. It errors when the store cannot enumerate
+// them, so a caller deciding what is safe to delete fails closed.
+func (m *MemeManager) StoredMemeFiles() ([]accessor.StoredFile, error) {
+	store, ok := m.store.(accessor.StoredFileStore)
+	if !ok {
+		return nil, errors.New("meme store cannot list stored files")
+	}
+	return store.AllStoredFiles()
+}
+
+// CountAuditActionsByActor counts audit events with the given action per actor.
+// Stores without an audit log yield an empty map, not an error.
+func (m *MemeManager) CountAuditActionsByActor(action string) (map[string]int, error) {
+	store, ok := m.store.(accessor.AuditActionCountStore)
+	if !ok {
+		return map[string]int{}, nil
+	}
+	return store.CountAuditActionsByActor(action)
+}
+
+// CountFavoritesByUser counts favorites per user, or an empty map when the
+// store cannot report it.
+func (m *MemeManager) CountFavoritesByUser() (map[string]int, error) {
+	store, ok := m.store.(accessor.FavoriteCountStore)
+	if !ok {
+		return map[string]int{}, nil
+	}
+	return store.CountFavoritesByUser()
 }

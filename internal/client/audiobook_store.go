@@ -236,7 +236,21 @@ type audiobookStore interface {
 	CompleteUpload(ctx context.Context, id, userID string, durationSeconds float64) (audiobookRecord, error)
 	AbortUpload(ctx context.Context, id, userID string) (audiobookUpload, error)
 	StaleUploads(ctx context.Context, olderThan time.Time) ([]audiobookUpload, error)
+	// ListInProgressUploads returns every user's unfinished upload, most
+	// recently updated first; GetUploadByID looks one up without the owner
+	// check GetUpload applies (admin use only).
+	ListInProgressUploads(ctx context.Context) ([]audiobookUpload, error)
+	GetUploadByID(ctx context.Context, id string) (audiobookUpload, error)
 	DiscardUpload(ctx context.Context, id string) error
+	AdminStats(ctx context.Context, now time.Time) (adminAudiobookStats, error)
+	AdminListening(ctx context.Context, now time.Time) ([]adminDaySeconds, []adminTopBook, []adminTopListener, error)
+	AdminHealthCounts(ctx context.Context) (adminAudiobookHealth, error)
+	AdminListAudiobooks(ctx context.Context, query adminAudiobookQuery) ([]adminAudiobookRow, int, error)
+	AdminUserAudiobookTotals(ctx context.Context, since time.Time) (map[string]adminUserAudiobookTotals, error)
+	// ListStoragePaths and ListUploadTempPaths report every file location the
+	// database references, for the admin storage orphan scan.
+	ListStoragePaths(ctx context.Context) ([]audiobookStoragePath, error)
+	ListUploadTempPaths(ctx context.Context) ([]string, error)
 
 	ListAudiobooks(ctx context.Context, userID string, filter audiobookListFilter) ([]audiobookWithProgress, error)
 	GetAudiobook(ctx context.Context, id string) (audiobookRecord, error)
@@ -268,6 +282,13 @@ type audiobookStore interface {
 	ListSeries(ctx context.Context, restrictToTags []string) ([]audiobookSeries, error)
 	RenameSeries(ctx context.Context, id, name string) (audiobookSeries, error)
 	DeleteSeries(ctx context.Context, id string) error
+	// MergeSeries moves every book of fromID into intoID (keeping sequence
+	// numbers) and deletes fromID, in one transaction. It returns the number
+	// of books moved, or ErrAudiobookSeriesNotFound if either series is missing.
+	MergeSeries(ctx context.Context, fromID, intoID string) (int, error)
+	// AdminAudiobookTagUsage lists tags used by at least one audiobook, with
+	// audiobook and meme counts, most-used first (admin use only).
+	AdminAudiobookTagUsage(ctx context.Context) ([]adminAudiobookTagUsage, error)
 	SetAudiobookSeries(ctx context.Context, audiobookID string, seriesID *string, sequence *float64) (audiobookRecord, error)
 
 	// BackfillMetadata re-probes already-stored audiobooks that are still
@@ -426,13 +447,20 @@ func (s *postgresAudiobookStore) CreateUpload(ctx context.Context, seed audioboo
 }
 
 func (s *postgresAudiobookStore) GetUpload(ctx context.Context, id, userID string) (audiobookUpload, error) {
+	return s.getUpload(ctx, `WHERE id = $1 AND user_id = $2`, id, userID)
+}
+
+func (s *postgresAudiobookStore) GetUploadByID(ctx context.Context, id string) (audiobookUpload, error) {
+	return s.getUpload(ctx, `WHERE id = $1`, id)
+}
+
+func (s *postgresAudiobookStore) getUpload(ctx context.Context, where string, args ...any) (audiobookUpload, error) {
 	var upload audiobookUpload
 	var rangesJSON []byte
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, user_id, title, author, filename, mime_type, total_bytes, received_bytes, received_ranges, temp_path, created_at, updated_at
 		FROM audiobook_uploads
-		WHERE id = $1 AND user_id = $2
-	`, id, userID).Scan(
+		`+where, args...).Scan(
 		&upload.ID, &upload.UserID, &upload.Title, &upload.Author, &upload.Filename, &upload.MimeType,
 		&upload.TotalBytes, &upload.ReceivedBytes, &rangesJSON, &upload.TempPath, &upload.CreatedAt, &upload.UpdatedAt,
 	)
@@ -522,6 +550,12 @@ func (s *postgresAudiobookStore) CompleteUpload(ctx context.Context, id, userID 
 	finalPath := filepath.Join(s.dir, finalID+ext)
 	if err := os.Rename(upload.TempPath, finalPath); err != nil {
 		return audiobookRecord{}, fmt.Errorf("move completed audiobook: %w", err)
+	}
+	// Rename keeps the .part file's old mtime; refresh it so the orphan scan's
+	// grace window protects a just-completed upload.
+	now := time.Now()
+	if err := os.Chtimes(finalPath, now, now); err != nil {
+		log.Printf("audiobooks: refresh mtime of %s failed: %v", finalPath, err)
 	}
 
 	// The client-supplied mimeType (the browser's File.type, trivially
@@ -701,13 +735,20 @@ func (s *postgresAudiobookStore) DiscardUpload(ctx context.Context, id string) e
 // and left a temp file behind. The caller removes the temp file and the row
 // via DiscardUpload once it has acted on each one.
 func (s *postgresAudiobookStore) StaleUploads(ctx context.Context, olderThan time.Time) ([]audiobookUpload, error) {
+	return s.listUploads(ctx, "stale", `WHERE updated_at < $1`, olderThan)
+}
+
+func (s *postgresAudiobookStore) ListInProgressUploads(ctx context.Context) ([]audiobookUpload, error) {
+	return s.listUploads(ctx, "in-progress", `ORDER BY updated_at DESC, id`)
+}
+
+func (s *postgresAudiobookStore) listUploads(ctx context.Context, label, clause string, args ...any) ([]audiobookUpload, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, user_id, title, author, filename, mime_type, total_bytes, received_bytes, temp_path, created_at, updated_at
 		FROM audiobook_uploads
-		WHERE updated_at < $1
-	`, olderThan)
+		`+clause, args...)
 	if err != nil {
-		return nil, fmt.Errorf("list stale audiobook uploads: %w", err)
+		return nil, fmt.Errorf("list %s audiobook uploads: %w", label, err)
 	}
 	defer rows.Close()
 
@@ -718,12 +759,12 @@ func (s *postgresAudiobookStore) StaleUploads(ctx context.Context, olderThan tim
 			&upload.ID, &upload.UserID, &upload.Title, &upload.Author, &upload.Filename, &upload.MimeType,
 			&upload.TotalBytes, &upload.ReceivedBytes, &upload.TempPath, &upload.CreatedAt, &upload.UpdatedAt,
 		); err != nil {
-			return nil, fmt.Errorf("scan stale audiobook upload: %w", err)
+			return nil, fmt.Errorf("scan %s audiobook upload: %w", label, err)
 		}
 		out = append(out, upload)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate stale audiobook uploads: %w", err)
+		return nil, fmt.Errorf("iterate %s audiobook uploads: %w", label, err)
 	}
 	return out, nil
 }
@@ -1740,4 +1781,93 @@ func scanAudiobookInt64List(ctx context.Context, tx pgx.Tx, sql string, args ...
 		out = append(out, id)
 	}
 	return out, rows.Err()
+}
+
+// audiobookStoragePath is one audiobook's on-disk file locations.
+type audiobookStoragePath struct {
+	ID          string
+	Title       string
+	StoragePath string
+	CoverPath   string
+	SizeBytes   int64
+	UploadedBy  string
+}
+
+// adminUserAudiobookTotals is one user's audiobook activity for the admin
+// User Activity page.
+type adminUserAudiobookTotals struct {
+	Uploaded       int
+	Seconds30d     float64
+	SecondsAllTime float64
+	Finished       int
+}
+
+// AdminUserAudiobookTotals returns per-user uploads, listening seconds (all
+// time and since `since`, by listen_date) and finished-book counts.
+func (s *postgresAudiobookStore) AdminUserAudiobookTotals(ctx context.Context, since time.Time) (map[string]adminUserAudiobookTotals, error) {
+	totals := map[string]adminUserAudiobookTotals{}
+
+	uploads, err := s.pool.Query(ctx, `SELECT uploaded_by_user_id, COUNT(*) FROM audiobooks WHERE uploaded_by_user_id <> '' GROUP BY uploaded_by_user_id`)
+	if err != nil {
+		return nil, fmt.Errorf("audiobook uploads by user: %w", err)
+	}
+	for uploads.Next() {
+		var id string
+		var n int
+		if err := uploads.Scan(&id, &n); err != nil {
+			uploads.Close()
+			return nil, fmt.Errorf("scan audiobook uploads: %w", err)
+		}
+		t := totals[id]
+		t.Uploaded = n
+		totals[id] = t
+	}
+	uploads.Close()
+	if err := uploads.Err(); err != nil {
+		return nil, fmt.Errorf("iterate audiobook uploads: %w", err)
+	}
+
+	listening, err := s.pool.Query(ctx, `
+		SELECT user_id, COALESCE(SUM(seconds_listened), 0),
+			COALESCE(SUM(seconds_listened) FILTER (WHERE listen_date >= $1), 0)
+		FROM audiobook_listening_stats GROUP BY user_id`, since.UTC().Format("2006-01-02"))
+	if err != nil {
+		return nil, fmt.Errorf("audiobook listening by user: %w", err)
+	}
+	for listening.Next() {
+		var id string
+		var all, recent float64
+		if err := listening.Scan(&id, &all, &recent); err != nil {
+			listening.Close()
+			return nil, fmt.Errorf("scan audiobook listening: %w", err)
+		}
+		t := totals[id]
+		t.SecondsAllTime, t.Seconds30d = all, recent
+		totals[id] = t
+	}
+	listening.Close()
+	if err := listening.Err(); err != nil {
+		return nil, fmt.Errorf("iterate audiobook listening: %w", err)
+	}
+
+	finished, err := s.pool.Query(ctx, `SELECT user_id, COUNT(*) FROM audiobook_progress WHERE finished_at IS NOT NULL GROUP BY user_id`)
+	if err != nil {
+		return nil, fmt.Errorf("audiobook finished by user: %w", err)
+	}
+	for finished.Next() {
+		var id string
+		var n int
+		if err := finished.Scan(&id, &n); err != nil {
+			finished.Close()
+			return nil, fmt.Errorf("scan audiobook finished: %w", err)
+		}
+		t := totals[id]
+		t.Finished = n
+		totals[id] = t
+	}
+	finished.Close()
+	if err := finished.Err(); err != nil {
+		return nil, fmt.Errorf("iterate audiobook finished: %w", err)
+	}
+	return totals, nil
 }

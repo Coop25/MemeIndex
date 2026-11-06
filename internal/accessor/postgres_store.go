@@ -649,44 +649,89 @@ func (s *PostgresStore) PendingSuggestionMemes(offset, limit int) (int, []Meme, 
 	return total, out, rows.Err()
 }
 
-// MergeTag repoints every meme_tags link from sourceTag onto targetTag in a
+// TagMergeCounts reports what a MergeTag moved: the memes that carried the
+// source tag, the audiobooks that did, and the account audiobook-tag
+// restrictions that pointed at it.
+type TagMergeCounts struct {
+	Memes        int
+	Audiobooks   int
+	Restrictions int
+}
+
+// auxTagLinkTables are the tables outside this package's own schema that
+// reference the shared `tags` table with ON DELETE CASCADE. A merge must
+// re-point them before the source tag is deleted, otherwise the cascade
+// silently strips audiobook tags and - worse - an account's tag restrictions
+// (an account with no restriction rows is unrestricted).
+var auxTagLinkTables = []struct{ table, keyColumn string }{
+	{"audiobook_tags", "audiobook_id"},
+	{"app_user_audiobook_tag_restrictions", "user_id"},
+}
+
+// MergeTag repoints every meme_tags, audiobook_tags and
+// app_user_audiobook_tag_restrictions link from sourceTag onto targetTag in a
 // single transaction, creating targetTag if needed and deleting sourceTag. It
-// returns the number of memes that carried sourceTag and writes the same
-// tag_removed / tag_added audit trail the per-meme path produced.
-func (s *PostgresStore) MergeTag(sourceTag, targetTag string, actor AuditActor) (int, error) {
+// returns how many of each were affected and writes the same tag_removed /
+// tag_added audit trail the per-meme path produced.
+func (s *PostgresStore) MergeTag(sourceTag, targetTag string, actor AuditActor) (TagMergeCounts, error) {
 	ctx := context.Background()
 	sourceTag = normalizeTag(sourceTag)
 	targetTag = normalizeTag(targetTag)
 	if sourceTag == "" || targetTag == "" {
-		return 0, errors.New("source and target tags are required")
+		return TagMergeCounts{}, errors.New("source and target tags are required")
 	}
 	if sourceTag == targetTag {
-		return 0, nil
+		return TagMergeCounts{}, nil
 	}
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return 0, err
+		return TagMergeCounts{}, err
 	}
 	defer tx.Rollback(ctx)
 
 	var sourceID int64
 	if err := tx.QueryRow(ctx, `SELECT id FROM tags WHERE name = $1`, sourceTag).Scan(&sourceID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return 0, nil
+			return TagMergeCounts{}, nil
 		}
-		return 0, err
+		return TagMergeCounts{}, err
 	}
 
 	affected, err := scanIDList(ctx, tx, `SELECT meme_id FROM meme_tags WHERE tag_id = $1 ORDER BY meme_id`, sourceID)
 	if err != nil {
-		return 0, err
+		return TagMergeCounts{}, err
 	}
-	if len(affected) == 0 {
-		if _, err := tx.Exec(ctx, `DELETE FROM tags WHERE id = $1`, sourceID); err != nil {
-			return 0, err
+
+	// Which of the audiobook-side link tables exist and still reference the
+	// source tag. Counted before anything moves.
+	type auxLink struct {
+		table, keyColumn string
+		count            int
+	}
+	var aux []auxLink
+	auxTotal := 0
+	for _, t := range auxTagLinkTables {
+		exists, err := tableExists(ctx, tx, t.table)
+		if err != nil {
+			return TagMergeCounts{}, err
 		}
-		return 0, tx.Commit(ctx)
+		if !exists {
+			continue
+		}
+		var n int
+		if err := tx.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE tag_id = $1`, t.table), sourceID).Scan(&n); err != nil {
+			return TagMergeCounts{}, err
+		}
+		aux = append(aux, auxLink{table: t.table, keyColumn: t.keyColumn, count: n})
+		auxTotal += n
+	}
+
+	if len(affected) == 0 && auxTotal == 0 {
+		if _, err := tx.Exec(ctx, `DELETE FROM tags WHERE id = $1`, sourceID); err != nil {
+			return TagMergeCounts{}, err
+		}
+		return TagMergeCounts{}, tx.Commit(ctx)
 	}
 
 	var targetID int64
@@ -695,54 +740,97 @@ func (s *PostgresStore) MergeTag(sourceTag, targetTag string, actor AuditActor) 
 		ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
 		RETURNING id
 	`, targetTag).Scan(&targetID); err != nil {
-		return 0, err
+		return TagMergeCounts{}, err
 	}
 
-	alreadyTagged, err := scanIDList(ctx, tx, `SELECT meme_id FROM meme_tags WHERE tag_id = $1`, targetID)
-	if err != nil {
-		return 0, err
-	}
-	hasTarget := make(map[string]struct{}, len(alreadyTagged))
-	for _, id := range alreadyTagged {
-		hasTarget[id] = struct{}{}
-	}
+	counts := TagMergeCounts{Memes: len(affected)}
 
-	if _, err := tx.Exec(ctx, `
-		UPDATE meme_tags
-		SET tag_id = $2
-		WHERE tag_id = $1
-		  AND NOT EXISTS (
-			SELECT 1 FROM meme_tags existing
-			WHERE existing.meme_id = meme_tags.meme_id AND existing.tag_id = $2
-		  )
-	`, sourceID, targetID); err != nil {
-		return 0, err
-	}
-	if _, err := tx.Exec(ctx, `DELETE FROM meme_tags WHERE tag_id = $1`, sourceID); err != nil {
-		return 0, err
-	}
-	if _, err := tx.Exec(ctx, `DELETE FROM tags WHERE id = $1`, sourceID); err != nil {
-		return 0, err
-	}
-	if _, err := tx.Exec(ctx, `UPDATE memes SET updated_at = NOW() WHERE id = ANY($1::text[])`, affected); err != nil {
-		return 0, err
-	}
-
-	for _, id := range affected {
-		if err := s.insertAuditLog(ctx, tx, id, "tag_removed", actor, fmt.Sprintf("Removed tag %q", sourceTag)); err != nil {
-			return 0, err
+	// Re-point the audiobook links before sourceTag is deleted: their tag_id
+	// foreign keys cascade on delete.
+	for _, l := range aux {
+		if l.count == 0 {
+			continue
 		}
-		if _, ok := hasTarget[id]; !ok {
-			if err := s.insertAuditLog(ctx, tx, id, "tag_added", actor, fmt.Sprintf("Added tag %q", targetTag)); err != nil {
-				return 0, err
+		if _, err := tx.Exec(ctx, fmt.Sprintf(`
+			UPDATE %[1]s
+			SET tag_id = $2
+			WHERE tag_id = $1
+			  AND NOT EXISTS (
+				SELECT 1 FROM %[1]s existing
+				WHERE existing.%[2]s = %[1]s.%[2]s AND existing.tag_id = $2
+			  )
+		`, l.table, l.keyColumn), sourceID, targetID); err != nil {
+			return TagMergeCounts{}, err
+		}
+		// Rows whose key already had the target are redundant now.
+		if _, err := tx.Exec(ctx, fmt.Sprintf(`DELETE FROM %s WHERE tag_id = $1`, l.table), sourceID); err != nil {
+			return TagMergeCounts{}, err
+		}
+		if l.table == "audiobook_tags" {
+			counts.Audiobooks = l.count
+		} else {
+			counts.Restrictions = l.count
+		}
+	}
+
+	if len(affected) > 0 {
+		alreadyTagged, err := scanIDList(ctx, tx, `SELECT meme_id FROM meme_tags WHERE tag_id = $1`, targetID)
+		if err != nil {
+			return TagMergeCounts{}, err
+		}
+		hasTarget := make(map[string]struct{}, len(alreadyTagged))
+		for _, id := range alreadyTagged {
+			hasTarget[id] = struct{}{}
+		}
+
+		if _, err := tx.Exec(ctx, `
+			UPDATE meme_tags
+			SET tag_id = $2
+			WHERE tag_id = $1
+			  AND NOT EXISTS (
+				SELECT 1 FROM meme_tags existing
+				WHERE existing.meme_id = meme_tags.meme_id AND existing.tag_id = $2
+			  )
+		`, sourceID, targetID); err != nil {
+			return TagMergeCounts{}, err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM meme_tags WHERE tag_id = $1`, sourceID); err != nil {
+			return TagMergeCounts{}, err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE memes SET updated_at = NOW() WHERE id = ANY($1::text[])`, affected); err != nil {
+			return TagMergeCounts{}, err
+		}
+		for _, id := range affected {
+			if err := s.insertAuditLog(ctx, tx, id, "tag_removed", actor, fmt.Sprintf("Removed tag %q", sourceTag)); err != nil {
+				return TagMergeCounts{}, err
+			}
+			if _, ok := hasTarget[id]; !ok {
+				if err := s.insertAuditLog(ctx, tx, id, "tag_added", actor, fmt.Sprintf("Added tag %q", targetTag)); err != nil {
+					return TagMergeCounts{}, err
+				}
 			}
 		}
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return 0, err
+	if _, err := tx.Exec(ctx, `DELETE FROM tags WHERE id = $1`, sourceID); err != nil {
+		return TagMergeCounts{}, err
 	}
-	return len(affected), nil
+
+	if err := tx.Commit(ctx); err != nil {
+		return TagMergeCounts{}, err
+	}
+	return counts, nil
+}
+
+// tableExists reports whether a relation is present in the database. Used for
+// tables owned by other packages' schemas (audiobooks), which may not exist
+// when this package runs standalone.
+func tableExists(ctx context.Context, db queryable, name string) (bool, error) {
+	var exists bool
+	if err := db.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, name).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check %s exists: %w", name, err)
+	}
+	return exists, nil
 }
 
 func scanIDList(ctx context.Context, q queryable, sql string, args ...any) ([]string, error) {
@@ -1811,9 +1899,9 @@ func (s *PostgresStore) deleteOrphanTags(ctx context.Context, db queryable, tagI
 	// without hard-depending on client-package tables that may not be there.
 	query := `DELETE FROM tags WHERE id = ANY($1::bigint[]) AND NOT EXISTS (SELECT 1 FROM meme_tags mt WHERE mt.tag_id = tags.id)`
 	for _, table := range []string{"audiobook_tags", "app_user_audiobook_tag_restrictions"} {
-		var exists bool
-		if err := db.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, table).Scan(&exists); err != nil {
-			return fmt.Errorf("check %s exists: %w", table, err)
+		exists, err := tableExists(ctx, db, table)
+		if err != nil {
+			return err
 		}
 		if exists {
 			query += fmt.Sprintf(` AND NOT EXISTS (SELECT 1 FROM %s WHERE tag_id = tags.id)`, table)
@@ -1945,7 +2033,8 @@ func (s *PostgresStore) ListMemeAudit(id string, limit int) ([]MemeAuditEntry, e
 	return out, rows.Err()
 }
 
-func (s *PostgresStore) ListAuditFeed(offset int, limit int) (PagedAuditFeed, error) {
+func (s *PostgresStore) ListAuditFeed(offset int, limit int, actorUserID string) (PagedAuditFeed, error) {
+	actorUserID = strings.TrimSpace(actorUserID) // empty matches every actor
 	if offset < 0 {
 		offset = 0
 	}
@@ -1957,7 +2046,7 @@ func (s *PostgresStore) ListAuditFeed(offset int, limit int) (PagedAuditFeed, er
 	}
 
 	var total int
-	if err := s.pool.QueryRow(context.Background(), `SELECT COUNT(*) FROM meme_audit_logs`).Scan(&total); err != nil {
+	if err := s.pool.QueryRow(context.Background(), `SELECT COUNT(*) FROM meme_audit_logs WHERE ($1 = '' OR actor_user_id = $1)`, actorUserID).Scan(&total); err != nil {
 		return PagedAuditFeed{}, err
 	}
 
@@ -1977,10 +2066,11 @@ func (s *PostgresStore) ListAuditFeed(offset int, limit int) (PagedAuditFeed, er
 			COALESCE(m.file_path, '') AS meme_file_path
 		FROM meme_audit_logs l
 		LEFT JOIN memes m ON m.id = l.meme_id
+		WHERE ($1 = '' OR l.actor_user_id = $1)
 		ORDER BY l.created_at DESC, l.id DESC
-		OFFSET $1
-		LIMIT $2
-	`, offset, limit)
+		OFFSET $2
+		LIMIT $3
+	`, actorUserID, offset, limit)
 	if err != nil {
 		return PagedAuditFeed{}, err
 	}
@@ -2250,4 +2340,54 @@ func scanMemeRow(row interface{ Scan(dest ...any) error }) (Meme, error) {
 	meme.SuggestedTags = suggestedTags
 	meme.AutoSuggestDisabled = autoSuggestDisabled
 	return meme, nil
+}
+
+// AllStoredFiles returns every meme row, hidden and pending-delete included.
+func (s *PostgresStore) AllStoredFiles() ([]StoredFile, error) {
+	rows, err := s.pool.Query(context.Background(), `
+		SELECT id, original_name, stored_name, file_path, COALESCE(hidden_from_app, FALSE), size_bytes
+		FROM memes
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]StoredFile, 0)
+	for rows.Next() {
+		var f StoredFile
+		if err := rows.Scan(&f.ID, &f.Title, &f.StoredName, &f.FilePath, &f.Hidden, &f.SizeBytes); err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
+// CountAuditActionsByActor returns how many audit events with the given action
+// each actor has recorded, keyed by actor_user_id.
+func (s *PostgresStore) CountAuditActionsByActor(action string) (map[string]int, error) {
+	return s.countByUser(`SELECT actor_user_id, COUNT(*) FROM meme_audit_logs WHERE action = $1 GROUP BY actor_user_id`, action)
+}
+
+// CountFavoritesByUser returns how many memes each user has favorited.
+func (s *PostgresStore) CountFavoritesByUser() (map[string]int, error) {
+	return s.countByUser(`SELECT user_id, COUNT(*) FROM user_favorites GROUP BY user_id`)
+}
+
+func (s *PostgresStore) countByUser(query string, args ...any) (map[string]int, error) {
+	rows, err := s.pool.Query(context.Background(), query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	counts := map[string]int{}
+	for rows.Next() {
+		var id string
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		counts[id] = n
+	}
+	return counts, rows.Err()
 }
