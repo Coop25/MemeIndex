@@ -216,6 +216,12 @@ func TestCachedAudiobookActivityPartialFailure(t *testing.T) {
 	if got.Health != (adminAudiobookHealth{}) {
 		t.Errorf("health = %+v, want zeroed", got.Health)
 	}
+	if !got.Partial {
+		t.Error("Partial = false, want true")
+	}
+	if again, _ := s.cachedAudiobookActivity(context.Background()); again == nil || !again.Partial {
+		t.Errorf("cached result lost the partial flag: %+v", again)
+	}
 
 	s = &Server{audiobooks: partialFailureStore{failListening: true}}
 	if got, err := s.cachedAudiobookActivity(context.Background()); err == nil {

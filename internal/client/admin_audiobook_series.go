@@ -149,6 +149,7 @@ func (s *Server) handleAdminAudiobookSeries(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "merge failed"})
 		return
 	}
+	log.Printf("audiobooks: series %s merged into %s by %s (%d books)", id, into, storageActorName(r), moved)
 	writeJSON(w, http.StatusOK, map[string]int{"moved": moved})
 }
 

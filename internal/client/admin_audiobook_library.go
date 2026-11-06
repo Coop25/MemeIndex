@@ -14,6 +14,8 @@ const (
 	adminAudiobookDefaultPageSize = 50
 	adminAudiobookMaxPageSize     = 200
 	adminAudiobookDefaultSort     = "created_at"
+	// adminAudiobookMaxPage keeps (page-1)*pageSize far from int overflow.
+	adminAudiobookMaxPage = 1_000_000
 )
 
 // adminAudiobookRow is one line of the admin audiobook library.
@@ -45,6 +47,9 @@ type adminAudiobookQuery struct {
 	FailedIDs []string
 	Limit     int
 	Offset    int
+	// WindowStart is the first day of the active-listener window; zero means
+	// adminWindowStart(now).
+	WindowStart time.Time
 }
 
 // adminAudiobookMP3Predicate matches the same rows ListStoredMP3s returns.
@@ -115,7 +120,12 @@ func (s *postgresAudiobookStore) AdminListAudiobooks(ctx context.Context, q admi
 
 	limitArg := fmt.Sprintf("$%d", len(args)+1)
 	offsetArg := fmt.Sprintf("$%d", len(args)+2)
-	args = append(args, q.Limit, q.Offset)
+	windowStart := q.WindowStart
+	if windowStart.IsZero() {
+		windowStart = adminWindowStart(time.Now())
+	}
+	windowArg := fmt.Sprintf("$%d", len(args)+3)
+	args = append(args, q.Limit, q.Offset, windowStart.Format("2006-01-02"))
 	rows, err := s.pool.Query(ctx, `
 		SELECT a.id, a.title, a.author,
 			CASE WHEN `+adminAudiobookMP3Predicate+` THEN 'MP3'
@@ -127,7 +137,7 @@ func (s *postgresAudiobookStore) AdminListAudiobooks(ctx context.Context, q admi
 		FROM audiobooks a
 		LEFT JOIN (
 			SELECT audiobook_id,
-				COUNT(DISTINCT user_id) FILTER (WHERE listen_date >= (CURRENT_DATE - 30)) AS active_listeners,
+				COUNT(DISTINCT user_id) FILTER (WHERE listen_date >= `+windowArg+`::date) AS active_listeners,
 				SUM(seconds_listened) AS seconds_listened
 			FROM audiobook_listening_stats
 			GROUP BY audiobook_id
@@ -172,6 +182,9 @@ func (s *Server) handleAdminAudiobooks(w http.ResponseWriter, r *http.Request) {
 	page, _ := strconv.Atoi(params.Get("page"))
 	if page < 1 {
 		page = 1
+	}
+	if page > adminAudiobookMaxPage {
+		page = adminAudiobookMaxPage
 	}
 	pageSize, _ := strconv.Atoi(params.Get("page_size"))
 	if pageSize < 1 {

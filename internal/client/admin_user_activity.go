@@ -3,7 +3,6 @@ package client
 import (
 	"log"
 	"net/http"
-	"strings"
 	"time"
 )
 
@@ -52,17 +51,14 @@ func (s *Server) handleAdminUserActivity(w http.ResponseWriter, r *http.Request)
 	}
 	var books map[string]adminUserAudiobookTotals
 	if s.audiobooks != nil {
-		books, err = s.audiobooks.AdminUserAudiobookTotals(ctx, time.Now().UTC().AddDate(0, 0, -30))
+		books, err = s.audiobooks.AdminUserAudiobookTotals(ctx, adminWindowStart(time.Now()))
 		if err != nil {
 			log.Printf("admin user activity audiobooks failed: %v", err)
 		}
 	}
 
 	for _, user := range users {
-		name := strings.TrimSpace(user.DisplayName)
-		if name == "" {
-			name = strings.TrimSpace(user.Username)
-		}
+		name := userDisplayName(user)
 		b := books[user.UserID]
 		rows = append(rows, adminUserActivity{
 			UserID:             user.UserID,

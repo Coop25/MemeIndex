@@ -1876,7 +1876,9 @@ func (s *Server) handleAdminDashboard(w http.ResponseWriter, r *http.Request) {
 		response.SystemHealth = append(response.SystemHealth, adminSystemHealth{Name: "Backup Service", Status: "Requires PostgreSQL", Healthy: false})
 	}
 	response.TotalStorageBytes = stats.TotalSizeBytes
+	audiobookStatsOK := true
 	if audiobookStats, err := s.cachedAudiobookAdminStats(r.Context()); err != nil {
+		audiobookStatsOK = false
 		log.Printf("admin dashboard audiobook stats failed: %v", err)
 	} else if audiobookStats != nil {
 		response.AudiobookStats = audiobookStats
@@ -1894,24 +1896,13 @@ func (s *Server) handleAdminDashboard(w http.ResponseWriter, r *http.Request) {
 		response.WorkQueues.LinkRetries = len(retries.Queued)
 		response.WorkQueues.RejectedLinks = len(retries.Rejected)
 	}
-	if activity, err := s.cachedAudiobookActivity(r.Context()); err != nil {
-		log.Printf("admin dashboard audiobook activity failed: %v", err)
+	audiobookHealth := adminSystemHealth{Name: "Audiobooks", Status: "Operational", Healthy: true}
+	activity, activityErr := s.cachedAudiobookActivity(r.Context())
+	if activityErr != nil {
+		log.Printf("admin dashboard audiobook activity failed: %v", activityErr)
 	} else if activity != nil {
 		if len(activity.TopListeners) > 0 {
-			names := map[string]string{}
-			if s.users != nil {
-				if users, listErr := s.users.ListUsers(r.Context()); listErr != nil {
-					log.Printf("admin dashboard listener names failed: %v", listErr)
-				} else {
-					for _, user := range users {
-						name := strings.TrimSpace(user.DisplayName)
-						if name == "" {
-							name = strings.TrimSpace(user.Username)
-						}
-						names[user.UserID] = name
-					}
-				}
-			}
+			names := s.adminUserNames(r.Context())
 			for index := range activity.TopListeners {
 				name := names[activity.TopListeners[index].UserID]
 				if name == "" {
@@ -1922,6 +1913,15 @@ func (s *Server) handleAdminDashboard(w http.ResponseWriter, r *http.Request) {
 		}
 		response.AudiobookActivity = activity
 		response.WorkQueues.ConversionQueue = activity.Health.AwaitingConversion
+		if activity.Partial {
+			audiobookHealth = adminSystemHealth{Name: "Audiobooks", Status: "Degraded", Healthy: false}
+		}
+	}
+	if activityErr != nil || !audiobookStatsOK {
+		audiobookHealth = adminSystemHealth{Name: "Audiobooks", Status: "Unavailable", Healthy: false}
+	}
+	if s.audiobooks != nil {
+		response.SystemHealth = append(response.SystemHealth, audiobookHealth)
 	}
 
 	diskStatus, diskHealthy := "Unknown", false
@@ -1934,8 +1934,9 @@ func (s *Server) handleAdminDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	response.SystemHealth = append(response.SystemHealth, adminSystemHealth{Name: "Disk", Status: diskStatus, Healthy: diskHealthy})
 
-	backupStatus, backupHealthy := "None yet", false
+	backupStatus, backupHealthy := "Requires PostgreSQL", false
 	if s.backup != nil {
+		backupStatus = "None yet"
 		if last, err := s.backup.lastCompletedBackup(response.GeneratedAt); err != nil {
 			log.Printf("admin dashboard last backup failed: %v", err)
 			backupStatus = "Unknown"

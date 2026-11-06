@@ -24,7 +24,7 @@ func TestAdminUserTotals(t *testing.T) {
 	insertListening(t, store, "u1", b1, now, 600)
 	insertListening(t, store, "u1", b1, now.AddDate(0, 0, -40), 900)
 
-	totals, err := store.AdminUserAudiobookTotals(ctx, now.AddDate(0, 0, -30))
+	totals, err := store.AdminUserAudiobookTotals(ctx, adminWindowStart(now))
 	if err != nil {
 		t.Fatalf("AdminUserAudiobookTotals: %v", err)
 	}
@@ -96,5 +96,21 @@ func TestUserActivityWithoutPostgres(t *testing.T) {
 	}
 	if byID["u2"].Favorites != 0 {
 		t.Errorf("bob favorites = %d", byID["u2"].Favorites)
+	}
+}
+
+func TestAdminUserTotalsWindowBoundary(t *testing.T) {
+	store, _ := newIsolatedAudiobookStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	b1 := insertActivityBook(t, store, "One", "", "[]", "")
+	insertListening(t, store, "in", b1, now.AddDate(0, 0, -29), 100)
+	insertListening(t, store, "out", b1, now.AddDate(0, 0, -30), 100)
+	totals, err := store.AdminUserAudiobookTotals(ctx, adminWindowStart(now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if totals["in"].Seconds30d != 100 || totals["out"].Seconds30d != 0 || totals["out"].SecondsAllTime != 100 {
+		t.Errorf("totals = %+v", totals)
 	}
 }

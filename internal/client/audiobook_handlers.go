@@ -980,6 +980,7 @@ func (s *Server) deleteAudiobookSeries(w http.ResponseWriter, r *http.Request, i
 		http.Error(w, "failed to delete series", http.StatusInternalServerError)
 		return
 	}
+	log.Printf("audiobooks: series %s deleted by %s", id, storageActorName(r))
 	w.WriteHeader(http.StatusNoContent)
 }
 

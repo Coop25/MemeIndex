@@ -150,3 +150,32 @@ func TestAdminAudiobooksWithoutPostgres(t *testing.T) {
 		t.Errorf("POST code = %d", w.Code)
 	}
 }
+
+func TestAdminWindowStart(t *testing.T) {
+	now := time.Date(2026, 11, 5, 23, 59, 0, 0, time.FixedZone("x", -8*3600)) // 2026-11-06 07:59 UTC
+	want := time.Date(2026, 10, 8, 0, 0, 0, 0, time.UTC)
+	if got := adminWindowStart(now); !got.Equal(want) {
+		t.Errorf("adminWindowStart = %v, want %v", got, want)
+	}
+}
+
+func TestAdminAudiobooksListenerWindowBoundary(t *testing.T) {
+	ts, store := libraryTestServer(t)
+	id := insertActivityBook(t, store, "Listened", "c.jpg", "[]", "")
+	today := time.Now().UTC()
+	insertListening(t, store, "in", id, today.AddDate(0, 0, -29), 10)
+	insertListening(t, store, "out", id, today.AddDate(0, 0, -30), 10)
+	_, body := getLibrary(t, ts, "")
+	if len(body.Items) != 1 || body.Items[0].ActiveListeners != 1 {
+		t.Fatalf("active listeners = %+v, want 1 (today-29 counts, today-30 does not)", body.Items)
+	}
+}
+
+func TestAdminAudiobooksHugePage(t *testing.T) {
+	ts, store := libraryTestServer(t)
+	insertLibraryBook(t, store, "A", 1, time.Now())
+	code, body := getLibrary(t, ts, "?page=9223372036854775807")
+	if code != http.StatusOK || len(body.Items) != 0 {
+		t.Fatalf("code %d body %+v", code, body)
+	}
+}

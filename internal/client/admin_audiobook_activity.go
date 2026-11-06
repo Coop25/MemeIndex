@@ -43,6 +43,9 @@ type adminAudiobookActivity struct {
 	TopBooks     []adminTopBook       `json:"top_books"`
 	TopListeners []adminTopListener   `json:"top_listeners"`
 	Health       adminAudiobookHealth `json:"health"`
+	// Partial is set when some aggregate queries failed; it is cached with
+	// the result so a degraded answer is never served as fully healthy.
+	Partial bool `json:"-"`
 }
 
 // adminWorkQueues are the "waiting on an admin or a worker" counts.
@@ -59,13 +62,19 @@ const (
 	adminListeningTop  = 5
 )
 
+// adminWindowStart is the first day (UTC midnight) of the admin 30-day
+// window: today minus 29 days, so the window spans exactly 30 dates.
+func adminWindowStart(now time.Time) time.Time {
+	now = now.UTC()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	return today.AddDate(0, 0, -(adminListeningDays - 1))
+}
+
 // AdminListening aggregates listening time over the last 30 UTC days (oldest
 // first, the last being the current date) plus the top books and listeners.
 // Listener display names are left empty for the caller to fill.
 func (s *postgresAudiobookStore) AdminListening(ctx context.Context, now time.Time) ([]adminDaySeconds, []adminTopBook, []adminTopListener, error) {
-	now = now.UTC()
-	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	windowStart := today.AddDate(0, 0, -(adminListeningDays - 1))
+	windowStart := adminWindowStart(now)
 
 	rows, err := s.pool.Query(ctx, `
 		SELECT to_char(listen_date, 'YYYY-MM-DD'), COALESCE(SUM(seconds_listened), 0)
@@ -239,10 +248,16 @@ func (s *Server) cachedAudiobookActivity(ctx context.Context) (*adminAudiobookAc
 		log.Printf("admin dashboard failed conversions failed: %v", err)
 	} else {
 		activity.Health.FailedConversion = len(failed)
+		// Permanently failed books are not "awaiting" conversion.
+		activity.Health.AwaitingConversion -= len(failed)
+		if activity.Health.AwaitingConversion < 0 {
+			activity.Health.AwaitingConversion = 0
+		}
 	}
 	if failures == 3 {
 		return nil, fmt.Errorf("all audiobook activity queries failed")
 	}
+	activity.Partial = failures > 0
 	c.activity, c.cachedAt, c.valid = activity, time.Now(), true
 	out := cloneAdminAudiobookActivity(activity)
 	return &out, nil

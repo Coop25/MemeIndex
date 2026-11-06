@@ -483,13 +483,20 @@ func (s *Server) adminUserNames(ctx context.Context) map[string]string {
 		return names
 	}
 	for _, user := range users {
-		name := strings.TrimSpace(user.DisplayName)
-		if name == "" {
-			name = strings.TrimSpace(user.Username)
-		}
-		names[user.UserID] = name
+		names[user.UserID] = userDisplayName(user)
 	}
 	return names
+}
+
+// userDisplayName is the name shown for a user: display name, else username,
+// else the user ID.
+func userDisplayName(user managedUserRecord) string {
+	for _, name := range []string{user.DisplayName, user.Username, user.UserID} {
+		if name = strings.TrimSpace(name); name != "" {
+			return name
+		}
+	}
+	return ""
 }
 
 func (s *Server) handleStorageOrphanScan(w http.ResponseWriter, r *http.Request) {

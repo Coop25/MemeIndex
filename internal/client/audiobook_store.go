@@ -551,6 +551,12 @@ func (s *postgresAudiobookStore) CompleteUpload(ctx context.Context, id, userID 
 	if err := os.Rename(upload.TempPath, finalPath); err != nil {
 		return audiobookRecord{}, fmt.Errorf("move completed audiobook: %w", err)
 	}
+	// Rename keeps the .part file's old mtime; refresh it so the orphan scan's
+	// grace window protects a just-completed upload.
+	now := time.Now()
+	if err := os.Chtimes(finalPath, now, now); err != nil {
+		log.Printf("audiobooks: refresh mtime of %s failed: %v", finalPath, err)
+	}
 
 	// The client-supplied mimeType (the browser's File.type, trivially
 	// overridable by anyone calling the API directly) is never trusted as the
