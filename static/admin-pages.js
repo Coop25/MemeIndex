@@ -74,8 +74,9 @@ function buildStorageLargest(largest) {
   if (!list.length) return adminPagesEmpty("Nothing to show yet.");
   return list.map((item) => {
     const name = escapeHTML(item.name || item.id || "Untitled");
-    const label = item.kind === "meme" && item.id
-      ? `<button type="button" class="text-button admin-storage-open" data-storage-open-meme="${escapeHTML(String(item.id))}">${name}</button>`
+    const openAttr = item.kind === "meme" ? "data-storage-open-meme" : item.kind === "audiobook" ? "data-storage-open-audiobook" : "";
+    const label = openAttr && item.id
+      ? `<button type="button" class="text-button admin-storage-open" ${openAttr}="${escapeHTML(String(item.id))}">${name}</button>`
       : `<strong>${name}</strong>`;
     return `<div class="admin-storage-row admin-storage-largest-row">
       <div class="admin-storage-row-copy">${label}<span>${escapeHTML(item.kind || "")} &middot; ${escapeHTML(item.owner || "—")}</span></div>
@@ -154,8 +155,16 @@ function renderAdminStorage() {
 
 async function loadAdminStorage({ refresh = false } = {}) {
   const result = await adminPagesFetchJSON(`/api/admin/storage${refresh ? "?refresh=1" : ""}`, undefined, "Failed to load storage.");
-  if (!result.ok) return false;
-  adminStorageState().data = result.body;
+  const s = adminStorageState();
+  if (!result.ok) {
+    s.status = result.error;
+    s.loadFailed = true;
+    renderAdminStorage();
+    return false;
+  }
+  s.data = result.body;
+  // Clear only a stale load error; a post-delete message survives its reload.
+  if (s.loadFailed) { s.status = ""; s.loadFailed = false; }
   renderAdminStorage();
   return true;
 }
@@ -192,12 +201,16 @@ async function scanStorageOrphans(s) {
   s.status = `Scan found ${n} orphaned file${n === 1 ? "" : "s"}.`;
 }
 
+function orphanDeleteMessage(count, bytes) {
+  return `Delete ${count} file${count === 1 ? "" : "s"} (${formatSize(bytes)})? This cannot be undone.`;
+}
+
 async function deleteStorageOrphans(s) {
   const orphans = (s.scan && s.scan.orphans) || [];
   const chosen = orphans.filter((o) => s.selected.has(o.path));
   if (!chosen.length) return;
   const bytes = chosen.reduce((sum, o) => sum + (o.bytes || 0), 0);
-  const message = `Delete ${chosen.length} files (${formatSize(bytes)})? This cannot be undone.`;
+  const message = orphanDeleteMessage(chosen.length, bytes);
   const ok = typeof confirmViaModal === "function"
     ? await confirmViaModal({ title: "Delete orphaned files", message, confirmLabel: "Delete" })
     : window.confirm(message);
@@ -259,6 +272,12 @@ function initAdminStoragePanel() {
       withStorageBusy((st) => discardStorageUpload(st, target.getAttribute("data-discard-upload")));
     } else if (target.hasAttribute("data-storage-open-meme")) {
       openAdminMemeByID(target.getAttribute("data-storage-open-meme")).catch((error) => console.error(error));
+    } else if (target.hasAttribute("data-storage-open-audiobook")) {
+      openAdminLibraryAudiobook(target.getAttribute("data-storage-open-audiobook"), s, renderAdminStorage).catch((error) => {
+        console.error(error);
+        s.status = "Could not open the audiobook.";
+        renderAdminStorage();
+      });
     }
   });
   panel.addEventListener("change", (event) => {
@@ -448,18 +467,19 @@ async function loadAdminAudiobookLibrary() {
 
 // openAdminLibraryAudiobook fetches the full record (the list rows are
 // summaries) and hands it to the shared audiobook edit modal in app.js.
-async function openAdminLibraryAudiobook(id) {
-  const s = adminLibraryState();
+// The status line and re-render default to the Library page's; the Storage
+// page passes its own.
+async function openAdminLibraryAudiobook(id, s = adminLibraryState(), render = renderAdminAudiobookLibrary) {
   s.status = "Opening...";
-  renderAdminAudiobookLibrary();
+  render();
   const result = await adminPagesFetchJSON(`/api/audiobooks/${encodeURIComponent(id)}`, undefined, "Could not open the audiobook.");
   if (!result.ok || !result.body) {
     s.status = result.error || "Could not open the audiobook.";
-    renderAdminAudiobookLibrary();
+    render();
     return;
   }
   s.status = "";
-  renderAdminAudiobookLibrary();
+  render();
   openAudiobookEditModal(result.body);
 }
 

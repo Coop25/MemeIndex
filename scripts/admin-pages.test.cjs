@@ -258,3 +258,39 @@ test("series tab is wired once", () => {
   assert.ok(appSource.includes("window.loadAdminAudiobookSeries()"));
   assert.ok(appSource.includes("window.renderAdminAudiobookSeries?.()"));
 });
+
+test("largest files: audiobook rows get an open button", () => {
+  const html = context.buildStorageLargest([
+    { kind: "audiobook", id: "ab1", name: "Book", bytes: 5, owner: "Ann" },
+    { kind: "cover", id: "c1", name: "Cover", bytes: 4, owner: "Ann" },
+  ]);
+  assert.match(html, /data-storage-open-audiobook="ab1"/);
+  assert.ok(!html.includes('data-storage-open-audiobook="c1"'));
+});
+
+test("orphan delete confirm pluralizes", () => {
+  assert.match(context.orphanDeleteMessage(1, 1024), /^Delete 1 file \(/);
+  assert.match(context.orphanDeleteMessage(2, 2048), /^Delete 2 files \(/);
+});
+
+test("storage load failure shows the error and a later success clears it", async () => {
+  vm.runInContext(`
+    var state = { admin: {} };
+    var __renders = 0;
+    renderAdminStorage = function () { __renders += 1; };
+    var __next = { ok: false, error: "Failed to load storage." };
+    adminPagesFetchJSON = async function () { return __next; };
+  `, context);
+  assert.equal(await vm.runInContext("loadAdminStorage()", context), false);
+  assert.equal(vm.runInContext("adminStorageState().status", context), "Failed to load storage.");
+  assert.equal(vm.runInContext("__renders", context), 1);
+
+  vm.runInContext('__next = { ok: true, body: { dirs: [] } };', context);
+  assert.equal(await vm.runInContext("loadAdminStorage()", context), true);
+  assert.equal(vm.runInContext("adminStorageState().status", context), "");
+
+  // A post-delete message must survive its reload.
+  vm.runInContext('adminStorageState().status = "Deleted 1 file, freed 1 KB.";', context);
+  await vm.runInContext("loadAdminStorage()", context);
+  assert.equal(vm.runInContext("adminStorageState().status", context), "Deleted 1 file, freed 1 KB.");
+});
