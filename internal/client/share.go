@@ -381,7 +381,7 @@ func (s *Server) sharedImageDimensions(meme accessor.Meme, preview bool) (int, i
 	if err != nil {
 		return 0, 0
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	config, _, err := image.DecodeConfig(file)
 	if err != nil {
 		return 0, 0
