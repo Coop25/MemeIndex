@@ -154,8 +154,10 @@ func (s *Server) handleAudiobookByID(w http.ResponseWriter, r *http.Request) {
 		s.listAudiobookBookmarks(w, r, id)
 	case action == "bookmarks" && r.Method == http.MethodPost:
 		s.createAudiobookBookmark(w, r, id)
+	case strings.HasPrefix(action, "bookmarks/") && strings.HasSuffix(action, "/use") && r.Method == http.MethodPost:
+		s.useAudiobookBookmark(w, r, id, strings.TrimSuffix(strings.TrimPrefix(action, "bookmarks/"), "/use"))
 	case strings.HasPrefix(action, "bookmarks/") && r.Method == http.MethodDelete:
-		s.deleteAudiobookBookmark(w, r, strings.TrimPrefix(action, "bookmarks/"))
+		s.deleteAudiobookBookmark(w, r, id, strings.TrimPrefix(action, "bookmarks/"))
 	case action == "favorite" && r.Method == http.MethodPut:
 		s.favoriteAudiobook(w, r, id)
 	case action == "favorite" && r.Method == http.MethodDelete:
@@ -636,7 +638,32 @@ func (s *Server) pauseAudiobookPlaybackElsewhere(w http.ResponseWriter, r *http.
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// requireVisibleAudiobook writes a 404 and returns false when the audiobook
+// doesn't exist or this session's tag restriction hides it - the same answer
+// either way, so a restricted account can't probe for hidden ids.
+func (s *Server) requireVisibleAudiobook(w http.ResponseWriter, r *http.Request, id string) bool {
+	record, err := s.audiobooks.GetAudiobook(r.Context(), id)
+	if errors.Is(err, ErrAudiobookNotFound) {
+		http.NotFound(w, r)
+		return false
+	}
+	if err != nil {
+		log.Printf("get audiobook failed: %v", err)
+		http.Error(w, "failed to load audiobook", http.StatusInternalServerError)
+		return false
+	}
+	session, _ := sessionFromContext(r.Context())
+	if !audiobookVisibleToSession(session, record, s.auth.enabled()) {
+		http.NotFound(w, r)
+		return false
+	}
+	return true
+}
+
 func (s *Server) listAudiobookBookmarks(w http.ResponseWriter, r *http.Request, id string) {
+	if !s.requireVisibleAudiobook(w, r, id) {
+		return
+	}
 	bookmarks, err := s.audiobooks.ListBookmarks(r.Context(), id, currentAudiobookUserID(r))
 	if err != nil {
 		log.Printf("list audiobook bookmarks failed: %v", err)
@@ -644,8 +671,14 @@ func (s *Server) listAudiobookBookmarks(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	out := make([]map[string]any, 0, len(bookmarks))
+	now := time.Now()
 	for _, bookmark := range bookmarks {
-		out = append(out, audiobookBookmarkJSON(bookmark))
+		// The sweeper runs daily - anything already past its expiry is
+		// hidden now rather than lingering until the next pass.
+		if s.audiobookBookmarkExpired(bookmark, now) {
+			continue
+		}
+		out = append(out, s.audiobookBookmarkJSON(bookmark))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"bookmarks": out})
 }
@@ -658,6 +691,9 @@ func (s *Server) createAudiobookBookmark(w http.ResponseWriter, r *http.Request,
 	var payload struct {
 		PositionSeconds float64 `json:"positionSeconds"`
 		Label           string  `json:"label"`
+		// SleepTimer marks the automatic bookmark dropped when a sleep timer
+		// starts. It replaces any earlier sleep-timer bookmark close by.
+		SleepTimer bool `json:"sleepTimer"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&payload); err != nil {
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
@@ -670,22 +706,91 @@ func (s *Server) createAudiobookBookmark(w http.ResponseWriter, r *http.Request,
 	if len(label) > 200 {
 		label = label[:200]
 	}
+	if !s.requireVisibleAudiobook(w, r, id) {
+		return
+	}
 
-	bookmark, err := s.audiobooks.CreateBookmark(r.Context(), id, currentAudiobookUserID(r), payload.PositionSeconds, label)
+	userID := currentAudiobookUserID(r)
+	var (
+		bookmark audiobookBookmark
+		replaced []string
+		err      error
+	)
+	if payload.SleepTimer {
+		// Night after night of "start a timer, doze off, rewind a bit" would
+		// otherwise pile up a sleep-timer bookmark every few minutes of the
+		// book. Only other sleep-timer bookmarks are replaced, never ones
+		// made by hand.
+		bookmark, replaced, err = s.audiobooks.CreateBookmarkReplacingNearby(r.Context(), id, userID, payload.PositionSeconds,
+			audiobookSleepTimerBookmarkLabel, audiobookSleepTimerBookmarkReplaceWindow.Seconds())
+	} else {
+		bookmark, err = s.audiobooks.CreateBookmark(r.Context(), id, userID, payload.PositionSeconds, label)
+	}
 	if err != nil {
 		log.Printf("create audiobook bookmark failed: %v", err)
 		http.Error(w, "failed to create bookmark", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusCreated, audiobookBookmarkJSON(bookmark))
+	out := s.audiobookBookmarkJSON(bookmark)
+	if replaced == nil {
+		replaced = []string{}
+	}
+	out["replaced_bookmark_ids"] = replaced
+	writeJSON(w, http.StatusCreated, out)
 }
 
-func (s *Server) deleteAudiobookBookmark(w http.ResponseWriter, r *http.Request, bookmarkID string) {
+// The label the sleep timer's automatic bookmark always carries; it is also
+// how earlier sleep-timer bookmarks are recognized for replacement.
+const audiobookSleepTimerBookmarkLabel = "Sleep timer started"
+
+// A new sleep-timer bookmark replaces earlier ones within this much of the
+// book on either side of it.
+const audiobookSleepTimerBookmarkReplaceWindow = 20 * time.Minute
+
+// useAudiobookBookmark records a jump to a bookmark, which is what keeps it
+// from expiring.
+func (s *Server) useAudiobookBookmark(w http.ResponseWriter, r *http.Request, audiobookID, bookmarkID string) {
 	if bookmarkID == "" || strings.Contains(bookmarkID, "/") {
 		http.NotFound(w, r)
 		return
 	}
-	err := s.audiobooks.DeleteBookmark(r.Context(), bookmarkID, currentAudiobookUserID(r))
+	// Its own bucket: jumping between bookmarks shouldn't use up the budget
+	// that creating one (including the sleep timer's automatic bookmark)
+	// draws from.
+	if s.enforceRateLimit(w, r, s.writeLimiter, "audiobook-bookmark-use") {
+		return
+	}
+	if !s.requireVisibleAudiobook(w, r, audiobookID) {
+		return
+	}
+	var usedSince time.Time
+	if s.config.AudiobookBookmarkExpiry > 0 {
+		usedSince = time.Now().Add(-s.config.AudiobookBookmarkExpiry)
+	}
+	bookmark, err := s.audiobooks.TouchBookmark(r.Context(), audiobookID, bookmarkID, currentAudiobookUserID(r), usedSince)
+	if errors.Is(err, ErrAudiobookBookmarkNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		log.Printf("use audiobook bookmark failed: %v", err)
+		http.Error(w, "failed to update bookmark", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.audiobookBookmarkJSON(bookmark))
+}
+
+func (s *Server) deleteAudiobookBookmark(w http.ResponseWriter, r *http.Request, audiobookID, bookmarkID string) {
+	if bookmarkID == "" || strings.Contains(bookmarkID, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	// Same rules as list/create/use: only through a book this account can
+	// see, and only a bookmark that is on that book.
+	if !s.requireVisibleAudiobook(w, r, audiobookID) {
+		return
+	}
+	err := s.audiobooks.DeleteBookmark(r.Context(), audiobookID, bookmarkID, currentAudiobookUserID(r))
 	if errors.Is(err, ErrAudiobookBookmarkNotFound) {
 		http.NotFound(w, r)
 		return
@@ -1268,6 +1373,44 @@ func (s *Server) startAudiobookUploadCleanupSweeper() {
 	}()
 }
 
+// startAudiobookBookmarkExpirySweeper deletes bookmarks nobody has used
+// within the configured window (MEMEINDEX_AUDIOBOOK_BOOKMARK_EXPIRY_DAYS).
+// It runs once at startup, so a server that was down at midnight doesn't
+// skip a day, then at the top of every day (server local time). Against a
+// window measured in months a day of slack is invisible, and the list
+// endpoint hides anything already past its expiry in the meantime.
+func (s *Server) startAudiobookBookmarkExpirySweeper() {
+	if s.audiobooks == nil || s.config.AudiobookBookmarkExpiry <= 0 {
+		return
+	}
+	go func() {
+		for {
+			s.sweepExpiredAudiobookBookmarks(context.Background(), time.Now())
+			now := time.Now()
+			// A fresh timer each day rather than a 24h ticker, so the run
+			// stays on midnight across DST changes instead of drifting an hour.
+			time.Sleep(nextAudiobookBookmarkSweep(now).Sub(now))
+		}
+	}()
+}
+
+// nextAudiobookBookmarkSweep is the next midnight after now, in now's zone.
+func nextAudiobookBookmarkSweep(now time.Time) time.Time {
+	year, month, day := now.Date()
+	return time.Date(year, month, day+1, 0, 0, 0, 0, now.Location())
+}
+
+func (s *Server) sweepExpiredAudiobookBookmarks(ctx context.Context, now time.Time) {
+	removed, err := s.audiobooks.DeleteExpiredBookmarks(ctx, now.Add(-s.config.AudiobookBookmarkExpiry))
+	if err != nil {
+		log.Printf("delete expired audiobook bookmarks failed: %v", err)
+		return
+	}
+	if removed > 0 {
+		log.Printf("audiobooks: removed %d bookmark(s) unused for %s", removed, s.config.AudiobookBookmarkExpiry)
+	}
+}
+
 // discardAudiobookUpload removes an in-progress upload's temp file and row.
 // It holds the same lock a concurrent chunk append/complete/abort would hold,
 // so it can't delete the temp file (or the row) out from under a request that
@@ -1497,13 +1640,33 @@ func audiobookSeriesJSON(series audiobookSeries) map[string]any {
 	}
 }
 
-func audiobookBookmarkJSON(bookmark audiobookBookmark) map[string]any {
-	return map[string]any{
+func (s *Server) audiobookBookmarkJSON(bookmark audiobookBookmark) map[string]any {
+	out := map[string]any{
 		"id":               bookmark.ID,
 		"position_seconds": bookmark.PositionSeconds,
 		"label":            bookmark.Label,
 		"created_at":       bookmark.CreatedAt,
+		"last_used_at":     bookmark.LastUsedAt,
+		"expires_at":       nil,
 	}
+	if expiresAt, ok := s.audiobookBookmarkExpiresAt(bookmark); ok {
+		out["expires_at"] = expiresAt
+	}
+	return out
+}
+
+// audiobookBookmarkExpiresAt is when an unused bookmark will be deleted, or
+// false when expiry is turned off.
+func (s *Server) audiobookBookmarkExpiresAt(bookmark audiobookBookmark) (time.Time, bool) {
+	if s.config.AudiobookBookmarkExpiry <= 0 || bookmark.LastUsedAt.IsZero() {
+		return time.Time{}, false
+	}
+	return bookmark.LastUsedAt.Add(s.config.AudiobookBookmarkExpiry), true
+}
+
+func (s *Server) audiobookBookmarkExpired(bookmark audiobookBookmark, now time.Time) bool {
+	expiresAt, ok := s.audiobookBookmarkExpiresAt(bookmark)
+	return ok && !now.Before(expiresAt)
 }
 
 func audiobookUploadJSON(upload audiobookUpload) map[string]any {

@@ -16,26 +16,29 @@ type Config struct {
 	MaxUploadBytes             int64
 	MaxAudiobookBytes          int64
 	AudiobookUploadConcurrency int
-	Addr                       string
-	DebugAddr                  string
-	LocalAddr                  string
-	DataDir                    string
-	DatabaseURL                string
-	PublicBaseURL              string
-	ShareSecret                string
-	MediaFetchYTDLPBinary      string
-	MediaFetchProxy            string
-	RateLimitEnabled           bool
-	ClientIPHeader             string
+	// AudiobookBookmarkExpiry is how long a bookmark can go unused (neither
+	// created nor jumped to) before it is deleted. Zero keeps them forever.
+	AudiobookBookmarkExpiry time.Duration
+	Addr                    string
+	DebugAddr               string
+	LocalAddr               string
+	DataDir                 string
+	DatabaseURL             string
+	PublicBaseURL           string
+	ShareSecret             string
+	MediaFetchYTDLPBinary   string
+	MediaFetchProxy         string
+	RateLimitEnabled        bool
+	ClientIPHeader          string
 	// MigrationSourceEnabled lets this server issue migration tokens and
 	// stream its whole library to another server that presents one.
 	MigrationSourceEnabled bool
 	// MigrationImportEnabled lets this server pull a library from another
 	// server and replace its own with it.
 	MigrationImportEnabled bool
-	MediaFetchRetry            MediaFetchRetryConfig
-	TagSuggestions             TagSuggestionsConfig
-	DiscordAuth                DiscordAuthConfig
+	MediaFetchRetry        MediaFetchRetryConfig
+	TagSuggestions         TagSuggestionsConfig
+	DiscordAuth            DiscordAuthConfig
 }
 
 type MediaFetchRetryConfig struct {
@@ -85,6 +88,7 @@ type rawConfig struct {
 	MaxUploadBytes                  int64    `envconfig:"MAX_UPLOAD_BYTES" default:"268435456"`
 	MaxAudiobookBytes               int64    `envconfig:"MAX_AUDIOBOOK_BYTES" default:"21474836480"`
 	AudiobookUploadConcurrency      int      `envconfig:"AUDIOBOOK_UPLOAD_CONCURRENCY" default:"4"`
+	AudiobookBookmarkExpiryDays     int      `envconfig:"AUDIOBOOK_BOOKMARK_EXPIRY_DAYS" default:"182"`
 	Addr                            string   `envconfig:"ADDR" default:":8080"`
 	DebugAddr                       string   `envconfig:"DEBUG_ADDR"`
 	LocalAddr                       string   `envconfig:"LOCAL_ADDR"`
@@ -167,22 +171,25 @@ func LoadConfig() (Config, error) {
 		// than the rate limiter (5 req/s, burst 40) or a modest server can
 		// comfortably absorb.
 		AudiobookUploadConcurrency: min(max(raw.AudiobookUploadConcurrency, 1), 16),
-		Addr:                       strings.TrimSpace(raw.Addr),
-		DebugAddr:                  strings.TrimSpace(raw.DebugAddr),
-		LocalAddr:                  strings.TrimSpace(raw.LocalAddr),
-		DataDir:                    strings.TrimSpace(raw.DataDir),
-		DatabaseURL:                strings.TrimSpace(raw.DatabaseURL),
-		PublicBaseURL:              strings.TrimSuffix(strings.TrimSpace(raw.PublicBaseURL), "/"),
-		ShareSecret:                firstNonEmpty(strings.TrimSpace(raw.ShareSecret), strings.TrimSpace(raw.SessionSecret)),
-		MediaFetchYTDLPBinary:      strings.TrimSpace(raw.MediaFetchYTDLPBinary),
+		// Capped at 100 years: a bigger "effectively forever" value would overflow
+		// time.Duration and could wrap to a tiny window that deletes everything.
+		AudiobookBookmarkExpiry: time.Duration(min(max(raw.AudiobookBookmarkExpiryDays, 0), maxAudiobookBookmarkExpiryDays)) * 24 * time.Hour,
+		Addr:                    strings.TrimSpace(raw.Addr),
+		DebugAddr:               strings.TrimSpace(raw.DebugAddr),
+		LocalAddr:               strings.TrimSpace(raw.LocalAddr),
+		DataDir:                 strings.TrimSpace(raw.DataDir),
+		DatabaseURL:             strings.TrimSpace(raw.DatabaseURL),
+		PublicBaseURL:           strings.TrimSuffix(strings.TrimSpace(raw.PublicBaseURL), "/"),
+		ShareSecret:             firstNonEmpty(strings.TrimSpace(raw.ShareSecret), strings.TrimSpace(raw.SessionSecret)),
+		MediaFetchYTDLPBinary:   strings.TrimSpace(raw.MediaFetchYTDLPBinary),
 		MediaFetchProxy: firstNonEmpty(
 			strings.TrimSpace(raw.MediaFetchProxy),
 			os.Getenv("HTTPS_PROXY"), os.Getenv("https_proxy"),
 			os.Getenv("HTTP_PROXY"), os.Getenv("http_proxy"),
 			os.Getenv("ALL_PROXY"), os.Getenv("all_proxy"),
 		),
-		RateLimitEnabled: raw.RateLimitEnabled,
-		ClientIPHeader:   strings.TrimSpace(raw.ClientIPHeader),
+		RateLimitEnabled:       raw.RateLimitEnabled,
+		ClientIPHeader:         strings.TrimSpace(raw.ClientIPHeader),
 		MigrationSourceEnabled: raw.MigrationSourceEnabled,
 		MigrationImportEnabled: raw.MigrationImportEnabled,
 		MediaFetchRetry: MediaFetchRetryConfig{
@@ -316,3 +323,7 @@ func shouldPreferGenerateOnlyModel(model string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(model))
 	return strings.HasPrefix(normalized, "qwen2.5vl")
 }
+
+// maxAudiobookBookmarkExpiryDays bounds MEMEINDEX_AUDIOBOOK_BOOKMARK_EXPIRY_DAYS
+// well inside what time.Duration can hold (~106,000 days).
+const maxAudiobookBookmarkExpiryDays = 36500

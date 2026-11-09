@@ -149,6 +149,7 @@ func NewServer(config Config, memeManager *manager.MemeManager) *Server {
 	}
 	server.linkRetries = newLinkRetryQueue(config.MediaFetchRetry.Interval, config.MediaFetchRetry.MaxAttempts, server.processRetriedLinkJob)
 	server.startAudiobookUploadCleanupSweeper()
+	server.startAudiobookBookmarkExpirySweeper()
 	go server.backfillAudiobookMetadata()
 
 	// Seed the metrics that are known at startup: the running build, and (for a
