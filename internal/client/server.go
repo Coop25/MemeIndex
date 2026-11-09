@@ -464,13 +464,36 @@ func capSharedNote(note string) string {
 	return note
 }
 
+// writeSessionUnavailable answers an API or asset request whose session could
+// not be checked because the user store is down. It is a 503, not a 401, so
+// clients keep their session and retry instead of sending the user to log in.
+func writeSessionUnavailable(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "5")
+	writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+		"error": "session check temporarily unavailable, please retry",
+	})
+}
+
+// writeSessionUnavailablePage is writeSessionUnavailable for page requests.
+func writeSessionUnavailablePage(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "5")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_, _ = io.WriteString(w, `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="refresh" content="5"><title>Temporarily unavailable</title></head><body style="font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem"><h1>Temporarily unavailable</h1><p>MemeIndex couldn't check your sign-in just now. You are still signed in; this page will retry in a few seconds.</p></body></html>`)
+}
+
 func (s *Server) withPageAuth(next http.Handler) http.Handler {
 	if !s.auth.enabled() {
 		return next
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		session, ok := s.auth.sessionFromRequest(r)
+		session, ok, err := s.auth.resolveSession(r)
+		if err != nil {
+			writeSessionUnavailablePage(w)
+			return
+		}
 		if !ok && allowsAnonymousLinkPreview(r) {
 			next.ServeHTTP(w, r)
 			return
@@ -504,7 +527,11 @@ func (s *Server) withProtectedAssetAuth(next http.Handler) http.Handler {
 			return
 		}
 
-		session, ok := s.auth.sessionFromRequest(r)
+		session, ok, err := s.auth.resolveSession(r)
+		if err != nil {
+			writeSessionUnavailable(w)
+			return
+		}
 		if !ok || !s.auth.authorizeAssetRequest(session, r) {
 			http.NotFound(w, r)
 			return
@@ -696,7 +723,11 @@ func (s *Server) withAPIAuth(next http.Handler, minimum permissionLevel) http.Ha
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		session, ok := s.auth.sessionFromRequest(r)
+		session, ok, err := s.auth.resolveSession(r)
+		if err != nil {
+			writeSessionUnavailable(w)
+			return
+		}
 		if !ok {
 			writeJSON(w, http.StatusUnauthorized, map[string]any{
 				"error": "authentication required",
@@ -2949,7 +2980,11 @@ func (s *Server) handleAuthSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session, ok := s.auth.sessionFromRequest(r)
+	session, ok, err := s.auth.resolveSession(r)
+	if err != nil {
+		writeSessionUnavailable(w)
+		return
+	}
 	if !ok {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{
 			"enabled":                      true,

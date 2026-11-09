@@ -438,29 +438,45 @@ func (a *authService) issueSessionToken(session authSession) (string, error) {
 	return signingInput + "." + signature, nil
 }
 
+// errSessionStoreUnavailable reports that a session could not be checked
+// because the user store failed, as opposed to the session being invalid.
+var errSessionStoreUnavailable = errors.New("session store unavailable")
+
+// sessionFromRequest returns the request's session, treating a session-store
+// failure as no session. Middleware that gates access should use
+// resolveSession instead so a database blip is not mistaken for a logout.
 func (a *authService) sessionFromRequest(r *http.Request) (authSession, bool) {
+	session, ok, _ := a.resolveSession(r)
+	return session, ok
+}
+
+// resolveSession is sessionFromRequest that also reports a session-store
+// failure. When err is non-nil (errSessionStoreUnavailable) the token itself
+// was valid but its revocation state could not be checked; callers should
+// answer 503 instead of sending the user to log in again.
+func (a *authService) resolveSession(r *http.Request) (authSession, bool, error) {
 	token, ok := a.readCookie(r, authSessionCookieName)
 	if !ok {
-		return authSession{}, false
+		return authSession{}, false, nil
 	}
 
 	// The signature and expiry checks are local and cheap; do them before any
 	// cache or database work so a forged or stale cookie never reaches either.
 	claims, ok := a.parseSessionToken(token)
 	if !ok {
-		return authSession{}, false
+		return authSession{}, false, nil
 	}
 
 	// With no user store, permissions derive purely from configuration and there
 	// is nothing to revoke, so skip the cache entirely.
 	if a.users == nil {
-		return a.sessionFromClaims(claims), true
+		return a.sessionFromClaims(claims), true, nil
 	}
 
 	cacheKey := sessionCacheKey(token)
 	if session, ok := a.cachedSession(cacheKey); ok {
 		a.maybeTouchProfile(claims)
-		return session, true
+		return session, true, nil
 	}
 
 	// One round-trip resolves both the current session version and the stored
@@ -469,8 +485,17 @@ func (a *authService) sessionFromRequest(r *http.Request) (authSession, bool) {
 	// copied or pre-logout token stops validating even before it expires. A
 	// missing row (or version <= 0) means the account was deleted.
 	record, found, err := a.users.GetUser(r.Context(), claims.Subject)
-	if err != nil || !found || record.SessionVersion <= 0 || record.SessionVersion != claims.SessionVersion {
-		return authSession{}, false
+	if err != nil {
+		// A store failure says nothing about whether the session is valid, so
+		// don't report it as "not logged in": that would bounce every user to
+		// the login page during a brief database outage.
+		if r.Context().Err() == nil {
+			log.Printf("session lookup for user %s failed: %v", claims.Subject, err)
+		}
+		return authSession{}, false, fmt.Errorf("%w: %v", errSessionStoreUnavailable, err)
+	}
+	if !found || record.SessionVersion <= 0 || record.SessionVersion != claims.SessionVersion {
+		return authSession{}, false, nil
 	}
 
 	session := authSession{
@@ -484,7 +509,7 @@ func (a *authService) sessionFromRequest(r *http.Request) (authSession, bool) {
 	}
 	a.storeSession(cacheKey, session)
 	a.maybeTouchProfile(claims)
-	return session, true
+	return session, true, nil
 }
 
 // sessionFromClaims builds a session straight from a verified token for the
