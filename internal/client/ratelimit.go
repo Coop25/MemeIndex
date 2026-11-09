@@ -145,7 +145,7 @@ func (s *Server) clientIP(r *http.Request) string {
 
 	header := strings.TrimSpace(s.config.ClientIPHeader)
 	if header == "" {
-		if ip := net.ParseIP(peer); ip == nil || !(ip.IsLoopback() || ip.IsPrivate()) {
+		if ip := net.ParseIP(peer); ip == nil || (!ip.IsLoopback() && !ip.IsPrivate()) {
 			return peer
 		}
 		header = "CF-Connecting-IP"

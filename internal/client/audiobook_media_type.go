@@ -46,14 +46,18 @@ func audiobookServableMimeType(sniffed, filename string) string {
 	if audiobookPlayableMimeType(base) {
 		return base
 	}
-	if byExt := mediaTypeBase(mime.TypeByExtension(strings.ToLower(filepath.Ext(filename)))); strings.HasPrefix(byExt, "audio/") {
-		return byExt
-	}
+	// The common audiobook extensions are mapped here, before asking the OS:
+	// mime.TypeByExtension reads the host's MIME database, which differs by
+	// platform (Debian maps .m4b to the non-standard audio/x-m4b, Windows to
+	// audio/mp4), and the type a book is served with shouldn't depend on that.
 	switch strings.ToLower(filepath.Ext(filename)) {
 	case ".m4b", ".m4a":
 		return "audio/mp4"
 	case ".mp3":
 		return "audio/mpeg"
+	}
+	if byExt := mediaTypeBase(mime.TypeByExtension(strings.ToLower(filepath.Ext(filename)))); strings.HasPrefix(byExt, "audio/") {
+		return byExt
 	}
 	return "application/octet-stream"
 }
