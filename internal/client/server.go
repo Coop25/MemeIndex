@@ -826,6 +826,13 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// OpenGraph requires absolute image URLs, and the shell is cached without
+	// knowing the origin, so make the preview icon absolute per request. The
+	// icon lives under /pwa-icons/, which link-preview crawlers can fetch
+	// without signing in (unlike /static/).
+	origin := html.EscapeString(s.publicOrigin(r))
+	body = bytes.ReplaceAll(body, []byte(`content="/pwa-icons/`), []byte(`content="`+origin+`/pwa-icons/`))
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write(body)
 }

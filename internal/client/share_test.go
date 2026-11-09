@@ -1,6 +1,9 @@
 package client
 
 import (
+	"bytes"
+	"image"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"net/textproto"
@@ -109,7 +112,12 @@ func TestSignedShareEmbedsAndRevocationDeniesPublicMedia(t *testing.T) {
 	}
 }
 
-func TestDiscordReceivesNativeMediaWhileBrowserReceivesSharePage(t *testing.T) {
+// Discord unfurls a link with Discordbot but its media proxy re-fetches the
+// embed later under a different User-Agent. Serving raw media only to
+// Discordbot meant the proxy got HTML instead of the image, so embeds broke
+// intermittently. Every client must now get the same page, whose OpenGraph
+// tags point at the UA-independent /media/ URL.
+func TestShareLinkServesSamePageToEveryUserAgent(t *testing.T) {
 	server, store, meme := newShareTestServer(t)
 	now := time.Now().UTC()
 	share, err := store.GetOrCreateMemeShare(meme.ID, "admin-1", now, now.Add(memeShareLifetime))
@@ -118,32 +126,61 @@ func TestDiscordReceivesNativeMediaWhileBrowserReceivesSharePage(t *testing.T) {
 	}
 	shareURL := "https://memes.example.com/m/" + meme.ID + "?share=" + url.QueryEscape(server.signMemeShare(share))
 
-	discordRecorder := httptest.NewRecorder()
-	discordRequest := httptest.NewRequest(http.MethodGet, shareURL, nil)
-	discordRequest.Header.Set("User-Agent", "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)")
-	server.handleMemeLink(discordRecorder, discordRequest)
-	if discordRecorder.Code != http.StatusOK || discordRecorder.Header().Get("Content-Type") != "image/png" {
-		t.Fatalf("Discord response status = %d, content-type = %q", discordRecorder.Code, discordRecorder.Header().Get("Content-Type"))
+	for _, userAgent := range []string{
+		"Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)",
+		"Mozilla/5.0 (Macintosh; Intel Mac OS X 10.11; rv:92.0) Gecko/20100101 Firefox/92.0",
+		"Mozilla/5.0 Chrome/140.0.0.0 Safari/537.36",
+	} {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, shareURL, nil)
+		request.Header.Set("User-Agent", userAgent)
+		server.handleMemeLink(recorder, request)
+		if recorder.Code != http.StatusOK || !strings.HasPrefix(recorder.Header().Get("Content-Type"), "text/html") {
+			t.Fatalf("%s: status = %d, content-type = %q", userAgent, recorder.Code, recorder.Header().Get("Content-Type"))
+		}
+		body := recorder.Body.String()
+		if !strings.Contains(body, `property="og:image" content="https://memes.example.com/m/`+meme.ID+`/media/shared.png?share=`) {
+			t.Fatalf("%s: page is missing og:image media URL: %s", userAgent, body)
+		}
+		if vary := recorder.Header().Get("Vary"); strings.Contains(vary, "User-Agent") {
+			t.Fatalf("%s: response still varies on User-Agent", userAgent)
+		}
 	}
-	if discordRecorder.Body.String() != "test image bytes" {
-		t.Fatalf("Discord response body = %q", discordRecorder.Body.String())
-	}
-	if cacheControl := discordRecorder.Header().Get("Cache-Control"); cacheControl != "no-store, max-age=0" {
-		t.Fatalf("Discord cache control = %q", cacheControl)
-	}
-	if vary := discordRecorder.Header().Get("Vary"); vary != "User-Agent" {
-		t.Fatalf("Discord vary = %q", vary)
-	}
+}
 
-	browserRecorder := httptest.NewRecorder()
-	browserRequest := httptest.NewRequest(http.MethodGet, shareURL, nil)
-	browserRequest.Header.Set("User-Agent", "Mozilla/5.0 Chrome/140.0.0.0 Safari/537.36")
-	server.handleMemeLink(browserRecorder, browserRequest)
-	if browserRecorder.Code != http.StatusOK || !strings.HasPrefix(browserRecorder.Header().Get("Content-Type"), "text/html") {
-		t.Fatalf("browser response status = %d, content-type = %q", browserRecorder.Code, browserRecorder.Header().Get("Content-Type"))
+func TestSharePageReportsImageDimensions(t *testing.T) {
+	store, err := accessor.NewMemeStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(browserRecorder.Body.String(), "Shared meme from MemeIndex") {
-		t.Fatalf("browser response is missing share page: %s", browserRecorder.Body.String())
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, image.NewRGBA(image.Rect(0, 0, 640, 360))); err != nil {
+		t.Fatal(err)
+	}
+	meme, err := store.Create(accessor.CreateInput{
+		File:        &encoded,
+		Header:      textproto.MIMEHeader{"Content-Type": []string{"image/png"}},
+		Filename:    "wide.png",
+		ContentType: "image/png",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{managers: manager.NewMemeManager(store), shareSecret: []byte("test-share-secret")}
+	now := time.Now().UTC()
+	share, err := store.GetOrCreateMemeShare(meme.ID, "admin-1", now, now.Add(memeShareLifetime))
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "https://memes.example.com/m/"+meme.ID+"?share="+url.QueryEscape(server.signMemeShare(share)), nil)
+	server.handleMemeLink(recorder, request)
+	body := recorder.Body.String()
+	if !strings.Contains(body, `property="og:description" content="Shared privately until `) {
+		t.Fatalf("share page description does not use the real expiry: %s", body)
+	}
+	if !strings.Contains(body, `property="og:image:width" content="640"`) || !strings.Contains(body, `property="og:image:height" content="360"`) {
+		t.Fatalf("share page is missing image dimensions: %s", body)
 	}
 }
 
