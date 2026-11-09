@@ -212,6 +212,13 @@ func TestMigrationEndToEnd(t *testing.T) {
 	if dest.migration.received.Load() == 0 {
 		t.Fatal("expected bytes to be counted")
 	}
+	// A token that has pulled the whole library once must not work again.
+	if source.migrationTokens.valid(token) {
+		t.Fatal("migration token still valid after a completed export")
+	}
+	if _, err := probeMigrationSource(ctx, migrationHTTPClient(), base, token); err == nil {
+		t.Fatal("source still accepted the token after a completed export")
+	}
 
 	got, err := os.ReadFile(filepath.Join(destDir, "uploads", "meme-1.png"))
 	if err != nil || !bytes.Equal(got, memeBytes) {

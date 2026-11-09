@@ -56,6 +56,9 @@ services:
       MEMEINDEX_MEDIAFETCH_RETRY_INTERVAL_SECONDS: ${MEMEINDEX_MEDIAFETCH_RETRY_INTERVAL_SECONDS:-300}
       MEMEINDEX_MEDIAFETCH_RETRY_MAX_ATTEMPTS: ${MEMEINDEX_MEDIAFETCH_RETRY_MAX_ATTEMPTS:-3}
       MEMEINDEX_RATE_LIMIT_ENABLED: ${MEMEINDEX_RATE_LIMIT_ENABLED:-true}
+      # Header carrying the real client IP for rate limiting. Left blank, the
+      # app still honours CF-Connecting-IP from private-network peers (where
+      # cloudflared sits), so tunnel visitors no longer share one bucket.
       MEMEINDEX_CLIENT_IP_HEADER: ${MEMEINDEX_CLIENT_IP_HEADER:-}
       MEMEINDEX_MIGRATION_SOURCE_ENABLED: ${MEMEINDEX_MIGRATION_SOURCE_ENABLED:-false}
       MEMEINDEX_MIGRATION_IMPORT_ENABLED: ${MEMEINDEX_MIGRATION_IMPORT_ENABLED:-false}
@@ -68,7 +71,7 @@ services:
       MEMEINDEX_TAGSUGGEST_GENERATE_ONLY: ${MEMEINDEX_TAGSUGGEST_GENERATE_ONLY:-false}
       MEMEINDEX_TAGSUGGEST_VIDEO_FRAME_COUNT: ${MEMEINDEX_TAGSUGGEST_VIDEO_FRAME_COUNT:-3}
       MEMEINDEX_TAGSUGGEST_VIDEO_FRAME_WIDTH: ${MEMEINDEX_TAGSUGGEST_VIDEO_FRAME_WIDTH:-320}
-      MEMEINDEX_TAGSUGGEST_DISABLE_TRANSCRIPTION: ${MEMEINDEX_TAGSUGGEST_DISABLE_TRANSCRIPTION:-true}
+      MEMEINDEX_TAGSUGGEST_DISABLE_TRANSCRIPTION: ${MEMEINDEX_TAGSUGGEST_DISABLE_TRANSCRIPTION:-false}
       MEMEINDEX_TAGSUGGEST_TRANSCRIBE_BINARY: ${MEMEINDEX_TAGSUGGEST_TRANSCRIBE_BINARY:-}
       MEMEINDEX_TAGSUGGEST_TRANSCRIBE_ARGS: ${MEMEINDEX_TAGSUGGEST_TRANSCRIBE_ARGS:-}
       MEMEINDEX_TAGSUGGEST_TRANSCRIBE_TIMEOUT_SECONDS: ${MEMEINDEX_TAGSUGGEST_TRANSCRIBE_TIMEOUT_SECONDS:-120}
@@ -96,14 +99,16 @@ services:
     volumes:
       - ./data:/app/data
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
+      # Follows MEMEINDEX_ADDR, so a non-default port does not leave the app
+      # "unhealthy" forever (and cloudflared, which waits on it, never starting).
+      test: ["CMD-SHELL", "addr=\"$${MEMEINDEX_ADDR:-:8080}\"; curl -fsS \"http://localhost:$${addr##*:}/healthz\" || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 15s
 
   ollama:
-    image: ollama/ollama:latest
+    image: ollama/ollama:${OLLAMA_IMAGE_TAG:-0.40.15}
     restart: unless-stopped
     environment:
       OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
@@ -111,7 +116,7 @@ services:
       - ollama_data:/root/.ollama
 
   ollama-model:
-    image: ollama/ollama:latest
+    image: ollama/ollama:${OLLAMA_IMAGE_TAG:-0.40.15}
     restart: "no"
     depends_on:
       ollama:
@@ -130,7 +135,7 @@ services:
       - ollama_data:/root/.ollama
 
   cloudflared:
-    image: cloudflare/cloudflared:latest
+    image: cloudflare/cloudflared:${CLOUDFLARED_IMAGE_TAG:-2026.10.7}
     restart: unless-stopped
     depends_on:
       app:

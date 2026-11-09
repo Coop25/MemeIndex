@@ -1179,56 +1179,72 @@ func (s *PostgresStore) Create(input CreateInput) (Meme, error) {
 		UpdatedAt:           now,
 	}
 
-	if err := ensurePreviewAsset(s.uploadDir, s.previewDir, &meme); err != nil {
-		// Thumbnail generation is best-effort.
-	}
-
 	ctx := context.Background()
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		_ = os.Remove(targetPath)
-		return Meme{}, err
-	}
-	defer tx.Rollback(ctx)
 
+	// Check for a duplicate before generating a thumbnail: an ffmpeg run for a
+	// file that is about to be rejected is wasted work, and its thumbnail used
+	// to be left behind on disk.
 	if existing, err := s.getByHash(ctx, meme.ContentHash); err == nil {
 		_ = os.Remove(targetPath)
-		return Meme{}, &DuplicateMemeError{Existing: existing}
+		return Meme{}, s.duplicateError(ctx, existing)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		_ = os.Remove(targetPath)
 		return Meme{}, err
 	}
+
+	if err := ensurePreviewAsset(s.uploadDir, s.previewDir, &meme); err != nil {
+		// Thumbnail generation is best-effort.
+	}
+	cleanup := func() { removeUploadAndThumbnail(s.uploadDir, s.previewDir, storedName) }
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		cleanup()
+		return Meme{}, err
+	}
+	defer tx.Rollback(ctx)
 
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO memes (
 			id, original_name, stored_name, file_path, content_type, content_hash, size_bytes, notes, source_url, suggested_tags, auto_suggest_disabled, created_at, updated_at
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 	`, meme.ID, meme.OriginalName, meme.StoredName, meme.FilePath, meme.ContentType, meme.ContentHash, meme.SizeBytes, meme.Notes, meme.SourceURL, meme.SuggestedTags, meme.AutoSuggestDisabled, meme.CreatedAt, meme.UpdatedAt); err != nil {
-		_ = os.Remove(targetPath)
+		cleanup()
 		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23505" {
 			if existing, lookupErr := s.getByHash(ctx, meme.ContentHash); lookupErr == nil {
-				return Meme{}, &DuplicateMemeError{Existing: existing}
+				return Meme{}, s.duplicateError(ctx, existing)
 			}
 		}
 		return Meme{}, err
 	}
 
 	if err := s.replaceTags(ctx, tx, meme.ID, meme.Tags); err != nil {
-		_ = os.Remove(targetPath)
+		cleanup()
 		return Meme{}, err
 	}
 
 	if err := s.insertAuditLog(ctx, tx, meme.ID, "uploaded", input.Actor, fmt.Sprintf("Uploaded %s", meme.OriginalName)); err != nil {
-		_ = os.Remove(targetPath)
+		cleanup()
 		return Meme{}, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		_ = os.Remove(targetPath)
+		cleanup()
 		return Meme{}, err
 	}
 
 	return meme, nil
+}
+
+// duplicateError builds the error for an upload whose content already exists.
+// When that existing copy is hidden pending delete approval it reports so,
+// instead of pointing the uploader at a meme they cannot open.
+func (s *PostgresStore) duplicateError(ctx context.Context, existing Meme) error {
+	var hidden bool
+	if err := s.pool.QueryRow(ctx, `SELECT COALESCE(hidden_from_app, FALSE) FROM memes WHERE id = $1`, existing.ID).Scan(&hidden); err == nil && hidden {
+		return &DuplicateMemeError{PendingDelete: true}
+	}
+	return &DuplicateMemeError{Existing: existing}
 }
 
 func (s *PostgresStore) Update(userID, id string, update MemeUpdate) (Meme, error) {
@@ -1318,6 +1334,11 @@ func (s *PostgresStore) SetFavoriteWithActor(userID, id string, favorite bool, a
 		return Meme{}, err
 	}
 	return s.GetByID(userID, id)
+}
+
+// HiddenMemeIDs lists the memes hidden from the app pending delete approval.
+func (s *PostgresStore) HiddenMemeIDs() ([]string, error) {
+	return scanIDList(context.Background(), s.pool, `SELECT id FROM memes WHERE COALESCE(hidden_from_app, FALSE) = TRUE`)
 }
 
 func (s *PostgresStore) TotalFavoriteAssignments() (int, error) {

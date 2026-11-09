@@ -300,13 +300,6 @@ func mergeSets(sets ...map[string]struct{}) map[string]struct{} {
 	return out
 }
 
-func max(value int, fallback int) int {
-	if value < fallback {
-		return fallback
-	}
-	return value
-}
-
 func parseOptionalPositiveInt(rawValue string) (int, error) {
 	value := strings.TrimSpace(rawValue)
 	if value == "" {

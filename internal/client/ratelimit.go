@@ -126,22 +126,40 @@ func (rl *rateLimiter) size() int {
 // example CF-Connecting-IP). A forwarding header is trusted only when it is
 // explicitly named, so a spoofed X-Forwarded-For cannot mint unlimited buckets
 // on a deployment that is reachable directly.
+//
+// With no header configured, CF-Connecting-IP is still honoured when the
+// connection itself comes from a loopback or private address - which is where
+// cloudflared sits in the bundled compose file. Without that, every visitor
+// behind the tunnel shares the tunnel's own address, so one client hammering
+// /auth/login would lock everyone out. A public peer can never use the
+// fallback to pick its own bucket. The local-network listener is always a
+// direct connection, so no forwarding header is trusted there at all.
 func (s *Server) clientIP(r *http.Request) string {
-	if header := strings.TrimSpace(s.config.ClientIPHeader); header != "" {
-		if raw := r.Header.Get(header); raw != "" {
-			candidate := strings.TrimSpace(raw)
-			if comma := strings.IndexByte(candidate, ','); comma >= 0 {
-				candidate = strings.TrimSpace(candidate[:comma])
-			}
-			if candidate != "" {
-				return candidate
-			}
+	peer := strings.TrimSpace(r.RemoteAddr)
+	if host, _, err := net.SplitHostPort(peer); err == nil {
+		peer = host
+	}
+	if isLocalTrusted(r) {
+		return peer
+	}
+
+	header := strings.TrimSpace(s.config.ClientIPHeader)
+	if header == "" {
+		if ip := net.ParseIP(peer); ip == nil || (!ip.IsLoopback() && !ip.IsPrivate()) {
+			return peer
+		}
+		header = "CF-Connecting-IP"
+	}
+	if raw := r.Header.Get(header); raw != "" {
+		candidate := strings.TrimSpace(raw)
+		if comma := strings.IndexByte(candidate, ','); comma >= 0 {
+			candidate = strings.TrimSpace(candidate[:comma])
+		}
+		if net.ParseIP(candidate) != nil {
+			return candidate
 		}
 	}
-	if host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr)); err == nil {
-		return host
-	}
-	return strings.TrimSpace(r.RemoteAddr)
+	return peer
 }
 
 // rateLimitIdentity keys a limiter by the authenticated user when the request
