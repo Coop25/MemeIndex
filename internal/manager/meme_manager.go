@@ -333,6 +333,17 @@ func (m *MemeManager) Dashboard(userID string) VaultDashboard {
 	return dashboard
 }
 
+// NewestMemeID returns the id of the most recently added meme the user can
+// see, or "" for an empty vault. It is the cheap check behind the home
+// screen's "anything new?" poll.
+func (m *MemeManager) NewestMemeID(userID string) string {
+	page := m.ListMemesSorted(userID, "", false, "", "", "newest", 0, 1)
+	if len(page.Memes) == 0 {
+		return ""
+	}
+	return page.Memes[0].ID
+}
+
 func vaultDashboardFromData(data accessor.MemeDashboardData) VaultDashboard {
 	dashboard := VaultDashboard{
 		TotalItems:    data.TotalItems,

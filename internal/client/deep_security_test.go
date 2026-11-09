@@ -180,7 +180,7 @@ func TestRestoreRejectsReorderedCSVColumns(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(staging, "database", "memes.csv"), []byte(strings.Join(columns, ",")+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateRestoredMemes(staging); err == nil {
+	if err := validateRestoredMemes(staging, portableBackupFormatVersion); err == nil {
 		t.Fatal("reordered CSV accepted")
 	}
 }
@@ -204,7 +204,7 @@ func TestRestoreRejectsUnsafeStoredURLs(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(staging, "database", "memes.csv"), []byte(csv), 0600); err != nil {
 			t.Fatal(err)
 		}
-		if err := validateRestoredMemes(staging); err == nil {
+		if err := validateRestoredMemes(staging, portableBackupFormatVersion); err == nil {
 			t.Fatalf("unsafe URL accepted at column %d", unsafeField)
 		}
 	}

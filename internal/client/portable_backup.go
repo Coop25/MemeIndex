@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -38,7 +39,15 @@ import (
 // accepted: the new table is simply left empty and audiobook_progress is
 // loaded with its format-3 column list - see backupTable.sinceFormat and
 // legacyColumns.
-const portableBackupFormatVersion = 4
+//
+// Bumped from 4 to 5 when session versions (app_users and
+// app_user_readd_required) and meme share-link state were added. Without them
+// a restore reset every account to session version 1 - signing people out and
+// letting a token its owner had already logged out of validate again - and
+// dropped every active share link. Format 3 and 4 archives still restore with
+// their own column lists; see invalidateLegacySessions for what happens to
+// their sessions.
+const portableBackupFormatVersion = 5
 
 // portableBackupOldestFormatVersion is the oldest archive format restore
 // still accepts.
@@ -112,11 +121,19 @@ func (t backupTable) columnsForFormat(version int) string {
 	return t.columns
 }
 
+// Column lists as formats 3 and 4 wrote them, before format 5 appended the
+// session-version and share-link columns.
+const (
+	backupMemeColumnsV4  = "id, original_name, stored_name, file_path, content_type, content_hash, size_bytes, notes, source_url, hidden_from_app, pending_delete, delete_requested_by_user_id, delete_requested_at, created_at, updated_at, suggested_tags, auto_suggest_disabled"
+	backupUserColumnsV4  = "user_id, username, display_name, avatar_url, last_active_at, can_view, can_upload, can_add_tags, can_remove_tags, can_delete_memes, created_at, updated_at, can_view_audiobooks, can_upload_audiobooks, can_delete_audiobooks, can_manage_audiobook_series"
+	backupReaddColumnsV4 = "user_id, blocked_at"
+)
+
 var portableBackupTables = []backupTable{
-	{name: "memes", columns: "id, original_name, stored_name, file_path, content_type, content_hash, size_bytes, notes, source_url, hidden_from_app, pending_delete, delete_requested_by_user_id, delete_requested_at, created_at, updated_at, suggested_tags, auto_suggest_disabled"},
+	{name: "memes", columns: backupMemeColumnsV4 + ", share_generation, share_expires_at, shared_at, shared_by_user_id", legacyColumns: map[int]string{3: backupMemeColumnsV4, 4: backupMemeColumnsV4}},
 	{name: "tags", columns: "id, name"},
-	{name: "app_users", columns: "user_id, username, display_name, avatar_url, last_active_at, can_view, can_upload, can_add_tags, can_remove_tags, can_delete_memes, created_at, updated_at, can_view_audiobooks, can_upload_audiobooks, can_delete_audiobooks, can_manage_audiobook_series"},
-	{name: "app_user_readd_required", columns: "user_id, blocked_at"},
+	{name: "app_users", columns: backupUserColumnsV4 + ", session_version", legacyColumns: map[int]string{3: backupUserColumnsV4, 4: backupUserColumnsV4}},
+	{name: "app_user_readd_required", columns: backupReaddColumnsV4 + ", session_version", legacyColumns: map[int]string{3: backupReaddColumnsV4, 4: backupReaddColumnsV4}},
 	// References tags(id), which (like every table below referencing it) must
 	// already be loaded - "tags" above satisfies that for every one of them.
 	{name: "app_user_audiobook_tag_restrictions", columns: "user_id, tag_id"},
@@ -709,7 +726,7 @@ func (b *portableBackup) restoreArchive(ctx context.Context, source io.Reader, m
 			return fmt.Errorf("backup is missing %s directory", dir)
 		}
 	}
-	if err := validateRestoredMemes(staging); err != nil {
+	if err := validateRestoredMemes(staging, manifest.FormatVersion); err != nil {
 		return err
 	}
 	if err := validateRestoredAudiobooks(staging, b.dataDir); err != nil {
@@ -760,6 +777,12 @@ func (b *portableBackup) restoreArchive(ctx context.Context, source io.Reader, m
 		}
 	}
 
+	if manifest.FormatVersion < 5 {
+		if err := invalidateLegacySessions(ctx, conn); err != nil {
+			return err
+		}
+	}
+
 	rollbackFiles, finishFiles, err := b.swapMediaDirectories(staging)
 	if err != nil {
 		return err
@@ -773,7 +796,25 @@ func (b *portableBackup) restoreArchive(ctx context.Context, source io.Reader, m
 	return nil
 }
 
-func validateRestoredMemes(staging string) error {
+// invalidateLegacySessions runs after restoring an archive older than format
+// 5, which did not record session versions: every restored account would
+// otherwise sit at the schema default of 1, and a token minted at version 1
+// that its owner had since logged out of (or that predates the account being
+// removed) would validate again. Nothing in the archive says what the real
+// versions were, so move every account past any version a token could carry.
+// Everyone signs in once more after such a restore.
+func invalidateLegacySessions(ctx context.Context, conn interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}) error {
+	for _, table := range []string{"app_users", "app_user_readd_required"} {
+		if _, err := conn.Exec(ctx, fmt.Sprintf("UPDATE %s SET session_version = EXTRACT(EPOCH FROM NOW())::BIGINT", table)); err != nil {
+			return fmt.Errorf("invalidate restored sessions in %s: %w", table, err)
+		}
+	}
+	return nil
+}
+
+func validateRestoredMemes(staging string, formatVersion int) error {
 	file, err := os.Open(filepath.Join(staging, "database", "memes.csv"))
 	if err != nil {
 		return err
@@ -786,7 +827,7 @@ func validateRestoredMemes(staging string) error {
 	}
 	// COPY imports by position, not the header labels. Validate the same schema
 	// before checking stored_name so a reordered header cannot bypass the check.
-	expected := strings.Split(portableBackupTables[0].columns, ", ")
+	expected := strings.Split(portableBackupTables[0].columnsForFormat(formatVersion), ", ")
 	if len(header) != len(expected) {
 		return errors.New("memes CSV schema does not match backup format")
 	}

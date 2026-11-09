@@ -106,6 +106,9 @@ func TestPortableBackupRoundTripThroughParts(t *testing.T) {
 	for _, statement := range []string{
 		`INSERT INTO memes (id, original_name, stored_name, file_path, content_type, size_bytes, created_at, updated_at)
 		 VALUES ('meme-1', 'cat.png', 'meme-1.png', '/uploads/meme-1.png', 'image/png', 2000, NOW(), NOW())`,
+		`UPDATE memes SET share_generation = 3, share_expires_at = '2027-01-01T00:00:00Z', shared_at = NOW(), shared_by_user_id = 'user-1' WHERE id = 'meme-1'`,
+		`INSERT INTO app_users (user_id, session_version) VALUES ('user-1', 7)`,
+		`INSERT INTO app_user_readd_required (user_id, session_version) VALUES ('user-2', 4)`,
 		`INSERT INTO tags (name) VALUES ('cats')`,
 		`INSERT INTO meme_tags (meme_id, tag_id) SELECT 'meme-1', id FROM tags WHERE name = 'cats'`,
 		fmt.Sprintf(`INSERT INTO audiobooks (id, title, filename, size_bytes, duration_seconds, storage_path, uploaded_by_user_id)
@@ -151,6 +154,8 @@ func TestPortableBackupRoundTripThroughParts(t *testing.T) {
 		`INSERT INTO tags (name) VALUES ('stray')`,
 		`DELETE FROM audiobook_listening_stats`,
 		`UPDATE audiobook_progress SET finished_at = NULL`,
+		`UPDATE app_users SET session_version = 1`,
+		`UPDATE app_user_readd_required SET session_version = 1`,
 	} {
 		if _, err := pool.Exec(ctx, statement); err != nil {
 			t.Fatal(err)
@@ -182,6 +187,25 @@ func TestPortableBackupRoundTripThroughParts(t *testing.T) {
 	}
 	if tagNames != "cats" || taggedMemes != 1 {
 		t.Fatalf("database not restored: tags=%q tagged memes=%d", tagNames, taggedMemes)
+	}
+	// Session versions and share links survive: resetting the first would let
+	// a logged-out token validate again, dropping the second kills every link.
+	var sessionVersion, readdVersion, shareGeneration int64
+	var shareExpiresAt *time.Time
+	if err := pool.QueryRow(ctx, `SELECT session_version FROM app_users WHERE user_id = 'user-1'`).Scan(&sessionVersion); err != nil {
+		t.Fatalf("read restored session version: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT session_version FROM app_user_readd_required WHERE user_id = 'user-2'`).Scan(&readdVersion); err != nil {
+		t.Fatalf("read restored re-add session version: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT share_generation, share_expires_at FROM memes WHERE id = 'meme-1'`).Scan(&shareGeneration, &shareExpiresAt); err != nil {
+		t.Fatalf("read restored share state: %v", err)
+	}
+	if sessionVersion != 7 || readdVersion != 4 {
+		t.Fatalf("session versions not restored: app_users=%d readd=%d, want 7 and 4", sessionVersion, readdVersion)
+	}
+	if want := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC); shareGeneration != 3 || shareExpiresAt == nil || !shareExpiresAt.Equal(want) {
+		t.Fatalf("share link not restored: generation=%d expires=%v", shareGeneration, shareExpiresAt)
 	}
 	var finishedAt *time.Time
 	if err := pool.QueryRow(ctx, `SELECT finished_at FROM audiobook_progress WHERE audiobook_id = 'book-1' AND user_id = 'user-1'`).Scan(&finishedAt); err != nil {
@@ -240,6 +264,7 @@ func TestPortableBackupRestoresFormat3Archive(t *testing.T) {
 		 VALUES ('book-1', 'user-1', 42, NOW(), NOW())`,
 		`INSERT INTO audiobook_listening_stats (user_id, audiobook_id, listen_date, seconds_listened)
 		 VALUES ('user-1', 'book-1', '2026-10-01', 10)`,
+		`INSERT INTO app_users (user_id, session_version) VALUES ('user-1', 7)`,
 	} {
 		if _, err := pool.Exec(ctx, statement); err != nil {
 			t.Fatalf("seed: %v\n%s", err, statement)
@@ -285,11 +310,21 @@ func TestPortableBackupRestoresFormat3Archive(t *testing.T) {
 	if stats != 0 {
 		t.Fatalf("format-3 restore should leave listening stats empty, found %d rows", stats)
 	}
+	// The archive never recorded session versions, so the restored account
+	// must land past any version an old token could carry, not back at 1.
+	var sessionVersion int64
+	if err := pool.QueryRow(ctx, `SELECT session_version FROM app_users WHERE user_id = 'user-1'`).Scan(&sessionVersion); err != nil {
+		t.Fatalf("read restored session version: %v", err)
+	}
+	if sessionVersion <= 7 {
+		t.Fatalf("legacy restore left session_version at %d; pre-restore tokens could validate again", sessionVersion)
+	}
 }
 
 // downgradeArchiveToFormat3 rewrites a current export the way v2.27.0 would
-// have written it: format_version 3, no listening stats CSV, and
-// audiobook_progress without its trailing finished_at column.
+// have written it: format_version 3, no listening stats CSV,
+// audiobook_progress without its trailing finished_at column, and none of the
+// session-version or share-link columns format 5 added.
 func downgradeArchiveToFormat3(t *testing.T, source io.Reader) []byte {
 	t.Helper()
 	gzr, err := gzip.NewReader(source)
@@ -311,6 +346,37 @@ func downgradeArchiveToFormat3(t *testing.T, source io.Reader) []byte {
 		payload, err := io.ReadAll(tr)
 		if err != nil {
 			t.Fatal(err)
+		}
+		// Columns format 5 appended, which a format-3 archive never had.
+		if dropped, ok := map[string]int{"database/memes.csv": 4, "database/app_users.csv": 1, "database/app_user_readd_required.csv": 1}[header.Name]; ok {
+			records, err := csv.NewReader(bytes.NewReader(payload)).ReadAll()
+			if err != nil {
+				t.Fatal(err)
+			}
+			// PostgreSQL writes an empty string as "" and NULL as nothing at
+			// all, and COPY reads them back that way. encoding/csv flattens
+			// both to an empty field, so app_users - whose text columns are
+			// NOT NULL and often empty, and which has no nullable column -
+			// gets its empties written back quoted.
+			quoteEmpty := header.Name == "database/app_users.csv"
+			var rewritten bytes.Buffer
+			for _, record := range records {
+				fields := record[:len(record)-dropped]
+				for i, field := range fields {
+					if i > 0 {
+						rewritten.WriteByte(',')
+					}
+					switch {
+					case field == "" && !quoteEmpty:
+					case field == "" || strings.ContainsAny(field, string([]byte{44, 34, 13, 10})): // comma, quote, CR, LF
+						rewritten.WriteString(`"` + strings.ReplaceAll(field, `"`, `""`) + `"`)
+					default:
+						rewritten.WriteString(field)
+					}
+				}
+				rewritten.WriteByte('\n')
+			}
+			payload = rewritten.Bytes()
 		}
 		switch header.Name {
 		case "database/audiobook_listening_stats.csv":

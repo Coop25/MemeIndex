@@ -2,8 +2,11 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"log"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -43,6 +46,81 @@ type linkRetryQueue struct {
 	queued       []LinkRetryJob
 	rejected     []LinkRetryJob
 	processingID string
+	// processing is the job run is working on right now. It is written to
+	// disk as still queued, so a restart mid-download retries it instead of
+	// losing it.
+	processing *LinkRetryJob
+	// persistPath, when set, is the file the queue is saved to after every
+	// change (see persistTo). Empty keeps the queue in memory only.
+	persistPath string
+}
+
+// persistedLinkRetries is the on-disk form of the queue.
+type persistedLinkRetries struct {
+	Queued   []LinkRetryJob `json:"queued"`
+	Rejected []LinkRetryJob `json:"rejected"`
+}
+
+// persistTo loads any queue previously saved at path and saves every later
+// change there, so queued and rejected link imports survive a restart or
+// deploy. A missing file is an empty queue; an unreadable one is reported and
+// left in place rather than overwritten.
+func (q *linkRetryQueue) persistTo(path string) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	payload, err := os.ReadFile(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+	case err != nil:
+		return err
+	default:
+		var saved persistedLinkRetries
+		if err := json.Unmarshal(payload, &saved); err != nil {
+			return err
+		}
+		q.queued = append(q.queued, saved.Queued...)
+		q.rejected = append(q.rejected, saved.Rejected...)
+	}
+	q.persistPath = path
+	return nil
+}
+
+// saveLocked writes the queue to persistPath. Callers hold q.mu. A failed
+// write is logged, not returned: the in-memory queue is still correct and the
+// next change tries again.
+func (q *linkRetryQueue) saveLocked() {
+	if q.persistPath == "" {
+		return
+	}
+	saved := persistedLinkRetries{
+		Queued:   append([]LinkRetryJob{}, q.queued...),
+		Rejected: append([]LinkRetryJob{}, q.rejected...),
+	}
+	if q.processing != nil {
+		saved.Queued = append(saved.Queued, *q.processing)
+	}
+	payload, err := json.Marshal(saved)
+	if err != nil {
+		log.Printf("link retry queue: encode failed: %v", err)
+		return
+	}
+	// Write beside the target and rename over it so a crash mid-write cannot
+	// leave a truncated queue file.
+	temp, err := os.CreateTemp(filepath.Dir(q.persistPath), ".link-retries-*.tmp")
+	if err != nil {
+		log.Printf("link retry queue: save failed: %v", err)
+		return
+	}
+	_, writeErr := temp.Write(payload)
+	closeErr := temp.Close()
+	if writeErr == nil && closeErr == nil {
+		writeErr = os.Rename(temp.Name(), q.persistPath)
+	}
+	if writeErr != nil || closeErr != nil {
+		_ = os.Remove(temp.Name())
+		log.Printf("link retry queue: save failed: %v", errors.Join(writeErr, closeErr))
+	}
 }
 
 // maxRejectedLinkRetries caps how many permanently failed jobs the queue keeps
@@ -88,6 +166,7 @@ func (q *linkRetryQueue) Enqueue(sourceURL string, tags []string, notes string, 
 		MaxAttempts:   q.maxAttempts,
 	}
 	q.queued = append(q.queued, job)
+	q.saveLocked()
 	return job
 }
 
@@ -127,6 +206,7 @@ func (q *linkRetryQueue) RequeueRejected(id string) bool {
 		job.NextAttemptAt = time.Now().UTC().Add(q.interval)
 		q.rejected = append(q.rejected[:index], q.rejected[index+1:]...)
 		q.queued = append(q.queued, job)
+		q.saveLocked()
 		return true
 	}
 	return false
@@ -180,6 +260,8 @@ func (q *linkRetryQueue) dequeueReady() (LinkRetryJob, bool) {
 	job := q.queued[readyIndex]
 	q.queued = append(q.queued[:readyIndex], q.queued[readyIndex+1:]...)
 	q.processingID = job.ID
+	q.processing = &job
+	q.saveLocked()
 	return job, true
 }
 
@@ -187,6 +269,8 @@ func (q *linkRetryQueue) finish(job LinkRetryJob, err error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.processingID = ""
+	q.processing = nil
+	defer q.saveLocked()
 
 	switch {
 	case err == nil, errors.Is(err, os.ErrNotExist):

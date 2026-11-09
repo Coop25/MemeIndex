@@ -25,6 +25,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	mediafetch "github.com/Coop25/mediafetch-go"
 	"memeindex/internal/accessor"
@@ -153,6 +154,12 @@ func NewServer(config Config, memeManager *manager.MemeManager) *Server {
 		audiobookRemuxProgress: newAudiobookRemuxProgress(),
 	}
 	server.linkRetries = newLinkRetryQueue(config.MediaFetchRetry.Interval, config.MediaFetchRetry.MaxAttempts, server.processRetriedLinkJob)
+	// Keep queued and rejected link imports across restarts and deploys. A
+	// queue file that cannot be read is not fatal: the server starts with an
+	// empty in-memory queue and leaves the file alone for inspection.
+	if err := server.linkRetries.persistTo(filepath.Join(config.DataDir, "link_retries.json")); err != nil {
+		log.Printf("link retry queue: could not load saved queue, starting empty and not saving: %v", err)
+	}
 	server.background.Go(func(ctx context.Context) {
 		server.linkRetries.run(ctx, server.background.Quit())
 	})
@@ -466,7 +473,13 @@ func sharedNotes(title, text string) string {
 
 func capSharedNote(note string) string {
 	if len(note) > 2000 {
-		note = strings.TrimSpace(note[:2000])
+		// Back up to a character boundary so a multi-byte character straddling
+		// the cap is dropped whole instead of being stored as invalid UTF-8.
+		cut := 2000
+		for cut > 0 && !utf8.RuneStart(note[cut]) {
+			cut--
+		}
+		note = strings.TrimSpace(note[:cut])
 	}
 	return note
 }
@@ -530,6 +543,7 @@ func (s *Server) withProtectedAssetAuth(next http.Handler) http.Handler {
 			return
 		}
 		if !s.auth.enabled() {
+			allowRevalidatedBrowserCache(w)
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -552,8 +566,22 @@ func (s *Server) withProtectedAssetAuth(next http.Handler) http.Handler {
 			return
 		}
 
+		allowRevalidatedBrowserCache(w)
 		next.ServeHTTP(w, r.WithContext(contextWithSession(r.Context(), session)))
 	})
+}
+
+// allowRevalidatedBrowserCache lets the viewer's own browser keep a meme file
+// or thumbnail it was just authorized to fetch, on the condition that it asks
+// the server again before every reuse. That request runs the session,
+// permission and hidden-meme checks above as usual, so access that has been
+// revoked still stops at once; an unchanged file is answered with a bodyless
+// 304 instead of being downloaded again on every visit. Shared caches (CDNs,
+// proxies) stay on no-store via the CDN headers, and refusals keep no-store
+// because this is only called on the path that serves the file.
+func allowRevalidatedBrowserCache(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "private, no-cache")
+	w.Header().Del("Pragma")
 }
 
 // assetMemeID maps /uploads/<id>.<ext> or /thumbnails/<id>.jpg to <id>.
@@ -790,6 +818,13 @@ func staticAssetHandler(dir string) http.Handler {
 		}
 		if q := r.URL.Query(); q.Get("h") != "" || q.Get("v") != "" {
 			w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+		} else {
+			// No fingerprint means the URL never changes across deploys (the
+			// audiobook sync worker, favicons). Without an explicit policy the
+			// browser guesses a freshness lifetime from Last-Modified and can
+			// keep running an old script next to a new app.js, so make it
+			// revalidate; an unchanged file costs one 304.
+			w.Header().Set("Cache-Control", "private, no-cache")
 		}
 		fs.ServeHTTP(w, r)
 	})
@@ -810,13 +845,15 @@ func renderIndexShell(refreshToken string) ([]byte, error) {
 	indexPath := filepath.Join("static", "index.html")
 	stylesRel := filepath.Join("static", "styles.css")
 	appRel := filepath.Join("static", "app.js")
+	adminRel := filepath.Join("static", "admin-pages.js")
 
 	stylesHash := assetContentHash(stylesRel)
 	appHash := assetContentHash(appRel)
+	adminHash := assetContentHash(adminRel)
 
 	var key string
 	if info, err := os.Stat(indexPath); err == nil {
-		key = fmt.Sprintf("%d:%d:%s:%s:%s:%s", info.Size(), info.ModTime().UnixNano(), BuildVersion(), stylesHash, appHash, refreshToken)
+		key = fmt.Sprintf("%d:%d:%s:%s:%s:%s:%s", info.Size(), info.ModTime().UnixNano(), BuildVersion(), stylesHash, appHash, adminHash, refreshToken)
 	}
 
 	if key != "" {
@@ -836,6 +873,7 @@ func renderIndexShell(refreshToken string) ([]byte, error) {
 
 	replaced := strings.ReplaceAll(string(content), "/static/styles.css", html.EscapeString(buildAssetURL("/static/styles.css", refreshToken)))
 	replaced = strings.ReplaceAll(replaced, "/static/app.js", html.EscapeString(buildAssetURL("/static/app.js", refreshToken)))
+	replaced = strings.ReplaceAll(replaced, "/static/admin-pages.js", html.EscapeString(buildAssetURL("/static/admin-pages.js", refreshToken)))
 	body := []byte(replaced)
 
 	if key != "" {
@@ -1317,6 +1355,13 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	// ?probe=newest answers "has anything new arrived?" for the home screen's
+	// background poll with a single id, instead of rebuilding and shipping the
+	// whole dashboard every few seconds per open tab.
+	if r.URL.Query().Get("probe") == "newest" {
+		writeJSON(w, http.StatusOK, map[string]any{"newest_id": s.managers.NewestMemeID(currentUserID(r))})
+		return
+	}
 	dashboard := s.managers.Dashboard(currentUserID(r))
 	dashboard.RecentItems = s.protectMemesForResponse(r, dashboard.RecentItems)
 	dashboard.FavoriteItems = s.protectMemesForResponse(r, dashboard.FavoriteItems)
@@ -1492,12 +1537,17 @@ func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
 
 	created := make([]accessor.Meme, 0, len(fileHeaders))
 	duplicates := make([]map[string]any, 0)
+	// A file that cannot be saved is reported alongside the ones that were,
+	// instead of failing the whole request: earlier files in the batch are
+	// already stored, and answering 500 for them made the client retry the
+	// batch into a wall of duplicates.
+	failed := make([]map[string]any, 0)
 	for _, fileHeader := range fileHeaders {
 		src, err := fileHeader.Open()
 		if err != nil {
 			log.Printf("open upload file failed: %v", err)
-			http.Error(w, "failed to read upload", http.StatusInternalServerError)
-			return
+			failed = append(failed, map[string]any{"filename": fileHeader.Filename, "error": "failed to read upload"})
+			continue
 		}
 
 		meme, err := s.managers.CreateMemeAs(
@@ -1520,16 +1570,20 @@ func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			log.Printf("create meme failed: %v", err)
-			http.Error(w, "failed to save meme", http.StatusInternalServerError)
-			return
+			failed = append(failed, map[string]any{"filename": fileHeader.Filename, "error": "failed to save meme"})
+			continue
 		}
 
 		created = append(created, meme)
 		s.managers.QueueMemeTagSuggestions(meme.ID)
 	}
 
+	if len(created) == 0 && len(duplicates) == 0 {
+		http.Error(w, "failed to save meme", http.StatusInternalServerError)
+		return
+	}
 	status := http.StatusCreated
-	if len(created) == 0 && len(duplicates) > 0 {
+	if len(created) == 0 {
 		status = http.StatusOK
 	}
 	writeJSON(w, status, map[string]any{
@@ -1537,6 +1591,7 @@ func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
 		"created":    len(created),
 		"duplicates": duplicates,
 		"skipped":    len(duplicates),
+		"failed":     failed,
 	})
 }
 
@@ -2968,6 +3023,7 @@ func (s *Server) handleAuthSession(w http.ResponseWriter, r *http.Request) {
 			"enabled":                      false,
 			"version":                      BuildVersion(),
 			"audiobook_upload_concurrency": s.config.AudiobookUploadConcurrency,
+			"audiobooks_available":         s.audiobooks != nil,
 			"public_base_url":              s.publicOrigin(r),
 			"permissions": authPermissions{
 				CanView:                  true,
@@ -2999,6 +3055,7 @@ func (s *Server) handleAuthSession(w http.ResponseWriter, r *http.Request) {
 			"login_url":                    "/auth/login",
 			"version":                      BuildVersion(),
 			"audiobook_upload_concurrency": s.config.AudiobookUploadConcurrency,
+			"audiobooks_available":         s.audiobooks != nil,
 			"public_base_url":              s.publicOrigin(r),
 		})
 		return
@@ -3017,6 +3074,7 @@ func (s *Server) handleAuthSession(w http.ResponseWriter, r *http.Request) {
 		"logout_url":                   "/auth/logout",
 		"version":                      BuildVersion(),
 		"audiobook_upload_concurrency": s.config.AudiobookUploadConcurrency,
+		"audiobooks_available":         s.audiobooks != nil,
 		"public_base_url":              s.publicOrigin(r),
 	})
 }
