@@ -84,3 +84,30 @@ func TestIndexServesFreshContentVersionedAssets(t *testing.T) {
 		}
 	}
 }
+
+func TestIndexLinkPreviewImageIsAbsoluteAndPublic(t *testing.T) {
+	template, err := os.ReadFile(filepath.Join("..", "..", "static", "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(t.TempDir())
+	if err := os.Mkdir("static", 0755); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{"index.html": string(template), "app.js": "s", "styles.css": "c"} {
+		if err := os.WriteFile(filepath.Join("static", name), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recorder := httptest.NewRecorder()
+	(&Server{}).handleIndex(recorder, httptest.NewRequest("GET", "https://memes.example.com/", nil))
+	body := recorder.Body.String()
+	// /static/ requires sign-in, so crawlers must be pointed at /pwa-icons/,
+	// and OpenGraph ignores relative image URLs.
+	if !strings.Contains(body, `property="og:image" content="https://memes.example.com/pwa-icons/icon.png"`) {
+		t.Fatalf("og:image is not an absolute public URL: %s", body)
+	}
+	if strings.Contains(body, `content="/static/favicon/`) {
+		t.Fatal("a preview tag still points at the sign-in protected /static/ path")
+	}
+}
