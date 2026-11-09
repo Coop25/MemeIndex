@@ -210,7 +210,12 @@ func (s *Server) handleMigrationExport(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(migrationErrorTrailer, sanitizeLogField(err.Error()))
 		return
 	}
-	log.Printf("migration export to %s completed", sanitizeLogField(s.clientIP(r)))
+	// The token is a 24-hour key to a full dump of this server, users
+	// included. Once it has done its one job, stop honouring it, so a copy
+	// left in a chat log or shell history cannot pull the library again. A
+	// failed export leaves it valid so the destination can simply retry.
+	s.migrationTokens.revoke()
+	log.Printf("migration export to %s completed; migration token revoked", sanitizeLogField(s.clientIP(r)))
 }
 
 // --- Destination side: pulling from a source --------------------------------

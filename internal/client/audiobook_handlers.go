@@ -125,6 +125,16 @@ func (s *Server) handleAudiobookByID(w http.ResponseWriter, r *http.Request) {
 		action = parts[1]
 	}
 
+	// The per-user state endpoints don't load the book themselves; without this
+	// a tag-restricted account could still write progress, heartbeats and
+	// favorites against (and so probe for) books it is not allowed to see.
+	switch action {
+	case "progress", "playback-heartbeat", "playback-elsewhere", "playback-elsewhere/pause", "favorite", "series":
+		if !s.requireVisibleAudiobook(w, r, id) {
+			return
+		}
+	}
+
 	switch {
 	case action == "" && r.Method == http.MethodGet:
 		s.getAudiobook(w, r, id)
@@ -193,39 +203,54 @@ func audiobookVisibleToSession(session authSession, record audiobookRecord, auth
 	return false
 }
 
-func (s *Server) getAudiobook(w http.ResponseWriter, r *http.Request, id string) {
+// loadVisibleAudiobook loads an audiobook for the current session, writing a
+// 404 (missing, or hidden by a tag restriction - the same answer either way,
+// so a restricted account can't probe for hidden ids) or a 500 and returning
+// ok=false when the caller should stop.
+func (s *Server) loadVisibleAudiobook(w http.ResponseWriter, r *http.Request, id string) (audiobookRecord, authSession, bool) {
 	session, _ := sessionFromContext(r.Context())
 	record, err := s.audiobooks.GetAudiobook(r.Context(), id)
 	if errors.Is(err, ErrAudiobookNotFound) {
 		http.NotFound(w, r)
-		return
+		return audiobookRecord{}, session, false
 	}
 	if err != nil {
 		log.Printf("get audiobook failed: %v", err)
 		http.Error(w, "failed to load audiobook", http.StatusInternalServerError)
-		return
+		return audiobookRecord{}, session, false
 	}
 	if !audiobookVisibleToSession(session, record, s.auth.enabled()) {
 		http.NotFound(w, r)
+		return audiobookRecord{}, session, false
+	}
+	return record, session, true
+}
+
+// loadEditableAudiobook is loadVisibleAudiobook plus the edit check shared by
+// the metadata, cover and tag endpoints.
+func (s *Server) loadEditableAudiobook(w http.ResponseWriter, r *http.Request, id string) (audiobookRecord, bool) {
+	record, session, ok := s.loadVisibleAudiobook(w, r, id)
+	if !ok {
+		return audiobookRecord{}, false
+	}
+	if !audiobookEditAllowed(session, record, s.auth.enabled()) {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "only the uploader or someone with delete-audiobooks access can edit this audiobook"})
+		return audiobookRecord{}, false
+	}
+	return record, true
+}
+
+func (s *Server) getAudiobook(w http.ResponseWriter, r *http.Request, id string) {
+	record, _, ok := s.loadVisibleAudiobook(w, r, id)
+	if !ok {
 		return
 	}
 	writeJSON(w, http.StatusOK, audiobookJSON(record))
 }
 
 func (s *Server) deleteAudiobook(w http.ResponseWriter, r *http.Request, id string) {
-	session, _ := sessionFromContext(r.Context())
-	record, err := s.audiobooks.GetAudiobook(r.Context(), id)
-	if errors.Is(err, ErrAudiobookNotFound) {
-		http.NotFound(w, r)
-		return
-	}
-	if err != nil {
-		log.Printf("get audiobook failed: %v", err)
-		http.Error(w, "failed to load audiobook", http.StatusInternalServerError)
-		return
-	}
-	if !audiobookVisibleToSession(session, record, s.auth.enabled()) {
-		http.NotFound(w, r)
+	record, session, ok := s.loadVisibleAudiobook(w, r, id)
+	if !ok {
 		return
 	}
 
@@ -266,23 +291,7 @@ func audiobookEditAllowed(session authSession, record audiobookRecord, authEnabl
 }
 
 func (s *Server) updateAudiobookMetadata(w http.ResponseWriter, r *http.Request, id string) {
-	session, _ := sessionFromContext(r.Context())
-	record, err := s.audiobooks.GetAudiobook(r.Context(), id)
-	if errors.Is(err, ErrAudiobookNotFound) {
-		http.NotFound(w, r)
-		return
-	}
-	if err != nil {
-		log.Printf("get audiobook failed: %v", err)
-		http.Error(w, "failed to load audiobook", http.StatusInternalServerError)
-		return
-	}
-	if !audiobookVisibleToSession(session, record, s.auth.enabled()) {
-		http.NotFound(w, r)
-		return
-	}
-	if !audiobookEditAllowed(session, record, s.auth.enabled()) {
-		writeJSON(w, http.StatusForbidden, map[string]any{"error": "only the uploader or someone with delete-audiobooks access can edit this audiobook"})
+	if _, ok := s.loadEditableAudiobook(w, r, id); !ok {
 		return
 	}
 
@@ -340,23 +349,7 @@ func (s *Server) updateAudiobookMetadata(w http.ResponseWriter, r *http.Request,
 const audiobookCoverMaxBytes = 8 << 20 // 8 MiB
 
 func (s *Server) replaceAudiobookCover(w http.ResponseWriter, r *http.Request, id string) {
-	session, _ := sessionFromContext(r.Context())
-	record, err := s.audiobooks.GetAudiobook(r.Context(), id)
-	if errors.Is(err, ErrAudiobookNotFound) {
-		http.NotFound(w, r)
-		return
-	}
-	if err != nil {
-		log.Printf("get audiobook failed: %v", err)
-		http.Error(w, "failed to load audiobook", http.StatusInternalServerError)
-		return
-	}
-	if !audiobookVisibleToSession(session, record, s.auth.enabled()) {
-		http.NotFound(w, r)
-		return
-	}
-	if !audiobookEditAllowed(session, record, s.auth.enabled()) {
-		writeJSON(w, http.StatusForbidden, map[string]any{"error": "only the uploader or someone with delete-audiobooks access can edit this audiobook"})
+	if _, ok := s.loadEditableAudiobook(w, r, id); !ok {
 		return
 	}
 	if s.enforceRateLimit(w, r, s.writeLimiter, "audiobook-cover") {
@@ -392,23 +385,7 @@ func (s *Server) replaceAudiobookCover(w http.ResponseWriter, r *http.Request, i
 }
 
 func (s *Server) removeAudiobookCover(w http.ResponseWriter, r *http.Request, id string) {
-	session, _ := sessionFromContext(r.Context())
-	record, err := s.audiobooks.GetAudiobook(r.Context(), id)
-	if errors.Is(err, ErrAudiobookNotFound) {
-		http.NotFound(w, r)
-		return
-	}
-	if err != nil {
-		log.Printf("get audiobook failed: %v", err)
-		http.Error(w, "failed to load audiobook", http.StatusInternalServerError)
-		return
-	}
-	if !audiobookVisibleToSession(session, record, s.auth.enabled()) {
-		http.NotFound(w, r)
-		return
-	}
-	if !audiobookEditAllowed(session, record, s.auth.enabled()) {
-		writeJSON(w, http.StatusForbidden, map[string]any{"error": "only the uploader or someone with delete-audiobooks access can edit this audiobook"})
+	if _, ok := s.loadEditableAudiobook(w, r, id); !ok {
 		return
 	}
 
@@ -426,19 +403,7 @@ func (s *Server) removeAudiobookCover(w http.ResponseWriter, r *http.Request, id
 }
 
 func (s *Server) listAudiobookTags(w http.ResponseWriter, r *http.Request, id string) {
-	session, _ := sessionFromContext(r.Context())
-	record, err := s.audiobooks.GetAudiobook(r.Context(), id)
-	if errors.Is(err, ErrAudiobookNotFound) {
-		http.NotFound(w, r)
-		return
-	}
-	if err != nil {
-		log.Printf("get audiobook failed: %v", err)
-		http.Error(w, "failed to load audiobook", http.StatusInternalServerError)
-		return
-	}
-	if !audiobookVisibleToSession(session, record, s.auth.enabled()) {
-		http.NotFound(w, r)
+	if _, _, ok := s.loadVisibleAudiobook(w, r, id); !ok {
 		return
 	}
 
@@ -452,23 +417,7 @@ func (s *Server) listAudiobookTags(w http.ResponseWriter, r *http.Request, id st
 }
 
 func (s *Server) replaceAudiobookTags(w http.ResponseWriter, r *http.Request, id string) {
-	session, _ := sessionFromContext(r.Context())
-	record, err := s.audiobooks.GetAudiobook(r.Context(), id)
-	if errors.Is(err, ErrAudiobookNotFound) {
-		http.NotFound(w, r)
-		return
-	}
-	if err != nil {
-		log.Printf("get audiobook failed: %v", err)
-		http.Error(w, "failed to load audiobook", http.StatusInternalServerError)
-		return
-	}
-	if !audiobookVisibleToSession(session, record, s.auth.enabled()) {
-		http.NotFound(w, r)
-		return
-	}
-	if !audiobookEditAllowed(session, record, s.auth.enabled()) {
-		writeJSON(w, http.StatusForbidden, map[string]any{"error": "only the uploader or someone with delete-audiobooks access can edit this audiobook"})
+	if _, ok := s.loadEditableAudiobook(w, r, id); !ok {
 		return
 	}
 
@@ -642,22 +591,8 @@ func (s *Server) pauseAudiobookPlaybackElsewhere(w http.ResponseWriter, r *http.
 // doesn't exist or this session's tag restriction hides it - the same answer
 // either way, so a restricted account can't probe for hidden ids.
 func (s *Server) requireVisibleAudiobook(w http.ResponseWriter, r *http.Request, id string) bool {
-	record, err := s.audiobooks.GetAudiobook(r.Context(), id)
-	if errors.Is(err, ErrAudiobookNotFound) {
-		http.NotFound(w, r)
-		return false
-	}
-	if err != nil {
-		log.Printf("get audiobook failed: %v", err)
-		http.Error(w, "failed to load audiobook", http.StatusInternalServerError)
-		return false
-	}
-	session, _ := sessionFromContext(r.Context())
-	if !audiobookVisibleToSession(session, record, s.auth.enabled()) {
-		http.NotFound(w, r)
-		return false
-	}
-	return true
+	_, _, ok := s.loadVisibleAudiobook(w, r, id)
+	return ok
 }
 
 func (s *Server) listAudiobookBookmarks(w http.ResponseWriter, r *http.Request, id string) {
@@ -1509,11 +1444,17 @@ func (s *Server) handleAudiobookMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	contentType := record.MimeType
-	if contentType == "" {
+	// Only a playable type is ever served as-is; anything else (including a
+	// hostile type stored before uploads were validated) goes out as opaque
+	// bytes. The sandbox CSP is a second wall: even if a document did render
+	// here, it could run no script and would get a unique opaque origin.
+	contentType := mediaTypeBase(record.MimeType)
+	if !audiobookPlayableMimeType(contentType) {
 		contentType = "application/octet-stream"
+		w.Header().Set("Content-Disposition", "attachment")
 	}
 	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'")
 	http.ServeContent(w, r, record.Filename, info.ModTime(), file)
 }
 
@@ -1558,7 +1499,14 @@ func (s *Server) handleAudiobookCover(w http.ResponseWriter, r *http.Request) {
 
 	// Sniffed from the file's own bytes rather than assumed from the historical
 	// ".jpg" extension - a user-replaced cover can be PNG/WEBP/GIF now too.
-	w.Header().Set("Content-Type", sniffAudiobookMimeType(record.CoverPath))
+	coverType := mediaTypeBase(sniffAudiobookMimeType(record.CoverPath))
+	switch coverType {
+	case "image/jpeg", "image/png", "image/webp", "image/gif":
+	default:
+		coverType = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", coverType)
+	w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'")
 	w.Header().Set("Cache-Control", "private, max-age=86400")
 	http.ServeContent(w, r, "cover.jpg", info.ModTime(), file)
 }

@@ -249,7 +249,15 @@ func TestHandleLogoutRevokesSessionVersion(t *testing.T) {
 		t.Fatalf("createSession: %v", err)
 	}
 
+	// A GET (any link on any site) must not log the user out.
+	getRec := httptest.NewRecorder()
+	server.handleLogout(getRec, requestWithSessionCookie(t, a, token))
+	if store.bumpCalls != 0 {
+		t.Fatalf("GET /auth/logout revoked sessions: calls=%d", store.bumpCalls)
+	}
+
 	logoutReq := requestWithSessionCookie(t, a, token)
+	logoutReq.Method = http.MethodPost
 	rec := httptest.NewRecorder()
 	server.handleLogout(rec, logoutReq)
 

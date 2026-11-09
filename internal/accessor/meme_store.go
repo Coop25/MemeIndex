@@ -458,6 +458,17 @@ func (s *MemeStore) Create(input CreateInput) (Meme, error) {
 		UpdatedAt:           now,
 	}
 
+	// Check for a duplicate before spending an ffmpeg run on a thumbnail that
+	// would only be thrown away (and, before this ordering, left behind).
+	s.mu.Lock()
+	if existing, ok := s.byHash[meme.ContentHash]; ok {
+		_ = os.Remove(targetPath)
+		existing.Favorite = s.isFavoriteLocked(s.favoriteSetLocked(""), existing.ID)
+		s.mu.Unlock()
+		return Meme{}, &DuplicateMemeError{Existing: existing}
+	}
+	s.mu.Unlock()
+
 	if err := ensurePreviewAsset(s.uploadDir, s.previewDir, &meme); err != nil {
 		// Thumbnail generation is best-effort.
 	}
@@ -465,8 +476,10 @@ func (s *MemeStore) Create(input CreateInput) (Meme, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Re-checked under the lock: an identical upload may have landed while
+	// the thumbnail was being generated.
 	if existing, ok := s.byHash[meme.ContentHash]; ok {
-		_ = os.Remove(targetPath)
+		removeUploadAndThumbnail(s.uploadDir, s.previewDir, storedName)
 		existing.Favorite = s.isFavoriteLocked(s.favoriteSetLocked(""), existing.ID)
 		return Meme{}, &DuplicateMemeError{Existing: existing}
 	}

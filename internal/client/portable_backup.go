@@ -736,7 +736,7 @@ func (b *portableBackup) restoreArchive(ctx context.Context, source io.Reader, m
 		}
 	}()
 
-	if _, err := conn.Exec(ctx, "TRUNCATE TABLE meme_tags, user_favorites, reel_sessions, meme_audit_logs, tags, memes, app_user_readd_required, app_user_audiobook_tag_restrictions, app_users, audiobook_tags, audiobook_bookmarks, audiobook_favorites, audiobook_progress, audiobook_playback_sessions, audiobook_listening_stats, audiobooks, audiobook_series RESTART IDENTITY CASCADE"); err != nil {
+	if _, err := conn.Exec(ctx, "TRUNCATE TABLE meme_tags, user_favorites, reel_sessions, meme_audit_logs, tags, memes, app_user_readd_required, app_user_audiobook_tag_restrictions, app_users, audiobook_tags, audiobook_bookmarks, audiobook_favorites, audiobook_progress, audiobook_playback_sessions, audiobook_listening_stats, audiobook_uploads, audiobooks, audiobook_series RESTART IDENTITY CASCADE"); err != nil {
 		return fmt.Errorf("clear current database: %w", err)
 	}
 	for _, table := range portableBackupTables {

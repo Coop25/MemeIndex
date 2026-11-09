@@ -66,6 +66,6 @@ EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD curl -fsS http://localhost:8080/healthz || exit 1
+  CMD addr="${MEMEINDEX_ADDR:-:8080}"; curl -fsS "http://localhost:${addr##*:}/healthz" || exit 1
 
 CMD ["memeindex"]

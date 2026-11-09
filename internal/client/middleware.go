@@ -30,10 +30,11 @@ func LoggingMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		start := time.Now()
-		next.ServeHTTP(w, r)
+		recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(recorder, r)
 		// Sanitize request-derived fields so a client cannot inject newlines and
 		// forge additional log lines.
-		log.Printf("%s %s (%s)", sanitizeLogField(r.Method), sanitizeLogField(r.URL.Path), time.Since(start).Round(time.Millisecond))
+		log.Printf("%s %s %d (%s)", sanitizeLogField(r.Method), sanitizeLogField(r.URL.Path), recorder.status, time.Since(start).Round(time.Millisecond))
 	})
 }
 

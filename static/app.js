@@ -268,6 +268,18 @@ const authVersionValue = document.querySelector("#auth-version-value");
 const authAdmin = document.querySelector("#auth-admin");
 const authInstall = document.querySelector("#auth-install");
 const authLogout = document.querySelector("#auth-logout");
+// Logout is POST-only on the server (a GET could be triggered by any link a
+// user clicks on another site), so the menu link submits it instead of
+// navigating to it.
+authLogout?.addEventListener("click", async (event) => {
+  event.preventDefault();
+  try {
+    await fetch(authLogout.getAttribute("href") || "/auth/logout", { method: "POST", credentials: "same-origin" });
+  } catch (error) {
+    console.error(error);
+  }
+  window.location.href = "/";
+});
 const navAudiobooksItem = document.querySelector("#nav-audiobooks-item");
 const audiobooksView = document.querySelector("#audiobooks-view");
 const audiobooksStatus = document.querySelector("#audiobooks-status");
@@ -11257,6 +11269,25 @@ async function fetchLinkUploadTagSuggestions() {
   }
 }
 
+// buildMemePatch sends only what the user changed since the modal opened:
+// tags as a delta against the saved set (so a concurrent edit by someone else
+// is merged instead of overwritten), and notes/favorite only when touched.
+// Without a snapshot it falls back to sending the full state.
+function buildMemePatch(snapshot, current) {
+  if (!snapshot) {
+    return { favorite: current.favorite, notes: current.notes, tags: current.tags };
+  }
+  const before = new Set(String(snapshot.tags || "").split(", ").map((value) => normalizeTagValue(value)).filter(Boolean));
+  const after = new Set((current.tags || []).map((value) => normalizeTagValue(value)).filter(Boolean));
+  const patch = {
+    tags_added: [...after].filter((tag) => !before.has(tag)),
+    tags_removed: [...before].filter((tag) => !after.has(tag)),
+  };
+  if (current.notes !== snapshot.notes) patch.notes = current.notes;
+  if (current.favorite !== snapshot.favorite) patch.favorite = current.favorite;
+  return patch;
+}
+
 async function persistCard(id, payload) {
   if (!canEditMetadata()) {
     window.alert("You do not have permission to edit metadata.");
@@ -11416,6 +11447,8 @@ function consumeShareTargetResult() {
     linkerror: ["Could not import that shared link.", "error", "Shared to MemeIndex"],
     toolarge: ["That shared file is larger than the upload limit.", "error", "Shared to MemeIndex"],
     forbidden: ["You do not have permission to add memes.", "error", "Shared to MemeIndex"],
+    ratelimited: ["Too many shares in a row. Wait a minute and try again.", "error", "Shared to MemeIndex"],
+    pending: ["Still downloading that link. It will appear once it finishes.", "info", "Shared to MemeIndex"],
     empty: ["Nothing usable was in that share.", "info", "Shared to MemeIndex"],
     error: ["Something went wrong handling that share.", "error", "Shared to MemeIndex"],
   };
@@ -11584,6 +11617,14 @@ linkUploadForm?.addEventListener("submit", async (event) => {
     }
 
     const payload = await response.json();
+    if (response.status === 202 && payload.pending) {
+      linkUploadStatus.textContent = "This one is taking a while. It keeps downloading in the background and will show up in your archive when it finishes.";
+      showToast("Still downloading in the background.", "info", { title: "Import", duration: 4200 });
+      linkUploadForm?.reset();
+      resetLinkUploadTags();
+      linkUploadModal?.close();
+      return;
+    }
     if (response.status === 202 || payload.queued) {
       const nextAttempt = payload?.job?.next_attempt_at ? formatDateTime(payload.job.next_attempt_at) : "a few minutes";
       linkUploadStatus.textContent = `Link download failed for now. It was added to the retry queue and will try again around ${nextAttempt}.`;
@@ -13161,12 +13202,19 @@ modalSave.addEventListener("click", async () => {
   const continueAdminReview = adminTagReviewSessionActive && isAdminView() && activeAdminTab() === "tag-review";
   modalSave.disabled = true;
   try {
-    const saved = await persistCard(savedMemeID, {
+    const saved = await persistCard(savedMemeID, buildMemePatch(modalSnapshot, {
       favorite: modalFavorite.classList.contains("is-active"),
       notes: modalNotesInput.value,
       tags: getModalTagValues(),
-    });
+    }));
     if (!saved) return;
+    // The server merged our tag delta into the meme's current tags, which may
+    // include tags someone else added meanwhile - show what was actually saved
+    // (unless the user already moved on to another meme).
+    if (saved?.id === savedMemeID && activeMemeId === savedMemeID && Array.isArray(saved.tags)) {
+      setModalTags(saved.tags);
+      renderTagEditor();
+    }
     modalSnapshot = {
       favorite: modalFavorite.classList.contains("is-active"),
       notes: modalNotesInput.value,

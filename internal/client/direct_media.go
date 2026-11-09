@@ -96,12 +96,12 @@ func (s *Server) importDirectMedia(ctx context.Context, client *http.Client, act
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		if response.StatusCode == http.StatusForbidden || response.StatusCode == http.StatusNotFound {
-			return accessor.Meme{}, errors.New("the attachment is unavailable or its link has expired; copy a fresh attachment link and try again")
+			return accessor.Meme{}, userError("the attachment is unavailable or its link has expired; copy a fresh attachment link and try again")
 		}
-		return accessor.Meme{}, fmt.Errorf("media download returned HTTP %d", response.StatusCode)
+		return accessor.Meme{}, userError(fmt.Sprintf("the link returned HTTP %d", response.StatusCode))
 	}
 	if response.ContentLength > maxDirectMediaBytes {
-		return accessor.Meme{}, errors.New("linked media exceeds the 256 MB limit")
+		return accessor.Meme{}, userError("linked media exceeds the 256 MB limit")
 	}
 	// Finish the download before storing, so oversized or interrupted responses
 	// never become partial entries in the index.
@@ -116,10 +116,10 @@ func (s *Server) importDirectMedia(ctx context.Context, client *http.Client, act
 		return accessor.Meme{}, err
 	}
 	if n > maxDirectMediaBytes {
-		return accessor.Meme{}, errors.New("linked media exceeds the 256 MB limit")
+		return accessor.Meme{}, userError("linked media exceeds the 256 MB limit")
 	}
 	if n == 0 {
-		return accessor.Meme{}, errors.New("linked media is empty")
+		return accessor.Meme{}, userError("linked media is empty")
 	}
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return accessor.Meme{}, err
@@ -134,7 +134,7 @@ func (s *Server) importDirectMedia(ctx context.Context, client *http.Client, act
 		contentType, _, _ = mime.ParseMediaType(response.Header.Get("Content-Type"))
 	}
 	if !strings.HasPrefix(contentType, "image/") && !strings.HasPrefix(contentType, "video/") {
-		return accessor.Meme{}, errors.New("the link did not return an image or video")
+		return accessor.Meme{}, userError("the link did not return an image or video")
 	}
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return accessor.Meme{}, err

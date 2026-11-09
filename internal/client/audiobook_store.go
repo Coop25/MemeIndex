@@ -45,6 +45,10 @@ var ErrAudiobookSeriesNameTaken = errors.New("audiobook series name already in u
 // already has an audiobook with the same title (case-insensitive).
 var ErrAudiobookDuplicateTitle = errors.New("an audiobook with this title already exists")
 
+// ErrAudiobookNotAudio is returned by CompleteUpload when the uploaded bytes
+// are recognisably not an audio file (markup, plain text, images, ...).
+var ErrAudiobookNotAudio = errors.New("that file is not an audio file")
+
 type audiobookRecord struct {
 	ID               string
 	Title            string
@@ -580,7 +584,18 @@ func (s *postgresAudiobookStore) CompleteUpload(ctx context.Context, id, userID 
 	// uploader stage stored XSS against any other viewer by claiming
 	// "text/html" for a file full of markup. Sniff it from the file's actual
 	// bytes instead, the same way direct_media.go does for linked media.
-	mimeType := sniffAudiobookMimeType(finalPath)
+	//
+	// Sniffing alone is not enough, though: http.DetectContentType happily
+	// reports markup as text/html, so a file that is plainly not audio is
+	// refused outright, and whatever is stored is narrowed to a type that can
+	// only ever play, never render (see audiobookServableMimeType).
+	sniffed := sniffAudiobookMimeType(finalPath)
+	if !audiobookSniffLooksLikeMedia(sniffed) {
+		_ = os.Remove(finalPath)
+		_ = s.DiscardUpload(ctx, id)
+		return audiobookRecord{}, ErrAudiobookNotAudio
+	}
+	mimeType := audiobookServableMimeType(sniffed, upload.Filename)
 
 	// Prefer whatever the file itself says over a user-typed title/author and
 	// the client's best-effort duration: an audiobook's ID3/MP4 tags are

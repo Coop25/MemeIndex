@@ -17,6 +17,7 @@ import (
 	"net/textproto"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -182,7 +183,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/og-image.svg", s.handleOGImage)
 	mux.HandleFunc("/manifest.webmanifest", s.handleWebManifest)
 	mux.HandleFunc("/service-worker.js", s.handleServiceWorker)
-	mux.Handle("/pwa-icons/", http.StripPrefix("/pwa-icons/", http.FileServer(http.Dir(filepath.Join("static", "favicon")))))
+	mux.Handle("/pwa-icons/", noDirectoryListing(http.StripPrefix("/pwa-icons/", http.FileServer(http.Dir(filepath.Join("static", "favicon"))))))
 	mux.Handle("/share-target", s.withPageAuth(http.HandlerFunc(s.handleShareTarget)))
 	mux.HandleFunc("/api/auth/session", s.handleAuthSession)
 	mux.Handle("/api/dashboard", s.withAPIAuth(http.HandlerFunc(s.handleDashboard), permissionView))
@@ -314,12 +315,20 @@ func (s *Server) handleShareTarget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Sharing into the archive is an upload, so it needs the same upload
+	// permission and the same rate limits as POST /api/memes - otherwise a
+	// view-only account could upload (and start unlimited link downloads)
+	// simply by going through the share sheet.
 	if s.auth.enabled() {
 		session, ok := sessionFromContext(r.Context())
-		if !ok || !hasPermission(session.Permissions, permissionView) {
+		if !ok || !hasPermission(session.Permissions, permissionUpload) {
 			http.Redirect(w, r, "/?shared=forbidden", http.StatusSeeOther)
 			return
 		}
+	}
+	if s.writeLimiter != nil && !s.writeLimiter.allow("upload|"+s.rateLimitIdentity(r)) {
+		http.Redirect(w, r, "/?shared=ratelimited", http.StatusSeeOther)
+		return
 	}
 
 	limit := s.config.MaxUploadBytes
@@ -380,7 +389,15 @@ func (s *Server) handleShareTarget(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if sharedURL := firstSharedURL(r.FormValue("url"), r.FormValue("text")); sharedURL != "" {
-		meme, err := s.createMemeFromSourceURL(r.Context(), actor, sharedURL, nil, notes)
+		if s.linkImportLimiter != nil && !s.linkImportLimiter.allow("linkimport|"+s.rateLimitIdentity(r)) {
+			http.Redirect(w, r, "/?shared=ratelimited", http.StatusSeeOther)
+			return
+		}
+		meme, err, pending := s.importLinkWithinBudget(r, actor, sharedURL, nil, notes)
+		if pending {
+			http.Redirect(w, r, "/?shared=pending", http.StatusSeeOther)
+			return
+		}
 		if err != nil {
 			var duplicateErr *accessor.DuplicateMemeError
 			switch {
@@ -476,6 +493,12 @@ func (s *Server) withProtectedAssetAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		setProtectedAssetHeaders(w)
 		setUntrustedAssetHeaders(w, r.URL.Path)
+		// http.FileServer would otherwise answer a directory path with a
+		// listing of every stored file.
+		if strings.HasSuffix(r.URL.Path, "/") {
+			http.NotFound(w, r)
+			return
+		}
 		if !s.auth.enabled() {
 			next.ServeHTTP(w, r)
 			return
@@ -486,8 +509,34 @@ func (s *Server) withProtectedAssetAuth(next http.Handler) http.Handler {
 			http.NotFound(w, r)
 			return
 		}
+		// A meme someone asked to delete is hidden from the app; stop serving
+		// its file and thumbnail too, so it is not still one copied URL away
+		// while the request waits for approval. Admins keep access because the
+		// approval queue previews exactly these files.
+		if !session.Permissions.CanManageUsers && s.managers.IsMemeHidden(assetMemeID(r.URL.Path)) {
+			http.NotFound(w, r)
+			return
+		}
 
 		next.ServeHTTP(w, r.WithContext(contextWithSession(r.Context(), session)))
+	})
+}
+
+// assetMemeID maps /uploads/<id>.<ext> or /thumbnails/<id>.jpg to <id>.
+func assetMemeID(requestPath string) string {
+	base := path.Base(requestPath)
+	return strings.TrimSuffix(base, path.Ext(base))
+}
+
+// noDirectoryListing wraps a file server so a directory path 404s instead of
+// listing its contents.
+func noDirectoryListing(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/") {
+			http.NotFound(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 
@@ -500,7 +549,39 @@ func setUntrustedAssetHeaders(w http.ResponseWriter, requestPath string) {
 	switch strings.ToLower(filepath.Ext(requestPath)) {
 	case ".html", ".htm", ".xhtml", ".svg", ".xml", ".js", ".mjs", ".css", ".url", ".exe", ".dll", ".msi", ".bat", ".cmd", ".ps1", ".sh":
 		w.Header().Set("Content-Disposition", "attachment")
+		// The CSP above only governs the upload when it is opened as a page.
+		// Loaded as a subresource of some other same-origin page (a <script>
+		// or <link rel=stylesheet>), what matters is the Content-Type, so
+		// never hand out a type the browser would execute or apply - with
+		// nosniff, an opaque type is refused as a script or stylesheet.
+		// ServeContent keeps a Content-Type that is already set. SVG keeps its
+		// image type so <img> previews still render; an image context never
+		// runs script, and opening it directly hits the attachment + sandbox.
+		if strings.ToLower(filepath.Ext(requestPath)) != ".svg" {
+			w.Header().Set("Content-Type", "application/octet-stream")
+		}
 	}
+	if scriptableContentType(w.Header().Get("Content-Type")) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Disposition", "attachment")
+	}
+}
+
+// scriptableContentType reports whether a Content-Type would let a browser run
+// or apply the body as code (script, stylesheet, markup) when it is loaded
+// from another page on this origin.
+func scriptableContentType(value string) bool {
+	base, _, _ := strings.Cut(strings.ToLower(strings.TrimSpace(value)), ";")
+	base = strings.TrimSpace(base)
+	switch {
+	case base == "", base == "image/svg+xml":
+		return false
+	case strings.Contains(base, "javascript"), strings.Contains(base, "ecmascript"),
+		strings.Contains(base, "html"), strings.Contains(base, "xml"),
+		base == "text/css", base == "application/wasm":
+		return true
+	}
+	return false
 }
 
 func setProtectedAssetHeaders(w http.ResponseWriter) {
@@ -665,6 +746,10 @@ func hasPermission(permissions authPermissions, minimum permissionLevel) bool {
 func staticAssetHandler(dir string) http.Handler {
 	fs := http.StripPrefix("/static/", http.FileServer(http.Dir(dir)))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/") {
+			http.NotFound(w, r)
+			return
+		}
 		if q := r.URL.Query(); q.Get("h") != "" || q.Get("v") != "" {
 			w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
 		}
@@ -1231,7 +1316,11 @@ func (s *Server) handleSaveLink(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var duplicateErr *accessor.DuplicateMemeError
 		if errors.As(err, &duplicateErr) {
-			writeJSON(w, http.StatusConflict, map[string]any{"error": "this link is already saved", "existing": s.protectMemeForResponse(r, duplicateErr.Existing)})
+			message := "this link is already saved"
+			if duplicateErr.PendingDelete {
+				message = "this link is already saved, but is waiting for a delete request to be reviewed"
+			}
+			writeJSON(w, http.StatusConflict, map[string]any{"error": message, "existing": s.protectMemeForResponse(r, duplicateErr.Existing)})
 			return
 		}
 		log.Printf("save external link failed: %v", err)
@@ -1301,7 +1390,14 @@ func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
 		if s.enforceRateLimit(w, r, s.linkImportLimiter, "linkimport") {
 			return
 		}
-		meme, err := s.createMemeFromSourceURL(r.Context(), currentAuditActor(r), sourceURL, splitTags(r.FormValue("tags")), r.FormValue("notes"))
+		meme, err, pending := s.importLinkWithinBudget(r, currentAuditActor(r), sourceURL, splitTags(r.FormValue("tags")), r.FormValue("notes"))
+		if pending {
+			writeJSON(w, http.StatusAccepted, map[string]any{
+				"pending": true,
+				"queued":  false,
+			})
+			return
+		}
 		if err != nil {
 			var duplicateErr *accessor.DuplicateMemeError
 			if errors.As(err, &duplicateErr) {
@@ -1309,8 +1405,9 @@ func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
 					"memes":   []accessor.Meme{},
 					"created": 0,
 					"duplicates": []map[string]any{{
-						"filename": duplicateErr.Existing.OriginalName,
-						"existing": s.protectMemeForResponse(r, duplicateErr.Existing),
+						"filename":       duplicateErr.Existing.OriginalName,
+						"existing":       s.protectMemeForResponse(r, duplicateErr.Existing),
+						"pending_delete": duplicateErr.PendingDelete,
 					}},
 					"skipped": 1,
 				})
@@ -1325,14 +1422,16 @@ func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
 				status = http.StatusServiceUnavailable
 			case s.shouldQueueLinkRetry(sourceURL, err):
 				job := s.linkRetries.Enqueue(sourceURL, splitTags(r.FormValue("tags")), r.FormValue("notes"), currentAuditActor(r))
+				log.Printf("link import of %q failed, queued for retry: %v", sanitizeLogField(sourceURL), err)
 				writeJSON(w, http.StatusAccepted, map[string]any{
 					"queued": true,
 					"job":    job,
-					"error":  err.Error(),
+					"error":  clientSafeError(err, "the download failed for now"),
 				})
 				return
 			}
-			http.Error(w, err.Error(), status)
+			log.Printf("link import of %q failed: %v", sanitizeLogField(sourceURL), err)
+			http.Error(w, clientSafeError(err, "could not download that link"), status)
 			return
 		}
 
@@ -1369,8 +1468,9 @@ func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
 			var duplicateErr *accessor.DuplicateMemeError
 			if errors.As(err, &duplicateErr) {
 				duplicates = append(duplicates, map[string]any{
-					"filename": fileHeader.Filename,
-					"existing": s.protectMemeForResponse(r, duplicateErr.Existing),
+					"filename":       fileHeader.Filename,
+					"existing":       s.protectMemeForResponse(r, duplicateErr.Existing),
+					"pending_delete": duplicateErr.PendingDelete,
 				})
 				continue
 			}
@@ -1395,8 +1495,8 @@ func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-var errUnsupportedMediaURL = errors.New("use a direct image or video link (including Discord attachments), or a supported YouTube, Facebook, Reddit, Instagram, TikTok, or Twitter/X link")
-var errUndownloadableSourceURL = errors.New("this link looks valid, but the source video is not directly downloadable from that URL. Try opening the post/video itself and copying the direct Facebook video URL instead of the share link")
+var errUnsupportedMediaURL = userError("use a direct image or video link (including Discord attachments), or a supported YouTube, Facebook, Reddit, Instagram, TikTok, or Twitter/X link")
+var errUndownloadableSourceURL = userError("this link looks valid, but the source video is not directly downloadable from that URL. Try opening the post/video itself and copying the direct Facebook video URL instead of the share link")
 
 func (s *Server) createMemeFromSourceURL(ctx context.Context, actor accessor.AuditActor, sourceURL string, tags []string, notes string) (accessor.Meme, error) {
 	sourceURL = strings.TrimSpace(sourceURL)
@@ -1404,7 +1504,7 @@ func (s *Server) createMemeFromSourceURL(ctx context.Context, actor accessor.Aud
 		return s.createMemeFromDirectURL(ctx, actor, sourceURL, tags, notes)
 	}
 	if s.mediaClient == nil {
-		return accessor.Meme{}, errors.New("link downloads are not configured")
+		return accessor.Meme{}, userError("link downloads are not configured")
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
@@ -1531,7 +1631,7 @@ func friendlySourceDownloadError(originalURL, resolvedURL string, err error) err
 	case strings.Contains(message, "private video"),
 		strings.Contains(message, "requires login"),
 		strings.Contains(message, "not directly downloadable"):
-		return errors.New("this video is not publicly downloadable from that link")
+		return userError("this video is not publicly downloadable from that link")
 	}
 
 	return err
@@ -1592,10 +1692,10 @@ func normalizeSourceURL(ctx context.Context, raw string) (string, error) {
 func validateRemoteURL(ctx context.Context, raw string) error {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || parsed.Hostname() == "" || parsed.User != nil {
-		return errors.New("invalid remote URL")
+		return userError("invalid remote URL")
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return errors.New("only HTTP and HTTPS remote URLs are allowed")
+		return userError("only HTTP and HTTPS remote URLs are allowed")
 	}
 	host := parsed.Hostname()
 	addresses := []net.IP{}
@@ -1611,11 +1711,11 @@ func validateRemoteURL(ctx context.Context, raw string) error {
 		}
 	}
 	if len(addresses) == 0 {
-		return errors.New("remote host did not resolve")
+		return userError("remote host did not resolve")
 	}
 	for _, address := range addresses {
 		if !publicRemoteIP(address) {
-			return errors.New("private and local network addresses are not allowed")
+			return userError("private and local network addresses are not allowed")
 		}
 	}
 	return nil
@@ -1639,14 +1739,68 @@ func sourceURLCandidates(original string, resolved string) []string {
 	return candidates
 }
 
+// memePatchPayload is the PATCH /api/memes/{id} body. Every field is
+// optional and an omitted one is left as it is - so a client that only edits
+// notes cannot silently wipe tags or unfavorite the meme. Tags can be sent
+// either as the full replacement set ("tags") or, preferably, as a delta
+// against what the client last saw ("tags_added"/"tags_removed"), which is
+// applied to the meme's current tags so two people tagging the same meme at
+// once don't overwrite each other's work.
+type memePatchPayload struct {
+	Tags        *[]string `json:"tags"`
+	TagsAdded   []string  `json:"tags_added"`
+	TagsRemoved []string  `json:"tags_removed"`
+	Notes       *string   `json:"notes"`
+	Favorite    *bool     `json:"favorite"`
+}
+
+// resolveMemePatch turns a partial PATCH body into the full update the store
+// applies, starting from the meme's current state.
+func resolveMemePatch(existing accessor.Meme, payload memePatchPayload) accessor.MemeUpdate {
+	update := accessor.MemeUpdate{
+		Tags:     append([]string(nil), existing.Tags...),
+		Notes:    existing.Notes,
+		Favorite: existing.Favorite,
+	}
+	switch {
+	case payload.TagsAdded != nil || payload.TagsRemoved != nil:
+		removed := map[string]struct{}{}
+		for _, tag := range normalizePermissionTags(payload.TagsRemoved) {
+			removed[tag] = struct{}{}
+		}
+		next := make([]string, 0, len(existing.Tags)+len(payload.TagsAdded))
+		for _, tag := range normalizePermissionTags(existing.Tags) {
+			if _, drop := removed[tag]; !drop {
+				next = append(next, tag)
+			}
+		}
+		update.Tags = normalizePermissionTags(append(next, payload.TagsAdded...))
+	case payload.Tags != nil:
+		update.Tags = *payload.Tags
+	}
+	if payload.Notes != nil {
+		update.Notes = *payload.Notes
+	}
+	if payload.Favorite != nil {
+		update.Favorite = *payload.Favorite
+	}
+	return update
+}
+
 func (s *Server) updateMeme(w http.ResponseWriter, r *http.Request, id string) {
-	var payload accessor.MemeUpdate
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+	var patch memePatchPayload
+	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
 		return
 	}
 
+	// With authentication disabled (MEMEINDEX_ALLOW_ANONYMOUS) there is no
+	// session at all, and every caller may do everything - the same policy
+	// handleAuthSession advertises to the frontend.
 	session, ok := sessionFromContext(r.Context())
+	if !s.auth.enabled() {
+		session, ok = authSession{Permissions: authPermissions{CanView: true, CanAddTags: true, CanRemoveTags: true, CanManageUsers: true}}, true
+	}
 	if !ok {
 		writeJSON(w, http.StatusForbidden, map[string]any{
 			"error": "insufficient permissions",
@@ -1665,6 +1819,7 @@ func (s *Server) updateMeme(w http.ResponseWriter, r *http.Request, id string) {
 		return
 	}
 
+	payload := resolveMemePatch(existing, patch)
 	currentTags := normalizePermissionTags(existing.Tags)
 	nextTags := normalizePermissionTags(payload.Tags)
 	addedTags, removedTags := diffTags(currentTags, nextTags)
@@ -2734,6 +2889,14 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	// POST only: logout revokes every session the user has, so letting a plain
+	// GET do it meant any link on any site could sign someone out of all their
+	// devices. A stray GET (an old bookmark) just goes back to the app.
+	// Cross-site POSTs are already refused by CrossOriginProtection.
+	if r.Method != http.MethodPost {
+		http.Redirect(w, r, "/", http.StatusFound)
+		return
+	}
 	if s.auth.enabled() {
 		// Advance the user's session version so the signed token being discarded
 		// here (and any copy of it that outlived this browser) stops validating

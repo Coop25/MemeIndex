@@ -95,6 +95,13 @@ type MemeShareStore interface {
 	RevokeAllMemeShares(now time.Time) (int, error)
 }
 
+// HiddenMemeStore is implemented by stores that can hide a meme from the app
+// without deleting it (a delete request awaiting approval). The file handlers
+// use it so a hidden meme's upload and thumbnail stop being served.
+type HiddenMemeStore interface {
+	HiddenMemeIDs() ([]string, error)
+}
+
 type AuditLogStore interface {
 	ListMemeAudit(id string, limit int) ([]MemeAuditEntry, error)
 	ListAuditFeed(offset int, limit int, actorUserID string) (PagedAuditFeed, error)

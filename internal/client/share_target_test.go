@@ -98,7 +98,7 @@ func TestHandleShareTargetEmptyShareRedirects(t *testing.T) {
 	}
 }
 
-func TestHandleShareTargetGatesOnViewPermission(t *testing.T) {
+func TestHandleShareTargetGatesOnUploadPermission(t *testing.T) {
 	server, store := newShareTargetTestServer(t)
 	server.auth = &authService{}
 
@@ -116,15 +116,28 @@ func TestHandleShareTargetGatesOnViewPermission(t *testing.T) {
 		t.Fatalf("view-less session: Location = %q", got)
 	}
 
+	// Sharing in is an upload: view-only accounts must not get a side door
+	// around the upload permission POST /api/memes enforces.
 	viewer := httptest.NewRecorder()
 	viewerReq := shareTargetRequest(t, nil, "files", "shared.png", []byte("viewer shared bytes"))
 	viewerReq = viewerReq.WithContext(contextWithSession(viewerReq.Context(), authSession{Permissions: authPermissions{CanView: true}}))
 	server.handleShareTarget(viewer, viewerReq)
-	if got := viewer.Header().Get("Location"); got != "/?shared=ok&n=1" {
-		t.Fatalf("viewer session: Location = %q (status %d)", got, viewer.Code)
+	if got := viewer.Header().Get("Location"); got != "/?shared=forbidden" {
+		t.Fatalf("view-only session: Location = %q (status %d)", got, viewer.Code)
+	}
+	if got := len(store.List("", "", false, "")); got != 0 {
+		t.Fatalf("view-only user stored %d meme(s) through the share target", got)
+	}
+
+	uploader := httptest.NewRecorder()
+	uploaderReq := shareTargetRequest(t, nil, "files", "shared.png", []byte("uploader shared bytes"))
+	uploaderReq = uploaderReq.WithContext(contextWithSession(uploaderReq.Context(), authSession{Permissions: authPermissions{CanView: true, CanUpload: true}}))
+	server.handleShareTarget(uploader, uploaderReq)
+	if got := uploader.Header().Get("Location"); got != "/?shared=ok&n=1" {
+		t.Fatalf("uploader session: Location = %q (status %d)", got, uploader.Code)
 	}
 	if got := len(store.List("", "", false, "")); got != 1 {
-		t.Fatalf("expected 1 stored meme for a view-permission user, got %d", got)
+		t.Fatalf("expected 1 stored meme for an upload-permission user, got %d", got)
 	}
 }
 

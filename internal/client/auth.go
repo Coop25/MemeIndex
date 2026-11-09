@@ -91,8 +91,8 @@ type authPermissions struct {
 	// account restricted to a "kids" tag. Empty means unrestricted (the
 	// default for every existing account).
 	AudiobookTagRestriction []string `json:"audiobookTagRestriction"`
-	CanAdd                   bool `json:"canAdd"`
-	CanManage                bool `json:"canManage"`
+	CanAdd                  bool     `json:"canAdd"`
+	CanManage               bool     `json:"canManage"`
 }
 
 type authClaims struct {
@@ -263,6 +263,15 @@ func (a *authService) verifySignedValue(signed string) (string, bool) {
 func (a *authService) cookieSecureForRequest(r *http.Request) bool {
 	if isLocalTrusted(r) {
 		return false
+	}
+	// Behind Cloudflare Tunnel (the recommended deployment) the app never sees
+	// TLS itself, so with MEMEINDEX_COOKIE_SECURE left at its default the
+	// session cookie used to go out without Secure. A proxy that terminated
+	// HTTPS says so in X-Forwarded-Proto. Trusting that header is safe here
+	// because it can only ever add the Secure flag: a client that spoofs it
+	// over plain HTTP just gets a cookie its own browser won't store.
+	if strings.EqualFold(forwardedHeaderFirstValue(r.Header.Get("X-Forwarded-Proto")), "https") {
+		return true
 	}
 	return a.config.CookieSecure || r.TLS != nil
 }
