@@ -4299,6 +4299,7 @@ body.admin-mode .admin-tab.is-active .admin-tab-badge { background: var(--green-
 .audiobook-player-bookmark-label { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .audiobook-player-bookmark-time { color: var(--faint); font-size: 12px; }
 .audiobook-player-bookmark-created { color: var(--faint); font-size: 11px; opacity: .75; }
+.audiobook-player-bookmark-expiry { color: var(--amber, #d29922); font-size: 11px; }
 .audiobook-player-bookmark-delete { flex-shrink: 0; display: grid; width: 50px; place-items: center; border: 0; border-left: 1px solid var(--line); background: var(--panel-2); color: var(--faint); cursor: pointer; transition: background .15s ease, color .15s ease; }
 .audiobook-player-bookmark-delete:hover, .audiobook-player-bookmark-delete:active {
   background: var(--red) !important; color: #fff !important; animation: audiobookDeleteHoverPop .4s ease forwards;

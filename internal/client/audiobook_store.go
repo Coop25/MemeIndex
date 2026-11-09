@@ -154,6 +154,9 @@ type audiobookBookmark struct {
 	PositionSeconds float64
 	Label           string
 	CreatedAt       time.Time
+	// LastUsedAt is when the bookmark was created or last jumped to - what
+	// expiry counts from.
+	LastUsedAt time.Time
 }
 
 // audiobookPlaybackSession is a snapshot of another device's most recent
@@ -307,8 +310,21 @@ type audiobookStore interface {
 	RecordRemuxedM4B(ctx context.Context, book audiobookStoredMP3, m4bPath string, sizeBytes int64) error
 
 	CreateBookmark(ctx context.Context, audiobookID, userID string, positionSeconds float64, label string) (audiobookBookmark, error)
+	// CreateBookmarkReplacingNearby creates a bookmark and, in the same
+	// transaction, deletes the user's other bookmarks on that book that
+	// carry the same label and sit within windowSeconds of its position.
+	// Returns the ids it deleted.
+	CreateBookmarkReplacingNearby(ctx context.Context, audiobookID, userID string, positionSeconds float64, label string, windowSeconds float64) (audiobookBookmark, []string, error)
 	ListBookmarks(ctx context.Context, audiobookID, userID string) ([]audiobookBookmark, error)
-	DeleteBookmark(ctx context.Context, id, userID string) error
+	DeleteBookmark(ctx context.Context, audiobookID, id, userID string) error
+	// TouchBookmark marks a bookmark as just used (jumped to), restarting its
+	// expiry clock. ErrAudiobookBookmarkNotFound if it is not the user's, not
+	// on that audiobook, or last used at or before usedSince (already
+	// expired). A zero usedSince skips the expiry check.
+	TouchBookmark(ctx context.Context, audiobookID, id, userID string, usedSince time.Time) (audiobookBookmark, error)
+	// DeleteExpiredBookmarks removes every bookmark last used before cutoff
+	// and reports how many went.
+	DeleteExpiredBookmarks(ctx context.Context, cutoff time.Time) (int64, error)
 
 	// HeartbeatPlaybackSession records this device's current playback state for
 	// an audiobook and reports whether another device has asked it to stop
@@ -399,7 +415,7 @@ func newAudiobookStore(ctx context.Context, databaseURL, dataDir string) (audiob
 	}
 
 	store := &postgresAudiobookStore{pool: pool, dir: dir, tmpDir: tmpDir, coversDir: coversDir}
-	if err := dbschema.Apply(ctx, pool, "015_audiobooks.sql", "016_audiobook_cover_art.sql", "017_audiobook_chapters.sql", "018_audiobook_narrator.sql", "019_audiobook_bookmarks.sql", "021_audiobook_series.sql", "022_audiobook_favorites.sql", "024_audiobook_upload_ranges.sql", "025_audiobook_playback_sessions.sql", "026_audiobook_tags.sql", "028_audiobook_listening_stats.sql"); err != nil {
+	if err := dbschema.Apply(ctx, pool, "015_audiobooks.sql", "016_audiobook_cover_art.sql", "017_audiobook_chapters.sql", "018_audiobook_narrator.sql", "019_audiobook_bookmarks.sql", "021_audiobook_series.sql", "022_audiobook_favorites.sql", "024_audiobook_upload_ranges.sql", "025_audiobook_playback_sessions.sql", "026_audiobook_tags.sql", "028_audiobook_listening_stats.sql", "029_audiobook_bookmark_last_used.sql"); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("ensure audiobooks schema: %w", err)
 	}
@@ -1381,24 +1397,76 @@ func (s *postgresAudiobookStore) backfillOne(ctx context.Context, id, storagePat
 	return hasCover || len(chaptersJSON) > 0 || duration > 0 || title != "" || author != "" || narrator != ""
 }
 
-func (s *postgresAudiobookStore) CreateBookmark(ctx context.Context, audiobookID, userID string, positionSeconds float64, label string) (audiobookBookmark, error) {
+// audiobookBookmarkColumns is the column list every bookmark query returns,
+// in the order scanAudiobookBookmark reads it.
+const audiobookBookmarkColumns = `id, audiobook_id, user_id, position_seconds, label, created_at, last_used_at`
+
+func scanAudiobookBookmark(row pgx.Row) (audiobookBookmark, error) {
 	var bookmark audiobookBookmark
-	err := s.pool.QueryRow(ctx, `
+	err := row.Scan(&bookmark.ID, &bookmark.AudiobookID, &bookmark.UserID, &bookmark.PositionSeconds, &bookmark.Label, &bookmark.CreatedAt, &bookmark.LastUsedAt)
+	return bookmark, err
+}
+
+// insertAudiobookBookmark runs on the pool or inside a transaction.
+func insertAudiobookBookmark(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, audiobookID, userID string, positionSeconds float64, label string) (audiobookBookmark, error) {
+	bookmark, err := scanAudiobookBookmark(q.QueryRow(ctx, `
 		INSERT INTO audiobook_bookmarks (id, audiobook_id, user_id, position_seconds, label)
 		VALUES ($1, $2, $3, $4, $5)
-		RETURNING id, audiobook_id, user_id, position_seconds, label, created_at
-	`, uuid.Must(uuid.NewV6()).String(), audiobookID, userID, positionSeconds, label).Scan(
-		&bookmark.ID, &bookmark.AudiobookID, &bookmark.UserID, &bookmark.PositionSeconds, &bookmark.Label, &bookmark.CreatedAt,
-	)
+		RETURNING `+audiobookBookmarkColumns,
+		uuid.Must(uuid.NewV6()).String(), audiobookID, userID, positionSeconds, label))
 	if err != nil {
 		return audiobookBookmark{}, fmt.Errorf("create audiobook bookmark: %w", err)
 	}
 	return bookmark, nil
 }
 
+func (s *postgresAudiobookStore) CreateBookmark(ctx context.Context, audiobookID, userID string, positionSeconds float64, label string) (audiobookBookmark, error) {
+	return insertAudiobookBookmark(ctx, s.pool, audiobookID, userID, positionSeconds, label)
+}
+
+func (s *postgresAudiobookStore) CreateBookmarkReplacingNearby(ctx context.Context, audiobookID, userID string, positionSeconds float64, label string, windowSeconds float64) (audiobookBookmark, []string, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return audiobookBookmark{}, nil, fmt.Errorf("begin bookmark replace: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Serialize replaces for this user+book: without it, two overlapping
+	// sleep-timer starts each delete before the other's insert commits, and
+	// both new bookmarks survive.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('audiobook-bookmark-replace:' || $1::text || ':' || $2::text, 0))`, audiobookID, userID); err != nil {
+		return audiobookBookmark{}, nil, fmt.Errorf("lock bookmark replace: %w", err)
+	}
+
+	rows, err := tx.Query(ctx, `
+		DELETE FROM audiobook_bookmarks
+		WHERE audiobook_id = $1 AND user_id = $2 AND label = $3
+		  AND ABS(position_seconds - $4) <= $5
+		RETURNING id
+	`, audiobookID, userID, label, positionSeconds, windowSeconds)
+	if err != nil {
+		return audiobookBookmark{}, nil, fmt.Errorf("delete nearby audiobook bookmarks: %w", err)
+	}
+	replaced, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return audiobookBookmark{}, nil, fmt.Errorf("delete nearby audiobook bookmarks: %w", err)
+	}
+
+	bookmark, err := insertAudiobookBookmark(ctx, tx, audiobookID, userID, positionSeconds, label)
+	if err != nil {
+		return audiobookBookmark{}, nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return audiobookBookmark{}, nil, fmt.Errorf("commit bookmark replace: %w", err)
+	}
+	return bookmark, replaced, nil
+}
+
 func (s *postgresAudiobookStore) ListBookmarks(ctx context.Context, audiobookID, userID string) ([]audiobookBookmark, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, audiobook_id, user_id, position_seconds, label, created_at
+		SELECT `+audiobookBookmarkColumns+`
 		FROM audiobook_bookmarks
 		WHERE audiobook_id = $1 AND user_id = $2
 		ORDER BY created_at DESC
@@ -1410,8 +1478,8 @@ func (s *postgresAudiobookStore) ListBookmarks(ctx context.Context, audiobookID,
 
 	out := []audiobookBookmark{}
 	for rows.Next() {
-		var bookmark audiobookBookmark
-		if err := rows.Scan(&bookmark.ID, &bookmark.AudiobookID, &bookmark.UserID, &bookmark.PositionSeconds, &bookmark.Label, &bookmark.CreatedAt); err != nil {
+		bookmark, err := scanAudiobookBookmark(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan audiobook bookmark: %w", err)
 		}
 		out = append(out, bookmark)
@@ -1422,8 +1490,8 @@ func (s *postgresAudiobookStore) ListBookmarks(ctx context.Context, audiobookID,
 	return out, nil
 }
 
-func (s *postgresAudiobookStore) DeleteBookmark(ctx context.Context, id, userID string) error {
-	tag, err := s.pool.Exec(ctx, `DELETE FROM audiobook_bookmarks WHERE id = $1 AND user_id = $2`, id, userID)
+func (s *postgresAudiobookStore) DeleteBookmark(ctx context.Context, audiobookID, id, userID string) error {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM audiobook_bookmarks WHERE id = $1 AND user_id = $2 AND audiobook_id = $3`, id, userID, audiobookID)
 	if err != nil {
 		return fmt.Errorf("delete audiobook bookmark: %w", err)
 	}
@@ -1431,6 +1499,37 @@ func (s *postgresAudiobookStore) DeleteBookmark(ctx context.Context, id, userID 
 		return ErrAudiobookBookmarkNotFound
 	}
 	return nil
+}
+
+func (s *postgresAudiobookStore) TouchBookmark(ctx context.Context, audiobookID, id, userID string, usedSince time.Time) (audiobookBookmark, error) {
+	// A zero usedSince means expiry is off; otherwise an already-expired
+	// bookmark the sweeper hasn't reached yet is treated as gone, matching
+	// the list endpoint, rather than revived by a jump from a stale list.
+	var cutoff *time.Time
+	if !usedSince.IsZero() {
+		cutoff = &usedSince
+	}
+	bookmark, err := scanAudiobookBookmark(s.pool.QueryRow(ctx, `
+		UPDATE audiobook_bookmarks SET last_used_at = NOW()
+		WHERE id = $1 AND user_id = $2 AND audiobook_id = $3
+		  AND ($4::timestamptz IS NULL OR last_used_at > $4)
+		RETURNING `+audiobookBookmarkColumns,
+		id, userID, audiobookID, cutoff))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return audiobookBookmark{}, ErrAudiobookBookmarkNotFound
+	}
+	if err != nil {
+		return audiobookBookmark{}, fmt.Errorf("touch audiobook bookmark: %w", err)
+	}
+	return bookmark, nil
+}
+
+func (s *postgresAudiobookStore) DeleteExpiredBookmarks(ctx context.Context, cutoff time.Time) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM audiobook_bookmarks WHERE last_used_at < $1`, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("delete expired audiobook bookmarks: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 func (s *postgresAudiobookStore) AddFavorite(ctx context.Context, audiobookID, userID string) error {

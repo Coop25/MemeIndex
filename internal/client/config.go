@@ -16,6 +16,9 @@ type Config struct {
 	MaxUploadBytes             int64
 	MaxAudiobookBytes          int64
 	AudiobookUploadConcurrency int
+	// AudiobookBookmarkExpiry is how long a bookmark can go unused (neither
+	// created nor jumped to) before it is deleted. Zero keeps them forever.
+	AudiobookBookmarkExpiry time.Duration
 	Addr                       string
 	DebugAddr                  string
 	LocalAddr                  string
@@ -85,6 +88,7 @@ type rawConfig struct {
 	MaxUploadBytes                  int64    `envconfig:"MAX_UPLOAD_BYTES" default:"268435456"`
 	MaxAudiobookBytes               int64    `envconfig:"MAX_AUDIOBOOK_BYTES" default:"21474836480"`
 	AudiobookUploadConcurrency      int      `envconfig:"AUDIOBOOK_UPLOAD_CONCURRENCY" default:"4"`
+	AudiobookBookmarkExpiryDays     int      `envconfig:"AUDIOBOOK_BOOKMARK_EXPIRY_DAYS" default:"182"`
 	Addr                            string   `envconfig:"ADDR" default:":8080"`
 	DebugAddr                       string   `envconfig:"DEBUG_ADDR"`
 	LocalAddr                       string   `envconfig:"LOCAL_ADDR"`
@@ -167,6 +171,9 @@ func LoadConfig() (Config, error) {
 		// than the rate limiter (5 req/s, burst 40) or a modest server can
 		// comfortably absorb.
 		AudiobookUploadConcurrency: min(max(raw.AudiobookUploadConcurrency, 1), 16),
+		// Capped at 100 years: a bigger "effectively forever" value would overflow
+		// time.Duration and could wrap to a tiny window that deletes everything.
+		AudiobookBookmarkExpiry:    time.Duration(min(max(raw.AudiobookBookmarkExpiryDays, 0), maxAudiobookBookmarkExpiryDays)) * 24 * time.Hour,
 		Addr:                       strings.TrimSpace(raw.Addr),
 		DebugAddr:                  strings.TrimSpace(raw.DebugAddr),
 		LocalAddr:                  strings.TrimSpace(raw.LocalAddr),
@@ -316,3 +323,7 @@ func shouldPreferGenerateOnlyModel(model string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(model))
 	return strings.HasPrefix(normalized, "qwen2.5vl")
 }
+
+// maxAudiobookBookmarkExpiryDays bounds MEMEINDEX_AUDIOBOOK_BOOKMARK_EXPIRY_DAYS
+// well inside what time.Duration can hold (~106,000 days).
+const maxAudiobookBookmarkExpiryDays = 36500

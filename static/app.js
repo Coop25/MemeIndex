@@ -7059,43 +7059,52 @@ function estimateAudiobookElsewherePosition(info) {
 // audiobook: elsewhere is {positionSeconds, ageSeconds, fetchedAt} for another
 // device still playing it (or null), and stopPending says a stop request this
 // device sent hasn't been picked up yet. null on a failed request.
-async function fetchAudiobookPlaybackStatus(audiobookId) {
-  try {
-    const response = await fetch(
-      `/api/audiobooks/${encodeURIComponent(audiobookId)}/playback-elsewhere?deviceId=${encodeURIComponent(getAudiobookDeviceId())}`,
-      { credentials: "same-origin" },
-    );
-    if (!response.ok) return null;
-    const payload = await response.json();
-    return {
-      elsewhere: payload.active
-        ? { positionSeconds: payload.position_seconds || 0, ageSeconds: payload.age_seconds || 0, fetchedAt: performance.now() }
-        : null,
-      stopPending: !!payload.stop_pending,
-    };
-  } catch (error) {
-    console.error(error);
-    return null;
-  }
+async function fetchAudiobookPlaybackStatus(audiobookId, { timeoutMs = 0 } = {}) {
+  const payload = await fetchAudiobookJSON(
+    `/api/audiobooks/${encodeURIComponent(audiobookId)}/playback-elsewhere?deviceId=${encodeURIComponent(getAudiobookDeviceId())}`,
+    timeoutMs,
+  );
+  if (!payload) return null;
+  return {
+    elsewhere: payload.active
+      ? { positionSeconds: payload.position_seconds || 0, ageSeconds: payload.age_seconds || 0, fetchedAt: performance.now() }
+      : null,
+    stopPending: !!payload.stop_pending,
+  };
 }
 
-async function fetchAudiobookPlaybackElsewhere(audiobookId) {
-  const status = await fetchAudiobookPlaybackStatus(audiobookId);
+async function fetchAudiobookPlaybackElsewhere(audiobookId, options) {
+  const status = await fetchAudiobookPlaybackStatus(audiobookId, options);
   return status?.elsewhere || null;
 }
 
 // fetchAudiobookSavedPosition reads the server's latest saved position for
 // a book, or null if it can't be fetched (the caller falls back to the list's
 // copy).
-async function fetchAudiobookSavedPosition(audiobookId) {
+async function fetchAudiobookSavedPosition(audiobookId, { timeoutMs = 0 } = {}) {
+  const payload = await fetchAudiobookJSON(`/api/audiobooks/${encodeURIComponent(audiobookId)}/progress`, timeoutMs);
+  if (!payload) return null;
+  return payload.found ? Number(payload.position_seconds) || 0 : null;
+}
+
+// fetchAudiobookJSON GETs a small player endpoint and returns its JSON, or
+// null on any failure. With a timeout, a slow or dead connection gives up
+// (as null) instead of holding up whatever is waiting on it - pressing play,
+// or opening a book, shouldn't hang on a bad signal just to double-check
+// something the player mostly already knows. The timer covers reading the
+// body too, not just the headers.
+async function fetchAudiobookJSON(url, timeoutMs = 0) {
+  const controller = timeoutMs > 0 ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : 0;
   try {
-    const response = await fetch(`/api/audiobooks/${encodeURIComponent(audiobookId)}/progress`, { credentials: "same-origin" });
+    const response = await fetch(url, { credentials: "same-origin", signal: controller?.signal });
     if (!response.ok) return null;
-    const payload = await response.json();
-    return payload.found ? Number(payload.position_seconds) || 0 : null;
+    return await response.json();
   } catch (error) {
-    console.error(error);
+    if (error?.name !== "AbortError") console.error(error);
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -7114,6 +7123,12 @@ async function pollAudiobookPlaybackElsewhere() {
   renderAudiobookPlaybackElsewhere(info);
 }
 
+// The takeover still waiting on its pause request, if any. Another press
+// meanwhile (a lock-screen or headset play, or the button again after
+// cancelling) joins it rather than sending a second request and running a
+// second seek-and-play on top of the first.
+let audiobookTakeover = null;
+
 // pauseAudiobookElsewhereAndPlayHere asks every other device playing this
 // book to stop, then takes over playback here from wherever that device had
 // gotten to. Used both by the "playing elsewhere" banner's explicit button
@@ -7126,6 +7141,38 @@ async function pauseAudiobookElsewhereAndPlayHere() {
   const audio = audiobookAudioEl;
   const elsewhere = audiobookPlaybackElsewhereState;
   if (!player || !audio || !elsewhere) return;
+  const seekToElsewherePosition = () => {
+    const targetPosition = estimateAudiobookElsewherePosition(elsewhere);
+    const knownDuration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : player.durationSeconds || 0;
+    if (Number.isFinite(targetPosition) && targetPosition > 0 && (!knownDuration || targetPosition < knownDuration - 1)) {
+      audio.currentTime = targetPosition;
+    }
+  };
+  // Same constraint as resumeAudiobookPlaybackFromSavedPosition: an element
+  // that has never played can only be started from inside the press, so it
+  // starts now rather than after the other device has been asked to stop.
+  const startNow = !audiobookPlaybackUnlocked && !audio.error && !audiobookStreamRecovery;
+  const begin = (takeover) => {
+    if (startNow) {
+      takeover.startedEarly = true;
+      seekToElsewherePosition();
+      startAudiobookPlayback(audio);
+    } else {
+      setAudiobookPlayPending("takeover");
+    }
+  };
+  if (audiobookTakeover?.playerId === player.id) {
+    begin(audiobookTakeover);
+    return;
+  }
+  const takeover = { playerId: player.id, startedEarly: false };
+  audiobookTakeover = takeover;
+  begin(takeover);
+  // The other device is still playing, so this one shouldn't be either.
+  const abandonTakeover = () => {
+    setAudiobookPlayPending(null);
+    if (takeover.startedEarly) audio.pause();
+  };
   try {
     const response = await fetch(`/api/audiobooks/${encodeURIComponent(player.id)}/playback-elsewhere/pause`, {
       method: "POST",
@@ -7133,19 +7180,27 @@ async function pauseAudiobookElsewhereAndPlayHere() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ deviceId: getAudiobookDeviceId() }),
     });
-    if (!(await expectAuthorized(response, "Could not pause the other device."))) return;
+    if (!(await expectAuthorized(response, "Could not pause the other device."))) {
+      abandonTakeover();
+      return;
+    }
   } catch (error) {
     console.error(error);
+    abandonTakeover();
     showToast("Could not pause the other device.", "error", { title: "Audiobooks" });
     return;
+  } finally {
+    if (audiobookTakeover === takeover) audiobookTakeover = null;
   }
-  const targetPosition = estimateAudiobookElsewherePosition(elsewhere);
+  // The player may have closed or moved to another book meanwhile - its
+  // banner isn't this one's to clear.
+  if (state.audiobooks.player?.id !== player.id) return;
   renderAudiobookPlaybackElsewhere(null);
-  const knownDuration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : player.durationSeconds || 0;
-  if (Number.isFinite(targetPosition) && targetPosition > 0 && (!knownDuration || targetPosition < knownDuration - 1)) {
-    audio.currentTime = targetPosition;
+  // Still waiting to play (not cancelled, and not already started early).
+  if (audiobookPlayPending === "takeover") {
+    seekToElsewherePosition();
+    startAudiobookPlayback(audio);
   }
-  audio.play().catch((error) => console.error(error));
   confirmAudiobookTakeover(player.id).catch((error) => console.error(error));
 }
 
@@ -7272,6 +7327,7 @@ function getAudiobookAudioElement() {
     audio.addEventListener(type, noteAudiobookStreamActivity);
   }
   audio.addEventListener("playing", () => {
+    audiobookPlaybackUnlocked = true;
     if (audiobookStreamRecovery) finishAudiobookStreamRecovery();
   });
   // durationchange covers files whose real length isn't known yet at
@@ -7292,6 +7348,8 @@ function getAudiobookAudioElement() {
     sendAudiobookPlaybackHeartbeat({ resumed: true });
     setAudiobookMediaSessionPlaybackState(audio);
     clearAudiobookPlayerStatus("Paused — now playing on another device.");
+    clearAudiobookPlayerStatus(AUDIOBOOK_TAP_TO_PLAY_STATUS);
+    clearAudiobookPlayerStatus(AUDIOBOOK_TAP_TO_KEEP_LISTENING_STATUS);
     updateAudiobookBufferingUI();
   });
   audio.addEventListener("pause", () => {
@@ -7354,6 +7412,7 @@ const AUDIOBOOK_STREAM_ATTEMPT_TIMEOUT_MS = 30000;
 const AUDIOBOOK_STREAM_STALL_MS = 20000;
 const AUDIOBOOK_RECONNECTING_STATUS = "Connection lost - reconnecting...";
 const AUDIOBOOK_PLAYBACK_ERROR_STATUS = "Playback error - check your connection, then press play to retry.";
+const AUDIOBOOK_TAP_TO_KEEP_LISTENING_STATUS = "Tap play to keep listening.";
 let audiobookStreamRecovery = null;
 let audiobookStreamActivityAt = 0;
 // Where playback was when recovery gave up: a failed load resets currentTime,
@@ -7476,7 +7535,7 @@ function reloadAudiobookStream(audio, player, recovery) {
     audio.play().catch((error) => {
       if (error?.name !== "NotAllowedError" || audiobookStreamRecovery !== recovery) return;
       finishAudiobookStreamRecovery();
-      setAudiobookPlayerStatus("Tap play to keep listening.");
+      setAudiobookPlayerStatus(AUDIOBOOK_TAP_TO_KEEP_LISTENING_STATUS);
     });
   }, { signal: reload.signal });
   audio.src = player.streamUrl;
@@ -7543,8 +7602,14 @@ function setupAudiobookMediaSessionHandlers(audio) {
       resumeAudiobookPlaybackFromSavedPosition().catch((error) => console.error(error));
     }
   });
-  navigator.mediaSession.setActionHandler("pause", () => audio.pause());
-  navigator.mediaSession.setActionHandler("stop", () => audio.pause());
+  navigator.mediaSession.setActionHandler("pause", () => {
+    cancelAudiobookPlayRequest();
+    audio.pause();
+  });
+  navigator.mediaSession.setActionHandler("stop", () => {
+    cancelAudiobookPlayRequest();
+    audio.pause();
+  });
   navigator.mediaSession.setActionHandler("seekbackward", (details) => {
     audio.currentTime = Math.max(0, audio.currentTime - (details?.seekOffset || 30));
   });
@@ -7599,7 +7664,53 @@ function clearAudiobookPlayerStatus(text) {
 }
 
 const AUDIOBOOK_BUFFERING_STATUS = "Buffering...";
+const AUDIOBOOK_TAP_TO_PLAY_STATUS = "Tap play to start listening.";
 let audiobookBuffering = false;
+
+// audiobookPlayPending covers the gap before the element itself says it is
+// trying to play: "open" while opening a book waits on metadata and the
+// saved position before autoplaying, "resume" while a press of play waits on
+// the saved-position fetch. The element is still paused through both, so
+// without this a press deep into a long book - where the seek and the fetch
+// both take a while on a phone - showed nothing at all.
+let audiobookPlayPending = null;
+
+// Set once this element has actually played. Until then a phone's browser
+// only lets play() start from inside the tap itself, not after an awaited
+// fetch, and refuses it outright otherwise.
+let audiobookPlaybackUnlocked = false;
+
+function setAudiobookPlayPending(reason) {
+  if (audiobookPlayPending === reason) return;
+  audiobookPlayPending = reason;
+  updateAudiobookBufferingUI();
+}
+
+// startAudiobookPlayback is every play() the player makes on the listener's
+// behalf: it hands the busy state over to the element (now unpaused, so the
+// readyState check takes over) and makes a refusal visible instead of
+// leaving the button looking like it ignored the press.
+function startAudiobookPlayback(audio) {
+  const attempt = audio.play();
+  audiobookPlayPending = null;
+  updateAudiobookBufferingUI();
+  return attempt.catch((error) => {
+    updateAudiobookBufferingUI();
+    // AbortError: a pause or a new source got there first, which is fine.
+    // Load failures come back through the "error" event and its recovery.
+    if (error?.name === "AbortError") return;
+    console.error(error);
+    if (error?.name === "NotAllowedError") setAudiobookPlayerStatus(AUDIOBOOK_TAP_TO_PLAY_STATUS);
+  });
+}
+
+// cancelAudiobookPlayRequest drops a press of play still waiting on its
+// position fetch - pressing the (spinning) button again, or pausing from the
+// lock screen, means "never mind".
+function cancelAudiobookPlayRequest() {
+  audiobookResumeRequestToken++;
+  setAudiobookPlayPending(null);
+}
 
 // updateAudiobookBufferingUI derives "is this stuck waiting on data" from the
 // audio element's own state - it's meant to be playing (not paused/ended) but
@@ -7609,8 +7720,8 @@ let audiobookBuffering = false;
 // the play button, which is the same node in both the full and mini player.
 function updateAudiobookBufferingUI() {
   const audio = audiobookAudioEl;
-  const buffering = !!audio && !!audio.getAttribute("src") && !audio.paused && !audio.ended && !audio.error
-    && (audio.readyState < HTMLMediaElement.HAVE_FUTURE_DATA || audio.seeking);
+  const buffering = !!audio && !!audio.getAttribute("src") && !audio.error && (!!audiobookPlayPending
+    || (!audio.paused && !audio.ended && (audio.readyState < HTMLMediaElement.HAVE_FUTURE_DATA || audio.seeking)));
   if (buffering === audiobookBuffering) return;
   audiobookBuffering = buffering;
   audiobookPlayerPlayButton?.classList.toggle("is-buffering", buffering);
@@ -7794,7 +7905,9 @@ async function openAudiobookPlayer(item) {
   updateSleepTimerButtonUI();
 
   audiobookPlayerModal?.showModal();
+  audiobookResumeRequestToken++;
   audio.src = item.stream_url;
+  setAudiobookPlayPending("open");
   renderAudiobookPlaybackElsewhere(null);
 
   // Autoplay-on-open has to wait on the audio metadata, the elsewhere-check,
@@ -7810,6 +7923,9 @@ async function openAudiobookPlayer(item) {
   let positionChecked = false;
   const tryAutoplayDecision = () => {
     if (!metadataReady || !elsewhereChecked || !positionChecked) return;
+    // A press of play (or of play then pause) while this was still waiting
+    // already decided what happens - autoplaying on top would override it.
+    if (audiobookPlayPending !== "open" || state.audiobooks.player?.id !== item.id) return;
     // audio.duration can still be NaN here for some files even after
     // loadedmetadata (e.g. an M4B whose real length needs another range
     // request the browser hasn't made yet) - falling back to the server's
@@ -7822,12 +7938,11 @@ async function openAudiobookPlayer(item) {
       audio.currentTime = resumeAt;
     }
     if (audiobookPlaybackElsewhereState) {
+      setAudiobookPlayPending(null);
       setAudiobookPlayerStatus(AUDIOBOOK_ELSEWHERE_STATUS);
       return;
     }
-    audio.play().catch(() => {
-      setAudiobookPlayerStatus("Tap play to start listening.");
-    });
+    startAudiobookPlayback(audio);
   };
   const onReady = () => {
     metadataReady = true;
@@ -7836,7 +7951,10 @@ async function openAudiobookPlayer(item) {
   };
   audio.addEventListener("loadedmetadata", onReady);
 
-  fetchAudiobookPlaybackElsewhere(item.id).then((info) => {
+  // Both checks give up after a while: the play button spins until they
+  // land, and a request stuck on a bad signal shouldn't hold it there
+  // forever. A timed-out check counts the same as a failed one.
+  fetchAudiobookPlaybackElsewhere(item.id, { timeoutMs: AUDIOBOOK_OPEN_CHECK_TIMEOUT_MS }).then((info) => {
     elsewhereChecked = true;
     if (state.audiobooks.player?.id !== item.id) return;
     renderAudiobookPlaybackElsewhere(info);
@@ -7847,7 +7965,7 @@ async function openAudiobookPlayer(item) {
     tryAutoplayDecision();
   });
 
-  fetchAudiobookSavedPosition(item.id).then((position) => {
+  fetchAudiobookSavedPosition(item.id, { timeoutMs: AUDIOBOOK_OPEN_CHECK_TIMEOUT_MS }).then((position) => {
     if (state.audiobooks.player?.id !== item.id) return;
     // This device's own save from just before (closing the player, then
     // reopening the same book) can still be in flight, so the server may not
@@ -7857,6 +7975,9 @@ async function openAudiobookPlayer(item) {
     if (position !== null && !localSaveIsFresh) {
       resumeAt = position;
       item.position_seconds = position;
+      // A metadata edit while opening swaps in a copy of the item; a press
+      // of play reads its starting point from that copy.
+      if (audiobookPlayerOpenItem?.id === item.id) audiobookPlayerOpenItem.position_seconds = position;
     }
     positionChecked = true;
     tryAutoplayDecision();
@@ -8137,7 +8258,8 @@ function renderAudiobookPlayerBookmarks() {
       <button type="button" class="audiobook-player-bookmark-jump" data-bookmark-start="${bookmark.position_seconds}">
         <span class="audiobook-player-bookmark-label">${escapeHTML(bookmark.label || "Bookmark")}</span>
         <span class="audiobook-player-bookmark-time">${formatMediaTime(bookmark.position_seconds)}</span>
-        <span class="audiobook-player-bookmark-created" title="${escapeHTML(formatDateTimeZoned(bookmark.created_at))}">${escapeHTML(formatRelativeTime(bookmark.created_at))}</span>
+        <span class="audiobook-player-bookmark-created" title="${escapeHTML(audiobookBookmarkCreatedTitle(bookmark))}">${escapeHTML(formatRelativeTime(bookmark.created_at))}</span>
+        ${renderAudiobookBookmarkExpiry(bookmark)}
       </button>
       <button type="button" class="audiobook-player-bookmark-delete" aria-label="Delete bookmark">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14" /><path d="M8 7V5.5A1.5 1.5 0 0 1 9.5 4h5A1.5 1.5 0 0 1 16 5.5V7" /><path d="M7 7v11.5A1.5 1.5 0 0 0 8.5 20h7a1.5 1.5 0 0 0 1.5-1.5V7" /></svg>
@@ -8150,13 +8272,68 @@ function renderAudiobookPlayerBookmarks() {
     row.querySelector(".audiobook-player-bookmark-jump")?.addEventListener("click", (event) => {
       const audio = getAudiobookAudioElement();
       audio.currentTime = Number(event.currentTarget.dataset.bookmarkStart) || 0;
-      if (audio.paused) audio.play().catch((error) => console.error(error));
+      if (audio.paused) {
+        cancelAudiobookPlayRequest();
+        startAudiobookPlayback(audio);
+      }
+      markAudiobookBookmarkUsed(id).catch((error) => console.error(error));
       if (window.innerWidth < 900) setAudiobookSidePanel(audiobookPlayerBookmarksPanel, audiobookPlayerBookmarksToggle, false);
     });
     row.querySelector(".audiobook-player-bookmark-delete")?.addEventListener("click", () => {
       deleteAudiobookBookmark(id).catch((error) => console.error(error));
     });
   });
+}
+
+// Bookmarks expire after going unused for the server's configured window
+// (MEMEINDEX_AUDIOBOOK_BOOKMARK_EXPIRY_DAYS, six months by default). The
+// expiry date is always in the row's tooltip, but only spelled out once it
+// is close enough to act on - otherwise every row would carry a "expires in
+// 6 months" line that means nothing yet.
+const AUDIOBOOK_BOOKMARK_EXPIRY_WARNING_DAYS = 14;
+
+function renderAudiobookBookmarkExpiry(bookmark) {
+  if (!bookmark.expires_at) return "";
+  const expiresAt = new Date(bookmark.expires_at);
+  if (Number.isNaN(expiresAt.getTime())) return "";
+  const daysLeft = (expiresAt.getTime() - Date.now()) / 86400000;
+  if (daysLeft > AUDIOBOOK_BOOKMARK_EXPIRY_WARNING_DAYS) return "";
+  const title = `Removed ${formatDateTimeZoned(expiresAt)} unless used - jumping to it resets the clock`;
+  const when = daysLeft < 1 ? "today" : `in ${Math.ceil(daysLeft)} day${Math.ceil(daysLeft) === 1 ? "" : "s"}`;
+  return `<span class="audiobook-player-bookmark-expiry" title="${escapeHTML(title)}">Expires ${when} - tap to keep</span>`;
+}
+
+function audiobookBookmarkCreatedTitle(bookmark) {
+  const created = formatDateTimeZoned(bookmark.created_at);
+  const expiresAt = bookmark.expires_at ? new Date(bookmark.expires_at) : null;
+  if (!expiresAt || Number.isNaN(expiresAt.getTime())) return created;
+  return `${created} · expires ${formatDateTimeZoned(expiresAt)} unless used`;
+}
+
+// markAudiobookBookmarkUsed restarts a bookmark's expiry clock after a jump
+// to it, and refreshes its row with the new expiry.
+async function markAudiobookBookmarkUsed(bookmarkId) {
+  const player = state.audiobooks.player;
+  if (!player) return;
+  const response = await fetch(`/api/audiobooks/${encodeURIComponent(player.id)}/bookmarks/${encodeURIComponent(bookmarkId)}/use`, {
+    method: "POST",
+    credentials: "same-origin",
+  });
+  // 404: it expired, was deleted on another device, or was replaced by a
+  // newer sleep-timer bookmark while this list was open - drop the row
+  // rather than leave a bookmark that can't be kept.
+  if (response.status === 404) {
+    if (state.audiobooks.player?.id !== player.id) return;
+    state.audiobooks.player.bookmarks = (state.audiobooks.player.bookmarks || []).filter((entry) => entry.id !== bookmarkId);
+    renderAudiobookPlayerBookmarks();
+    showToast("That bookmark no longer exists, so it was removed from the list.", "info", { title: "Audiobooks" });
+    return;
+  }
+  if (!response.ok) return;
+  const updated = await response.json();
+  if (state.audiobooks.player?.id !== player.id) return;
+  state.audiobooks.player.bookmarks = (state.audiobooks.player.bookmarks || []).map((entry) => (entry.id === updated.id ? updated : entry));
+  renderAudiobookPlayerBookmarks();
 }
 
 // flashAudiobookActionButton briefly pulses a button green (and, if a label
@@ -8178,7 +8355,7 @@ function flashAudiobookActionButton(button, labelEl, successText) {
   }, 1200);
 }
 
-async function createAudiobookBookmark(label) {
+async function createAudiobookBookmark(label, { sleepTimer = false } = {}) {
   const player = state.audiobooks.player;
   const audio = audiobookAudioEl;
   if (!player || !audio) return;
@@ -8187,12 +8364,14 @@ async function createAudiobookBookmark(label) {
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ positionSeconds: audio.currentTime || 0, label: label || "" }),
+      body: JSON.stringify({ positionSeconds: audio.currentTime || 0, label: label || "", sleepTimer }),
     });
     if (!(await expectAuthorized(response, "Could not add bookmark."))) return;
     const bookmark = await response.json();
     if (state.audiobooks.player?.id !== player.id) return;
-    state.audiobooks.player.bookmarks = [...(state.audiobooks.player.bookmarks || []), bookmark]
+    // A sleep-timer bookmark replaces earlier ones close by in the book.
+    const replaced = new Set(bookmark.replaced_bookmark_ids || []);
+    state.audiobooks.player.bookmarks = [...(state.audiobooks.player.bookmarks || []).filter((entry) => !replaced.has(entry.id)), bookmark]
       .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
     renderAudiobookPlayerBookmarks();
     return bookmark;
@@ -8350,7 +8529,7 @@ async function startSleepTimer(selection) {
   // Drop a bookmark right where playback is now, before the timer starts
   // counting down - if the listener drifts off, this marks roughly where
   // they still were awake rather than wherever playback happened to stop.
-  const bookmark = await createAudiobookBookmark("Sleep timer started");
+  const bookmark = await createAudiobookBookmark("Sleep timer started", { sleepTimer: true });
   // Another start may have finished while the bookmark was saving - replace
   // it rather than leaving its interval running.
   cancelSleepTimer({ silent: true });
@@ -8516,6 +8695,11 @@ function saveAudiobookProgressNow() {
 // normal drift (a heartbeat/save that landed a couple of seconds before the
 // pause) rather than a real "someone else moved the bookmark" difference.
 const AUDIOBOOK_RESUME_POSITION_TOLERANCE_SECONDS = 2;
+const AUDIOBOOK_RESUME_POSITION_TIMEOUT_MS = 4000;
+// Opening a book waits on these before autoplaying; longer than a press's
+// timeout because nothing has started yet and the fresh position matters
+// more than a quick start.
+const AUDIOBOOK_OPEN_CHECK_TIMEOUT_MS = 8000;
 
 // A press is only superseded by a later one while still paused (see the
 // token check below) - once playback actually starts, audio.paused itself
@@ -8540,25 +8724,65 @@ async function resumeAudiobookPlaybackFromSavedPosition() {
   // this twice - each fetching the position independently and racing to seek
   // right before calling play(). Only the most recent press's result applies.
   const token = ++audiobookResumeRequestToken;
-  const position = await fetchAudiobookSavedPosition(player.id);
+  // A browser that hasn't let this element play yet only allows play() from
+  // inside the press itself - after the await below it is refused, silently
+  // as far as the listener could tell. So the first play starts right away
+  // and the fetched position is reconciled with a seek once it arrives.
+  const startNow = !audiobookPlaybackUnlocked && !audio.error && !audiobookStreamRecovery;
+  // Best position known without asking the server: what opening the book
+  // fetched (or the library list had). Only used while the open flow still
+  // hasn't seeked there itself - pressing play in that window would
+  // otherwise start a long book from the top. Once it has, wherever the
+  // element is (including a deliberate jump back to 0:00) is what counts.
+  const openStillPending = audiobookPlayPending === "open";
+  const knownPosition = openStillPending && audiobookPlayerOpenItem?.id === player.id ? Number(audiobookPlayerOpenItem.position_seconds) || 0 : 0;
+  const knownDuration = () => (Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : player.durationSeconds || 0);
+  // Same bounds as the open flow's own resume, so a finished book (saved at
+  // its very end) starts over instead of seeking there and ending at once.
+  const seekToKnownPosition = () => {
+    const duration = knownDuration();
+    if (knownPosition > 1 && (!duration || knownPosition < duration - 2)) audio.currentTime = knownPosition;
+  };
+  if (startNow) {
+    seekToKnownPosition();
+    startAudiobookPlayback(audio);
+  } else {
+    setAudiobookPlayPending("resume");
+  }
+  const position = await fetchAudiobookSavedPosition(player.id, { timeoutMs: AUDIOBOOK_RESUME_POSITION_TIMEOUT_MS });
+  // A newer press (or a cancel) owns the pending state from here.
   if (token !== audiobookResumeRequestToken) return;
-  // The player can close, switch to a different book, or already be playing
-  // again (a second press, a media-session/hardware play key) while this was
-  // in flight - any of those make the fetched position no longer relevant.
-  if (state.audiobooks.player?.id !== player.id || !audio.paused) return;
+  if (state.audiobooks.player?.id !== player.id) {
+    setAudiobookPlayPending(null);
+    return;
+  }
+  const seekToSavedPosition = () => {
+    if (position === null || Math.abs(position - audio.currentTime) <= AUDIOBOOK_RESUME_POSITION_TOLERANCE_SECONDS) return;
+    const duration = knownDuration();
+    if (!duration || position < duration - 1) {
+      audio.currentTime = position;
+    }
+  };
+  if (startNow) {
+    seekToSavedPosition();
+    return;
+  }
+  // Already playing again (a media-session/hardware play key got there
+  // first) - the fetched position is no longer relevant.
+  if (!audio.paused) {
+    setAudiobookPlayPending(null);
+    return;
+  }
   // A dead element won't start again from play() alone - the source has to be
   // reloaded, which also covers pressing play mid-reconnect.
   if (audio.error || audiobookStreamRecovery) {
+    setAudiobookPlayPending(null);
     retryAudiobookStreamNow(audio, position ?? undefined);
     return;
   }
-  if (position !== null && Math.abs(position - audio.currentTime) > AUDIOBOOK_RESUME_POSITION_TOLERANCE_SECONDS) {
-    const knownDuration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : player.durationSeconds || 0;
-    if (!knownDuration || position < knownDuration - 1) {
-      audio.currentTime = position;
-    }
-  }
-  audio.play().catch((error) => console.error(error));
+  seekToSavedPosition();
+  if (position === null) seekToKnownPosition();
+  startAudiobookPlayback(audio);
 }
 
 // setAudiobookPlayerPosition is the shared path for the "mark as not
@@ -8608,6 +8832,7 @@ function closeAudiobookPlayer() {
   }
   audiobookSyncActive = false;
   resetAudiobookStreamRecovery();
+  cancelAudiobookPlayRequest();
   audiobookTakeoverConfirmToken++;
   audiobookTakeoverConfirming = false;
   renderAudiobookPlaybackElsewhere(null);
@@ -11646,6 +11871,12 @@ audiobookPlayerBookmarksToggle?.addEventListener("click", () => {
 });
 audiobookPlayerPlayButton?.addEventListener("click", () => {
   const audio = getAudiobookAudioElement();
+  // Pressing the spinning button again while a press is still fetching the
+  // saved position calls that press off, like pausing would.
+  if (audio.paused && (audiobookPlayPending === "resume" || audiobookPlayPending === "takeover")) {
+    cancelAudiobookPlayRequest();
+    return;
+  }
   if (audio.paused) {
     // Another device playing this book takes priority over a plain play():
     // pressing play here means "play here instead", not "play here too", so
@@ -11657,6 +11888,7 @@ audiobookPlayerPlayButton?.addEventListener("click", () => {
       resumeAudiobookPlaybackFromSavedPosition().catch((error) => console.error(error));
     }
   } else {
+    cancelAudiobookPlayRequest();
     audio.pause();
   }
 });
