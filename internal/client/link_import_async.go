@@ -46,13 +46,22 @@ type linkImportOutcome struct {
 // request, so the download survives the response. It returns the result if the
 // import finishes within linkImportResponseBudget; otherwise pending is true
 // and finishBackgroundLinkImport takes over (tag suggestions on success, the
-// retry queue on a retryable failure).
+// retry queue on a retryable failure). Both goroutines are tracked by
+// s.background so shutdown waits for them (and, past its grace period, cancels
+// the download) before the store is closed.
 func (s *Server) importLinkWithinBudget(r *http.Request, actor accessor.AuditActor, sourceURL string, tags []string, notes string) (meme accessor.Meme, err error, pending bool) {
 	done := make(chan linkImportOutcome, 1)
-	go func() {
-		meme, err := s.createMemeFromSourceURL(context.WithoutCancel(r.Context()), actor, sourceURL, tags, notes)
+	requestValues := context.WithoutCancel(r.Context())
+	started := s.background.Go(func(stop context.Context) {
+		ctx, cancel := context.WithCancel(requestValues)
+		defer cancel()
+		defer context.AfterFunc(stop, cancel)()
+		meme, err := s.createMemeFromSourceURL(ctx, actor, sourceURL, tags, notes)
 		done <- linkImportOutcome{meme: meme, err: err}
-	}()
+	})
+	if !started {
+		return accessor.Meme{}, userError("The server is restarting. Please try again in a moment."), false
+	}
 
 	timer := time.NewTimer(linkImportResponseBudget)
 	defer timer.Stop()
@@ -62,7 +71,11 @@ func (s *Server) importLinkWithinBudget(r *http.Request, actor accessor.AuditAct
 	case <-timer.C:
 	case <-r.Context().Done():
 	}
-	go s.finishBackgroundLinkImport(done, actor, sourceURL, tags, notes)
+	if !s.background.Go(func(context.Context) {
+		s.finishBackgroundLinkImport(done, actor, sourceURL, tags, notes)
+	}) {
+		log.Printf("background link import of %q will not be followed up: server is shutting down", sanitizeLogField(sourceURL))
+	}
 	return accessor.Meme{}, nil, true
 }
 

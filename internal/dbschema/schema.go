@@ -34,15 +34,19 @@ type querier interface {
 // individually idempotent (IF NOT EXISTS ...), which keeps two instances
 // booting at once safe: at worst they both run the same no-op DDL before one of
 // them wins the ledger insert.
+//
+// Migrations run with statement_timeout disabled; see withoutStatementTimeout.
 func Apply(ctx context.Context, db execer, names ...string) error {
-	q, ok := db.(querier)
-	if !ok {
-		// Callers in this codebase always pass a *pgxpool.Pool; this branch only
-		// exists so a bare execer (e.g. a test double) still gets the old
-		// run-every-time behaviour instead of a panic.
-		return applyUntracked(ctx, db, names...)
-	}
-	return applyTracked(ctx, q, names...)
+	return withoutStatementTimeout(ctx, db, func(db execer) error {
+		q, ok := db.(querier)
+		if !ok {
+			// Callers in this codebase always pass a *pgxpool.Pool; this branch
+			// only exists so a bare execer (e.g. a test double) still gets the
+			// old run-every-time behaviour instead of a panic.
+			return applyUntracked(ctx, db, names...)
+		}
+		return applyTracked(ctx, q, names...)
+	})
 }
 
 func applyUntracked(ctx context.Context, db execer, names ...string) error {
@@ -127,17 +131,24 @@ func short(sum string) string {
 // did not apply, so the caller can surface a degraded-capability signal (e.g.
 // on /readyz and the admin dashboard).
 func ApplyOptional(ctx context.Context, db execer, names ...string) (notApplied []string) {
-	for _, name := range names {
-		sql, err := files.ReadFile("sql/" + name)
-		if err != nil {
-			log.Printf("dbschema: optional migration %s unreadable: %v", name, err)
-			notApplied = append(notApplied, name)
-			continue
+	err := withoutStatementTimeout(ctx, db, func(db execer) error {
+		for _, name := range names {
+			sql, err := files.ReadFile("sql/" + name)
+			if err != nil {
+				log.Printf("dbschema: optional migration %s unreadable: %v", name, err)
+				notApplied = append(notApplied, name)
+				continue
+			}
+			if _, err := db.Exec(ctx, string(sql)); err != nil {
+				log.Printf("dbschema: optional migration %s not applied (continuing without it): %v", name, err)
+				notApplied = append(notApplied, name)
+			}
 		}
-		if _, err := db.Exec(ctx, string(sql)); err != nil {
-			log.Printf("dbschema: optional migration %s not applied (continuing without it): %v", name, err)
-			notApplied = append(notApplied, name)
-		}
+		return nil
+	})
+	if err != nil {
+		log.Printf("dbschema: optional migrations not applied (continuing without them): %v", err)
+		return append([]string(nil), names...)
 	}
 	return notApplied
 }

@@ -1396,7 +1396,11 @@ func (s *Server) withAudiobookMediaAuth(next http.Handler) http.Handler {
 			return
 		}
 
-		session, ok := s.auth.sessionFromRequest(r)
+		session, ok, err := s.auth.resolveSession(r)
+		if err != nil {
+			writeSessionUnavailable(w)
+			return
+		}
 		if !ok || !hasPermission(session.Permissions, permissionViewAudiobooks) {
 			http.NotFound(w, r)
 			return

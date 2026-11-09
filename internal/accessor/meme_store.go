@@ -813,7 +813,7 @@ func (s *MemeStore) saveMemesLocked() error {
 		return fmt.Errorf("encode index: %w", err)
 	}
 
-	if err := os.WriteFile(s.dataFile, payload, 0o644); err != nil {
+	if err := writeFileAtomic(s.dataFile, payload, 0o644); err != nil {
 		return fmt.Errorf("write index: %w", err)
 	}
 
@@ -845,7 +845,7 @@ func (s *MemeStore) saveFavoritesLocked() error {
 	if err != nil {
 		return fmt.Errorf("encode favorites: %w", err)
 	}
-	if err := os.WriteFile(s.favoritesFile, payload, 0o644); err != nil {
+	if err := writeFileAtomic(s.favoritesFile, payload, 0o644); err != nil {
 		return fmt.Errorf("write favorites: %w", err)
 	}
 	return nil
