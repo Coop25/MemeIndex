@@ -1363,11 +1363,20 @@ function canManageUsers() {
   return !!state.auth.permissions?.canManageUsers;
 }
 
+// Audiobooks need the database-backed store; a server running on the legacy
+// JSON store reports audiobooks_available: false and every audiobook request
+// would answer 501, so no permission (not even admin) shows the section.
+function audiobooksAvailable() {
+  return state.auth.audiobooksAvailable !== false;
+}
+
 function canViewAudiobooks() {
+  if (!audiobooksAvailable()) return false;
   return !!state.auth.permissions?.canViewAudiobooks || !!state.auth.permissions?.canUploadAudiobooks || !!state.auth.permissions?.canDeleteAudiobooks || canManageUsers();
 }
 
 function canUploadAudiobooks() {
+  if (!audiobooksAvailable()) return false;
   return !!state.auth.permissions?.canUploadAudiobooks || canManageUsers();
 }
 
@@ -1512,6 +1521,7 @@ async function fetchAuthSession() {
     },
     logoutURL: payload.logout_url || "/auth/logout",
     publicBaseURL: String(payload.public_base_url || "").trim(),
+    audiobooksAvailable: payload.audiobooks_available !== false,
   };
 
   if (state.auth.enabled && state.auth.authenticated && !state.auth.permissions?.canView && !state.auth.permissions?.canViewAudiobooks) {
@@ -8909,6 +8919,19 @@ function navigateToTag(tag) {
 }
 
 async function fetchVaultDashboard({ onlyIfNewestChanged = false } = {}) {
+	if (onlyIfNewestChanged) {
+		// The background poll only needs to know whether something new arrived.
+		// Ask for the newest id alone and skip the full dashboard when it is the
+		// one already on screen.
+		const probe = await fetch("/api/dashboard?probe=newest", { cache: "no-store" });
+		if ((probe.status === 401 || probe.status === 403) && !(await expectAuthorized(probe, "Failed to load dashboard."))) return;
+		// A background check that fails for any other reason just tries again
+		// on the next tick; it must not interrupt the user with an error.
+		if (!probe.ok) return false;
+		const probed = await probe.json();
+		const renderedNewestID = String(dashboardRecent?.querySelector(".meme-card")?.dataset.memeId || "");
+		if (String(probed?.newest_id || "") === renderedNewestID) return false;
+	}
 	const response = await fetch("/api/dashboard", { cache: "no-store" });
 	if (!(await expectAuthorized(response, "Failed to load dashboard."))) return;
 	const dashboard = await response.json();
@@ -9479,6 +9502,10 @@ function truncateWithCounter(value, maxLength = 48) {
 function buildPreview(meme) {
   if (meme.contentType.startsWith("image/")) {
     const img = document.createElement("img");
+    // Decode off the main thread and let the browser hold off on cards that
+    // are far outside the viewport.
+    img.loading = "lazy";
+    img.decoding = "async";
     img.src = meme.previewPath || meme.filePath;
     img.alt = meme.originalName;
     return img;
@@ -11572,6 +11599,16 @@ uploadForm.addEventListener("submit", async (event) => {
       uploadStatus.textContent = `${skippedCount} duplicate${skippedCount === 1 ? "" : "s"} skipped.`;
     } else {
       uploadStatus.textContent = "Upload complete.";
+    }
+    // The server saves what it can and lists the rest, so name the files that
+    // did not make it instead of reporting the whole batch as a success.
+    const failedNames = (Array.isArray(payload.failed) ? payload.failed : []).map((entry) => entry?.filename).filter(Boolean);
+    if (failedNames.length > 0) {
+      const shown = failedNames.slice(0, 3).join(", ") + (failedNames.length > 3 ? `, and ${failedNames.length - 3} more` : "");
+      uploadStatus.textContent = `${uploadStatus.textContent} ${failedNames.length} could not be saved: ${shown}.`;
+      showToast(uploadStatus.textContent, "error", { title: "Upload", duration: 8000 });
+      await loadInitialMemes();
+      return;
     }
     showToast(uploadStatus.textContent || "Upload complete.", "success", { title: "Upload", duration: 3400 });
     await loadInitialMemes();

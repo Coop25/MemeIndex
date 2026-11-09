@@ -11,10 +11,11 @@ MemeIndex is a self-hosted meme organizer built with Go and a lightweight fronte
 ## Features
 
 - Upload any file type through the browser
-- Download supported YouTube, Facebook, and Reddit links from a dedicated Process Link modal
+- Download supported YouTube, Facebook, Reddit, Instagram, TikTok, and Twitter/X links, plus direct image and video URLs, from the Import Media Link modal
 - Store metadata in Postgres with a dedicated tags table for suggestions
 - Compute content hashes on upload so duplicate files can be skipped
-- Generate video thumbnails for lighter grid previews when `ffmpeg` is installed
+- Generate video thumbnails for lighter grid previews when `ffmpeg` is installed, and downscaled thumbnails for large JPEG and PNG images (no `ffmpeg` needed)
+- Upload, organize into series, and listen to audiobooks with synced progress, bookmarks, a sleep timer, and listening stats (requires Postgres)
 - Suggest reviewable tags for images and videos through an optional local Ollama model, and index the text the model reads off the image (plus any video transcript) so memes are searchable by their on-image caption
 - Keep the original source link attached to imported link-based memes
 - Preview image and video files inline
@@ -34,7 +35,7 @@ $env:MEMEINDEX_ALLOW_ANONYMOUS='true'
 go run .
 ```
 
-Then open `http://localhost:8080`. This explicitly enables anonymous local operation. Use complete Discord configuration for a shared or production instance. Go 1.26.6 or newer is required.
+Then open `http://localhost:8080`. This explicitly enables anonymous local operation. Use complete Discord configuration for a shared or production instance. Go 1.27.3 or newer is required (see `go.mod`).
 
 ## Run with `.env`
 
@@ -59,7 +60,7 @@ The real `.env` file is ignored by git, so secrets stay local.
 
 ## Bulk Upload Script
 
-This repo includes a PowerShell uploader at [`scripts/upload-memes.ps1`](/f:/GitHub/MemeIndex/scripts/upload-memes.ps1) for importing a large meme folder through the normal authenticated upload API.
+This repo includes a PowerShell uploader at [`scripts/upload-memes.ps1`](scripts/upload-memes.ps1) for importing a large meme folder through the normal authenticated upload API.
 
 Example with the raw auth token:
 
@@ -92,6 +93,8 @@ Optional flags:
 - `-Tags "tag1,tag2"` applies the same comma-separated tags to every uploaded file in the batch
 - `-Notes "Imported backlog"` applies the same notes field to every uploaded file in the batch
 - `-DryRun` prints the files that would be uploaded without sending anything
+
+Leave out both `-SessionToken` and `-CookieValue` only for a server running with `MEMEINDEX_ALLOW_ANONYMOUS=true`. The script exits non-zero and lists the files that could not be saved; re-running it is safe because files already in the archive are skipped as duplicates.
 
 ## Configuration
 
@@ -225,6 +228,7 @@ Sign in as a super admin, open **Admin > Backup & Restore**, and select **Create
 - all original meme files and generated thumbnails
 - all meme metadata and tags
 - per-user favorites and permissions
+- active share links and each account's session version, so shared links keep working and sign-ins (including sign-outs) carry over. Restoring a backup made before this was added signs everyone out once
 - reel sessions, moderation state, and audit history
 - all audiobook files, cover art, metadata, chapters, series, bookmarks, favorites, per-user playback progress, finished-books history, and listening stats (daily totals and streaks)
 

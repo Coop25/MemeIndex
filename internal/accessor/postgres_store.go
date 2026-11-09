@@ -115,7 +115,7 @@ func (s *PostgresStore) ThumbnailDir() string {
 }
 
 func (s *PostgresStore) EnsurePreviewAssets() error {
-	// Only the video rows are relevant here, and only their stored name and
+	// Only video and image rows get thumbnails, and only their stored name and
 	// content type are needed - not the per-row tag aggregation and favourites
 	// lookup that List() hydrates for the whole archive.
 	memes, err := s.videoMemesForPreview(context.Background())
@@ -180,7 +180,7 @@ func (s *PostgresStore) videoMemesForPreview(ctx context.Context) ([]Meme, error
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, stored_name, content_type
 		FROM memes
-		WHERE content_type LIKE 'video/%'
+		WHERE (content_type LIKE 'video/%' OR content_type LIKE 'image/%')
 		  AND COALESCE(hidden_from_app, FALSE) = FALSE
 		ORDER BY created_at DESC, id ASC
 	`)

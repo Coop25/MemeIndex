@@ -638,7 +638,7 @@ func (s *MemeStore) EnsurePreviewAssets() error {
 	failed := 0
 
 	for _, meme := range memes {
-		if strings.HasPrefix(meme.ContentType, "video/") {
+		if hasThumbnailableType(meme.ContentType) {
 			totalVideos += 1
 		}
 	}
@@ -652,7 +652,7 @@ func (s *MemeStore) EnsurePreviewAssets() error {
 
 	processedVideos := 0
 	for i := range memes {
-		if !strings.HasPrefix(memes[i].ContentType, "video/") {
+		if !hasThumbnailableType(memes[i].ContentType) {
 			continue
 		}
 

@@ -50,7 +50,7 @@ const (
 	previewAssetUnavailable   previewAssetResult = "unavailable"
 )
 
-// thumbnailPresenceCache remembers video stored-names whose thumbnail file has
+// thumbnailPresenceCache remembers stored-names (videos and images) whose thumbnail file has
 // been seen on disk. A generated thumbnail is permanent for the life of the
 // meme, so a positive result never needs re-checking; only the absence of one
 // is re-stat'd (an upload or the backfill can create it later). The cache is
@@ -74,7 +74,12 @@ func decoratePreviewPath(meme *Meme, previewDir string) {
 
 	switch {
 	case strings.HasPrefix(meme.ContentType, "image/"):
+		// A large JPEG or PNG has a downscaled thumbnail for the grid; every
+		// other image (small, animated, undecodable) is its own preview.
 		meme.PreviewPath = meme.FilePath
+		if previewDir != "" && thumbnailOnDisk(previewDir, meme.StoredName) {
+			meme.PreviewPath = thumbnailWebPath(meme.StoredName)
+		}
 	case strings.HasPrefix(meme.ContentType, "video/"):
 		if previewDir == "" {
 			meme.PreviewPath = ""
@@ -96,6 +101,56 @@ func decoratePreviewPath(meme *Meme, previewDir string) {
 	}
 }
 
+// thumbnailOnDisk reports whether storedName's thumbnail exists, remembering a
+// positive answer (see thumbnailPresenceCache).
+func thumbnailOnDisk(previewDir, storedName string) bool {
+	cacheKey := previewDir + "\x00" + storedName
+	if _, seen := thumbnailPresenceCache.Load(cacheKey); seen {
+		return true
+	}
+	if _, err := os.Stat(filepath.Join(previewDir, thumbnailFileName(storedName))); err != nil {
+		return false
+	}
+	thumbnailPresenceCache.Store(cacheKey, struct{}{})
+	return true
+}
+
+// ensureImagePreviewAsset gives a large image a downscaled thumbnail so the
+// grid does not download the full-size original for every card. Any image
+// that is skipped or fails keeps its original file as the preview, so this
+// never fails an upload.
+func ensureImagePreviewAsset(uploadDir, previewDir string, meme *Meme) (previewAssetResult, error) {
+	meme.PreviewPath = meme.FilePath
+	if previewDir == "" || strings.TrimSpace(meme.StoredName) == "" {
+		return previewAssetUnsupported, nil
+	}
+	if thumbnailOnDisk(previewDir, meme.StoredName) {
+		meme.PreviewPath = thumbnailWebPath(meme.StoredName)
+		return previewAssetAlreadyExists, nil
+	}
+	if err := os.MkdirAll(previewDir, 0o755); err != nil {
+		return previewAssetUnsupported, nil
+	}
+	err := generateImageThumbnail(filepath.Join(uploadDir, meme.StoredName), filepath.Join(previewDir, thumbnailFileName(meme.StoredName)))
+	switch {
+	case err == nil:
+		meme.PreviewPath = thumbnailWebPath(meme.StoredName)
+		return previewAssetGenerated, nil
+	case errors.Is(err, errImageThumbnailSkipped):
+		return previewAssetUnsupported, nil
+	default:
+		log.Printf("image thumbnail for %s failed, using the original as its preview: %v", meme.StoredName, err)
+		return previewAssetUnsupported, nil
+	}
+}
+
+// hasThumbnailableType reports whether the preview backfill should look at a
+// meme of this content type: videos get a poster frame, images a downscaled
+// copy.
+func hasThumbnailableType(contentType string) bool {
+	return strings.HasPrefix(contentType, "video/") || strings.HasPrefix(contentType, "image/")
+}
+
 func ensurePreviewAsset(uploadDir, previewDir string, meme *Meme) error {
 	_, err := ensurePreviewAssetWithResult(uploadDir, previewDir, meme)
 	return err
@@ -107,8 +162,7 @@ func ensurePreviewAssetWithResult(uploadDir, previewDir string, meme *Meme) (pre
 	}
 
 	if strings.HasPrefix(meme.ContentType, "image/") {
-		meme.PreviewPath = meme.FilePath
-		return previewAssetUnsupported, nil
+		return ensureImagePreviewAsset(uploadDir, previewDir, meme)
 	}
 
 	if !strings.HasPrefix(meme.ContentType, "video/") {

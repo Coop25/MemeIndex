@@ -136,7 +136,7 @@ func TestStaticAssetHandlerMarksFingerprintedURLsImmutable(t *testing.T) {
 
 	plain := httptest.NewRecorder()
 	handler.ServeHTTP(plain, httptest.NewRequest(http.MethodGet, "/static/app.js", nil))
-	if cc := plain.Header().Get("Cache-Control"); cc != "" {
-		t.Fatalf("unfingerprinted asset Cache-Control = %q, want none set here", cc)
+	if cc := plain.Header().Get("Cache-Control"); cc != "private, no-cache" {
+		t.Fatalf("unfingerprinted asset Cache-Control = %q, want revalidation", cc)
 	}
 }
