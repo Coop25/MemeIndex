@@ -353,14 +353,29 @@ func downgradeArchiveToFormat3(t *testing.T, source io.Reader) []byte {
 			if err != nil {
 				t.Fatal(err)
 			}
+			// PostgreSQL writes an empty string as "" and NULL as nothing at
+			// all, and COPY reads them back that way. encoding/csv flattens
+			// both to an empty field, so app_users - whose text columns are
+			// NOT NULL and often empty, and which has no nullable column -
+			// gets its empties written back quoted.
+			quoteEmpty := header.Name == "database/app_users.csv"
 			var rewritten bytes.Buffer
-			w := csv.NewWriter(&rewritten)
 			for _, record := range records {
-				if err := w.Write(record[:len(record)-dropped]); err != nil {
-					t.Fatal(err)
+				fields := record[:len(record)-dropped]
+				for i, field := range fields {
+					if i > 0 {
+						rewritten.WriteByte(',')
+					}
+					switch {
+					case field == "" && !quoteEmpty:
+					case field == "" || strings.ContainsAny(field, string([]byte{44, 34, 13, 10})): // comma, quote, CR, LF
+						rewritten.WriteString(`"` + strings.ReplaceAll(field, `"`, `""`) + `"`)
+					default:
+						rewritten.WriteString(field)
+					}
 				}
+				rewritten.WriteByte('\n')
 			}
-			w.Flush()
 			payload = rewritten.Bytes()
 		}
 		switch header.Name {
