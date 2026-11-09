@@ -492,7 +492,7 @@ func (a *authService) resolveSession(r *http.Request) (authSession, bool, error)
 		if r.Context().Err() == nil {
 			log.Printf("session lookup for user %s failed: %v", claims.Subject, err)
 		}
-		return authSession{}, false, fmt.Errorf("%w: %v", errSessionStoreUnavailable, err)
+		return authSession{}, false, fmt.Errorf("%w: %w", errSessionStoreUnavailable, err)
 	}
 	if !found || record.SessionVersion <= 0 || record.SessionVersion != claims.SessionVersion {
 		return authSession{}, false, nil
