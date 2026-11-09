@@ -148,6 +148,9 @@ func main() {
 
 	// Now that no new requests can arrive, stop the background workers and wait
 	// for the goroutines this process owns before closing the store they use.
+	// Detached link imports go first: a finished one queues tag suggestions on
+	// the meme manager, which must still be running to accept them.
+	server.StopBackgroundWork(20 * time.Second)
 	memeManager.StopBackgroundWorkers(10 * time.Second)
 	bg.Wait()
 

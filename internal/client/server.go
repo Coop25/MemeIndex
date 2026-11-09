@@ -42,9 +42,13 @@ type Server struct {
 	audiobookActivity   audiobookActivityCache
 	mediaClient         *mediafetch.Client
 	linkRetries         *linkRetryQueue
-	backup              *portableBackup
-	shareSecret         []byte
-	draining            atomic.Bool
+	// background tracks goroutines that outlive a request (detached link
+	// imports, the link retry queue) so StopBackgroundWork can wait for them
+	// before main closes the store.
+	background  backgroundTasks
+	backup      *portableBackup
+	shareSecret []byte
+	draining    atomic.Bool
 	// restoring is set for the full duration of a portable-backup import, which
 	// truncates the database and swaps the uploads/thumbnails directories under
 	// the running server. While it is set, maintenanceGuard rejects mutating
@@ -149,6 +153,9 @@ func NewServer(config Config, memeManager *manager.MemeManager) *Server {
 		audiobookRemuxProgress: newAudiobookRemuxProgress(),
 	}
 	server.linkRetries = newLinkRetryQueue(config.MediaFetchRetry.Interval, config.MediaFetchRetry.MaxAttempts, server.processRetriedLinkJob)
+	server.background.Go(func(ctx context.Context) {
+		server.linkRetries.run(ctx, server.background.Quit())
+	})
 	server.startAudiobookUploadCleanupSweeper()
 	server.startAudiobookBookmarkExpirySweeper()
 	go server.backfillAudiobookMetadata()

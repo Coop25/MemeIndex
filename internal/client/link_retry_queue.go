@@ -45,6 +45,17 @@ type linkRetryQueue struct {
 	processingID string
 }
 
+// maxRejectedLinkRetries caps how many permanently failed jobs the queue keeps
+// for the admin panel; past it the oldest are dropped so a long-running server
+// with a broken downloader doesn't grow this list without bound.
+const maxRejectedLinkRetries = 200
+
+// linkRetryPollInterval is how often run checks for a ready job. A var so
+// tests can shrink it.
+var linkRetryPollInterval = 5 * time.Second
+
+// newLinkRetryQueue builds an idle queue; the caller starts processing with
+// run, normally as a tracked background task so shutdown can stop it.
 func newLinkRetryQueue(interval time.Duration, maxAttempts int, processFn func(context.Context, LinkRetryJob) error) *linkRetryQueue {
 	if interval <= 0 {
 		interval = 5 * time.Minute
@@ -57,7 +68,6 @@ func newLinkRetryQueue(interval time.Duration, maxAttempts int, processFn func(c
 		maxAttempts: maxAttempts,
 		processFn:   processFn,
 	}
-	go q.run()
 	return q
 }
 
@@ -122,18 +132,26 @@ func (q *linkRetryQueue) RequeueRejected(id string) bool {
 	return false
 }
 
-func (q *linkRetryQueue) run() {
-	ticker := time.NewTicker(5 * time.Second)
+// run processes ready jobs until quit is closed. A job in progress when quit
+// closes is allowed to finish; ctx cancels it if shutdown runs out of time.
+func (q *linkRetryQueue) run(ctx context.Context, quit <-chan struct{}) {
+	ticker := time.NewTicker(linkRetryPollInterval)
 	defer ticker.Stop()
 
-	for range ticker.C {
+	for {
+		select {
+		case <-quit:
+			return
+		case <-ticker.C:
+		}
+
 		job, ok := q.dequeueReady()
 		if !ok {
 			continue
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
-		err := q.processFn(ctx, job)
+		jobCtx, cancel := context.WithTimeout(ctx, 6*time.Minute)
+		err := q.processFn(jobCtx, job)
 		cancel()
 		q.finish(job, err)
 	}
@@ -178,6 +196,9 @@ func (q *linkRetryQueue) finish(job LinkRetryJob, err error) {
 		job.LastError = strings.TrimSpace(err.Error())
 		if job.Attempts >= job.MaxAttempts {
 			q.rejected = append(q.rejected, job)
+			if overflow := len(q.rejected) - maxRejectedLinkRetries; overflow > 0 {
+				q.rejected = slices.Delete(q.rejected, 0, overflow)
+			}
 			return
 		}
 		job.NextAttemptAt = time.Now().UTC().Add(q.interval)
