@@ -4858,17 +4858,52 @@ button.admin-health-row:hover, button.admin-health-row:focus-visible { backgroun
 .admin-series-muted { color: var(--muted); }
 .admin-series-tag-table { min-width: 520px; }
 
-/* Recently added: one shared row height, each card as wide as its own preview
-   (--preview-ratio is set per card once the image's real shape is known), so
-   tall and wide items both show in full without letterboxing. Order is kept;
-   the row scrolls sideways when the items don't all fit. */
+/* Meme previews sized to the picture. app.js sets --preview-ratio (width /
+   height) on each card once the image's real shape is known; until then a
+   card is square. Everything below keeps items in their original order. */
+
+/* Wrapping grids (library grid view, Favorites and Random picks on desktop):
+   justified rows. Basis and grow are both proportional to the ratio, so every
+   card in a row ends up the same height and the row spans the full width. A
+   row that cannot be filled (the last one, or one cut short by a wide item)
+   stops growing at --tile-grow times the base height instead of ballooning. */
+body:not(.library-list-view) .meme-grid,
+body:not(.library-list-view) .meme-grid.has-single-item,
+.dashboard-feature-items {
+  --tile-height: clamp(180px, 15vw, 250px);
+  --tile-grow: 1.4;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+.dashboard-feature-items { --tile-height: clamp(150px, 10vw, 200px); --tile-grow: 1.3; }
+body:not(.library-list-view) .meme-grid > .meme-card,
+.dashboard-feature-items > .meme-card {
+  /* content-box keeps the border out of the proportional widths, so every
+     preview in a row is exactly the same height. */
+  box-sizing: content-box;
+  flex: var(--preview-ratio, 1) 1 calc(var(--preview-ratio, 1) * var(--tile-height));
+  min-width: 0;
+  max-width: calc(var(--preview-ratio, 1) * var(--tile-height) * var(--tile-grow));
+}
+body:not(.library-list-view) .meme-grid .preview-frame,
+.dashboard-feature-items .preview-frame {
+  width: 100%;
+  height: auto;
+  aspect-ratio: var(--preview-ratio, 1);
+}
+.dashboard-recent .dashboard-empty,
+.dashboard-feature-items .dashboard-empty { flex: 1 1 100%; }
+
+/* Recently added: a single row. app.js shows as many of the newest items as
+   span the row at about this height and sets the exact height that makes them
+   fill it edge to edge. */
 .dashboard-recent,
 body.home-mode .dashboard-recent {
   --recent-row-height: clamp(200px, 17vw, 290px);
   display: flex;
   align-items: stretch;
-  overflow-x: auto;
-  overflow-y: hidden;
+  overflow: hidden;
   padding-top: 3px;
 }
 .dashboard-recent .meme-card,
@@ -4882,7 +4917,30 @@ body.home-mode .dashboard-recent .preview-frame {
   height: var(--recent-row-height);
   aspect-ratio: var(--preview-ratio, 1);
 }
+
 @media (max-width: 760px) {
+  body:not(.library-list-view) .meme-grid { --tile-height: clamp(120px, 38vw, 190px); }
+
+  /* Phones: the dashboard rows scroll sideways at a fixed height. */
   .dashboard-recent,
-  body.home-mode .dashboard-recent { --recent-row-height: clamp(150px, 46vw, 230px); }
+  body.home-mode .dashboard-recent,
+  .dashboard-feature-items {
+    --recent-row-height: clamp(150px, 46vw, 230px);
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+  /* A very wide preview stops at the row's width (and letterboxes) rather
+     than being wider than the screen. */
+  .dashboard-recent .meme-card,
+  body.home-mode .dashboard-recent .meme-card,
+  .dashboard-feature-items > .meme-card { flex: 0 0 auto; max-width: 100%; }
+  .dashboard-recent .preview-frame,
+  body.home-mode .dashboard-recent .preview-frame,
+  .dashboard-feature-items .preview-frame {
+    width: auto;
+    max-width: 100%;
+    height: var(--recent-row-height);
+  }
+  .dashboard-feature-items .dashboard-empty { flex: 0 0 auto; }
 }

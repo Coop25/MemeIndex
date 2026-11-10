@@ -886,7 +886,7 @@ func (s *PostgresStore) MemeDashboard(userID string) (MemeDashboardData, error) 
 		).Scan(&data.TagCount)
 	})
 	g.Go(func() error {
-		rows, err := s.queryMemeRows(ctx, uid, visible, "m.created_at DESC, m.id ASC", 6, 0)
+		rows, err := s.queryMemeRows(ctx, uid, visible, "m.created_at DESC, m.id ASC", DashboardRecentLimit, 0)
 		data.RecentItems = rows
 		return err
 	})

@@ -57,6 +57,11 @@ type TagCount struct {
 	Count int
 }
 
+// DashboardRecentLimit is how many newest memes the home screen is given. The
+// Recently added row shows as many of them as fit across the window, so this
+// has to cover a very wide screen full of narrow portrait previews.
+const DashboardRecentLimit = 24
+
 // MemeDashboardData is the SQL-resolved form of the user home screen summary.
 type MemeDashboardData struct {
 	TotalItems    int

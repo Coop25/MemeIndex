@@ -9051,32 +9051,39 @@ function renderDashboardMemeCollection(container, items, emptyMessage) {
 		const card = buildMemeCardElement(meme);
 		card.classList.add("dashboard-meme-card");
 		card.title = `Open ${meme.originalName || "meme"} in the editor`;
-		if (container === dashboardRecent) fitCardToPreviewRatio(card);
+		if (container === dashboardRecent) {
+			// Only a row's worth of these is shown, but which ones depends on
+			// every card's shape, so load them all up front.
+			const media = card._previewFrame?.firstElementChild;
+			if (media instanceof HTMLImageElement) media.loading = "eager";
+		}
 		container.appendChild(card);
 		layoutCardTags(card._tagList, card._tags, 1);
 	});
+	if (container === dashboardRecent) scheduleDashboardRecentLayout();
 }
 
-// Preview shapes already measured, keyed by source, so a dashboard refresh
-// lays the row out at its final widths instead of reflowing as images load.
+// Preview shapes already measured, keyed by source, so a re-render lays cards
+// out at their final widths instead of reflowing as images load.
 const previewRatioCache = new Map();
 const PREVIEW_RATIO_MIN = 0.5;
 const PREVIEW_RATIO_MAX = 2.2;
 
 // Publishes the preview's width/height ratio as --preview-ratio on the card so
 // the stylesheet can size the box to the picture. Extreme shapes are clamped
-// (and letterboxed inside the box) to keep one item from dominating the row.
+// (and letterboxed inside the box) to keep one item from dominating a row.
 function fitCardToPreviewRatio(card) {
 	const media = card?._previewFrame?.firstElementChild;
-	if (!media || !(media instanceof HTMLImageElement || media instanceof HTMLVideoElement)) return;
+	if (!card) return;
+	card._previewRatio = 1;
+	if (!(media instanceof HTMLImageElement || media instanceof HTMLVideoElement)) return;
 	const isVideo = media instanceof HTMLVideoElement;
 	const key = media.getAttribute("src") || "";
-	// Lets updateMemeCardElement re-fit the card when it swaps the preview.
-	card._fitsPreviewRatio = true;
-	// The row is a handful of cards; loading them all up front avoids cards
-	// changing width as the row is scrolled.
-	if (!isVideo) media.loading = "eager";
-	const apply = (ratio) => card.style.setProperty("--preview-ratio", String(ratio));
+	const apply = (ratio) => {
+		card._previewRatio = ratio;
+		card.style.setProperty("--preview-ratio", String(ratio));
+		if (card.parentElement === dashboardRecent) scheduleDashboardRecentLayout();
+	};
 	const measure = () => {
 		const width = isVideo ? media.videoWidth : media.naturalWidth;
 		const height = isVideo ? media.videoHeight : media.naturalHeight;
@@ -9090,6 +9097,70 @@ function fitCardToPreviewRatio(card) {
 	if (!measure()) {
 		media.addEventListener(isVideo ? "loadedmetadata" : "load", measure, { once: true });
 	}
+}
+
+// Picks how many leading items of a single justified row to show, and the row
+// height that makes them span `width` exactly. It takes whichever of "one item
+// fewer, slightly taller" and "one more, slightly shorter" lands closer to
+// `targetHeight`. When there are too few items to span the row it shows them
+// all and stops growing at `maxHeight`.
+function pickJustifiedRow(ratios, width, gap, targetHeight, maxHeight) {
+	const heightFor = (count, ratioSum) => (width - gap * (count - 1)) / ratioSum;
+	let ratioSum = 0;
+	for (let index = 0; index < ratios.length; index += 1) {
+		const previousSum = ratioSum;
+		ratioSum += ratios[index];
+		const height = heightFor(index + 1, ratioSum);
+		if (height > targetHeight) continue;
+		if (index > 0) {
+			const tallerHeight = heightFor(index, previousSum);
+			if (tallerHeight <= maxHeight && tallerHeight / targetHeight < targetHeight / height) {
+				return { count: index, height: tallerHeight };
+			}
+		}
+		return { count: index + 1, height };
+	}
+	if (!ratios.length || ratioSum <= 0) return { count: 0, height: targetHeight };
+	return { count: ratios.length, height: Math.min(maxHeight, heightFor(ratios.length, ratioSum)) };
+}
+
+const DASHBOARD_RECENT_MOBILE_COUNT = 6;
+let dashboardRecentLayoutFrame = 0;
+
+function scheduleDashboardRecentLayout() {
+	if (!dashboardRecent || dashboardRecentLayoutFrame) return;
+	dashboardRecentLayoutFrame = requestAnimationFrame(() => {
+		dashboardRecentLayoutFrame = 0;
+		layoutDashboardRecentRow();
+	});
+}
+
+// Shows as many of the newest items as fill the Recently added row edge to
+// edge at the current window width, and hides the rest.
+function layoutDashboardRecentRow() {
+	const cards = Array.from(dashboardRecent?.querySelectorAll(".meme-card") || []);
+	const width = dashboardRecent?.clientWidth || 0;
+	if (!cards.length || !width) return;
+	if (window.matchMedia("(max-width: 760px)").matches) {
+		// Phones keep a short sideways-scrolling row at the stylesheet's height.
+		cards.forEach((card, index) => { card.hidden = index >= DASHBOARD_RECENT_MOBILE_COUNT; });
+		dashboardRecent.style.removeProperty("--recent-row-height");
+		return;
+	}
+	const gap = parseFloat(getComputedStyle(dashboardRecent).columnGap) || 0;
+	const targetHeight = Math.min(290, Math.max(200, window.innerWidth * 0.17));
+	// Each card is its preview plus its own borders, so fold that fixed extra
+	// width into the gap (and the one border pair no gap accounts for).
+	const cardStyle = getComputedStyle(cards[0]);
+	const chrome = (parseFloat(cardStyle.borderLeftWidth) || 0) + (parseFloat(cardStyle.borderRightWidth) || 0);
+	const row = pickJustifiedRow(cards.map((card) => card._previewRatio || 1), width - chrome, gap + chrome, targetHeight, targetHeight * 1.5);
+	cards.forEach((card, index) => { card.hidden = index >= row.count; });
+	// Shave a hair off so sub-pixel rounding can never push the last card out.
+	dashboardRecent.style.setProperty("--recent-row-height", `${Math.max(1, row.height - 0.25).toFixed(2)}px`);
+}
+
+if (dashboardRecent && typeof ResizeObserver === "function") {
+	new ResizeObserver(() => scheduleDashboardRecentLayout()).observe(dashboardRecent);
 }
 
 async function refreshDashboardRandomItems() {
@@ -9388,10 +9459,8 @@ function updateMemeCardElement(card, meme) {
       preview.dataset.previewSrc = nextPreviewSrc;
       preview.dataset.previewKind = previewKindForMeme(meme);
     }
-    if (card._fitsPreviewRatio) {
-      card.style.removeProperty("--preview-ratio");
-      fitCardToPreviewRatio(card);
-    }
+    card.style.removeProperty("--preview-ratio");
+    fitCardToPreviewRatio(card);
   }
 
   card._tags = meme.tags || [];
