@@ -326,7 +326,7 @@ func (m *MemeManager) Dashboard(userID string) VaultDashboard {
 		}
 	}
 	limit := min(6, len(items))
-	dashboard.RecentItems = append(dashboard.RecentItems, items[:limit]...)
+	dashboard.RecentItems = append(dashboard.RecentItems, items[:min(accessor.DashboardRecentLimit, len(items))]...)
 	for _, index := range rand.Perm(len(items))[:limit] {
 		dashboard.RandomItems = append(dashboard.RandomItems, items[index])
 	}
