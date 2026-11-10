@@ -62,6 +62,14 @@ type TagCount struct {
 // has to cover a very wide screen full of narrow portrait previews.
 const DashboardRecentLimit = 24
 
+// DashboardFavoriteLimit is how many newest favorites the home screen is
+// given. Favorites fill a single fitted row just as Recently added does.
+const DashboardFavoriteLimit = 24
+
+// DashboardTopTagLimit is how many of the most used tags the home screen's
+// tag cloud is given.
+const DashboardTopTagLimit = 24
+
 // MemeDashboardData is the SQL-resolved form of the user home screen summary.
 type MemeDashboardData struct {
 	TotalItems    int

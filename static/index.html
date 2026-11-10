@@ -218,33 +218,50 @@
 
         <section class="content-panel">
           <section id="home-dashboard" class="vault-dashboard" aria-live="polite">
-            <section class="dashboard-overview">
-              <div class="dashboard-overview-heading">
-                <h2>Vault overview</h2>
-              </div>
-              <div id="dashboard-stats" class="dashboard-stats"></div>
+            <section class="home-hero" aria-label="Vault spotlight">
+              <article id="home-spotlight" class="home-spotlight is-empty">
+                <img id="home-spotlight-backdrop" class="home-spotlight-backdrop" alt="" aria-hidden="true">
+                <div id="home-spotlight-stage" class="home-spotlight-stage" role="button" tabindex="0" aria-label="Open the spotlight item"></div>
+                <div class="home-spotlight-info">
+                  <p class="home-spotlight-kicker">Random pick</p>
+                  <h2 id="home-spotlight-title" class="home-spotlight-title"></h2>
+                  <p id="home-spotlight-meta" class="home-spotlight-meta"></p>
+                  <div id="home-spotlight-tags" class="home-spotlight-tags"></div>
+                  <div class="home-spotlight-actions">
+                    <button id="dashboard-random-refresh" class="primary-button dashboard-shuffle-button" type="button">Shuffle</button>
+                    <button id="home-spotlight-open" class="secondary-button" type="button">Open</button>
+                    <button id="home-spotlight-favorite" class="secondary-button home-spotlight-favorite" type="button" aria-pressed="false">
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78L12 21.23l8.84-8.84a5.5 5.5 0 0 0 0-7.78Z" /></svg>
+                      <span>Favorite</span>
+                    </button>
+                  </div>
+                  <div id="home-spotlight-next" class="home-spotlight-next">
+                    <span>Up next</span>
+                    <div id="home-spotlight-queue" class="home-spotlight-queue"></div>
+                  </div>
+                </div>
+                <p class="home-spotlight-empty">Add something to your vault and a random pick will show up here.</p>
+              </article>
+              <aside class="home-hero-side" aria-label="Vault overview">
+                <div id="dashboard-stats" class="home-stats"></div>
+                <div id="home-type-mix" class="home-type-mix"></div>
+              </aside>
             </section>
             <section class="dashboard-section">
-              <div class="section-heading"><h3>Recently added</h3><button class="text-button" type="button" data-go-library>View all items</button></div>
+              <div class="section-heading"><h3>Recently added</h3><button id="dashboard-recent-all" class="text-button" type="button" data-go-library>View all items</button></div>
               <div id="dashboard-recent" class="dashboard-recent"></div>
             </section>
             <section class="storage-card hidden" aria-hidden="true">
               <div><p class="section-kicker">Storage</p><h3>Vault usage</h3></div>
               <div><strong id="dashboard-storage-label">—</strong><div class="storage-track"><span id="dashboard-storage-bar"></span></div><small>Original stored files</small></div>
             </section>
-            <div class="dashboard-feature-grid">
-              <section class="dashboard-section dashboard-feature-section">
-                <div class="section-heading"><h3>Favorites</h3><button class="text-button" type="button" data-go-view="favorites">View favorites</button></div>
-                <div id="dashboard-favorites" class="dashboard-feature-items"></div>
-              </section>
-              <section class="dashboard-section dashboard-feature-section dashboard-random-section">
-                <div class="section-heading"><h3>Random picks</h3><button id="dashboard-random-refresh" class="text-button dashboard-shuffle-button" type="button">Shuffle</button></div>
-                <div id="dashboard-random" class="dashboard-feature-items"></div>
-              </section>
-            </div>
+            <section class="dashboard-section">
+              <div class="section-heading"><h3>Favorites</h3><button id="dashboard-favorites-all" class="text-button" type="button" data-go-view="favorites">View favorites</button></div>
+              <div id="dashboard-favorites" class="dashboard-recent dashboard-favorites-row"></div>
+            </section>
             <section id="dashboard-tags-section" class="dashboard-section hidden">
               <div class="section-heading"><h3>Popular tags</h3><button class="text-button" type="button" data-go-library>Browse archive</button></div>
-              <div id="dashboard-tags" class="dashboard-tag-grid"></div>
+              <div id="dashboard-tags" class="home-tag-cloud"></div>
             </section>
           </section>
           <section id="library-heading" class="library-heading hidden">

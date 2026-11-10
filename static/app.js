@@ -230,8 +230,22 @@ const homeDashboard = document.querySelector("#home-dashboard");
 const dashboardStats = document.querySelector("#dashboard-stats");
 const dashboardRecent = document.querySelector("#dashboard-recent");
 const dashboardFavorites = document.querySelector("#dashboard-favorites");
-const dashboardRandom = document.querySelector("#dashboard-random");
 const dashboardRandomRefresh = document.querySelector("#dashboard-random-refresh");
+const dashboardRecentAll = document.querySelector("#dashboard-recent-all");
+const dashboardFavoritesAll = document.querySelector("#dashboard-favorites-all");
+const dashboardTypeMix = document.querySelector("#home-type-mix");
+const homeSpotlight = document.querySelector("#home-spotlight");
+const homeSpotlightBackdrop = document.querySelector("#home-spotlight-backdrop");
+const homeSpotlightStage = document.querySelector("#home-spotlight-stage");
+const homeSpotlightTitle = document.querySelector("#home-spotlight-title");
+const homeSpotlightMeta = document.querySelector("#home-spotlight-meta");
+const homeSpotlightTags = document.querySelector("#home-spotlight-tags");
+const homeSpotlightOpen = document.querySelector("#home-spotlight-open");
+const homeSpotlightFavorite = document.querySelector("#home-spotlight-favorite");
+const homeSpotlightNext = document.querySelector("#home-spotlight-next");
+const homeSpotlightQueue = document.querySelector("#home-spotlight-queue");
+// The single-row sections of the home screen, each fitted edge to edge.
+const dashboardRows = [dashboardRecent, dashboardFavorites].filter(Boolean);
 const dashboardStorageLabel = document.querySelector("#dashboard-storage-label");
 const dashboardStorageBar = document.querySelector("#dashboard-storage-bar");
 const dashboardTagsSection = document.querySelector("#dashboard-tags-section");
@@ -8952,7 +8966,9 @@ function navigateToTag(tag) {
 	if (drawerMediaQuery.matches) closeSidebarDrawer();
 }
 
-async function fetchVaultDashboard({ onlyIfNewestChanged = false } = {}) {
+// keepSpotlight leaves the featured random pick alone, for refreshes the user
+// did not ask for (a favorite toggled, a new upload arriving in the background).
+async function fetchVaultDashboard({ onlyIfNewestChanged = false, keepSpotlight = false } = {}) {
 	if (onlyIfNewestChanged) {
 		// The background poll only needs to know whether something new arrived.
 		// Ask for the newest id alone and skip the full dashboard when it is the
@@ -8976,19 +8992,31 @@ async function fetchVaultDashboard({ onlyIfNewestChanged = false } = {}) {
 	}
 	state.library.counts = dashboard.counts || state.library.counts;
 	renderSidebarCounts();
-	const cards = [
-		["items", "Total memes", Number(dashboard.total_items || 0).toLocaleString(), "Files and links"],
-		["tags", "Tags", Number(dashboard.tag_count || 0).toLocaleString(), "Across your archive"],
-		["storage", "Storage used", formatSize(Number(dashboard.storage_bytes || 0)), "Original files"],
-		["favorites", "Favorites", Number(dashboard.favorites || 0).toLocaleString(), "Quick access"],
+	const totalItems = Number(dashboard.total_items || 0);
+	const favoriteCount = Number(dashboard.favorites || 0);
+	const topTags = Array.isArray(dashboard.top_tags) ? dashboard.top_tags : [];
+	const tiles = [
+		["items", "Total memes", totalItems.toLocaleString(), () => navigateToView("library")],
+		["tags", "Tags", Number(dashboard.tag_count || 0).toLocaleString(), topTags.length ? () => dashboardTagsSection?.scrollIntoView({ behavior: "smooth", block: "start" }) : null],
+		["storage", "Storage used", formatSize(Number(dashboard.storage_bytes || 0)), null],
+		["favorites", "Favorites", favoriteCount.toLocaleString(), () => navigateToView("favorites")],
 	];
-	dashboardStats.replaceChildren(...cards.map(([icon, label, value, note]) => {
-		const article = document.createElement("article");
-		article.className = "dashboard-stat-card";
-		article.dataset.icon = icon;
-		article.innerHTML = `<i aria-hidden="true"></i><span>${label}</span><strong>${value}</strong><small>${note}</small>`;
-		return article;
+	dashboardStats.replaceChildren(...tiles.map(([kind, label, value, action]) => {
+		const tile = document.createElement(action ? "button" : "div");
+		if (action) {
+			tile.type = "button";
+			tile.addEventListener("click", action);
+		}
+		tile.className = "home-stat-tile";
+		tile.dataset.kind = kind;
+		tile.innerHTML = `<span></span><strong></strong>`;
+		tile.querySelector("span").textContent = label;
+		tile.querySelector("strong").textContent = value;
+		return tile;
 	}));
+	renderDashboardTypeMix(dashboard.counts || {});
+	if (dashboardRecentAll) dashboardRecentAll.textContent = totalItems > 1 ? `View all ${totalItems.toLocaleString()} items` : "View all items";
+	if (dashboardFavoritesAll) dashboardFavoritesAll.textContent = favoriteCount > 1 ? `View all ${favoriteCount.toLocaleString()} favorites` : "View favorites";
 	renderDashboardMemeCollection(
 		dashboardRecent,
 		dashboard.recent_items,
@@ -8999,21 +9027,26 @@ async function fetchVaultDashboard({ onlyIfNewestChanged = false } = {}) {
 		dashboard.favorite_items,
 		"Favorite a meme and it will appear here.",
 	);
-	renderDashboardMemeCollection(
-		dashboardRandom,
-		dashboard.random_items,
-		"Add something to your vault to get random picks.",
-	);
+	// A kept spotlight is left exactly as it is, so a video playing in it is
+	// not restarted; edits to its item reach it through syncMemeCardElements.
+	if (!keepSpotlight || !spotlight.items.length) setSpotlightItems(dashboard.random_items);
 	dashboardStorageLabel.textContent = formatSize(Number(dashboard.storage_bytes || 0));
 	dashboardStorageBar.style.width = dashboard.storage_bytes > 0 ? "100%" : "0%";
-	const topTags = Array.isArray(dashboard.top_tags) ? dashboard.top_tags : [];
+	// Tag size follows how often the tag is used, on a log scale so one very
+	// popular tag does not flatten all the others.
+	const tagCounts = topTags.map((tag) => Math.log(Math.max(1, Number(tag.count) || 1)));
+	const minWeight = Math.min(...tagCounts);
+	const weightSpan = Math.max(...tagCounts) - minWeight;
 	dashboardTags?.replaceChildren(...topTags.map((tag, index) => {
 		const button = document.createElement("button");
 		button.type = "button";
-		button.className = "dashboard-tag-card";
-		button.innerHTML = `<i aria-hidden="true">${["☺", "▤", "◈", "✦", "◉"][index % 5]}</i><span class="tag-chip"></span><small></small>`;
+		button.className = "home-tag";
+		const weight = weightSpan > 0 ? (tagCounts[index] - minWeight) / weightSpan : 0.5;
+		button.style.setProperty("--tag-weight", weight.toFixed(3));
+		button.innerHTML = `<span></span><small></small>`;
 		button.querySelector("span").textContent = tag.name;
-		button.querySelector("small").textContent = `${tag.count} item${tag.count === 1 ? "" : "s"}`;
+		button.querySelector("small").textContent = Number(tag.count || 0).toLocaleString();
+		button.title = `${tag.count} item${tag.count === 1 ? "" : "s"} tagged ${tag.name}`;
 		button.addEventListener("click", () => navigateToTag(tag.name));
 		return button;
 	}));
@@ -9021,13 +9054,240 @@ async function fetchVaultDashboard({ onlyIfNewestChanged = false } = {}) {
 	return true;
 }
 
+// One bar split by item type, with a legend that links to each type's view.
+function renderDashboardTypeMix(counts) {
+	if (!dashboardTypeMix) return;
+	const types = [
+		["videos", "Videos", Number(counts.videos || 0)],
+		["images", "Images", Number(counts.images || 0)],
+		["mp3s", "Audio", Number(counts.mp3s || 0)],
+		["files", "Files", Number(counts.files || 0)],
+	].filter(([, , count]) => count > 0);
+	const untagged = Number(counts.untagged || 0);
+	dashboardTypeMix.replaceChildren();
+	dashboardTypeMix.classList.toggle("hidden", types.length === 0);
+	if (!types.length) return;
+	const bar = document.createElement("div");
+	bar.className = "home-type-bar";
+	bar.setAttribute("aria-hidden", "true");
+	const legend = document.createElement("div");
+	legend.className = "home-type-legend";
+	types.forEach(([view, label, count]) => {
+		const segment = document.createElement("span");
+		segment.dataset.type = view;
+		segment.style.flexGrow = String(count);
+		bar.appendChild(segment);
+		const entry = document.createElement("button");
+		entry.type = "button";
+		entry.dataset.type = view;
+		entry.innerHTML = `<i aria-hidden="true"></i><span></span><strong></strong>`;
+		entry.querySelector("span").textContent = label;
+		entry.querySelector("strong").textContent = count.toLocaleString();
+		entry.addEventListener("click", () => navigateToView(view));
+		legend.appendChild(entry);
+	});
+	dashboardTypeMix.append(bar, legend);
+	if (untagged > 0) {
+		const link = document.createElement("button");
+		link.type = "button";
+		link.className = "home-untagged-link";
+		link.textContent = `${untagged.toLocaleString()} untagged`;
+		link.addEventListener("click", () => navigateToView("untagged"));
+		dashboardTypeMix.appendChild(link);
+	}
+}
+
+// The featured random pick. `items` is the current batch of random memes and
+// `index` the one on show; the rest wait in the Up next strip.
+const spotlight = { items: [], index: 0 };
+let spotlightHoverTimer = 0;
+
+function currentSpotlightMeme() {
+	const meme = spotlight.items[spotlight.index];
+	return meme ? getMemeById(meme.id) || meme : null;
+}
+
+function setSpotlightItems(items) {
+	spotlight.items = (Array.isArray(items) ? items : []).map((meme) => upsertMemeInState(meme) || meme);
+	spotlight.index = 0;
+	renderSpotlight();
+}
+
+function spotlightKindLabel(meme) {
+	if (isVideoMeme(meme)) return "Video";
+	if (isImageMeme(meme)) return "Image";
+	if (isMP3Meme(meme)) return "Audio";
+	return "File";
+}
+
+// The spotlight's headline: the first line of the item's notes when it has
+// any, else its file name when that reads like a name. Machine-made names
+// (ids, long digit runs) get a stock line instead; the full name stays in the
+// tooltip.
+function spotlightHeadline(meme) {
+	const note = String(meme.notes || "").split("\n").map((line) => line.trim()).find(Boolean);
+	if (note) return note;
+	const name = String(meme.originalName || "").replace(/\.[a-z0-9]{1,5}$/i, "").trim();
+	const digits = (name.match(/\d/g) || []).length;
+	const readable = name && name.length <= 60 && digits / name.length < 0.4 && !/^[0-9a-f_-]{16,}$/i.test(name);
+	return readable ? name : "Remember this one?";
+}
+
+function stopSpotlightHoverPreview() {
+	window.clearTimeout(spotlightHoverTimer);
+	spotlightHoverTimer = 0;
+	homeSpotlightStage?.querySelector(".home-spotlight-video")?.remove();
+	homeSpotlightStage?.classList.remove("is-playing");
+}
+
+function renderSpotlight() {
+	if (!homeSpotlight) return;
+	stopSpotlightHoverPreview();
+	const meme = currentSpotlightMeme();
+	homeSpotlight.classList.toggle("is-empty", !meme);
+	if (!meme) {
+		homeSpotlightStage.replaceChildren();
+		homeSpotlightBackdrop.removeAttribute("src");
+		return;
+	}
+	const stillSrc = meme.previewPath || (isImageMeme(meme) ? meme.filePath : "");
+	if (stillSrc) homeSpotlightBackdrop.src = stillSrc;
+	else homeSpotlightBackdrop.removeAttribute("src");
+
+	// Images show the original rather than the small card thumbnail; videos
+	// show their poster until hovered.
+	let media;
+	if (isImageMeme(meme)) {
+		media = document.createElement("img");
+		media.src = meme.filePath || meme.previewPath;
+		media.alt = meme.originalName || "";
+		media.decoding = "async";
+	} else {
+		media = buildPreview(meme);
+	}
+	homeSpotlightStage.replaceChildren(media);
+	// Shape the stage to the picture: from the card's measured shape straight
+	// away when there is one, then from the picture itself once it has loaded.
+	const setStageRatio = (width, height) => {
+		if (!width || !height || media.parentElement !== homeSpotlightStage) return;
+		homeSpotlightStage.style.setProperty("--spot-ratio", Math.min(2.4, Math.max(0.45, width / height)).toFixed(4));
+	};
+	const knownRatio = previewRatioCache.get(meme.previewPath || meme.filePath);
+	if (knownRatio) homeSpotlightStage.style.setProperty("--spot-ratio", String(knownRatio));
+	else homeSpotlightStage.style.removeProperty("--spot-ratio");
+	if (media instanceof HTMLImageElement) {
+		if (media.complete && media.naturalWidth) setStageRatio(media.naturalWidth, media.naturalHeight);
+		else media.addEventListener("load", () => setStageRatio(media.naturalWidth, media.naturalHeight), { once: true });
+	} else if (media instanceof HTMLVideoElement) {
+		media.addEventListener("loadedmetadata", () => setStageRatio(media.videoWidth, media.videoHeight), { once: true });
+	}
+	homeSpotlightStage.dataset.kind = spotlightKindLabel(meme).toLowerCase();
+	homeSpotlightStage.setAttribute("aria-label", `Open ${meme.originalName || "item"} details`);
+
+	homeSpotlightTitle.textContent = spotlightHeadline(meme);
+	homeSpotlightTitle.title = meme.originalName || "";
+	const added = meme.createdAt ? `added ${formatRelativeTime(meme.createdAt)}` : "";
+	homeSpotlightMeta.textContent = [spotlightKindLabel(meme), formatSize(Number(meme.sizeBytes || 0)), added].filter(Boolean).join(" • ");
+	const tags = Array.isArray(meme.tags) ? meme.tags : [];
+	homeSpotlightTags.replaceChildren(...tags.slice(0, 8).map((tag) => {
+		const chip = document.createElement("button");
+		chip.type = "button";
+		chip.className = "tag-chip";
+		chip.textContent = tag;
+		chip.addEventListener("click", () => navigateToTag(tag));
+		return chip;
+	}));
+	if (!tags.length) {
+		const none = document.createElement("span");
+		none.className = "home-spotlight-untagged";
+		none.textContent = "No tags yet";
+		homeSpotlightTags.appendChild(none);
+	}
+	syncSpotlightFavorite();
+
+	homeSpotlightQueue.replaceChildren(...spotlight.items.map((item, index) => {
+		if (index === spotlight.index) return null;
+		const queued = getMemeById(item.id) || item;
+		const button = document.createElement("button");
+		button.type = "button";
+		button.className = "home-spotlight-queued";
+		button.title = queued.originalName || "";
+		button.setAttribute("aria-label", `Show ${queued.originalName || "item"} in the spotlight`);
+		const thumb = queued.previewPath || (isImageMeme(queued) ? queued.filePath : "");
+		if (thumb) {
+			const img = document.createElement("img");
+			img.src = thumb;
+			img.alt = "";
+			img.loading = "lazy";
+			button.appendChild(img);
+		} else {
+			button.textContent = pickIcon(queued.contentType);
+		}
+		button.addEventListener("click", () => {
+			spotlight.index = index;
+			renderSpotlight();
+		});
+		return button;
+	}).filter(Boolean));
+	homeSpotlightNext.classList.toggle("hidden", spotlight.items.length < 2);
+}
+
+function syncSpotlightFavorite() {
+	const meme = currentSpotlightMeme();
+	if (!homeSpotlightFavorite || !meme) return;
+	const favorite = Boolean(meme.favorite);
+	homeSpotlightFavorite.classList.toggle("is-favorite", favorite);
+	homeSpotlightFavorite.setAttribute("aria-pressed", favorite ? "true" : "false");
+	homeSpotlightFavorite.querySelector("span").textContent = favorite ? "Favorited" : "Favorite";
+	homeSpotlightFavorite.disabled = !canView();
+}
+
+function openSpotlightMeme() {
+	const meme = currentSpotlightMeme();
+	if (!meme) return;
+	stopSpotlightHoverPreview();
+	openModal(meme.id);
+}
+
+homeSpotlightStage?.addEventListener("click", openSpotlightMeme);
+homeSpotlightStage?.addEventListener("keydown", (event) => {
+	if (event.key === "Enter" || event.key === " ") {
+		event.preventDefault();
+		openSpotlightMeme();
+	}
+});
+homeSpotlightOpen?.addEventListener("click", openSpotlightMeme);
+homeSpotlightFavorite?.addEventListener("click", async () => {
+	const meme = currentSpotlightMeme();
+	if (meme) await persistFavorite(meme.id, !meme.favorite);
+});
+// Resting the pointer on a video plays it muted in place; leaving stops it.
+homeSpotlightStage?.addEventListener("mouseenter", () => {
+	const meme = currentSpotlightMeme();
+	if (!meme || !isVideoMeme(meme) || !window.matchMedia("(hover: hover)").matches) return;
+	window.clearTimeout(spotlightHoverTimer);
+	spotlightHoverTimer = window.setTimeout(() => {
+		if (homeSpotlightStage.querySelector(".home-spotlight-video")) return;
+		const video = document.createElement("video");
+		video.className = "home-spotlight-video";
+		video.src = meme.filePath;
+		video.muted = true;
+		video.loop = true;
+		video.playsInline = true;
+		video.addEventListener("playing", () => homeSpotlightStage.classList.add("is-playing"), { once: true });
+		homeSpotlightStage.appendChild(video);
+		video.play().catch(() => stopSpotlightHoverPreview());
+	}, 280);
+});
+homeSpotlightStage?.addEventListener("mouseleave", stopSpotlightHoverPreview);
+
 let homeDashboardRefreshInFlight = false;
 
 async function refreshHomeDashboardForNewMemes() {
 	if (homeDashboardRefreshInFlight || document.hidden || state.filters.view !== "home" || !canView()) return;
 	homeDashboardRefreshInFlight = true;
 	try {
-		await fetchVaultDashboard({ onlyIfNewestChanged: true });
+		await fetchVaultDashboard({ onlyIfNewestChanged: true, keepSpotlight: true });
 	} finally {
 		homeDashboardRefreshInFlight = false;
 	}
@@ -9051,7 +9311,7 @@ function renderDashboardMemeCollection(container, items, emptyMessage) {
 		const card = buildMemeCardElement(meme);
 		card.classList.add("dashboard-meme-card");
 		card.title = `Open ${meme.originalName || "meme"} in the editor`;
-		if (container === dashboardRecent) {
+		if (dashboardRows.includes(container)) {
 			// Only a row's worth of these is shown, but which ones depends on
 			// every card's shape, so load them all up front.
 			const media = card._previewFrame?.firstElementChild;
@@ -9060,7 +9320,7 @@ function renderDashboardMemeCollection(container, items, emptyMessage) {
 		container.appendChild(card);
 		layoutCardTags(card._tagList, card._tags, 1);
 	});
-	if (container === dashboardRecent) scheduleDashboardRecentLayout();
+	if (dashboardRows.includes(container)) scheduleDashboardRecentLayout();
 }
 
 // Preview shapes already measured, keyed by source, so a re-render lays cards
@@ -9082,7 +9342,7 @@ function fitCardToPreviewRatio(card) {
 	const apply = (ratio) => {
 		card._previewRatio = ratio;
 		card.style.setProperty("--preview-ratio", String(ratio));
-		if (card.parentElement === dashboardRecent) scheduleDashboardRecentLayout();
+		if (dashboardRows.includes(card.parentElement)) scheduleDashboardRecentLayout();
 	};
 	const measure = () => {
 		const width = isVideo ? media.videoWidth : media.naturalWidth;
@@ -9128,27 +9388,30 @@ const DASHBOARD_RECENT_MOBILE_COUNT = 6;
 let dashboardRecentLayoutFrame = 0;
 
 function scheduleDashboardRecentLayout() {
-	if (!dashboardRecent || dashboardRecentLayoutFrame) return;
+	if (!dashboardRows.length || dashboardRecentLayoutFrame) return;
 	dashboardRecentLayoutFrame = requestAnimationFrame(() => {
 		dashboardRecentLayoutFrame = 0;
-		layoutDashboardRecentRow();
+		dashboardRows.forEach(layoutDashboardRow);
 	});
 }
 
-// Shows as many of the newest items as fill the Recently added row edge to
-// edge at the current window width, and hides the rest.
-function layoutDashboardRecentRow() {
-	const cards = Array.from(dashboardRecent?.querySelectorAll(".meme-card") || []);
-	const width = dashboardRecent?.clientWidth || 0;
+// Shows as many of a row's leading items as fill it edge to edge at the
+// current window width, and hides the rest. Favorites sit a little shorter
+// than Recently added so the two rows do not read as one block.
+function layoutDashboardRow(rowElement) {
+	const cards = Array.from(rowElement?.querySelectorAll(".meme-card") || []);
+	const width = rowElement?.clientWidth || 0;
 	if (!cards.length || !width) return;
 	if (window.matchMedia("(max-width: 760px)").matches) {
 		// Phones keep a short sideways-scrolling row at the stylesheet's height.
 		cards.forEach((card, index) => { card.hidden = index >= DASHBOARD_RECENT_MOBILE_COUNT; });
-		dashboardRecent.style.removeProperty("--recent-row-height");
+		rowElement.style.removeProperty("--recent-row-height");
 		return;
 	}
-	const gap = parseFloat(getComputedStyle(dashboardRecent).columnGap) || 0;
-	const targetHeight = Math.min(290, Math.max(200, window.innerWidth * 0.17));
+	const gap = parseFloat(getComputedStyle(rowElement).columnGap) || 0;
+	const targetHeight = rowElement === dashboardFavorites
+		? Math.min(230, Math.max(170, window.innerWidth * 0.135))
+		: Math.min(290, Math.max(200, window.innerWidth * 0.17));
 	// Each card is its preview plus its own borders, so fold that fixed extra
 	// width into the gap (and the one border pair no gap accounts for).
 	const cardStyle = getComputedStyle(cards[0]);
@@ -9156,26 +9419,23 @@ function layoutDashboardRecentRow() {
 	const row = pickJustifiedRow(cards.map((card) => card._previewRatio || 1), width - chrome, gap + chrome, targetHeight, targetHeight * 1.5);
 	cards.forEach((card, index) => { card.hidden = index >= row.count; });
 	// Shave a hair off so sub-pixel rounding can never push the last card out.
-	dashboardRecent.style.setProperty("--recent-row-height", `${Math.max(1, row.height - 0.25).toFixed(2)}px`);
+	rowElement.style.setProperty("--recent-row-height", `${Math.max(1, row.height - 0.25).toFixed(2)}px`);
 }
 
-if (dashboardRecent && typeof ResizeObserver === "function") {
-	new ResizeObserver(() => scheduleDashboardRecentLayout()).observe(dashboardRecent);
+if (dashboardRows.length && typeof ResizeObserver === "function") {
+	const dashboardRowObserver = new ResizeObserver(() => scheduleDashboardRecentLayout());
+	dashboardRows.forEach((row) => dashboardRowObserver.observe(row));
 }
 
 async function refreshDashboardRandomItems() {
-	if (!dashboardRandomRefresh || !dashboardRandom) return;
+	if (!dashboardRandomRefresh || !homeSpotlight) return;
 	dashboardRandomRefresh.disabled = true;
 	dashboardRandomRefresh.classList.add("is-loading");
 	try {
 		const response = await fetch("/api/dashboard", { cache: "no-store" });
 		if (!(await expectAuthorized(response, "Could not shuffle random picks."))) return;
 		const dashboard = await response.json();
-		renderDashboardMemeCollection(
-			dashboardRandom,
-			dashboard.random_items,
-			"Add something to your vault to get random picks.",
-		);
+		setSpotlightItems(dashboard.random_items);
 	} finally {
 		dashboardRandomRefresh.disabled = false;
 		dashboardRandomRefresh.classList.remove("is-loading");
@@ -10442,7 +10702,8 @@ function syncFavoriteUI(updatedMeme) {
   }
 
   if (state.filters.view === "home") {
-    fetchVaultDashboard().catch((error) => console.error(error));
+    syncSpotlightFavorite();
+    fetchVaultDashboard({ keepSpotlight: true }).catch((error) => console.error(error));
   }
 }
 
@@ -10467,6 +10728,7 @@ function syncMemeCardElements(updatedMeme) {
     updateMemeCardElement(card, updatedMeme);
     layoutCardTags(card._tagList, card._tags, 1);
   });
+  if (spotlight.items[spotlight.index]?.id === updatedMeme.id) renderSpotlight();
 }
 
 function upsertMemeInState(meme) {
