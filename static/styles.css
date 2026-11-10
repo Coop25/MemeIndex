@@ -4857,3 +4857,32 @@ button.admin-health-row:hover, button.admin-health-row:focus-visible { backgroun
 .admin-series-chip { display: inline-block; margin: 2px 4px 2px 0; padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; font-size: 11px; }
 .admin-series-muted { color: var(--muted); }
 .admin-series-tag-table { min-width: 520px; }
+
+/* Recently added: one shared row height, each card as wide as its own preview
+   (--preview-ratio is set per card once the image's real shape is known), so
+   tall and wide items both show in full without letterboxing. Order is kept;
+   the row scrolls sideways when the items don't all fit. */
+.dashboard-recent,
+body.home-mode .dashboard-recent {
+  --recent-row-height: clamp(200px, 17vw, 290px);
+  display: flex;
+  align-items: stretch;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-top: 3px;
+}
+.dashboard-recent .meme-card,
+body.home-mode .dashboard-recent .meme-card {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+.dashboard-recent .preview-frame,
+body.home-mode .dashboard-recent .preview-frame {
+  width: auto;
+  height: var(--recent-row-height);
+  aspect-ratio: var(--preview-ratio, 1);
+}
+@media (max-width: 760px) {
+  .dashboard-recent,
+  body.home-mode .dashboard-recent { --recent-row-height: clamp(150px, 46vw, 230px); }
+}

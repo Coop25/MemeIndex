@@ -9051,9 +9051,45 @@ function renderDashboardMemeCollection(container, items, emptyMessage) {
 		const card = buildMemeCardElement(meme);
 		card.classList.add("dashboard-meme-card");
 		card.title = `Open ${meme.originalName || "meme"} in the editor`;
+		if (container === dashboardRecent) fitCardToPreviewRatio(card);
 		container.appendChild(card);
 		layoutCardTags(card._tagList, card._tags, 1);
 	});
+}
+
+// Preview shapes already measured, keyed by source, so a dashboard refresh
+// lays the row out at its final widths instead of reflowing as images load.
+const previewRatioCache = new Map();
+const PREVIEW_RATIO_MIN = 0.5;
+const PREVIEW_RATIO_MAX = 2.2;
+
+// Publishes the preview's width/height ratio as --preview-ratio on the card so
+// the stylesheet can size the box to the picture. Extreme shapes are clamped
+// (and letterboxed inside the box) to keep one item from dominating the row.
+function fitCardToPreviewRatio(card) {
+	const media = card?._previewFrame?.firstElementChild;
+	if (!media || !(media instanceof HTMLImageElement || media instanceof HTMLVideoElement)) return;
+	const isVideo = media instanceof HTMLVideoElement;
+	const key = media.getAttribute("src") || "";
+	// Lets updateMemeCardElement re-fit the card when it swaps the preview.
+	card._fitsPreviewRatio = true;
+	// The row is a handful of cards; loading them all up front avoids cards
+	// changing width as the row is scrolled.
+	if (!isVideo) media.loading = "eager";
+	const apply = (ratio) => card.style.setProperty("--preview-ratio", String(ratio));
+	const measure = () => {
+		const width = isVideo ? media.videoWidth : media.naturalWidth;
+		const height = isVideo ? media.videoHeight : media.naturalHeight;
+		if (!width || !height) return false;
+		const ratio = Math.min(PREVIEW_RATIO_MAX, Math.max(PREVIEW_RATIO_MIN, width / height));
+		previewRatioCache.set(key, ratio);
+		apply(ratio);
+		return true;
+	};
+	if (previewRatioCache.has(key)) apply(previewRatioCache.get(key));
+	if (!measure()) {
+		media.addEventListener(isVideo ? "loadedmetadata" : "load", measure, { once: true });
+	}
 }
 
 async function refreshDashboardRandomItems() {
@@ -9351,6 +9387,10 @@ function updateMemeCardElement(card, meme) {
     if (preview) {
       preview.dataset.previewSrc = nextPreviewSrc;
       preview.dataset.previewKind = previewKindForMeme(meme);
+    }
+    if (card._fitsPreviewRatio) {
+      card.style.removeProperty("--preview-ratio");
+      fitCardToPreviewRatio(card);
     }
   }
 
