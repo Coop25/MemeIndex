@@ -59,7 +59,7 @@ func newScratchBackupDatabase(t *testing.T) string {
 	}
 	defer pool.Close()
 	var schema []string
-	for i := 1; i <= 28; i++ {
+	for i := 1; i <= 30; i++ {
 		if i == 11 {
 			continue // pg_trgm indexes: optional, irrelevant to backups
 		}
@@ -107,6 +107,7 @@ func TestPortableBackupRoundTripThroughParts(t *testing.T) {
 		`INSERT INTO memes (id, original_name, stored_name, file_path, content_type, size_bytes, created_at, updated_at)
 		 VALUES ('meme-1', 'cat.png', 'meme-1.png', '/uploads/meme-1.png', 'image/png', 2000, NOW(), NOW())`,
 		`UPDATE memes SET share_generation = 3, share_expires_at = '2027-01-01T00:00:00Z', shared_at = NOW(), shared_by_user_id = 'user-1' WHERE id = 'meme-1'`,
+		`INSERT INTO meme_share_links (slug, meme_id, generation) VALUES ('7c9e6679-7425-40de-944b-e07fc1f90ae7', 'meme-1', 3)`,
 		`INSERT INTO app_users (user_id, session_version) VALUES ('user-1', 7)`,
 		`INSERT INTO app_user_readd_required (user_id, session_version) VALUES ('user-2', 4)`,
 		`INSERT INTO tags (name) VALUES ('cats')`,
@@ -206,6 +207,12 @@ func TestPortableBackupRoundTripThroughParts(t *testing.T) {
 	}
 	if want := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC); shareGeneration != 3 || shareExpiresAt == nil || !shareExpiresAt.Equal(want) {
 		t.Fatalf("share link not restored: generation=%d expires=%v", shareGeneration, shareExpiresAt)
+	}
+	// The link's code survives too; without it the share would stay active
+	// with no link that reaches it.
+	var shareSlug string
+	if err := pool.QueryRow(ctx, `SELECT slug FROM meme_share_links WHERE meme_id = 'meme-1' AND generation = 3`).Scan(&shareSlug); err != nil || shareSlug != "7c9e6679-7425-40de-944b-e07fc1f90ae7" {
+		t.Fatalf("share link code not restored: slug=%q err=%v", shareSlug, err)
 	}
 	var finishedAt *time.Time
 	if err := pool.QueryRow(ctx, `SELECT finished_at FROM audiobook_progress WHERE audiobook_id = 'book-1' AND user_id = 'user-1'`).Scan(&finishedAt); err != nil {
@@ -379,7 +386,7 @@ func downgradeArchiveToFormat3(t *testing.T, source io.Reader) []byte {
 			payload = rewritten.Bytes()
 		}
 		switch header.Name {
-		case "database/audiobook_listening_stats.csv":
+		case "database/audiobook_listening_stats.csv", "database/meme_share_links.csv":
 			continue
 		case "manifest.json":
 			var manifest map[string]any
