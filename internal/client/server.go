@@ -242,6 +242,7 @@ func (s *Server) Routes() http.Handler {
 	}
 	mux.Handle("/static/", s.withPageAuth(staticAssetHandler("static")))
 	mux.HandleFunc("/m/", s.handleMemeLink)
+	mux.HandleFunc("/s/", s.handleShareLink)
 	mux.Handle("/", s.withPageAuth(http.HandlerFunc(s.handleIndex)))
 	mux.Handle("/api/memes", s.withAPIAuth(http.HandlerFunc(s.handleMemes), permissionView))
 	mux.Handle("/api/memes/save-link", s.withAPIAuth(http.HandlerFunc(s.handleSaveLink), permissionUpload))

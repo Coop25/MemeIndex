@@ -85,11 +85,22 @@ type MemeShareState struct {
 	SharedByUserID string    `json:"shared_by_user_id"`
 	SharedAt       time.Time `json:"shared_at"`
 	ExpiresAt      time.Time `json:"expires_at"`
+	// Slug is the random code in the current share's public link. It is empty
+	// for a share created before share links had codes.
+	Slug string `json:"-"`
 }
 
 type MemeShareStore interface {
+	// GetOrCreateMemeShare starts a share, or renews an active one: an active
+	// share keeps its generation and link and only has its expiry moved to
+	// expiresAt, while an expired or revoked one gets a new generation and a
+	// new link.
 	GetOrCreateMemeShare(memeID, userID string, now, expiresAt time.Time) (MemeShareState, error)
 	GetMemeShareState(memeID string) (MemeShareState, error)
+	// ResolveMemeShareSlug maps a share link code, current or historical, to
+	// its meme and the share generation it was issued for. An unknown code
+	// returns os.ErrNotExist.
+	ResolveMemeShareSlug(slug string) (memeID string, generation int64, err error)
 	ListActiveMemeShares(now time.Time) ([]MemeShareState, error)
 	RevokeMemeShare(memeID string) error
 	RevokeAllMemeShares(now time.Time) (int, error)

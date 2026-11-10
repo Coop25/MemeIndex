@@ -9629,7 +9629,7 @@ function buildModalPreview(meme) {
 
   const icon = document.createElement("div");
   icon.className = "file-icon";
-  icon.innerHTML = `<strong>${pickIcon(meme.contentType)}</strong><span>${escapeHTML(meme.contentType)}</span><span>Use Share to create a 30-day access link.</span>`;
+  icon.innerHTML = `<strong>${pickIcon(meme.contentType)}</strong><span>${escapeHTML(meme.contentType)}</span><span>Use Share to create a one-year access link.</span>`;
   return icon;
 }
 
@@ -9677,7 +9677,7 @@ function buildRandomReelPreview(meme) {
 
   const icon = document.createElement("div");
   icon.className = "file-icon";
-  icon.innerHTML = `<strong>${pickIcon(meme.contentType)}</strong><span>${escapeHTML(meme.originalName)}</span><span>Use Share to create a 30-day access link.</span>`;
+  icon.innerHTML = `<strong>${pickIcon(meme.contentType)}</strong><span>${escapeHTML(meme.originalName)}</span><span>Use Share to create a one-year access link.</span>`;
   return icon;
 }
 
@@ -11432,7 +11432,7 @@ async function shareMeme(id, button) {
     if (!shareURL) throw new Error("share URL missing");
     await copyShareText(shareURL);
     showShareCopiedFeedback(button);
-    showToast("30-day share link copied.", "success", { title: "Share", duration: 3200 });
+    showToast("Share link copied. It works for one year.", "success", { title: "Share", duration: 3200 });
     return true;
   } catch (error) {
     console.error(error);

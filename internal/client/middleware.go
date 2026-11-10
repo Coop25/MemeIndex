@@ -21,6 +21,17 @@ func newCSPNonce() string {
 	return base64.StdEncoding.EncodeToString(buf)
 }
 
+// loggedRequestPath is the request path as it should appear in the log. The
+// code in a /s/ share link is all it takes to fetch the shared file, so it is
+// kept out of the log the same way the older links' ?share= token always was
+// (query strings are never logged).
+func loggedRequestPath(path string) string {
+	if strings.HasPrefix(path, "/s/") {
+		return "/s/[share link]"
+	}
+	return path
+}
+
 func LoggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Health probes are polled every few seconds by orchestration; logging
@@ -34,7 +45,7 @@ func LoggingMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(recorder, r)
 		// Sanitize request-derived fields so a client cannot inject newlines and
 		// forge additional log lines.
-		log.Printf("%s %s %d (%s)", sanitizeLogField(r.Method), sanitizeLogField(r.URL.Path), recorder.status, time.Since(start).Round(time.Millisecond))
+		log.Printf("%s %s %d (%s)", sanitizeLogField(r.Method), sanitizeLogField(loggedRequestPath(r.URL.Path)), recorder.status, time.Since(start).Round(time.Millisecond))
 	})
 }
 

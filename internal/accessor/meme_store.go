@@ -41,6 +41,8 @@ type Meme struct {
 	ShareExpiresAt      time.Time `json:"-"`
 	SharedAt            time.Time `json:"-"`
 	SharedByUserID      string    `json:"-"`
+	// ShareSlugs maps each share generation to the link code issued for it.
+	ShareSlugs map[int64]string `json:"-"`
 }
 
 type AuditActor struct {
@@ -98,24 +100,25 @@ type DeleteResult struct {
 }
 
 type persistedMeme struct {
-	ID                  string    `json:"id"`
-	OriginalName        string    `json:"originalName"`
-	StoredName          string    `json:"storedName"`
-	FilePath            string    `json:"filePath"`
-	ContentType         string    `json:"contentType"`
-	ContentHash         string    `json:"contentHash,omitempty"`
-	SizeBytes           int64     `json:"sizeBytes"`
-	Tags                []string  `json:"tags"`
-	SuggestedTags       []string  `json:"suggestedTags,omitempty"`
-	AutoSuggestDisabled bool      `json:"autoSuggestDisabled,omitempty"`
-	Notes               string    `json:"notes"`
-	SourceURL           string    `json:"sourceUrl,omitempty"`
-	CreatedAt           time.Time `json:"createdAt"`
-	UpdatedAt           time.Time `json:"updatedAt"`
-	ShareGeneration     int64     `json:"shareGeneration,omitempty"`
-	ShareExpiresAt      time.Time `json:"shareExpiresAt,omitempty"`
-	SharedAt            time.Time `json:"sharedAt,omitempty"`
-	SharedByUserID      string    `json:"sharedByUserId,omitempty"`
+	ID                  string           `json:"id"`
+	OriginalName        string           `json:"originalName"`
+	StoredName          string           `json:"storedName"`
+	FilePath            string           `json:"filePath"`
+	ContentType         string           `json:"contentType"`
+	ContentHash         string           `json:"contentHash,omitempty"`
+	SizeBytes           int64            `json:"sizeBytes"`
+	Tags                []string         `json:"tags"`
+	SuggestedTags       []string         `json:"suggestedTags,omitempty"`
+	AutoSuggestDisabled bool             `json:"autoSuggestDisabled,omitempty"`
+	Notes               string           `json:"notes"`
+	SourceURL           string           `json:"sourceUrl,omitempty"`
+	CreatedAt           time.Time        `json:"createdAt"`
+	UpdatedAt           time.Time        `json:"updatedAt"`
+	ShareGeneration     int64            `json:"shareGeneration,omitempty"`
+	ShareExpiresAt      time.Time        `json:"shareExpiresAt,omitempty"`
+	SharedAt            time.Time        `json:"sharedAt,omitempty"`
+	SharedByUserID      string           `json:"sharedByUserId,omitempty"`
+	ShareSlugs          map[int64]string `json:"shareSlugs,omitempty"`
 }
 
 type MemeUpdate struct {
@@ -193,13 +196,23 @@ func (s *MemeStore) GetOrCreateMemeShare(memeID, userID string, now, expiresAt t
 		}
 		if !s.memes[i].ShareExpiresAt.After(now) {
 			s.memes[i].ShareGeneration++
-			s.memes[i].ShareExpiresAt = expiresAt.UTC()
 			s.memes[i].SharedAt = now.UTC()
 			s.memes[i].SharedByUserID = strings.TrimSpace(userID)
-			s.byID[memeID] = s.memes[i]
-			if err := s.saveMemesLocked(); err != nil {
-				return MemeShareState{}, err
+		}
+		// An active share is renewed in place: same generation, same link.
+		s.memes[i].ShareExpiresAt = expiresAt.UTC()
+		if s.memes[i].ShareSlugs[s.memes[i].ShareGeneration] == "" {
+			// Copy on write: Meme values handed out earlier share the old map.
+			slugs := make(map[int64]string, len(s.memes[i].ShareSlugs)+1)
+			for generation, slug := range s.memes[i].ShareSlugs {
+				slugs[generation] = slug
 			}
+			slugs[s.memes[i].ShareGeneration] = uuid.NewString()
+			s.memes[i].ShareSlugs = slugs
+		}
+		s.byID[memeID] = s.memes[i]
+		if err := s.saveMemesLocked(); err != nil {
+			return MemeShareState{}, err
 		}
 		return memeShareStateFromMeme(s.memes[i]), nil
 	}
@@ -214,6 +227,23 @@ func (s *MemeStore) GetMemeShareState(memeID string) (MemeShareState, error) {
 		return MemeShareState{}, os.ErrNotExist
 	}
 	return memeShareStateFromMeme(meme), nil
+}
+
+func (s *MemeStore) ResolveMemeShareSlug(slug string) (string, int64, error) {
+	slug = strings.TrimSpace(slug)
+	if slug == "" {
+		return "", 0, os.ErrNotExist
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, meme := range s.memes {
+		for generation, candidate := range meme.ShareSlugs {
+			if candidate == slug {
+				return meme.ID, generation, nil
+			}
+		}
+	}
+	return "", 0, os.ErrNotExist
 }
 
 func (s *MemeStore) ListActiveMemeShares(now time.Time) ([]MemeShareState, error) {
@@ -265,7 +295,7 @@ func (s *MemeStore) RevokeAllMemeShares(now time.Time) (int, error) {
 }
 
 func memeShareStateFromMeme(meme Meme) MemeShareState {
-	return MemeShareState{MemeID: meme.ID, Generation: meme.ShareGeneration, SharedByUserID: meme.SharedByUserID, SharedAt: meme.SharedAt, ExpiresAt: meme.ShareExpiresAt}
+	return MemeShareState{MemeID: meme.ID, Generation: meme.ShareGeneration, SharedByUserID: meme.SharedByUserID, SharedAt: meme.SharedAt, ExpiresAt: meme.ShareExpiresAt, Slug: meme.ShareSlugs[meme.ShareGeneration]}
 }
 
 func (s *MemeStore) List(userID, query string, favoritesOnly bool, tag string) []Meme {
@@ -735,6 +765,7 @@ func (s *MemeStore) loadMemes() error {
 			ShareExpiresAt:      item.ShareExpiresAt,
 			SharedAt:            item.SharedAt,
 			SharedByUserID:      item.SharedByUserID,
+			ShareSlugs:          item.ShareSlugs,
 		})
 	}
 
@@ -805,6 +836,7 @@ func (s *MemeStore) saveMemesLocked() error {
 			ShareExpiresAt:      meme.ShareExpiresAt,
 			SharedAt:            meme.SharedAt,
 			SharedByUserID:      meme.SharedByUserID,
+			ShareSlugs:          meme.ShareSlugs,
 		})
 	}
 

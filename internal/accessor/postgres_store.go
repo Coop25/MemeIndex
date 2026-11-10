@@ -1509,7 +1509,7 @@ func (s *PostgresStore) GetOrCreateMemeShare(memeID, userID string, now, expires
 	err := s.pool.QueryRow(context.Background(), `
 		UPDATE memes
 		SET share_generation = CASE WHEN share_expires_at > $2 THEN share_generation ELSE share_generation + 1 END,
-			share_expires_at = CASE WHEN share_expires_at > $2 THEN share_expires_at ELSE $3 END,
+			share_expires_at = $3,
 			shared_at = CASE WHEN share_expires_at > $2 THEN shared_at ELSE $2 END,
 			shared_by_user_id = CASE WHEN share_expires_at > $2 THEN shared_by_user_id ELSE $4 END
 		WHERE id = $1 AND COALESCE(hidden_from_app, FALSE) = FALSE
@@ -1518,27 +1518,57 @@ func (s *PostgresStore) GetOrCreateMemeShare(memeID, userID string, now, expires
 	if errors.Is(err, pgx.ErrNoRows) {
 		return MemeShareState{}, os.ErrNotExist
 	}
-	return share, err
+	if err != nil {
+		return MemeShareState{}, err
+	}
+	// One link per generation: a renewed share (or two racing requests) gets
+	// the link already issued rather than a second one. The no-op update makes
+	// RETURNING yield the existing row on conflict.
+	err = s.pool.QueryRow(context.Background(), `
+		INSERT INTO meme_share_links (slug, meme_id, generation)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (meme_id, generation) DO UPDATE SET generation = EXCLUDED.generation
+		RETURNING slug
+	`, uuid.NewString(), share.MemeID, share.Generation).Scan(&share.Slug)
+	if err != nil {
+		return MemeShareState{}, err
+	}
+	return share, nil
 }
 
 func (s *PostgresStore) GetMemeShareState(memeID string) (MemeShareState, error) {
 	var share MemeShareState
 	err := s.pool.QueryRow(context.Background(), `
-		SELECT id, share_generation, shared_by_user_id, COALESCE(shared_at, 'epoch'::timestamptz), COALESCE(share_expires_at, 'epoch'::timestamptz)
-		FROM memes WHERE id = $1 AND COALESCE(hidden_from_app, FALSE) = FALSE
-	`, strings.TrimSpace(memeID)).Scan(&share.MemeID, &share.Generation, &share.SharedByUserID, &share.SharedAt, &share.ExpiresAt)
+		SELECT m.id, m.share_generation, m.shared_by_user_id, COALESCE(m.shared_at, 'epoch'::timestamptz), COALESCE(m.share_expires_at, 'epoch'::timestamptz), COALESCE(l.slug, '')
+		FROM memes m
+		LEFT JOIN meme_share_links l ON l.meme_id = m.id AND l.generation = m.share_generation
+		WHERE m.id = $1 AND COALESCE(m.hidden_from_app, FALSE) = FALSE
+	`, strings.TrimSpace(memeID)).Scan(&share.MemeID, &share.Generation, &share.SharedByUserID, &share.SharedAt, &share.ExpiresAt, &share.Slug)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return MemeShareState{}, os.ErrNotExist
 	}
 	return share, err
 }
 
+func (s *PostgresStore) ResolveMemeShareSlug(slug string) (string, int64, error) {
+	var memeID string
+	var generation int64
+	err := s.pool.QueryRow(context.Background(), `
+		SELECT meme_id, generation FROM meme_share_links WHERE slug = $1
+	`, strings.TrimSpace(slug)).Scan(&memeID, &generation)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", 0, os.ErrNotExist
+	}
+	return memeID, generation, err
+}
+
 func (s *PostgresStore) ListActiveMemeShares(now time.Time) ([]MemeShareState, error) {
 	rows, err := s.pool.Query(context.Background(), `
-		SELECT id, share_generation, shared_by_user_id, shared_at, share_expires_at
-		FROM memes
-		WHERE share_expires_at > $1 AND COALESCE(hidden_from_app, FALSE) = FALSE
-		ORDER BY shared_at DESC
+		SELECT m.id, m.share_generation, m.shared_by_user_id, m.shared_at, m.share_expires_at, COALESCE(l.slug, '')
+		FROM memes m
+		LEFT JOIN meme_share_links l ON l.meme_id = m.id AND l.generation = m.share_generation
+		WHERE m.share_expires_at > $1 AND COALESCE(m.hidden_from_app, FALSE) = FALSE
+		ORDER BY m.shared_at DESC
 	`, now.UTC())
 	if err != nil {
 		return nil, err
@@ -1547,7 +1577,7 @@ func (s *PostgresStore) ListActiveMemeShares(now time.Time) ([]MemeShareState, e
 	shares := []MemeShareState{}
 	for rows.Next() {
 		var share MemeShareState
-		if err := rows.Scan(&share.MemeID, &share.Generation, &share.SharedByUserID, &share.SharedAt, &share.ExpiresAt); err != nil {
+		if err := rows.Scan(&share.MemeID, &share.Generation, &share.SharedByUserID, &share.SharedAt, &share.ExpiresAt, &share.Slug); err != nil {
 			return nil, err
 		}
 		shares = append(shares, share)
@@ -1589,6 +1619,7 @@ func (s *PostgresStore) ensureSchema(ctx context.Context) error {
 		"009_meme_shares.sql",
 		"010_meme_query_indexes.sql",
 		"012_meme_search_text.sql",
+		"030_meme_share_links.sql",
 	); err != nil {
 		return fmt.Errorf("ensure schema: %w", err)
 	}
