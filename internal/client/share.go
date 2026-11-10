@@ -6,8 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
-	"html"
-	"image"
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
@@ -21,9 +19,10 @@ import (
 	"time"
 
 	"memeindex/internal/accessor"
+	"memeindex/internal/manager"
 )
 
-const memeShareLifetime = 30 * 24 * time.Hour
+const memeShareLifetime = manager.MemeShareLifetime
 
 func loadOrCreateShareSecret(dataDir, configured string) ([]byte, error) {
 	if strings.TrimSpace(configured) != "" {
@@ -72,10 +71,13 @@ func (s *Server) createMemeShare(w http.ResponseWriter, r *http.Request, memeID 
 		http.Error(w, "failed to load shared meme", http.StatusInternalServerError)
 		return
 	}
+	// The link is the file itself, so one URL serves every purpose; the
+	// separate keys remain for clients written against the older response.
+	link := s.memeShareURL(r, share, meme)
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"url":        s.memeSharePageURL(r, share),
-		"page_url":   s.memeSharePageURL(r, share),
-		"media_url":  s.memeShareMediaURL(r, share, meme),
+		"url":        link,
+		"page_url":   link,
+		"media_url":  link,
 		"expires_at": share.ExpiresAt,
 	})
 }
@@ -122,12 +124,10 @@ func (s *Server) handleMemeLink(w http.ResponseWriter, r *http.Request) {
 				s.serveSharedMemeAsset(w, r, meme, true)
 				return
 			}
-			// Every client - browsers, Discordbot, and Discord's media proxy,
-			// which fetches later under a different User-Agent - gets the same
-			// page. Its OpenGraph tags point at the /media/ URL, which serves
-			// the file regardless of who asks, so the embed no longer depends
-			// on User-Agent sniffing.
-			s.renderSharedMemePage(w, r, token, meme, share.ExpiresAt)
+			// A link from before share links pointed straight at the file.
+			// It now behaves like the newer /s/ links: every client gets the
+			// file itself, with no page or User-Agent sniffing in between.
+			s.serveSharedMemeAsset(w, r, meme, false)
 			return
 		}
 		if assetKind == "" {
@@ -146,6 +146,51 @@ func (s *Server) handleMemeLink(w http.ResponseWriter, r *http.Request) {
 	}
 	s.withPageAuth(http.HandlerFunc(s.handleIndex)).ServeHTTP(w, r)
 }
+
+// handleShareLink serves /s/<code>.<ext>, the public link to a shared meme's
+// file. The extension is only there so chat apps recognise the media type; the
+// code alone identifies the share. A code whose share has expired, been
+// revoked, or been replaced by a newer share redirects to the meme's
+// sign-in-protected page instead of serving the file.
+func (s *Server) handleShareLink(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store, max-age=0")
+	w.Header().Set("CDN-Cache-Control", "no-store")
+	w.Header().Set("Cloudflare-CDN-Cache-Control", "no-store")
+	w.Header().Set("Surrogate-Control", "no-store")
+	w.Header().Set("X-Robots-Tag", "noindex, nofollow, noarchive")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	name := strings.TrimPrefix(r.URL.Path, "/s/")
+	if strings.Contains(name, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	slug, _, _ := strings.Cut(name, ".")
+	if len(slug) != shareSlugLength {
+		http.NotFound(w, r)
+		return
+	}
+	share, meme, current, err := s.managers.ResolveMemeShareLink(slug)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			http.Error(w, "failed to load shared meme", http.StatusInternalServerError)
+			return
+		}
+		http.NotFound(w, r)
+		return
+	}
+	if current && share.ExpiresAt.After(time.Now().UTC()) {
+		s.serveSharedMemeAsset(w, r, meme, false)
+		return
+	}
+	http.Redirect(w, r, "/m/"+url.PathEscape(meme.ID), http.StatusFound)
+}
+
+// shareSlugLength is the length of a share link code, a random UUID.
+const shareSlugLength = 36
 
 func (s *Server) handleAdminShares(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/api/admin/shares" {
@@ -191,9 +236,9 @@ func (s *Server) handleAdminShares(w http.ResponseWriter, r *http.Request) {
 				"meme":                   s.protectMemeForResponse(r, entry.Meme),
 				"share":                  entry.Share,
 				"shared_by_display_name": sharedByDisplayName,
-				"url":                    s.memeSharePageURL(r, entry.Share),
-				"page_url":               s.memeSharePageURL(r, entry.Share),
-				"media_url":              s.memeShareMediaURL(r, entry.Share, entry.Meme),
+				"url":                    s.memeShareURL(r, entry.Share, entry.Meme),
+				"page_url":               s.memeShareURL(r, entry.Share, entry.Meme),
+				"media_url":              s.memeShareURL(r, entry.Share, entry.Meme),
 			})
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"shares": items})
@@ -220,12 +265,14 @@ func (s *Server) handleAdminShares(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) memeSharePageURL(r *http.Request, share accessor.MemeShareState) string {
-	return s.publicOrigin(r) + "/m/" + url.PathEscape(share.MemeID) + "?share=" + url.QueryEscape(s.signMemeShare(share))
-}
-
-func (s *Server) memeShareMediaURL(r *http.Request, share accessor.MemeShareState, meme accessor.Meme) string {
-	return s.publicOrigin(r) + "/m/" + url.PathEscape(share.MemeID) + "/media/" + url.PathEscape(sharedAssetFileName(meme, false)) + "?share=" + url.QueryEscape(s.signMemeShare(share))
+// memeShareURL returns the public link to a shared meme's file.
+func (s *Server) memeShareURL(r *http.Request, share accessor.MemeShareState, meme accessor.Meme) string {
+	if share.Slug == "" {
+		// A share created before links had codes keeps its signed link until
+		// it is next renewed, which issues it a code.
+		return s.publicOrigin(r) + "/m/" + url.PathEscape(share.MemeID) + "?share=" + url.QueryEscape(s.signMemeShare(share))
+	}
+	return s.publicOrigin(r) + "/s/" + url.PathEscape(share.Slug) + filepath.Ext(sharedAssetFileName(meme, false))
 }
 
 // publicOrigin returns the origin shared links should use. Memes can be
@@ -242,29 +289,39 @@ func (s *Server) publicOrigin(r *http.Request) string {
 }
 
 func (s *Server) signMemeShare(share accessor.MemeShareState) string {
-	expires := strconv.FormatInt(share.ExpiresAt.UTC().Unix(), 10)
-	generation := strconv.FormatInt(share.Generation, 10)
-	payload := share.MemeID + "\n" + expires + "\n" + generation
+	return s.signMemeShareValues(share.MemeID, share.ExpiresAt.UTC().Unix(), share.Generation)
+}
+
+func (s *Server) signMemeShareValues(memeID string, expiresUnix, generationValue int64) string {
+	expires := strconv.FormatInt(expiresUnix, 10)
+	generation := strconv.FormatInt(generationValue, 10)
+	payload := memeID + "\n" + expires + "\n" + generation
 	mac := hmac.New(sha256.New, s.shareSecret)
 	_, _ = mac.Write([]byte(payload))
 	signature := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 	return expires + "." + generation + "." + signature
 }
 
+// validMemeShareToken checks a signed link from before share links had codes.
+// The token carries its own expiry, which the signature covers; it is honoured
+// until then as long as the share it was issued for is still the meme's
+// current, unexpired one. Renewing a share moves the share's expiry without
+// changing its generation, so the token's expiry is deliberately not required
+// to equal the share's.
 func (s *Server) validMemeShareToken(token string, share accessor.MemeShareState, now time.Time) bool {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 || len(s.shareSecret) == 0 || !share.ExpiresAt.After(now) {
 		return false
 	}
 	expires, err := strconv.ParseInt(parts[0], 10, 64)
-	if err != nil || expires != share.ExpiresAt.UTC().Unix() || now.Unix() >= expires {
+	if err != nil || now.Unix() >= expires {
 		return false
 	}
 	generation, err := strconv.ParseInt(parts[1], 10, 64)
 	if err != nil || generation != share.Generation {
 		return false
 	}
-	expected := s.signMemeShare(share)
+	expected := s.signMemeShareValues(share.MemeID, expires, generation)
 	return hmac.Equal([]byte(expected), []byte(token))
 }
 
@@ -301,92 +358,6 @@ func (s *Server) serveSharedMemeAsset(w http.ResponseWriter, r *http.Request, me
 	}
 	setUntrustedAssetHeaders(w, "/uploads/"+fileName)
 	http.ServeFile(w, r, filepath.Join(baseDir, fileName))
-}
-
-func (s *Server) renderSharedMemePage(w http.ResponseWriter, r *http.Request, token string, meme accessor.Meme, expiresAt time.Time) {
-	origin := s.publicOrigin(r)
-	shareURL := origin + "/m/" + url.PathEscape(meme.ID) + "?share=" + url.QueryEscape(token)
-	mediaURL := origin + "/m/" + url.PathEscape(meme.ID) + "/media/" + url.PathEscape(sharedAssetFileName(meme, false)) + "?share=" + url.QueryEscape(token)
-	previewURL := origin + "/m/" + url.PathEscape(meme.ID) + "/preview/" + url.PathEscape(sharedAssetFileName(meme, true)) + "?share=" + url.QueryEscape(token)
-	openURL := "/m/" + url.PathEscape(meme.ID)
-	title := "Shared meme from MemeIndex"
-	mediaTag := `<a class="file" href="` + html.EscapeString(mediaURL) + `">Open shared file</a>`
-	ogType := "website"
-	// Shares are reused until they expire, so the time left varies.
-	description := "Shared privately until " + expiresAt.UTC().Format("January 2, 2006") + "."
-	// No og:image fallback for other file types: Discord does not render SVG
-	// (the old /og-image.svg fallback), so a generic image only added noise.
-	meta := ""
-	ogTag := func(property, content string) string {
-		return `<meta property="` + property + `" content="` + html.EscapeString(content) + `">`
-	}
-	twitterTag := func(name, content string) string {
-		return `<meta name="` + name + `" content="` + html.EscapeString(content) + `">`
-	}
-	sizeTags := func(prefix string, width, height int) string {
-		if width <= 0 || height <= 0 {
-			return ""
-		}
-		return ogTag(prefix+":width", strconv.Itoa(width)) + ogTag(prefix+":height", strconv.Itoa(height))
-	}
-	switch {
-	case strings.HasPrefix(meme.ContentType, "image/"):
-		width, height := s.sharedImageDimensions(meme, false)
-		meta = ogTag("og:image", mediaURL) + ogTag("og:image:secure_url", mediaURL) + ogTag("og:image:type", meme.ContentType) + sizeTags("og:image", width, height) + ogTag("og:image:alt", "Shared meme") +
-			twitterTag("twitter:card", "summary_large_image") + twitterTag("twitter:image", mediaURL) + twitterTag("twitter:image:alt", "Shared meme")
-		mediaTag = `<img src="` + html.EscapeString(mediaURL) + `" alt="Shared meme">`
-	case strings.HasPrefix(meme.ContentType, "video/"):
-		ogType = "video.other"
-		// The poster frame shares the video's aspect ratio, so its size stands
-		// in for the video's; Discord needs a size to draw an inline player.
-		width, height := s.sharedImageDimensions(meme, true)
-		meta = ogTag("og:video", mediaURL) + ogTag("og:video:url", mediaURL) + ogTag("og:video:secure_url", mediaURL) + ogTag("og:video:type", meme.ContentType) + sizeTags("og:video", width, height)
-		if strings.HasPrefix(meme.PreviewPath, "/thumbnails/") {
-			meta += ogTag("og:image", previewURL) + ogTag("og:image:secure_url", previewURL) + ogTag("og:image:type", mime.TypeByExtension(filepath.Ext(sharedAssetFileName(meme, true)))) + sizeTags("og:image", width, height) + ogTag("og:image:alt", "Shared meme preview") +
-				twitterTag("twitter:card", "summary_large_image") + twitterTag("twitter:image", previewURL)
-		}
-		mediaTag = `<video src="` + html.EscapeString(mediaURL) + `" controls autoplay loop playsinline></video>`
-	case strings.HasPrefix(meme.ContentType, "audio/"):
-		meta = ogTag("og:audio", mediaURL) + ogTag("og:audio:secure_url", mediaURL) + ogTag("og:audio:type", meme.ContentType)
-		mediaTag = `<audio src="` + html.EscapeString(mediaURL) + `" controls autoplay></audio>`
-	}
-
-	page := `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>` + title + `</title><meta name="robots" content="noindex,nofollow,noarchive">` + ogTag("og:type", ogType) + `<meta property="og:site_name" content="MemeIndex"><meta property="og:title" content="` + title + `">` + ogTag("og:description", description) + ogTag("og:url", shareURL) + `<meta name="twitter:title" content="` + title + `">` + twitterTag("twitter:description", description) + `` + meta + `<style>html,body{margin:0;min-height:100%;background:#070b0a;color:#eef7f0;font:16px system-ui}body{display:grid;place-items:center;padding:24px;box-sizing:border-box}.wrap{width:min(1100px,100%);text-align:center}img,video{max-width:100%;max-height:82vh;border-radius:12px;background:#000}audio{width:min(680px,100%)}a{color:#72c77a}.open{display:inline-block;margin-top:18px;padding:11px 16px;border:1px solid #315d3b;border-radius:9px;text-decoration:none}.meta{color:#91a397;font-size:13px}</style></head><body><main class="wrap">` + mediaTag + `<p><a class="open" href="` + html.EscapeString(openURL) + `">Open in MemeIndex</a></p><p class="meta">Public link expires ` + html.EscapeString(expiresAt.Local().Format("January 2, 2006")) + `.</p></main></body></html>`
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store, max-age=0")
-	w.Header().Set("X-Robots-Tag", "noindex, nofollow, noarchive")
-	w.Header().Set("Referrer-Policy", "no-referrer")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'")
-	_, _ = w.Write([]byte(page))
-}
-
-// sharedImageDimensions reads only the header of the meme's image (or, with
-// preview, its poster thumbnail) to report its pixel size. It returns zeros
-// for formats the standard library cannot decode, in which case the share
-// page simply omits the size tags.
-func (s *Server) sharedImageDimensions(meme accessor.Meme, preview bool) (int, int) {
-	var path string
-	if preview {
-		if !strings.HasPrefix(meme.PreviewPath, "/thumbnails/") || strings.TrimSpace(s.managers.ThumbnailDir()) == "" {
-			return 0, 0
-		}
-		path = filepath.Join(s.managers.ThumbnailDir(), filepath.Base(meme.PreviewPath))
-	} else {
-		if strings.TrimSpace(meme.StoredName) == "" {
-			return 0, 0
-		}
-		path = filepath.Join(s.managers.UploadDir(), filepath.Base(meme.StoredName))
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return 0, 0
-	}
-	defer func() { _ = file.Close() }()
-	config, _, err := image.DecodeConfig(file)
-	if err != nil {
-		return 0, 0
-	}
-	return config.Width, config.Height
 }
 
 func sharedAssetFileName(meme accessor.Meme, preview bool) string {

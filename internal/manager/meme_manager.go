@@ -502,7 +502,30 @@ func (m *MemeManager) GetOrCreateMemeShare(memeID, userID string, now time.Time)
 	if !ok {
 		return accessor.MemeShareState{}, errors.New("meme sharing is unavailable")
 	}
-	return store.GetOrCreateMemeShare(strings.TrimSpace(memeID), strings.TrimSpace(userID), now.UTC(), now.UTC().Add(30*24*time.Hour))
+	return store.GetOrCreateMemeShare(strings.TrimSpace(memeID), strings.TrimSpace(userID), now.UTC(), now.UTC().Add(MemeShareLifetime))
+}
+
+// MemeShareLifetime is how long a share link serves its file. Sharing a meme
+// that is already shared renews the same link for this long again.
+const MemeShareLifetime = 365 * 24 * time.Hour
+
+// ResolveMemeShareLink looks up a share link code. current reports whether the
+// code belongs to the meme's current share generation; an older code still
+// resolves so its link can redirect to the meme, but must not serve the file.
+func (m *MemeManager) ResolveMemeShareLink(slug string) (share accessor.MemeShareState, meme accessor.Meme, current bool, err error) {
+	store, ok := m.store.(accessor.MemeShareStore)
+	if !ok {
+		return accessor.MemeShareState{}, accessor.Meme{}, false, errors.New("meme sharing is unavailable")
+	}
+	memeID, generation, err := store.ResolveMemeShareSlug(strings.TrimSpace(slug))
+	if err != nil {
+		return accessor.MemeShareState{}, accessor.Meme{}, false, err
+	}
+	share, meme, err = m.GetMemeShare(memeID)
+	if err != nil {
+		return accessor.MemeShareState{}, accessor.Meme{}, false, err
+	}
+	return share, meme, generation == share.Generation, nil
 }
 
 func (m *MemeManager) GetMemeShare(memeID string) (accessor.MemeShareState, accessor.Meme, error) {

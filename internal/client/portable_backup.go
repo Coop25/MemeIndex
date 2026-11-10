@@ -47,7 +47,12 @@ import (
 // dropped every active share link. Format 3 and 4 archives still restore with
 // their own column lists; see invalidateLegacySessions for what happens to
 // their sessions.
-const portableBackupFormatVersion = 5
+//
+// Bumped from 5 to 6 when share link codes (meme_share_links) were added.
+// Without the table a restore leaves every share active but with no link that
+// reaches it. Older archives restore with the table left empty; their shares
+// get a code the next time someone shares the meme.
+const portableBackupFormatVersion = 6
 
 // portableBackupOldestFormatVersion is the oldest archive format restore
 // still accepts.
@@ -131,6 +136,8 @@ const (
 
 var portableBackupTables = []backupTable{
 	{name: "memes", columns: backupMemeColumnsV4 + ", share_generation, share_expires_at, shared_at, shared_by_user_id", legacyColumns: map[int]string{3: backupMemeColumnsV4, 4: backupMemeColumnsV4}},
+	// References memes(id), so it must load after memes.
+	{name: "meme_share_links", columns: "slug, meme_id, generation, created_at", sinceFormat: 6},
 	{name: "tags", columns: "id, name"},
 	{name: "app_users", columns: backupUserColumnsV4 + ", session_version", legacyColumns: map[int]string{3: backupUserColumnsV4, 4: backupUserColumnsV4}},
 	{name: "app_user_readd_required", columns: backupReaddColumnsV4 + ", session_version", legacyColumns: map[int]string{3: backupReaddColumnsV4, 4: backupReaddColumnsV4}},
@@ -753,7 +760,7 @@ func (b *portableBackup) restoreArchive(ctx context.Context, source io.Reader, m
 		}
 	}()
 
-	if _, err := conn.Exec(ctx, "TRUNCATE TABLE meme_tags, user_favorites, reel_sessions, meme_audit_logs, tags, memes, app_user_readd_required, app_user_audiobook_tag_restrictions, app_users, audiobook_tags, audiobook_bookmarks, audiobook_favorites, audiobook_progress, audiobook_playback_sessions, audiobook_listening_stats, audiobook_uploads, audiobooks, audiobook_series RESTART IDENTITY CASCADE"); err != nil {
+	if _, err := conn.Exec(ctx, "TRUNCATE TABLE meme_share_links, meme_tags, user_favorites, reel_sessions, meme_audit_logs, tags, memes, app_user_readd_required, app_user_audiobook_tag_restrictions, app_users, audiobook_tags, audiobook_bookmarks, audiobook_favorites, audiobook_progress, audiobook_playback_sessions, audiobook_listening_stats, audiobook_uploads, audiobooks, audiobook_series RESTART IDENTITY CASCADE"); err != nil {
 		return fmt.Errorf("clear current database: %w", err)
 	}
 	for _, table := range portableBackupTables {
