@@ -893,7 +893,7 @@ func (s *PostgresStore) MemeDashboard(userID string) (MemeDashboardData, error) 
 	g.Go(func() error {
 		rows, err := s.queryMemeRows(ctx, uid,
 			visible+" AND EXISTS (SELECT 1 FROM user_favorites uf WHERE uf.user_id = $1 AND uf.meme_id = m.id)",
-			"m.created_at DESC, m.id ASC", 6, 0,
+			"m.created_at DESC, m.id ASC", DashboardFavoriteLimit, 0,
 		)
 		data.FavoriteItems = rows
 		return err
@@ -904,7 +904,7 @@ func (s *PostgresStore) MemeDashboard(userID string) (MemeDashboardData, error) 
 		return err
 	})
 	g.Go(func() error {
-		tags, err := s.TagCounts(5)
+		tags, err := s.TagCounts(DashboardTopTagLimit)
 		data.TopTags = tags
 		return err
 	})

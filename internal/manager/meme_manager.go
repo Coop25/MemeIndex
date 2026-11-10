@@ -314,7 +314,7 @@ func (m *MemeManager) Dashboard(userID string) VaultDashboard {
 		dashboard.StorageBytes += item.SizeBytes
 		if item.Favorite {
 			dashboard.Favorites++
-			if len(dashboard.FavoriteItems) < 6 {
+			if len(dashboard.FavoriteItems) < accessor.DashboardFavoriteLimit {
 				dashboard.FavoriteItems = append(dashboard.FavoriteItems, item)
 			}
 		}
@@ -331,7 +331,7 @@ func (m *MemeManager) Dashboard(userID string) VaultDashboard {
 		dashboard.RandomItems = append(dashboard.RandomItems, items[index])
 	}
 	dashboard.TagCount = len(tagCounts)
-	dashboard.TopTags = topTagStats(tagCounts, 5)
+	dashboard.TopTags = topTagStats(tagCounts, accessor.DashboardTopTagLimit)
 	return dashboard
 }
 
