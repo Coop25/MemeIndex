@@ -64,6 +64,7 @@ const state = {
       busy: false,
     },
     shares: [],
+    sharesPage: { offset: 0, limit: 25, total: 0, hasMore: false },
   },
   auth: {
     enabled: false,
@@ -465,6 +466,7 @@ const adminTagQueueKicker = document.querySelector("#admin-tag-queue-kicker");
 const adminTagQueueTitle = document.querySelector("#admin-tag-queue-title");
 const adminTagQueueSummary = document.querySelector("#admin-tag-queue-summary");
 const adminTagQueueReset = document.querySelector("#admin-tag-queue-reset");
+const adminTagQueueRetryFailed = document.querySelector("#admin-tag-queue-retry-failed");
 const adminTagQueueGrid = document.querySelector("#admin-tag-queue-grid");
 const adminTagQueueList = document.querySelector("#admin-tag-queue-list");
 const adminLinkQueuePanel = document.querySelector("#admin-link-queue-panel");
@@ -2627,6 +2629,7 @@ function renderAdminTagQueueStatus() {
   const isReviewTab = tab === "tag-review";
   const visible = isAdminView() && canManageUsers() && (isQueueTab || isReviewTab);
   adminTagQueuePanel.classList.toggle("hidden", !visible);
+  adminTagQueueRetryFailed?.classList.toggle("hidden", !isQueueTab);
   adminTagQueueReset?.classList.toggle("hidden", !isQueueTab);
   if (adminTagQueueReset) {
     adminTagQueueReset.disabled = !isQueueTab;
@@ -2818,10 +2821,18 @@ function renderAdminTagQueueStatus() {
 }
 
 async function fetchAdminShares() {
-  const response = await fetch("/api/admin/shares", { cache: "no-store" });
+  const page = state.admin.sharesPage;
+  const params = new URLSearchParams({ offset: String(page.offset || 0), limit: String(page.limit || 25) });
+  const response = await fetch(`/api/admin/shares?${params.toString()}`, { cache: "no-store" });
   if (!(await expectAuthorized(response, "Failed to load shared memes."))) return null;
   const payload = await response.json();
   state.admin.shares = Array.isArray(payload.shares) ? payload.shares : [];
+  // The server pulls an out-of-range offset back to the last page, so trust its
+  // numbers over the ones that were requested.
+  page.total = Math.max(0, Number(payload.total ?? state.admin.shares.length));
+  page.offset = Math.max(0, Number(payload.offset || 0));
+  page.limit = Math.max(1, Number(payload.limit || page.limit || 25));
+  page.hasMore = Boolean(payload.has_more);
   renderAdminShares();
   return state.admin.shares;
 }
@@ -2829,14 +2840,16 @@ async function fetchAdminShares() {
 function renderAdminShares() {
   if (!adminViewTable || activeAdminTab() !== "shares") return;
   const shares = Array.isArray(state.admin.shares) ? state.admin.shares : [];
+  const page = state.admin.sharesPage;
+  const total = Math.max(Number(page.total || 0), shares.length);
   const layout = document.createElement("div");
   layout.className = "admin-shares-layout";
   if (shares.length) {
     const toolbar = document.createElement("div");
     toolbar.className = "admin-shares-toolbar";
-    toolbar.innerHTML = `<div><strong>${shares.length.toLocaleString()} active share link${shares.length === 1 ? "" : "s"}</strong><span>Revoke individual links below or remove public access from all of them.</span></div><button class="danger-button shared-revoke-all-button" type="button">Revoke All</button>`;
+    toolbar.innerHTML = `<div><strong>${total.toLocaleString()} active share link${total === 1 ? "" : "s"}</strong><span>Revoke individual links below or remove public access from all of them.</span></div><button class="danger-button shared-revoke-all-button" type="button">Revoke All</button>`;
     toolbar.querySelector(".shared-revoke-all-button")?.addEventListener("click", async (event) => {
-      if (!window.confirm(`Revoke all ${shares.length} active share link${shares.length === 1 ? "" : "s"}?\n\nEvery existing public link will stop working immediately.`)) return;
+      if (!window.confirm(`Revoke all ${total.toLocaleString()} active share link${total === 1 ? "" : "s"}?\n\nEvery existing public link will stop working immediately, including the ones on other pages.`)) return;
       const button = event.currentTarget;
       button.disabled = true;
       const response = await fetch("/api/admin/shares", { method: "DELETE" });
@@ -2847,6 +2860,7 @@ function renderAdminShares() {
       const payload = await response.json();
       const revoked = Number(payload.revoked || 0);
       showToast(`${revoked.toLocaleString()} share link${revoked === 1 ? "" : "s"} revoked.`, "success", { title: "Public Access Removed", duration: 3600 });
+      state.admin.sharesPage.offset = 0;
       await fetchAdminShares();
       setAdminViewStatus("No memes are currently shared.");
     });
@@ -2901,6 +2915,26 @@ function renderAdminShares() {
     table.appendChild(row);
   });
   layout.appendChild(table);
+  if (total > page.limit) {
+    const pageNumber = Math.floor(page.offset / page.limit) + 1;
+    const pageCount = Math.max(1, Math.ceil(total / page.limit));
+    const pager = document.createElement("nav");
+    pager.className = "admin-tag-review-pagination";
+    pager.setAttribute("aria-label", "Shared meme pages");
+    pager.innerHTML = `
+      <button type="button" class="admin-tag-page-button" data-admin-shares-page="prev" ${page.offset <= 0 ? "disabled" : ""}>Previous</button>
+      <span>Page ${pageNumber.toLocaleString()} of ${pageCount.toLocaleString()} · ${(page.offset + 1).toLocaleString()}-${(page.offset + shares.length).toLocaleString()} of ${total.toLocaleString()}</span>
+      <button type="button" class="admin-tag-page-button" data-admin-shares-page="next" ${page.hasMore ? "" : "disabled"}>Next</button>`;
+    pager.querySelectorAll("[data-admin-shares-page]").forEach((button) => {
+      button.addEventListener("click", () => {
+        if (button.disabled) return;
+        const delta = button.getAttribute("data-admin-shares-page") === "prev" ? -page.limit : page.limit;
+        page.offset = Math.max(0, page.offset + delta);
+        fetchAdminShares().catch((error) => console.error(error));
+      });
+    });
+    layout.appendChild(pager);
+  }
   adminViewTable.replaceChildren(layout);
 }
 
@@ -12609,6 +12643,27 @@ adminPageNext?.addEventListener("click", () => {
     setAdminViewStatus("Could not load admin page.");
     showToast("Could not load admin page.", "error", { title: "Admin" });
   });
+});
+
+adminTagQueueRetryFailed?.addEventListener("click", async () => {
+  adminTagQueueRetryFailed.disabled = true;
+  try {
+    const response = await fetch("/api/admin/tag-suggestions/retry-failed", { method: "POST" });
+    if (!(await expectAuthorized(response, "Failed to retry tag suggestions."))) {
+      showToast("Could not retry failed tag suggestions.", "error", { title: "Tag Queue" });
+      return;
+    }
+    const payload = await response.json();
+    const reenabled = Number(payload?.reenabled_exhausted || 0);
+    const queued = Number(payload?.queued || 0);
+    showToast(`Re-enabled ${reenabled} failed meme${reenabled === 1 ? "" : "s"} and queued ${queued}.`, "success", { title: "Tag Queue", duration: 3400 });
+    await fetchAdminTagQueueStatus();
+  } catch (error) {
+    console.error(error);
+    showToast("Could not retry failed tag suggestions.", "error", { title: "Tag Queue" });
+  } finally {
+    adminTagQueueRetryFailed.disabled = false;
+  }
 });
 
 adminTagQueueReset?.addEventListener("click", () => {

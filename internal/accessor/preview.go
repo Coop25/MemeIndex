@@ -251,7 +251,7 @@ func videoTagFrameOffsets(inputPath string, frameCount int) []string {
 	if frameCount <= 0 {
 		frameCount = 3
 	}
-	frameCount = min(frameCount, 5)
+	frameCount = min(frameCount, maxTagFrames)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cmd := localMediaCommand(ctx,
@@ -394,6 +394,65 @@ func extractVideoAudio(inputPath, outputPath string) error {
 		return err
 	}
 	return nil
+}
+
+// tagScratchDirs are the subfolders of the thumbnails directory that hold the
+// tag suggester's working files: video frames, resized images and extracted
+// audio. They exist only for the duration of one suggestion attempt.
+var tagScratchDirs = []string{"tagframes", "tagimages", "tagaudio"}
+
+// maxTagFrames bounds how many numbered frame files one video can have.
+const maxTagFrames = 5
+
+// RemoveTagScratch deletes the tag suggester's working files for one stored
+// upload. Missing files are not an error; the real thumbnail is untouched.
+func RemoveTagScratch(previewDir, storedName string) {
+	previewDir, storedName = strings.TrimSpace(previewDir), strings.TrimSpace(storedName)
+	if previewDir == "" || storedName == "" {
+		return
+	}
+	base := strings.TrimSuffix(storedName, filepath.Ext(storedName))
+	paths := []string{
+		filepath.Join(previewDir, "tagimages", thumbnailFileName(storedName)),
+		filepath.Join(previewDir, "tagaudio", tagAudioFileName(storedName)),
+	}
+	for index := 1; index <= maxTagFrames; index++ {
+		paths = append(paths,
+			filepath.Join(previewDir, "tagframes", tagFrameFileName(storedName, index)),
+			// Frames written before the "-tag-v2-" naming.
+			filepath.Join(previewDir, "tagframes", fmt.Sprintf("%s-tag-%d.jpg", base, index)),
+		)
+	}
+	for _, path := range paths {
+		_ = os.Remove(path)
+	}
+}
+
+// SweepTagScratch deletes every regular file directly inside the tag scratch
+// folders and reports how many it removed. Everything there is regenerated on
+// demand, so this is safe at startup, before the suggestion worker runs.
+func SweepTagScratch(previewDir string) int {
+	previewDir = strings.TrimSpace(previewDir)
+	if previewDir == "" {
+		return 0
+	}
+	removed := 0
+	for _, name := range tagScratchDirs {
+		dir := filepath.Join(previewDir, name)
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if !entry.Type().IsRegular() {
+				continue
+			}
+			if err := os.Remove(filepath.Join(dir, entry.Name())); err == nil {
+				removed++
+			}
+		}
+	}
+	return removed
 }
 
 func tagFrameFileName(storedName string, index int) string {
