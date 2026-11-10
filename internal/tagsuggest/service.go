@@ -30,9 +30,9 @@ var (
 func requestError(err error) error {
 	var timeout interface{ Timeout() bool }
 	if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &timeout) && timeout.Timeout()) {
-		return fmt.Errorf("%w (%v)", ErrTimeout, err)
+		return fmt.Errorf("%w (%s)", ErrTimeout, err.Error())
 	}
-	return fmt.Errorf("%w: %v", ErrUnavailable, err)
+	return fmt.Errorf("%w: %s", ErrUnavailable, err.Error())
 }
 
 type Config struct {
@@ -163,7 +163,7 @@ func (s *Service) Unload(ctx context.Context) error {
 	if err != nil {
 		return requestError(err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 1<<20))
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return fmt.Errorf("%w: %s", ErrUnavailable, response.Status)
@@ -359,7 +359,7 @@ func (s *Service) suggestWithGenerateFallback(ctx context.Context, input Request
 		if originalErr == nil {
 			return Result{}, fmt.Errorf("generate-only request failed: %w", requestError(err))
 		}
-		return Result{}, fmt.Errorf("structured path failed (%v); fallback generate also failed: %w", originalErr, requestError(err))
+		return Result{}, fmt.Errorf("structured path failed (%s); fallback generate also failed: %w", originalErr.Error(), requestError(err))
 	}
 	defer response.Body.Close()
 
@@ -633,7 +633,7 @@ func tagsFromJSON(raw json.RawMessage) []string {
 func buildPrompt(input Request, knownTags []string, existingTags []string, maxTags int) string {
 	var builder strings.Builder
 	builder.WriteString("Analyze the meme's joke and return reusable search tags for an archive.\n")
-	builder.WriteString(fmt.Sprintf("Return %d to %d distinct tags, or fewer only when the evidence is weak.\n", min(3, maxTags), maxTags))
+	fmt.Fprintf(&builder, "Return %d to %d distinct tags, or fewer only when the evidence is weak.\n", min(3, maxTags), maxTags)
 	builder.WriteString("Read visible captions and subtitles before interpreting the visual scene. For video frames, infer the shared sequence rather than tagging each frame separately.\n")
 	builder.WriteString("Most tags should cover the joke's actual topic, situation, emotion, cultural reference, or recognizable format. For those, prefer the meaning of text or speech over literal objects.\n")
 	builder.WriteString("Also include one to three tags for the scene someone would search by, when it is clearly visible: the setting or location (kitchen, office, car interior, beach, gym, classroom), the conditions (night, snow, rain, sunset), and any prominent animal, vehicle, food, or object the scene is about. Name the specific place or thing rather than a vague word such as room or background.\n")
