@@ -72,7 +72,15 @@ func main() {
 
 	go runPreviewAssetBackfill(memeManager)
 	memeManager.StartTagHygieneWorker()
-	memeManager.StartTagSuggestionWorker()
+	// The first sweep after an upgrade can have tens of thousands of files to
+	// delete, so it runs off the startup path. The worker starts only once it
+	// is done, so the sweep cannot delete files of a suggestion in flight.
+	go func() {
+		if removed := memeManager.SweepTagScratch(); removed > 0 {
+			log.Printf("tag suggestion scratch: removed %d leftover working file(s) from the thumbnails folder", removed)
+		}
+		memeManager.StartTagSuggestionWorker()
+	}()
 	if queued := memeManager.SeedTagSuggestionQueue(); queued > 0 {
 		log.Printf("tag suggestion worker: queued %d existing untagged meme(s) with no pending suggestions", queued)
 	}

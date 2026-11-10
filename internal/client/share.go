@@ -207,7 +207,10 @@ func (s *Server) handleAdminShares(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		shares, err := s.managers.ListActiveMemeShares(time.Now().UTC())
+		query := r.URL.Query()
+		requestedOffset, _ := strconv.Atoi(query.Get("offset"))
+		requestedLimit, _ := strconv.Atoi(query.Get("limit"))
+		shares, total, offset, limit, err := s.managers.ListActiveMemeSharesPage(time.Now().UTC(), requestedOffset, requestedLimit)
 		if err != nil {
 			http.Error(w, "failed to list shared memes", http.StatusInternalServerError)
 			return
@@ -241,7 +244,13 @@ func (s *Server) handleAdminShares(w http.ResponseWriter, r *http.Request) {
 				"media_url":              s.memeShareURL(r, entry.Share, entry.Meme),
 			})
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"shares": items})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"shares":   items,
+			"total":    total,
+			"offset":   offset,
+			"limit":    limit,
+			"has_more": offset+limit < total,
+		})
 		return
 	}
 

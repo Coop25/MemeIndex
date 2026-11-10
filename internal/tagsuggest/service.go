@@ -21,7 +21,19 @@ var (
 	ErrUnavailable     = errors.New("tag suggestion service is unavailable")
 	ErrUnsupported     = errors.New("tag suggestions are only supported for images and videos with generated thumbnails")
 	ErrInvalidResponse = errors.New("tag suggestion model returned an unusable response")
+	// ErrTimeout is an ErrUnavailable: the model was reachable but did not
+	// answer in time. Callers that care check it before ErrUnavailable.
+	ErrTimeout = fmt.Errorf("%w: the model did not answer in time", ErrUnavailable)
 )
+
+// requestError classifies a failed HTTP round trip to Ollama.
+func requestError(err error) error {
+	var timeout interface{ Timeout() bool }
+	if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &timeout) && timeout.Timeout()) {
+		return fmt.Errorf("%w (%v)", ErrTimeout, err)
+	}
+	return fmt.Errorf("%w: %v", ErrUnavailable, err)
+}
 
 type Config struct {
 	OllamaURL    string
@@ -69,6 +81,13 @@ const (
 	maxOCRTextLen        = 2000
 	maxTranscriptTextLen = 2000
 	maxSearchTextLen     = 4000
+
+	// The reply holds the tags and a copy of the on-image text. The text is
+	// asked for in at most schemaOCRTextLen characters and the reply may run
+	// to maxReplyTokens, so a caption-heavy meme does not get cut off before
+	// the JSON closes.
+	schemaOCRTextLen = 1000
+	maxReplyTokens   = 1024
 )
 
 func New(config Config) *Service {
@@ -116,26 +135,40 @@ func (s *Service) Timeout() time.Duration {
 	return s.timeout
 }
 
-func (s *Service) WaitUntilReady(ctx context.Context) error {
+// Ready checks once whether Ollama answers and has the model pulled.
+func (s *Service) Ready(ctx context.Context) error {
 	if !s.Enabled() {
 		return ErrDisabled
 	}
+	_, err := s.ready(ctx)
+	return err
+}
 
-	for {
-		ready, err := s.ready(ctx)
-		if err == nil && ready {
-			return nil
-		}
-
-		select {
-		case <-ctx.Done():
-			if err != nil {
-				return err
-			}
-			return ctx.Err()
-		case <-time.After(3 * time.Second):
-		}
+// Unload asks Ollama to drop the model from memory now instead of holding it
+// for its keep-alive period. The next suggestion loads it again.
+func (s *Service) Unload(ctx context.Context) error {
+	if !s.Enabled() {
+		return ErrDisabled
 	}
+	payload, err := json.Marshal(map[string]any{"model": s.model, "keep_alive": 0})
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, s.baseURL+"/api/generate", bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := s.httpClient.Do(request)
+	if err != nil {
+		return requestError(err)
+	}
+	defer response.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 1<<20))
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Errorf("%w: %s", ErrUnavailable, response.Status)
+	}
+	return nil
 }
 
 func (s *Service) ready(ctx context.Context) (bool, error) {
@@ -200,6 +233,10 @@ func (s *Service) Suggest(ctx context.Context, input Request) (Result, error) {
 	}
 
 	result, err := s.suggestWithStructuredChat(ctx, input, imagePayloads)
+	if errors.Is(err, ErrTimeout) {
+		// Asking again the other way would only wait out a second timeout.
+		return Result{}, err
+	}
 	if err != nil {
 		// Fallback: some local vision models fail on chat+schema even when plain generation works.
 		result, err = s.suggestWithGenerateFallback(ctx, input, imagePayloads, err)
@@ -224,7 +261,7 @@ func (s *Service) suggestWithStructuredChat(ctx context.Context, input Request, 
 		"format": schema,
 		"options": map[string]any{
 			"temperature": 0,
-			"num_predict": 512,
+			"num_predict": maxReplyTokens,
 		},
 		"messages": []map[string]any{
 			{
@@ -252,13 +289,13 @@ func (s *Service) suggestWithStructuredChat(ctx context.Context, input Request, 
 
 	response, err := s.httpClient.Do(request)
 	if err != nil {
-		return Result{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
+		return Result{}, requestError(err)
 	}
 	defer response.Body.Close()
 
 	responseBody, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err != nil {
-		return Result{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
+		return Result{}, requestError(err)
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		message := strings.TrimSpace(string(responseBody))
@@ -302,7 +339,7 @@ func (s *Service) suggestWithGenerateFallback(ctx context.Context, input Request
 		"format": tagResponseSchema(s.maxTags),
 		"options": map[string]any{
 			"temperature": 0,
-			"num_predict": 512,
+			"num_predict": maxReplyTokens,
 		},
 	}
 
@@ -320,18 +357,18 @@ func (s *Service) suggestWithGenerateFallback(ctx context.Context, input Request
 	response, err := s.httpClient.Do(request)
 	if err != nil {
 		if originalErr == nil {
-			return Result{}, fmt.Errorf("%w: generate-only request failed: %v", ErrUnavailable, err)
+			return Result{}, fmt.Errorf("generate-only request failed: %w", requestError(err))
 		}
-		return Result{}, fmt.Errorf("%w: structured path failed (%v); fallback generate also failed: %v", ErrUnavailable, originalErr, err)
+		return Result{}, fmt.Errorf("structured path failed (%v); fallback generate also failed: %w", originalErr, requestError(err))
 	}
 	defer response.Body.Close()
 
 	responseBody, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err != nil {
 		if originalErr == nil {
-			return Result{}, fmt.Errorf("%w: generate-only read failed: %v", ErrUnavailable, err)
+			return Result{}, fmt.Errorf("generate-only read failed: %w", requestError(err))
 		}
-		return Result{}, fmt.Errorf("%w: fallback generate read failed: %v", ErrUnavailable, err)
+		return Result{}, fmt.Errorf("fallback generate read failed: %w", requestError(err))
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		message := strings.TrimSpace(string(responseBody))
@@ -392,7 +429,7 @@ func tagResponseSchema(maxTags int) map[string]any {
 			},
 			"text": map[string]any{
 				"type":      "string",
-				"maxLength": maxOCRTextLen,
+				"maxLength": schemaOCRTextLen,
 			},
 		},
 		"required": []string{"tags"},
@@ -506,6 +543,12 @@ func extractTagsFromModelText(raw string) ([]string, error) {
 		}
 	}
 
+	// A reply cut off at the token limit is not valid JSON, but the tags come
+	// first and are usually complete by then.
+	if tags := tagsFromTruncatedJSON(trimmed); len(tags) > 0 {
+		return tags, nil
+	}
+
 	plain := strings.TrimSpace(strings.Trim(trimmed, "`"))
 	lowerPlain := strings.ToLower(plain)
 	if strings.HasPrefix(lowerPlain, "tags:") {
@@ -535,6 +578,44 @@ func extractTagsFromModelText(raw string) ([]string, error) {
 	return tags, nil
 }
 
+// tagsFromTruncatedJSON reads the complete strings of a "tags" array out of a
+// JSON object that ends early. It returns nil when there is no such array.
+func tagsFromTruncatedJSON(raw string) []string {
+	start := strings.IndexByte(raw, '{')
+	if start < 0 {
+		return nil
+	}
+	decoder := json.NewDecoder(strings.NewReader(raw[start:]))
+	var tags []string
+	afterTagsKey, inTags := false, false
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return tags
+		}
+		switch value := token.(type) {
+		case json.Delim:
+			if inTags {
+				// "]" closes the array; anything else is not a flat string list.
+				return tags
+			}
+			inTags = afterTagsKey && value == '['
+			afterTagsKey = false
+		case string:
+			if inTags {
+				tags = append(tags, value)
+				continue
+			}
+			afterTagsKey = value == "tags"
+		default:
+			if inTags {
+				return tags
+			}
+			afterTagsKey = false
+		}
+	}
+}
+
 func tagsFromJSON(raw json.RawMessage) []string {
 	var object struct {
 		Tags []string `json:"tags"`
@@ -552,9 +633,10 @@ func tagsFromJSON(raw json.RawMessage) []string {
 func buildPrompt(input Request, knownTags []string, existingTags []string, maxTags int) string {
 	var builder strings.Builder
 	builder.WriteString("Analyze the meme's joke and return reusable search tags for an archive.\n")
-	builder.WriteString(fmt.Sprintf("Return 2 to %d distinct tags, or fewer only when the evidence is weak.\n", maxTags))
+	builder.WriteString(fmt.Sprintf("Return %d to %d distinct tags, or fewer only when the evidence is weak.\n", min(3, maxTags), maxTags))
 	builder.WriteString("Read visible captions and subtitles before interpreting the visual scene. For video frames, infer the shared sequence rather than tagging each frame separately.\n")
-	builder.WriteString("Choose tags for the joke's actual topic, situation, emotion, cultural reference, or recognizable format. Prefer the meaning of text or speech over literal objects.\n")
+	builder.WriteString("Most tags should cover the joke's actual topic, situation, emotion, cultural reference, or recognizable format. For those, prefer the meaning of text or speech over literal objects.\n")
+	builder.WriteString("Also include one to three tags for the scene someone would search by, when it is clearly visible: the setting or location (kitchen, office, car interior, beach, gym, classroom), the conditions (night, snow, rain, sunset), and any prominent animal, vehicle, food, or object the scene is about. Name the specific place or thing rather than a vague word such as room or background.\n")
 	builder.WriteString("Use short lowercase phrases. Do not include generic media descriptions, camera details, demographic guesses, or anything not supported by the supplied evidence.\n")
 	builder.WriteString("Do not repeat existing tags. Existing archive tags are optional vocabulary hints, not topics you must use.\n")
 	builder.WriteString("Also copy any text, captions, or subtitles visible in the image into a field named text, exactly as written. Use an empty string when there is no readable text.\n")
@@ -669,8 +751,7 @@ func isArchiveUsefulTag(tag string) bool {
 		"face":       {},
 		"camera":     {},
 		"room":       {},
-		"indoors":    {},
-		"outdoors":   {},
+		"background": {},
 		"closeup":    {},
 		"vertical":   {},
 		"talking":    {},

@@ -223,6 +223,7 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/api/admin/tag-hygiene", s.withAPIAuth(http.HandlerFunc(s.handleTagHygiene), permissionManageUsers))
 	mux.Handle("/api/admin/tag-suggestions/status", s.withAPIAuth(http.HandlerFunc(s.handleTagSuggestionStatus), permissionManageUsers))
 	mux.Handle("/api/admin/tag-suggestions/reset", s.withAPIAuth(http.HandlerFunc(s.handleResetTagSuggestions), permissionManageUsers))
+	mux.Handle("/api/admin/tag-suggestions/retry-failed", s.withAPIAuth(http.HandlerFunc(s.handleRetryFailedTagSuggestions), permissionManageUsers))
 	mux.Handle("/api/admin/link-downloads/status", s.withAPIAuth(http.HandlerFunc(s.handleLinkDownloadStatus), permissionManageUsers))
 	mux.Handle("/api/admin/link-downloads/", s.withAPIAuth(http.HandlerFunc(s.handleLinkDownloadActions), permissionManageUsers))
 	mux.Handle("/api/admin/memes/pending-delete", s.withAPIAuth(http.HandlerFunc(s.handlePendingDeleteQueue), permissionManageUsers))
@@ -2521,6 +2522,28 @@ func (s *Server) handleResetTagSuggestions(w http.ResponseWriter, r *http.Reques
 			log.Printf("reset tag suggestions failed: %v", err)
 			http.Error(w, "failed to reset tag suggestions", http.StatusInternalServerError)
 		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleRetryFailedTagSuggestions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	result, err := s.managers.RetryFailedTagSuggestions(currentAuditActor(r))
+	if err != nil {
+		if errors.Is(err, tagsuggest.ErrDisabled) {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+				"error": "tag suggestions are disabled",
+			})
+			return
+		}
+		log.Printf("retry failed tag suggestions failed: %v", err)
+		http.Error(w, "failed to retry tag suggestions", http.StatusInternalServerError)
 		return
 	}
 

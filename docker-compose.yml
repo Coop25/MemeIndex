@@ -111,7 +111,9 @@ services:
     image: ollama/ollama:${OLLAMA_IMAGE_TAG:-0.40.15}
     restart: unless-stopped
     environment:
-      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
+      # The app unloads the model itself when its tag queue empties; this only
+      # covers a model left loaded by a manual "suggest tags" on one meme.
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-5m}
     volumes:
       - ollama_data:/root/.ollama
 

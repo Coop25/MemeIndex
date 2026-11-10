@@ -290,7 +290,9 @@ Notes:
 - if you configure a local transcription command, video audio is extracted to WAV and its transcript is included as extra meme context for tagging
 - the same suggestion pass asks the model for the verbatim on-image text and stores it (joined with the transcript) in a hidden `search_text` column that meme search matches against; it is never shown in the UI and is cleared when tag suggestions are reset
 - the default model is `qwen2.5vl:3b`, which is a smaller vision model and usually a better fit for reading meme text than the earlier default
-- the compose file keeps Ollama models warm with `OLLAMA_KEEP_ALIVE=30m` by default so back-to-back suggestions do not need a fresh cold load every time
+- the app only contacts Ollama when a meme is waiting for tags, and asks it to unload the model as soon as the tag queue is empty, so the model is not held in memory between uploads
+- `OLLAMA_KEEP_ALIVE=5m` in the compose file only covers a model loaded by a manual "suggest tags" on a single meme
+- the frames, resized image and audio the suggester prepares for the model are deleted after each attempt; leftovers in `data/thumbnails/tagframes`, `tagimages` and `tagaudio` are removed at startup
 - if Ollama is down, still starting, or missing the configured model, the app stays online and tag suggestions simply return unavailable
 - Postgres also stores random reel sessions when `MEMEINDEX_DATABASE_URL` is enabled
 - on startup MemeIndex tries to create the bundled `pg_trgm` extension and trigram indexes so substring search is index-accelerated; if the database role may not create extensions this step is skipped with a log line and search still works, just with a sequential scan

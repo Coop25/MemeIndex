@@ -35,7 +35,8 @@ type MemeManager struct {
 	suggestionQueueCond   *sync.Cond
 	suggestionQueue       []string
 	queuedSuggestionIDs   map[string]struct{}
-	suggestionClosing     bool // set under suggestionQueueMu by StopBackgroundWorkers
+	suggestionFailures    map[string]int // transient failures per queued meme id
+	suggestionClosing     bool           // set under suggestionQueueMu by StopBackgroundWorkers
 	suggestionWorkerStart sync.Once
 	suggestionWorkerReady bool
 	suggestionWorkerState string
@@ -162,6 +163,7 @@ func NewMemeManagerWithTagSuggester(store accessor.Store, tagSuggester *tagsugge
 		videoFrameWidth:     runtimeConfig.VideoFrameWidth,
 		disableTranscript:   runtimeConfig.DisableTranscript,
 		queuedSuggestionIDs: map[string]struct{}{},
+		suggestionFailures:  map[string]int{},
 		suggestionWorkerState: func() string {
 			if tagSuggester == nil || !tagSuggester.Enabled() {
 				return "disabled"
@@ -573,6 +575,57 @@ func (m *MemeManager) ListActiveMemeShares(now time.Time) ([]ActiveMemeShare, er
 	return result, nil
 }
 
+// Paging bounds for the admin shared-memes list.
+const (
+	activeSharesPageDefaultLimit = 25
+	activeSharesPageMaxLimit     = 100
+)
+
+// ListActiveMemeSharesPage returns one page of active shares, newest first,
+// with the total number of active shares. Only the page's memes are loaded.
+// An offset past the end is pulled back to the last page, so revoking the only
+// row on the final page does not leave the caller on an empty one.
+func (m *MemeManager) ListActiveMemeSharesPage(now time.Time, offset, limit int) (shares []ActiveMemeShare, total int, pageOffset int, pageLimit int, err error) {
+	store, ok := m.store.(accessor.MemeShareStore)
+	if !ok {
+		return nil, 0, 0, 0, errors.New("meme sharing is unavailable")
+	}
+	if limit <= 0 {
+		limit = activeSharesPageDefaultLimit
+	}
+	if limit > activeSharesPageMaxLimit {
+		limit = activeSharesPageMaxLimit
+	}
+	states, err := store.ListActiveMemeShares(now.UTC())
+	if err != nil {
+		return nil, 0, 0, 0, err
+	}
+	total = len(states)
+	if offset < 0 {
+		offset = 0
+	}
+	if total > 0 && offset >= total {
+		offset = ((total - 1) / limit) * limit
+	}
+	if total == 0 {
+		offset = 0
+	}
+	page := states[offset:min(offset+limit, total)]
+
+	ids := make([]string, 0, len(page))
+	for _, state := range page {
+		ids = append(ids, state.MemeID)
+	}
+	memes := m.memesByIDs(ids)
+	shares = make([]ActiveMemeShare, 0, len(page))
+	for _, state := range page {
+		if meme, ok := memes[state.MemeID]; ok {
+			shares = append(shares, ActiveMemeShare{Meme: meme, Share: state})
+		}
+	}
+	return shares, total, offset, limit, nil
+}
+
 // memesByIDs resolves visible memes by id in one batch where the store supports
 // it (BulkMemeStore), falling back to per-id lookups otherwise. Missing ids are
 // simply absent from the map.
@@ -926,6 +979,46 @@ func (m *MemeManager) ResetTagSuggestionsAndRequeueUntagged(actor accessor.Audit
 		}
 	}
 
+	return result, nil
+}
+
+type RetryFailedTagSuggestionsResult struct {
+	ReenabledExhausted int `json:"reenabled_exhausted"`
+	Queued             int `json:"queued"`
+}
+
+// RetryFailedTagSuggestions gives memes the suggester gave up on another go:
+// it clears their auto-suggest-disabled mark and queues every untagged meme
+// that has no suggestions. Unlike the reset it leaves existing suggestions
+// alone.
+func (m *MemeManager) RetryFailedTagSuggestions(actor accessor.AuditActor) (RetryFailedTagSuggestionsResult, error) {
+	suggestionStore, ok := m.store.(accessor.SuggestedTagStore)
+	if !ok || m.tagSuggester == nil || !m.tagSuggester.Enabled() {
+		return RetryFailedTagSuggestionsResult{}, tagsuggest.ErrDisabled
+	}
+
+	result := RetryFailedTagSuggestionsResult{}
+	for _, meme := range m.store.List("", "", false, "") {
+		if !meme.AutoSuggestDisabled {
+			continue
+		}
+		if err := suggestionStore.SetAutoSuggestDisabled(meme.ID, false); err != nil {
+			return RetryFailedTagSuggestionsResult{}, err
+		}
+		result.ReenabledExhausted++
+	}
+	result.Queued = m.SeedTagSuggestionQueue()
+
+	m.invalidateAdminReadCache()
+	if writer, ok := m.store.(accessor.SystemAuditStore); ok {
+		description := fmt.Sprintf(
+			"Retried failed tag suggestions: re-enabled %d exhausted, queued %d untagged",
+			result.ReenabledExhausted, result.Queued,
+		)
+		if err := writer.RecordSystemAudit("tag_suggestions_retry_failed", actor, description); err != nil {
+			log.Printf("record tag suggestion retry audit failed: %v", err)
+		}
+	}
 	return result, nil
 }
 
@@ -1725,31 +1818,98 @@ func (m *MemeManager) ReloadAfterRestore() error {
 	return nil
 }
 
-func (m *MemeManager) runTagSuggestionWorker() {
-	log.Printf("tag suggestion worker: waiting for Ollama model %q", m.tagSuggester.Model())
-	m.setTagSuggestionWorkerState("waiting_for_ollama", false, "", "")
+// maxTagSuggestionFailures is how many times the worker retries one meme after
+// a timeout or an Ollama error before leaving it for the next restart or an
+// admin retry. Without a cap a single slow video cycles through the queue
+// forever.
+const maxTagSuggestionFailures = 3
+
+// waitForOllama blocks until Ollama answers with the model pulled. It returns
+// false when the workers are stopping.
+func (m *MemeManager) waitForOllama() bool {
+	announced := false
 	for {
 		if m.workerCtx.Err() != nil {
-			return
+			return false
 		}
 		ctx, cancel := context.WithTimeout(m.workerCtx, 30*time.Second)
-		err := m.tagSuggester.WaitUntilReady(ctx)
+		err := m.tagSuggester.Ready(ctx)
 		cancel()
 		if err == nil {
-			break
+			if announced {
+				log.Printf("tag suggestion worker: Ollama is ready")
+			}
+			return true
 		}
 		m.setTagSuggestionWorkerState("waiting_for_ollama", false, "", err.Error())
-		log.Printf("tag suggestion worker: Ollama not ready yet: %v", err)
+		if !announced {
+			log.Printf("tag suggestion worker: waiting for Ollama model %q: %v", m.tagSuggester.Model(), err)
+			announced = true
+		}
 		if !m.waitOrStop(3 * time.Second) {
-			return
+			return false
 		}
 	}
-	m.setTagSuggestionWorkerState("idle", true, "", "")
-	log.Printf("tag suggestion worker: Ollama is ready")
+}
+
+// retryOrDropTagSuggestion requeues a meme after a transient failure, or
+// drops it once it has failed maxTagSuggestionFailures times. It reports
+// whether the meme was requeued.
+func (m *MemeManager) retryOrDropTagSuggestion(id string, err error) bool {
+	m.suggestionQueueMu.Lock()
+	m.suggestionFailures[id]++
+	giveUp := m.suggestionFailures[id] >= maxTagSuggestionFailures
+	m.suggestionQueueMu.Unlock()
+
+	if giveUp {
+		log.Printf("tag suggestion worker: giving up on meme %s after %d failed attempts: %v", id, maxTagSuggestionFailures, err)
+		m.finishTagSuggestion(id)
+		m.setTagSuggestionWorkerState("idle", true, "", fmt.Sprintf("gave up on %s after %d attempts: %v", id, maxTagSuggestionFailures, err))
+		return false
+	}
+	log.Printf("tag suggestion worker: retrying meme %s later: %v", id, err)
+	m.requeueTagSuggestion(id)
+	m.setTagSuggestionWorkerState("retrying", true, "", err.Error())
+	return true
+}
+
+// unloadTagModelIfIdle frees the model's memory once nothing is left to tag,
+// rather than leaving it loaded for Ollama's keep-alive period.
+func (m *MemeManager) unloadTagModelIfIdle() {
+	m.suggestionQueueMu.Lock()
+	idle := len(m.suggestionQueue) == 0
+	m.suggestionQueueMu.Unlock()
+	if !idle {
+		return
+	}
+	ctx, cancel := context.WithTimeout(m.workerCtx, 30*time.Second)
+	defer cancel()
+	if err := m.tagSuggester.Unload(ctx); err != nil {
+		log.Printf("tag suggestion worker: could not unload the model: %v", err)
+		return
+	}
+	log.Printf("tag suggestion worker: queue is empty, unloaded model %q", m.tagSuggester.Model())
+}
+
+func (m *MemeManager) runTagSuggestionWorker() {
+	// One check at startup so the admin panel shows whether Ollama is there.
+	// After this Ollama is only contacted when there is a meme to tag.
+	ctx, cancel := context.WithTimeout(m.workerCtx, 10*time.Second)
+	err := m.tagSuggester.Ready(ctx)
+	cancel()
+	if err != nil {
+		m.setTagSuggestionWorkerState("idle", false, "", err.Error())
+	} else {
+		m.setTagSuggestionWorkerState("idle", true, "", "")
+	}
 
 	for {
 		memeID, ok := m.dequeueTagSuggestion()
 		if !ok {
+			return
+		}
+		if !m.waitForOllama() {
+			m.requeueTagSuggestion(memeID)
 			return
 		}
 		m.setTagSuggestionWorkerState("processing", true, memeID, "")
@@ -1764,13 +1924,10 @@ func (m *MemeManager) runTagSuggestionWorker() {
 			m.requeueTagSuggestion(memeID)
 			return
 		}
-		if err == nil {
+		switch {
+		case err == nil:
 			m.finishTagSuggestion(memeID)
 			m.recordTagSuggestionSuccess()
-			continue
-		}
-
-		switch {
 		case errors.Is(err, errAutoSuggestExhausted):
 			log.Printf("tag suggestion worker: exhausted retries for meme %s; marking auto-suggest disabled", memeID)
 			m.finishTagSuggestion(memeID)
@@ -1779,21 +1936,14 @@ func (m *MemeManager) runTagSuggestionWorker() {
 			log.Printf("tag suggestion worker: dropping meme %s from queue: %v", memeID, err)
 			m.finishTagSuggestion(memeID)
 			m.setTagSuggestionWorkerState("idle", true, "", err.Error())
-		case errors.Is(err, tagsuggest.ErrUnavailable):
-			log.Printf("tag suggestion worker: retrying meme %s later after Ollama error: %v", memeID, err)
-			m.requeueTagSuggestion(memeID)
-			m.setTagSuggestionWorkerState("waiting_for_ollama", false, "", err.Error())
-			if !m.waitOrStop(3 * time.Second) {
-				return
-			}
 		default:
-			log.Printf("tag suggestion worker: unexpected error for meme %s, retrying later: %v", memeID, err)
-			m.requeueTagSuggestion(memeID)
-			m.setTagSuggestionWorkerState("retrying", true, "", err.Error())
-			if !m.waitOrStop(3 * time.Second) {
+			// A timeout, an Ollama error, or something unexpected. Whether
+			// Ollama is still up is rechecked before the next meme.
+			if m.retryOrDropTagSuggestion(memeID, err) && !m.waitOrStop(3*time.Second) {
 				return
 			}
 		}
+		m.unloadTagModelIfIdle()
 	}
 }
 
@@ -1837,7 +1987,11 @@ func (m *MemeManager) dequeueTagSuggestion() (string, bool) {
 func (m *MemeManager) finishTagSuggestion(id string) {
 	m.suggestionQueueMu.Lock()
 	defer m.suggestionQueueMu.Unlock()
-	delete(m.queuedSuggestionIDs, strings.TrimSpace(id))
+	id = strings.TrimSpace(id)
+	delete(m.queuedSuggestionIDs, id)
+	// Whatever the outcome, the meme has left the queue: a later run starts
+	// with a clean failure count.
+	delete(m.suggestionFailures, id)
 }
 
 func (m *MemeManager) requeueTagSuggestion(id string) {
@@ -1985,6 +2139,14 @@ func (m *MemeManager) ThumbnailDir() string {
 		return ""
 	}
 	return previewStore.ThumbnailDir()
+}
+
+// SweepTagScratch removes leftover tag-suggestion working files from the
+// thumbnails directory and reports how many were deleted. Call it before the
+// suggestion worker starts so it cannot delete the files of a suggestion in
+// flight.
+func (m *MemeManager) SweepTagScratch() int {
+	return accessor.SweepTagScratch(m.ThumbnailDir())
 }
 
 func (m *MemeManager) EnsurePreviewAssets() error {
@@ -2226,6 +2388,9 @@ func (m *MemeManager) transcriptForVideo(ctx context.Context, meme accessor.Meme
 
 func (m *MemeManager) suggestTagsForMeme(ctx context.Context, meme accessor.Meme) (tagsuggest.Result, error) {
 	attempts := m.tagSuggestionAttemptsForMeme(meme)
+	// The frames, resized image and audio written for the model are working
+	// files; leaving them behind grows the thumbnails folder without bound.
+	defer accessor.RemoveTagScratch(m.ThumbnailDir(), meme.StoredName)
 	var lastUnavailable error
 	var lastInvalidResponse error
 
