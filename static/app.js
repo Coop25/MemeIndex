@@ -244,6 +244,11 @@ const homeSpotlightOpen = document.querySelector("#home-spotlight-open");
 const homeSpotlightFavorite = document.querySelector("#home-spotlight-favorite");
 const homeSpotlightNext = document.querySelector("#home-spotlight-next");
 const homeSpotlightQueue = document.querySelector("#home-spotlight-queue");
+const homeSpotlightPrev = document.querySelector("#home-spotlight-prev");
+const homeSpotlightNextButton = document.querySelector("#home-spotlight-next-button");
+const homeSpotlightPosition = document.querySelector("#home-spotlight-position");
+const homeSpotlightAutoplay = document.querySelector("#home-spotlight-autoplay");
+const homeSpotlightLoop = document.querySelector("#home-spotlight-loop");
 // The single-row sections of the home screen, each fitted edge to edge.
 const dashboardRows = [dashboardRecent, dashboardFavorites].filter(Boolean);
 const dashboardStorageLabel = document.querySelector("#dashboard-storage-label");
@@ -9029,7 +9034,7 @@ async function fetchVaultDashboard({ onlyIfNewestChanged = false, keepSpotlight 
 	);
 	// A kept spotlight is left exactly as it is, so a video playing in it is
 	// not restarted; edits to its item reach it through syncMemeCardElements.
-	if (!keepSpotlight || !spotlight.items.length) setSpotlightItems(dashboard.random_items);
+	if (!keepSpotlight || !hasSpotlightItems()) setSpotlightItems(dashboard.random_items);
 	dashboardStorageLabel.textContent = formatSize(Number(dashboard.storage_bytes || 0));
 	dashboardStorageBar.style.width = dashboard.storage_bytes > 0 ? "100%" : "0%";
 	// Tag size follows how often the tag is used, on a log scale so one very
@@ -9097,19 +9102,153 @@ function renderDashboardTypeMix(counts) {
 	}
 }
 
-// The featured random pick. `items` is the current batch of random memes and
-// `index` the one on show; the rest wait in the Up next strip.
-const spotlight = { items: [], index: 0 };
-let spotlightHoverTimer = 0;
+// The featured random pick. `history` holds every item shown so far, with
+// `pos` the one on show; `queue` is the Up next strip. Next walks forward
+// through history and then pulls from the queue, which is topped up with fresh
+// random items so it never runs dry; Previous walks back through history.
+const SPOTLIGHT_QUEUE_SIZE = 5;
+const SPOTLIGHT_HISTORY_LIMIT = 60;
+// `batch` goes up on every Shuffle so a top-up still on its way for the old
+// batch does not land in the new one.
+const spotlight = { history: [], pos: -1, queue: [], fetching: null, exhausted: false, batch: 0 };
+
+// Autoplay and Loop are remembered per browser. Both start on.
+const SPOTLIGHT_AUTOPLAY_KEY = "memeindex.spotlightAutoplay";
+const SPOTLIGHT_LOOP_KEY = "memeindex.spotlightLoop";
+
+function loadSpotlightToggle(key) {
+	try {
+		return window.localStorage.getItem(key) !== "false";
+	} catch {
+		return true;
+	}
+}
+
+function saveSpotlightToggle(key, value) {
+	try {
+		window.localStorage.setItem(key, value ? "true" : "false");
+	} catch {
+		// Not remembered in a private window; the checkbox still works.
+	}
+}
+
+function spotlightAutoplayOn() {
+	return Boolean(homeSpotlightAutoplay?.checked);
+}
+
+function spotlightLoopOn() {
+	return Boolean(homeSpotlightLoop?.checked);
+}
+
+if (homeSpotlightAutoplay) homeSpotlightAutoplay.checked = loadSpotlightToggle(SPOTLIGHT_AUTOPLAY_KEY);
+if (homeSpotlightLoop) homeSpotlightLoop.checked = loadSpotlightToggle(SPOTLIGHT_LOOP_KEY);
 
 function currentSpotlightMeme() {
-	const meme = spotlight.items[spotlight.index];
+	const meme = spotlight.history[spotlight.pos];
 	return meme ? getMemeById(meme.id) || meme : null;
 }
 
+function hasSpotlightItems() {
+	return spotlight.history.length > 0;
+}
+
+// Items still ahead of the one on show: any forward history first (after
+// stepping back), then the queue.
+function upcomingSpotlightItems() {
+	return spotlight.history.slice(spotlight.pos + 1).concat(spotlight.queue);
+}
+
 function setSpotlightItems(items) {
-	spotlight.items = (Array.isArray(items) ? items : []).map((meme) => upsertMemeInState(meme) || meme);
-	spotlight.index = 0;
+	const memes = (Array.isArray(items) ? items : []).map((meme) => upsertMemeInState(meme) || meme);
+	spotlight.history = memes.slice(0, 1);
+	spotlight.pos = memes.length ? 0 : -1;
+	spotlight.queue = memes.slice(1);
+	spotlight.exhausted = false;
+	spotlight.batch += 1;
+	spotlight.fetching = null;
+	renderSpotlight();
+	topUpSpotlightQueue();
+}
+
+// Fetches another batch of random items and appends the ones not already in
+// the history or queue. A small vault runs out of unseen items, so once a
+// fetch brings nothing new, repeats are let back in (just never the item on
+// show or the one about to play).
+async function topUpSpotlightQueue() {
+	// A fetch already on its way is returned, so a caller can wait for it.
+	if (spotlight.fetching) return spotlight.fetching;
+	if (upcomingSpotlightItems().length >= SPOTLIGHT_QUEUE_SIZE || !hasSpotlightItems()) return;
+	const batch = spotlight.batch;
+	let fetching = null;
+	fetching = (async () => {
+		try {
+			for (let attempt = 0; attempt < 3 && upcomingSpotlightItems().length < SPOTLIGHT_QUEUE_SIZE; attempt += 1) {
+				const response = await fetch("/api/dashboard", { cache: "no-store" });
+				if (!response.ok || batch !== spotlight.batch) return;
+				const dashboard = await response.json();
+				if (batch !== spotlight.batch) return;
+				const fresh = Array.isArray(dashboard.random_items) ? dashboard.random_items : [];
+				const known = new Set(spotlight.history.concat(spotlight.queue).map((meme) => meme.id));
+				let added = fresh.filter((meme) => meme?.id && !known.has(meme.id));
+				if (!added.length && spotlight.exhausted) {
+					const avoid = new Set([currentSpotlightMeme()?.id, upcomingSpotlightItems().at(-1)?.id]);
+					added = fresh.filter((meme) => meme?.id && !avoid.has(meme.id));
+				}
+				if (!added.length) {
+					spotlight.exhausted = true;
+					continue;
+				}
+				const room = SPOTLIGHT_QUEUE_SIZE - upcomingSpotlightItems().length;
+				spotlight.queue.push(...added.slice(0, Math.max(0, room)).map((meme) => upsertMemeInState(meme) || meme));
+			}
+		} catch (error) {
+			console.warn("Could not top up the random picks", error);
+		} finally {
+			if (spotlight.fetching === fetching) spotlight.fetching = null;
+			renderSpotlightQueue();
+		}
+	})();
+	spotlight.fetching = fetching;
+	return fetching;
+}
+
+// Moves the spotlight `steps` items forward (1 for Next, more when an Up next
+// thumbnail further along is picked).
+function advanceSpotlight(steps = 1) {
+	let moved = false;
+	for (let step = 0; step < steps; step += 1) {
+		if (spotlight.pos < spotlight.history.length - 1) {
+			spotlight.pos += 1;
+		} else if (spotlight.queue.length) {
+			spotlight.history.push(spotlight.queue.shift());
+			spotlight.pos += 1;
+		} else {
+			break;
+		}
+		moved = true;
+	}
+	// Forget the oldest items once the history gets long.
+	const overflow = spotlight.history.length - SPOTLIGHT_HISTORY_LIMIT;
+	if (overflow > 0 && spotlight.pos >= overflow) {
+		spotlight.history.splice(0, overflow);
+		spotlight.pos -= overflow;
+	}
+	return moved;
+}
+
+async function showNextSpotlight() {
+	if (!advanceSpotlight(1)) {
+		// The queue was empty (a fetch still on its way); wait for it once.
+		await topUpSpotlightQueue();
+		if (!advanceSpotlight(1)) return;
+	}
+	renderSpotlight();
+	topUpSpotlightQueue();
+}
+
+function showPreviousSpotlight() {
+	if (spotlight.pos <= 0) return;
+	spotlight.pos -= 1;
 	renderSpotlight();
 }
 
@@ -9133,39 +9272,107 @@ function spotlightHeadline(meme) {
 	return readable ? name : "Remember this one?";
 }
 
-function stopSpotlightHoverPreview() {
-	window.clearTimeout(spotlightHoverTimer);
-	spotlightHoverTimer = 0;
-	homeSpotlightStage?.querySelector(".home-spotlight-video")?.remove();
-	homeSpotlightStage?.classList.remove("is-playing");
+function spotlightMediaElements() {
+	return homeSpotlightStage ? [...homeSpotlightStage.querySelectorAll("video, audio")] : [];
+}
+
+function pauseSpotlightMedia() {
+	spotlightMediaElements().forEach((media) => {
+		if (!media.paused) media.pause();
+	});
+}
+
+// Gives a spotlight video or audio element the shared volume preference and
+// keeps that preference in step when the viewer changes it.
+function prepareSpotlightMedia(media) {
+	media.volume = loadPreferredMediaVolume();
+	media.loop = spotlightLoopOn();
+	// With Loop off and Autoplay on, a finished item hands over to the next.
+	media.addEventListener("ended", () => {
+		if (!spotlightAutoplayOn() || media.loop || !homeSpotlightStage.contains(media)) return;
+		showNextSpotlight().catch((error) => console.warn("Could not show the next random pick", error));
+	});
+	media.addEventListener("volumechange", () => {
+		// Muting for a page-load autoplay is the browser's rule, not the
+		// viewer's choice, so it is not saved as their volume.
+		if (media.dataset.autoMuted === "true") {
+			if (media.muted) return;
+			delete media.dataset.autoMuted;
+		}
+		syncStoredMediaVolumeFromElement(media);
+	});
+	// Only one spotlight item plays at a time, and nothing plays behind the
+	// editor or reel.
+	media.addEventListener("play", () => {
+		spotlightMediaElements().forEach((other) => {
+			if (other !== media && !other.paused) other.pause();
+		});
+	});
 }
 
 function renderSpotlight() {
 	if (!homeSpotlight) return;
-	stopSpotlightHoverPreview();
+	pauseSpotlightMedia();
 	const meme = currentSpotlightMeme();
 	homeSpotlight.classList.toggle("is-empty", !meme);
 	if (!meme) {
 		homeSpotlightStage.replaceChildren();
 		homeSpotlightBackdrop.removeAttribute("src");
+		renderSpotlightQueue();
 		return;
 	}
 	const stillSrc = meme.previewPath || (isImageMeme(meme) ? meme.filePath : "");
 	if (stillSrc) homeSpotlightBackdrop.src = stillSrc;
 	else homeSpotlightBackdrop.removeAttribute("src");
 
-	// Images show the original rather than the small card thumbnail; videos
-	// show their poster until hovered.
+	// Videos get a real player with sound and controls; images show the
+	// original rather than the small card thumbnail; audio gets its cover (or
+	// icon) with a player along the bottom.
+	const playable = isVideoMeme(meme) || isMP3Meme(meme);
 	let media;
-	if (isImageMeme(meme)) {
+	let player = null;
+	if (isVideoMeme(meme)) {
+		media = document.createElement("video");
+		media.className = "home-spotlight-player-video";
+		media.src = meme.filePath;
+		if (meme.previewPath) media.poster = meme.previewPath;
+		media.controls = true;
+		media.playsInline = true;
+		media.preload = "metadata";
+		player = media;
+	} else if (isImageMeme(meme)) {
 		media = document.createElement("img");
 		media.src = meme.filePath || meme.previewPath;
 		media.alt = meme.originalName || "";
 		media.decoding = "async";
 	} else {
 		media = buildPreview(meme);
+		if (media instanceof HTMLImageElement) media.loading = "eager";
 	}
-	homeSpotlightStage.replaceChildren(media);
+	const children = [media];
+	if (isMP3Meme(meme)) {
+		player = document.createElement("audio");
+		player.className = "home-spotlight-audio";
+		player.src = meme.filePath;
+		player.controls = true;
+		player.preload = "metadata";
+		children.push(player);
+	}
+	if (player) prepareSpotlightMedia(player);
+	homeSpotlightStage.replaceChildren(...children);
+	homeSpotlightStage.classList.toggle("is-playable", playable);
+	// A playable stage is a player, not a button: its clicks belong to the
+	// controls, and Open details is in the actions below.
+	if (playable) {
+		homeSpotlightStage.removeAttribute("role");
+		homeSpotlightStage.removeAttribute("tabindex");
+		homeSpotlightStage.removeAttribute("aria-label");
+	} else {
+		homeSpotlightStage.setAttribute("role", "button");
+		homeSpotlightStage.tabIndex = 0;
+		homeSpotlightStage.setAttribute("aria-label", `Open ${meme.originalName || "item"} details`);
+	}
+
 	// Shape the stage to the picture: from the card's measured shape straight
 	// away when there is one, then from the picture itself once it has loaded.
 	const setStageRatio = (width, height) => {
@@ -9182,8 +9389,28 @@ function renderSpotlight() {
 		media.addEventListener("loadedmetadata", () => setStageRatio(media.videoWidth, media.videoHeight), { once: true });
 	}
 	homeSpotlightStage.dataset.kind = spotlightKindLabel(meme).toLowerCase();
-	homeSpotlightStage.setAttribute("aria-label", `Open ${meme.originalName || "item"} details`);
 
+	// With Autoplay on, a new item starts by itself, with sound when the
+	// browser allows it. On page load, or when one item hands over to the next
+	// without a click, the browser may only allow it muted, so fall back to that.
+	if (player && spotlightAutoplayOn() && document.body.classList.contains("home-mode")) {
+		player.play().catch(() => {
+			if (!player.isConnected) return;
+			player.dataset.autoMuted = "true";
+			player.muted = true;
+			player.play().catch(() => {});
+		});
+	}
+
+	renderSpotlightDetails();
+	renderSpotlightQueue();
+}
+
+// Title, meta, tags and favorite: everything that can change while the item
+// is on show without restarting its video.
+function renderSpotlightDetails() {
+	const meme = currentSpotlightMeme();
+	if (!meme || !homeSpotlightTitle) return;
 	homeSpotlightTitle.textContent = spotlightHeadline(meme);
 	homeSpotlightTitle.title = meme.originalName || "";
 	const added = meme.createdAt ? `added ${formatRelativeTime(meme.createdAt)}` : "";
@@ -9204,13 +9431,17 @@ function renderSpotlight() {
 		homeSpotlightTags.appendChild(none);
 	}
 	syncSpotlightFavorite();
+}
 
-	homeSpotlightQueue.replaceChildren(...spotlight.items.map((item, index) => {
-		if (index === spotlight.index) return null;
+function renderSpotlightQueue() {
+	if (!homeSpotlightQueue) return;
+	const upcoming = upcomingSpotlightItems().slice(0, SPOTLIGHT_QUEUE_SIZE);
+	homeSpotlightQueue.replaceChildren(...upcoming.map((item, index) => {
 		const queued = getMemeById(item.id) || item;
 		const button = document.createElement("button");
 		button.type = "button";
 		button.className = "home-spotlight-queued";
+		button.dataset.kind = spotlightKindLabel(queued).toLowerCase();
 		button.title = queued.originalName || "";
 		button.setAttribute("aria-label", `Show ${queued.originalName || "item"} in the spotlight`);
 		const thumb = queued.previewPath || (isImageMeme(queued) ? queued.filePath : "");
@@ -9224,12 +9455,18 @@ function renderSpotlight() {
 			button.textContent = pickIcon(queued.contentType);
 		}
 		button.addEventListener("click", () => {
-			spotlight.index = index;
+			if (!advanceSpotlight(index + 1)) return;
 			renderSpotlight();
+			topUpSpotlightQueue();
 		});
 		return button;
-	}).filter(Boolean));
-	homeSpotlightNext.classList.toggle("hidden", spotlight.items.length < 2);
+	}));
+	homeSpotlightNext.classList.toggle("hidden", upcoming.length === 0);
+	if (homeSpotlightPrev) homeSpotlightPrev.disabled = spotlight.pos <= 0;
+	if (homeSpotlightNextButton) homeSpotlightNextButton.disabled = upcoming.length === 0 && !spotlight.fetching;
+	if (homeSpotlightPosition) {
+		homeSpotlightPosition.textContent = hasSpotlightItems() ? `${spotlight.pos + 1} of ${spotlight.history.length}` : "";
+	}
 }
 
 function syncSpotlightFavorite() {
@@ -9245,12 +9482,17 @@ function syncSpotlightFavorite() {
 function openSpotlightMeme() {
 	const meme = currentSpotlightMeme();
 	if (!meme) return;
-	stopSpotlightHoverPreview();
+	pauseSpotlightMedia();
 	openModal(meme.id);
 }
 
-homeSpotlightStage?.addEventListener("click", openSpotlightMeme);
+homeSpotlightStage?.addEventListener("click", (event) => {
+	if (homeSpotlightStage.classList.contains("is-playable")) return;
+	if (event.target.closest("video, audio")) return;
+	openSpotlightMeme();
+});
 homeSpotlightStage?.addEventListener("keydown", (event) => {
+	if (homeSpotlightStage.classList.contains("is-playable")) return;
 	if (event.key === "Enter" || event.key === " ") {
 		event.preventDefault();
 		openSpotlightMeme();
@@ -9261,25 +9503,62 @@ homeSpotlightFavorite?.addEventListener("click", async () => {
 	const meme = currentSpotlightMeme();
 	if (meme) await persistFavorite(meme.id, !meme.favorite);
 });
-// Resting the pointer on a video plays it muted in place; leaving stops it.
-homeSpotlightStage?.addEventListener("mouseenter", () => {
-	const meme = currentSpotlightMeme();
-	if (!meme || !isVideoMeme(meme) || !window.matchMedia("(hover: hover)").matches) return;
-	window.clearTimeout(spotlightHoverTimer);
-	spotlightHoverTimer = window.setTimeout(() => {
-		if (homeSpotlightStage.querySelector(".home-spotlight-video")) return;
-		const video = document.createElement("video");
-		video.className = "home-spotlight-video";
-		video.src = meme.filePath;
-		video.muted = true;
-		video.loop = true;
-		video.playsInline = true;
-		video.addEventListener("playing", () => homeSpotlightStage.classList.add("is-playing"), { once: true });
-		homeSpotlightStage.appendChild(video);
-		video.play().catch(() => stopSpotlightHoverPreview());
-	}, 280);
+homeSpotlightPrev?.addEventListener("click", showPreviousSpotlight);
+homeSpotlightAutoplay?.addEventListener("change", () => {
+	saveSpotlightToggle(SPOTLIGHT_AUTOPLAY_KEY, homeSpotlightAutoplay.checked);
 });
-homeSpotlightStage?.addEventListener("mouseleave", stopSpotlightHoverPreview);
+homeSpotlightLoop?.addEventListener("change", () => {
+	saveSpotlightToggle(SPOTLIGHT_LOOP_KEY, homeSpotlightLoop.checked);
+	spotlightMediaElements().forEach((media) => {
+		media.loop = homeSpotlightLoop.checked;
+	});
+});
+homeSpotlightNextButton?.addEventListener("click", () => {
+	showNextSpotlight().catch((error) => console.warn("Could not show the next random pick", error));
+});
+// Swiping the stage sideways on a touch screen steps through the picks.
+(() => {
+	if (!homeSpotlightStage) return;
+	let startX = 0;
+	let startY = 0;
+	let tracking = false;
+	homeSpotlightStage.addEventListener("touchstart", (event) => {
+		if (event.touches.length !== 1) return;
+		// The bottom of a player is its control bar; dragging the seek bar
+		// there is not a swipe.
+		const bounds = homeSpotlightStage.getBoundingClientRect();
+		if (homeSpotlightStage.classList.contains("is-playable") && event.touches[0].clientY > bounds.bottom - 64) {
+			tracking = false;
+			return;
+		}
+		startX = event.touches[0].clientX;
+		startY = event.touches[0].clientY;
+		tracking = true;
+	}, { passive: true });
+	homeSpotlightStage.addEventListener("touchend", (event) => {
+		if (!tracking) return;
+		tracking = false;
+		const touch = event.changedTouches[0];
+		const dx = touch.clientX - startX;
+		const dy = touch.clientY - startY;
+		if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+		if (dx < 0) homeSpotlightNextButton?.click();
+		else showPreviousSpotlight();
+	}, { passive: true });
+})();
+// Any other video or sound starting (the editor, a card, an audiobook) stops
+// a playing spotlight item, so two never play over each other.
+document.addEventListener("play", (event) => {
+	if (homeSpotlightStage && event.target instanceof HTMLMediaElement && !homeSpotlightStage.contains(event.target)) {
+		pauseSpotlightMedia();
+	}
+}, true);
+// Leaving the home view, or opening the reel over it, stops a playing
+// spotlight item.
+new MutationObserver(() => {
+	const classes = document.body.classList;
+	if (!classes.contains("home-mode") || classes.contains("random-reel-open")) pauseSpotlightMedia();
+}).observe(document.body, { attributes: true, attributeFilter: ["class"] });
 
 let homeDashboardRefreshInFlight = false;
 
@@ -10728,7 +11007,8 @@ function syncMemeCardElements(updatedMeme) {
     updateMemeCardElement(card, updatedMeme);
     layoutCardTags(card._tagList, card._tags, 1);
   });
-  if (spotlight.items[spotlight.index]?.id === updatedMeme.id) renderSpotlight();
+  if (currentSpotlightMeme()?.id === updatedMeme.id) renderSpotlightDetails();
+  if (upcomingSpotlightItems().some((item) => item.id === updatedMeme.id)) renderSpotlightQueue();
 }
 
 function upsertMemeInState(meme) {
