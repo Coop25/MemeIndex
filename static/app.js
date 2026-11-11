@@ -241,6 +241,7 @@ const homeSpotlightMeta = document.querySelector("#home-spotlight-meta");
 const homeSpotlightTags = document.querySelector("#home-spotlight-tags");
 const homeSpotlightOpen = document.querySelector("#home-spotlight-open");
 const homeSpotlightFavorite = document.querySelector("#home-spotlight-favorite");
+const homeSpotlightShare = document.querySelector("#home-spotlight-share");
 const homeSpotlightNext = document.querySelector("#home-spotlight-next");
 const homeSpotlightQueue = document.querySelector("#home-spotlight-queue");
 const homeSpotlightPrev = document.querySelector("#home-spotlight-prev");
@@ -9435,6 +9436,7 @@ function syncSpotlightFavorite() {
 	homeSpotlightFavorite.setAttribute("aria-pressed", favorite ? "true" : "false");
 	homeSpotlightFavorite.querySelector("span").textContent = favorite ? "Favorited" : "Favorite";
 	homeSpotlightFavorite.disabled = !canView();
+	if (homeSpotlightShare) homeSpotlightShare.disabled = !canView();
 }
 
 function openSpotlightMeme() {
@@ -9460,6 +9462,10 @@ homeSpotlightOpen?.addEventListener("click", openSpotlightMeme);
 homeSpotlightFavorite?.addEventListener("click", async () => {
 	const meme = currentSpotlightMeme();
 	if (meme) await persistFavorite(meme.id, !meme.favorite);
+});
+homeSpotlightShare?.addEventListener("click", () => {
+	const meme = currentSpotlightMeme();
+	if (meme) shareMeme(meme.id, homeSpotlightShare);
 });
 homeSpotlightPrev?.addEventListener("click", showPreviousSpotlight);
 homeSpotlightAutoplay?.addEventListener("change", () => {
@@ -12033,7 +12039,7 @@ async function copyShareText(value) {
 
 function showShareCopiedFeedback(button) {
   if (!button) return;
-  const label = button.querySelector(".modal-action-label, .random-reel-nav-label, .card-copy-label");
+  const label = button.querySelector(".modal-action-label, .random-reel-nav-label, .card-copy-label, .home-spotlight-action-label");
   const originalAriaLabel = button.getAttribute("aria-label");
   const originalTooltip = button.getAttribute("data-tooltip");
   const originalLabel = label?.textContent || "Share";
