@@ -221,7 +221,30 @@
             <section class="home-hero" aria-label="Vault spotlight">
               <article id="home-spotlight" class="home-spotlight is-empty">
                 <img id="home-spotlight-backdrop" class="home-spotlight-backdrop" alt="" aria-hidden="true">
-                <div id="home-spotlight-stage" class="home-spotlight-stage" role="button" tabindex="0" aria-label="Open the spotlight item"></div>
+                <div class="home-spotlight-player">
+                  <div id="home-spotlight-stage" class="home-spotlight-stage" role="button" tabindex="0" aria-label="Open the spotlight item"></div>
+                  <div class="home-spotlight-nav">
+                    <button id="home-spotlight-prev" class="home-spotlight-step" type="button" aria-label="Previous random pick">
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7" /></svg>
+                      <span>Previous</span>
+                    </button>
+                    <span id="home-spotlight-position" class="home-spotlight-position" aria-live="polite"></span>
+                    <button id="home-spotlight-next-button" class="home-spotlight-step" type="button" aria-label="Next random pick">
+                      <span>Next</span>
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7" /></svg>
+                    </button>
+                  </div>
+                  <div class="home-spotlight-toggles">
+                    <label class="home-spotlight-toggle" title="Start each pick playing on its own; when Loop is off, move on to the next pick when one ends">
+                      <input id="home-spotlight-autoplay" type="checkbox" checked>
+                      <span>Autoplay</span>
+                    </label>
+                    <label class="home-spotlight-toggle" title="Replay a video or sound when it ends">
+                      <input id="home-spotlight-loop" type="checkbox" checked>
+                      <span>Loop</span>
+                    </label>
+                  </div>
+                </div>
                 <div class="home-spotlight-info">
                   <p class="home-spotlight-kicker">Random pick</p>
                   <h2 id="home-spotlight-title" class="home-spotlight-title"></h2>
