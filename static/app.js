@@ -233,7 +233,6 @@ const dashboardFavorites = document.querySelector("#dashboard-favorites");
 const dashboardRandomRefresh = document.querySelector("#dashboard-random-refresh");
 const dashboardRecentAll = document.querySelector("#dashboard-recent-all");
 const dashboardFavoritesAll = document.querySelector("#dashboard-favorites-all");
-const dashboardTypeMix = document.querySelector("#home-type-mix");
 const homeSpotlight = document.querySelector("#home-spotlight");
 const homeSpotlightBackdrop = document.querySelector("#home-spotlight-backdrop");
 const homeSpotlightStage = document.querySelector("#home-spotlight-stage");
@@ -9006,20 +9005,21 @@ async function fetchVaultDashboard({ onlyIfNewestChanged = false, keepSpotlight 
 		["storage", "Storage used", formatSize(Number(dashboard.storage_bytes || 0)), null],
 		["favorites", "Favorites", favoriteCount.toLocaleString(), () => navigateToView("favorites")],
 	];
+	// The slim strip across the top of Home; the ones with somewhere to go
+	// are buttons.
 	dashboardStats.replaceChildren(...tiles.map(([kind, label, value, action]) => {
 		const tile = document.createElement(action ? "button" : "div");
 		if (action) {
 			tile.type = "button";
 			tile.addEventListener("click", action);
 		}
-		tile.className = "home-stat-tile";
-		tile.dataset.kind = kind;
+		tile.className = "dashboard-stat-card";
+		tile.dataset.icon = kind;
 		tile.innerHTML = `<span></span><strong></strong>`;
 		tile.querySelector("span").textContent = label;
 		tile.querySelector("strong").textContent = value;
 		return tile;
 	}));
-	renderDashboardTypeMix(dashboard.counts || {});
 	if (dashboardRecentAll) dashboardRecentAll.textContent = totalItems > 1 ? `View all ${totalItems.toLocaleString()} items` : "View all items";
 	if (dashboardFavoritesAll) dashboardFavoritesAll.textContent = favoriteCount > 1 ? `View all ${favoriteCount.toLocaleString()} favorites` : "View favorites";
 	renderDashboardMemeCollection(
@@ -9057,49 +9057,6 @@ async function fetchVaultDashboard({ onlyIfNewestChanged = false, keepSpotlight 
 	}));
 	dashboardTagsSection?.classList.toggle("hidden", topTags.length === 0);
 	return true;
-}
-
-// One bar split by item type, with a legend that links to each type's view.
-function renderDashboardTypeMix(counts) {
-	if (!dashboardTypeMix) return;
-	const types = [
-		["videos", "Videos", Number(counts.videos || 0)],
-		["images", "Images", Number(counts.images || 0)],
-		["mp3s", "Audio", Number(counts.mp3s || 0)],
-		["files", "Files", Number(counts.files || 0)],
-	].filter(([, , count]) => count > 0);
-	const untagged = Number(counts.untagged || 0);
-	dashboardTypeMix.replaceChildren();
-	dashboardTypeMix.classList.toggle("hidden", types.length === 0);
-	if (!types.length) return;
-	const bar = document.createElement("div");
-	bar.className = "home-type-bar";
-	bar.setAttribute("aria-hidden", "true");
-	const legend = document.createElement("div");
-	legend.className = "home-type-legend";
-	types.forEach(([view, label, count]) => {
-		const segment = document.createElement("span");
-		segment.dataset.type = view;
-		segment.style.flexGrow = String(count);
-		bar.appendChild(segment);
-		const entry = document.createElement("button");
-		entry.type = "button";
-		entry.dataset.type = view;
-		entry.innerHTML = `<i aria-hidden="true"></i><span></span><strong></strong>`;
-		entry.querySelector("span").textContent = label;
-		entry.querySelector("strong").textContent = count.toLocaleString();
-		entry.addEventListener("click", () => navigateToView(view));
-		legend.appendChild(entry);
-	});
-	dashboardTypeMix.append(bar, legend);
-	if (untagged > 0) {
-		const link = document.createElement("button");
-		link.type = "button";
-		link.className = "home-untagged-link";
-		link.textContent = `${untagged.toLocaleString()} untagged`;
-		link.addEventListener("click", () => navigateToView("untagged"));
-		dashboardTypeMix.appendChild(link);
-	}
 }
 
 // The featured random pick. `history` holds every item shown so far, with
@@ -9285,7 +9242,7 @@ function pauseSpotlightMedia() {
 // Gives a spotlight video or audio element the shared volume preference and
 // keeps that preference in step when the viewer changes it.
 function prepareSpotlightMedia(media) {
-	media.volume = loadPreferredMediaVolume();
+	applyDefaultMediaVolume(media);
 	media.loop = spotlightLoopOn();
 	// With Loop off and Autoplay on, a finished item hands over to the next.
 	media.addEventListener("ended", () => {
@@ -9304,6 +9261,7 @@ function prepareSpotlightMedia(media) {
 	// Only one spotlight item plays at a time, and nothing plays behind the
 	// editor or reel.
 	media.addEventListener("play", () => {
+		if (media.dataset.autoMuted !== "true") applyDefaultMediaVolume(media);
 		spotlightMediaElements().forEach((other) => {
 			if (other !== media && !other.paused) other.pause();
 		});
