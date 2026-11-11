@@ -4735,10 +4735,48 @@ body.home-mode .dashboard-recent .preview-frame {
 }
 
 /* ---- Home: spotlight hero, stat tiles, type mix and tag cloud -------------- */
-.home-hero {
+/* A single slim overview strip across the top of Home. */
+.dashboard-overview {
+  display: block;
+  padding: 0 clamp(14px, 3vw, 52px);
+  border-bottom: 1px solid var(--line);
+  background: rgba(17, 17, 21, .65);
+}
+.dashboard-overview .dashboard-stats {
+  position: static;
+  inset: auto;
+  z-index: auto;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) clamp(270px, 23vw, 360px);
-  gap: 16px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0;
+  width: 100%;
+  margin: 0;
+}
+.dashboard-overview .dashboard-stat-card {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: inherit;
+  font: inherit;
+  backdrop-filter: none;
+}
+.dashboard-overview button.dashboard-stat-card { cursor: pointer; transition: color .15s ease; }
+.dashboard-overview button.dashboard-stat-card:hover,
+.dashboard-overview button.dashboard-stat-card:focus-visible { color: var(--green-bright); }
+.dashboard-overview .dashboard-stat-card + .dashboard-stat-card { border-left: 1px solid var(--line); }
+.dashboard-overview .dashboard-stat-card span { grid-column: auto; color: #bcb7b1; font-size: 11px; white-space: nowrap; }
+.dashboard-overview .dashboard-stat-card strong { grid-column: auto; font-size: 13px; line-height: 1.1; white-space: nowrap; }
+
+.home-hero {
+  display: block;
   min-width: 0;
   padding: 22px clamp(28px, 3vw, 52px) 0;
 }
@@ -4994,82 +5032,6 @@ body.home-mode .dashboard-recent .preview-frame {
   text-align: center;
 }
 
-.home-hero-side { display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: 12px; min-width: 0; }
-.home-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-.home-stat-tile {
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  gap: 10px;
-  min-width: 0;
-  min-height: 96px;
-  padding: 15px 16px;
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  background: linear-gradient(150deg, rgba(38, 32, 27, .9), rgba(20, 20, 24, .92));
-  color: inherit;
-  font: inherit;
-  text-align: left;
-}
-button.home-stat-tile { cursor: pointer; transition: border-color .15s ease, transform .15s ease; }
-button.home-stat-tile:hover,
-button.home-stat-tile:focus-visible { border-color: rgba(201, 149, 93, .55); transform: translateY(-1px); }
-.home-stat-tile span { color: var(--muted); font-size: 12px; }
-.home-stat-tile strong {
-  overflow: hidden;
-  font-size: clamp(24px, 2vw, 34px);
-  font-variant-numeric: tabular-nums;
-  font-weight: 750;
-  letter-spacing: -.035em;
-  line-height: 1;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.home-stat-tile[data-kind="items"] strong { color: var(--green-bright); }
-
-.home-type-mix {
-  display: grid;
-  gap: 12px;
-  padding: 15px 16px;
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  background: rgba(20, 20, 24, .92);
-}
-.home-type-bar { display: flex; gap: 2px; height: 10px; overflow: hidden; border-radius: 999px; }
-.home-type-bar span { flex: 1 1 0; min-width: 4px; }
-.home-type-bar [data-type="videos"], .home-type-legend [data-type="videos"] i { background: var(--green); }
-.home-type-bar [data-type="images"], .home-type-legend [data-type="images"] i { background: var(--blue); }
-.home-type-bar [data-type="mp3s"], .home-type-legend [data-type="mp3s"] i { background: var(--purple); }
-.home-type-bar [data-type="files"], .home-type-legend [data-type="files"] i { background: var(--amber); }
-.home-type-legend { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 16px; }
-.home-type-legend button {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  padding: 2px 0;
-  border: 0;
-  background: transparent;
-  color: var(--muted);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-.home-type-legend button:hover, .home-untagged-link:hover { color: var(--green-bright); }
-.home-type-legend i { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; }
-.home-type-legend strong { margin-left: auto; color: var(--text); font-variant-numeric: tabular-nums; font-weight: 600; }
-.home-untagged-link {
-  justify-self: start;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--faint);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-.home-untagged-link::after { content: " \2192"; }
-
 /* Popular tags as a cloud: app.js sets --tag-weight (0 to 1) from how often
    each tag is used. */
 .home-tag-cloud { display: flex; flex-wrap: wrap; align-items: center; gap: 9px 10px; padding-bottom: 30px; }
@@ -5099,16 +5061,12 @@ button.home-stat-tile:focus-visible { border-color: rgba(201, 149, 93, .55); tra
   body.home-mode .section-heading h3 { font-size: 20px; }
 }
 
-@media (max-width: 1180px) {
-  .home-hero { grid-template-columns: minmax(0, 1fr); }
-  .home-hero-side { grid-template-rows: auto; }
-  .home-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-  .home-stat-tile { min-height: 80px; }
-  .home-type-legend { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-}
-
 @media (max-width: 760px) {
-  .home-hero { gap: 10px; padding: 10px 10px 0; }
+  .dashboard-overview { padding: 0 6px; }
+  .dashboard-overview .dashboard-stat-card { flex-direction: column; gap: 2px; min-height: 40px; padding: 5px 3px; }
+  .dashboard-overview .dashboard-stat-card span { font-size: 10px; }
+  .dashboard-overview .dashboard-stat-card strong { font-size: 12px; }
+  .home-hero { padding: 10px 10px 0; }
   .home-spotlight { --spot-height: min(70vh, 150vw); flex-direction: column; min-height: 0; border-radius: 14px; }
   .home-spotlight::after { background: linear-gradient(180deg, rgba(12, 12, 15, .25), rgba(12, 12, 15, .86) 62%); }
   .home-spotlight-player { flex: 0 0 auto; width: 100%; padding: 8px 8px 0; gap: 8px; }
@@ -5125,10 +5083,6 @@ button.home-stat-tile:focus-visible { border-color: rgba(201, 149, 93, .55); tra
   .home-spotlight-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .home-spotlight-actions > button { justify-content: center; min-height: 44px; padding-inline: 8px; }
   .home-spotlight-queued { flex-basis: 64px; height: 84px; }
-  .home-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-  .home-stat-tile { min-height: 70px; padding: 11px 12px; }
-  .home-stat-tile strong { font-size: 22px; }
-  .home-type-legend { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .home-tag-cloud { gap: 7px; padding-bottom: 16px; }
   .home-tag { font-size: calc(12px + var(--tag-weight, .5) * 7px); }
 }

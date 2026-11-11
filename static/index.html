@@ -218,6 +218,9 @@
 
         <section class="content-panel">
           <section id="home-dashboard" class="vault-dashboard" aria-live="polite">
+            <section class="dashboard-overview" aria-label="Vault overview">
+              <div id="dashboard-stats" class="dashboard-stats"></div>
+            </section>
             <section class="home-hero" aria-label="Vault spotlight">
               <article id="home-spotlight" class="home-spotlight is-empty">
                 <img id="home-spotlight-backdrop" class="home-spotlight-backdrop" alt="" aria-hidden="true">
@@ -265,10 +268,6 @@
                 </div>
                 <p class="home-spotlight-empty">Add something to your vault and a random pick will show up here.</p>
               </article>
-              <aside class="home-hero-side" aria-label="Vault overview">
-                <div id="dashboard-stats" class="home-stats"></div>
-                <div id="home-type-mix" class="home-type-mix"></div>
-              </aside>
             </section>
             <section class="dashboard-section">
               <div class="section-heading"><h3>Recently added</h3><button id="dashboard-recent-all" class="text-button" type="button" data-go-library>View all items</button></div>
