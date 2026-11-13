@@ -167,16 +167,6 @@ func (a *authService) enabled() bool {
 	return a != nil
 }
 
-func (a *authService) buildLoginURL(state string) string {
-	values := url.Values{}
-	values.Set("client_id", a.config.ClientID)
-	values.Set("response_type", "code")
-	values.Set("redirect_uri", a.config.RedirectURL)
-	values.Set("scope", "identify")
-	values.Set("state", state)
-	return "https://discord.com/oauth2/authorize?" + values.Encode()
-}
-
 func (a *authService) buildLoginURLForRequest(r *http.Request, state string) string {
 	values := url.Values{}
 	values.Set("client_id", a.config.ClientID)
@@ -773,7 +763,7 @@ func (a *authService) exchangeCode(ctx context.Context, code string, redirectURL
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
@@ -801,7 +791,7 @@ func (a *authService) fetchUser(ctx context.Context, accessToken string) (discor
 	if err != nil {
 		return discordUser{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))

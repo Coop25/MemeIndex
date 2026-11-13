@@ -361,7 +361,7 @@ func (s *Server) handleShareTarget(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/?shared=error", http.StatusSeeOther)
 		return
 	}
-	defer r.MultipartForm.RemoveAll()
+	defer func() { _ = r.MultipartForm.RemoveAll() }()
 
 	actor := currentAuditActor(r)
 	notes := sharedNotes(r.FormValue("title"), r.FormValue("text"))
@@ -380,7 +380,7 @@ func (s *Server) handleShareTarget(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			meme, err := s.managers.CreateMemeAs(actor, src, fileHeader.Header, fileHeader.Filename, nil, notes)
-			src.Close()
+			_ = src.Close()
 			if err != nil {
 				var duplicateErr *accessor.DuplicateMemeError
 				if errors.As(err, &duplicateErr) {
@@ -665,10 +665,10 @@ func allowsAnonymousLinkPreview(r *http.Request) bool {
 		return false
 	}
 
-	switch {
-	case r.URL.Path == "/":
+	switch r.URL.Path {
+	case "/":
 		return true
-	case r.URL.Path == "/og-image.svg":
+	case "/og-image.svg":
 		return true
 	default:
 		return false
@@ -746,8 +746,8 @@ func (s *Server) protectAuditFeedForResponse(r *http.Request, feed accessor.Page
 }
 
 func allowsAuthenticatedShellOnly(path string) bool {
-	switch {
-	case path == "/forbidden":
+	switch path {
+	case "/forbidden":
 		return true
 	default:
 		return false
@@ -1465,7 +1465,7 @@ func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid multipart request", http.StatusBadRequest)
 		return
 	}
-	defer r.MultipartForm.RemoveAll()
+	defer func() { _ = r.MultipartForm.RemoveAll() }()
 
 	sourceURL := strings.TrimSpace(r.FormValue("source_url"))
 	fileHeaders := r.MultipartForm.File["file"]
@@ -1560,7 +1560,7 @@ func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
 			splitTags(r.FormValue("tags")),
 			r.FormValue("notes"),
 		)
-		src.Close()
+		_ = src.Close()
 		if err != nil {
 			var duplicateErr *accessor.DuplicateMemeError
 			if errors.As(err, &duplicateErr) {
@@ -1663,14 +1663,14 @@ func (s *Server) createMemeFromSourceURL(ctx context.Context, actor accessor.Aud
 	if downloadedFile == "" {
 		return accessor.Meme{}, friendlySourceDownloadError(sourceURL, resolvedSourceURL, lastDownloadErr)
 	}
-	defer os.RemoveAll(successfulDownloadDir)
+	defer func() { _ = os.RemoveAll(successfulDownloadDir) }()
 
 	src, err := os.Open(downloadedFile)
 	if err != nil {
 		log.Printf("open downloaded media failed for original=%q resolved=%q selected=%q file=%q: %v", sourceURL, resolvedSourceURL, successfulDownload, downloadedFile, err)
 		return accessor.Meme{}, err
 	}
-	defer src.Close()
+	defer func() { _ = src.Close() }()
 
 	filename := filepath.Base(downloadedFile)
 	header := textproto.MIMEHeader{}
@@ -1774,7 +1774,7 @@ func normalizeSourceURL(ctx context.Context, raw string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 
 	if response.Request == nil || response.Request.URL == nil {
 		return trimmed, nil
@@ -2295,7 +2295,7 @@ func (s *Server) handleBackupDownload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to open completed backup", http.StatusInternalServerError)
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	if err != nil {
 		log.Printf("stat completed backup failed: %v", err)

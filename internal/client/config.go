@@ -237,7 +237,7 @@ func (c Config) validateSecurity() error {
 			return fmt.Errorf("incomplete Discord authentication configuration")
 		}
 		if !c.AllowAnonymous {
-			return fmt.Errorf("Discord authentication is required; use MEMEINDEX_ALLOW_ANONYMOUS=true only for intentional anonymous operation")
+			return fmt.Errorf("authentication is required: configure Discord sign-in, or set MEMEINDEX_ALLOW_ANONYMOUS=true only for intentional anonymous operation")
 		}
 	} else if !strongSigningSecret(a.SessionSecret) {
 		return fmt.Errorf("MEMEINDEX_SESSION_SECRET must be a random secret of at least 32 characters, not an example value")

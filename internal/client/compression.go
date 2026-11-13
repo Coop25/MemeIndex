@@ -100,7 +100,7 @@ func (w *gzipResponseWriter) WriteHeader(status int) {
 	}
 	w.wroteHeader = true
 
-	header := w.ResponseWriter.Header()
+	header := w.Header()
 	// Only compress a plain 200 with an allow-listed text type that is not
 	// already encoded. 304/redirects/partial responses are left untouched.
 	if status == http.StatusOK && header.Get("Content-Encoding") == "" && isCompressibleType(header.Get("Content-Type")) {

@@ -470,7 +470,7 @@ func (b *portableBackup) writeArchive(ctx context.Context, output io.Writer) err
 	if _, err := conn.Exec(ctx, "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY"); err != nil {
 		return fmt.Errorf("begin database snapshot: %w", err)
 	}
-	defer conn.Exec(context.Background(), "ROLLBACK")
+	defer func() { _, _ = conn.Exec(context.Background(), "ROLLBACK") }()
 
 	gz := gzip.NewWriter(output)
 	tw := tar.NewWriter(gz)
@@ -701,7 +701,7 @@ func (b *portableBackup) restoreArchive(ctx context.Context, source io.Reader, m
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(staging)
+	defer func() { _ = os.RemoveAll(staging) }()
 	if err := extractPortableArchiveWithLimits(source, staging, maxExtractBytes, defaultMaxExtractEntries); err != nil {
 		return err
 	}
@@ -826,7 +826,7 @@ func validateRestoredMemes(staging string, formatVersion int) error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	reader := csv.NewReader(file)
 	header, err := reader.Read()
 	if err != nil {
@@ -894,7 +894,7 @@ func validateRestoredAudiobooks(staging, dataDir string) error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	reader := csv.NewReader(file)
 	header, err := reader.Read()
 	if err != nil {
@@ -1123,7 +1123,7 @@ func extractPortableArchiveWithLimits(source io.Reader, destination string, maxB
 	if err != nil {
 		return errors.New("file is not a valid MemeIndex backup")
 	}
-	defer gz.Close()
+	defer func() { _ = gz.Close() }()
 	tr := tar.NewReader(gz)
 	var expanded int64
 	entries := 0
@@ -1155,7 +1155,7 @@ func extractPortableArchiveWithLimits(source io.Reader, destination string, maxB
 			if err := os.MkdirAll(target, 0o755); err != nil {
 				return err
 			}
-		case tar.TypeReg, tar.TypeRegA:
+		case tar.TypeReg:
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
 			}
