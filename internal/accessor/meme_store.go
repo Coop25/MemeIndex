@@ -462,12 +462,18 @@ func (s *MemeStore) Create(input CreateInput) (Meme, error) {
 	if err != nil {
 		return Meme{}, fmt.Errorf("create upload file: %w", err)
 	}
-	defer dst.Close()
+	defer func() { _ = dst.Close() }()
 
 	hasher := newContentHashWriter()
 	size, err := io.Copy(io.MultiWriter(dst, hasher), input.File)
 	if err != nil {
 		return Meme{}, fmt.Errorf("write upload file: %w", err)
+	}
+	// Close now rather than only in the defer: a failed close can mean the
+	// last bytes never reached the disk, and no meme may point at a short file.
+	if err := dst.Close(); err != nil {
+		_ = os.Remove(targetPath)
+		return Meme{}, fmt.Errorf("close upload file: %w", err)
 	}
 
 	now := time.Now().UTC()
@@ -499,9 +505,8 @@ func (s *MemeStore) Create(input CreateInput) (Meme, error) {
 	}
 	s.mu.Unlock()
 
-	if err := ensurePreviewAsset(s.uploadDir, s.previewDir, &meme); err != nil {
-		// Thumbnail generation is best-effort.
-	}
+	// Thumbnail generation is best-effort.
+	_ = ensurePreviewAsset(s.uploadDir, s.previewDir, &meme)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()

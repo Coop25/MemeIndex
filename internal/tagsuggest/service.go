@@ -179,9 +179,9 @@ func (s *Service) ready(ctx context.Context) (bool, error) {
 
 	response, err := s.httpClient.Do(request)
 	if err != nil {
-		return false, fmt.Errorf("%w: %v", ErrUnavailable, err)
+		return false, fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return false, fmt.Errorf("%w: %s", ErrUnavailable, response.Status)
@@ -220,7 +220,7 @@ func (s *Service) Suggest(ctx context.Context, input Request) (Result, error) {
 		}
 		imageBytes, err := os.ReadFile(trimmedPath)
 		if err != nil {
-			return Result{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
+			return Result{}, fmt.Errorf("%w: %s", ErrUnavailable, err.Error())
 		}
 		imagePayloads = append(imagePayloads, base64.StdEncoding.EncodeToString(imageBytes))
 	}
@@ -291,7 +291,7 @@ func (s *Service) suggestWithStructuredChat(ctx context.Context, input Request, 
 	if err != nil {
 		return Result{}, requestError(err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 
 	responseBody, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err != nil {
@@ -319,7 +319,7 @@ func (s *Service) suggestWithStructuredChat(ctx context.Context, input Request, 
 
 	tags, err := extractTagsFromModelText(chatResponse.Message.Content)
 	if err != nil {
-		return Result{}, fmt.Errorf("%w: %v", ErrInvalidResponse, err)
+		return Result{}, fmt.Errorf("%w: %w", ErrInvalidResponse, err)
 	}
 	result := s.buildResult(input, tags, extractTextFromModelText(chatResponse.Message.Content))
 	if len(result.Tags) == 0 {
@@ -361,7 +361,7 @@ func (s *Service) suggestWithGenerateFallback(ctx context.Context, input Request
 		}
 		return Result{}, fmt.Errorf("structured path failed (%s); fallback generate also failed: %w", originalErr.Error(), requestError(err))
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 
 	responseBody, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err != nil {
@@ -381,7 +381,7 @@ func (s *Service) suggestWithGenerateFallback(ctx context.Context, input Request
 		if originalErr == nil {
 			return Result{}, fmt.Errorf("%w: generate-only request failed: %s", ErrUnavailable, message)
 		}
-		return Result{}, fmt.Errorf("%w: structured path failed (%v); fallback generate failed: %s", ErrUnavailable, originalErr, message)
+		return Result{}, fmt.Errorf("%w: structured path failed (%s); fallback generate failed: %s", ErrUnavailable, originalErr.Error(), message)
 	}
 
 	var generateResponse struct {
@@ -397,9 +397,9 @@ func (s *Service) suggestWithGenerateFallback(ctx context.Context, input Request
 	tags, err := extractTagsFromModelText(generateResponse.Response)
 	if err != nil {
 		if originalErr == nil {
-			return Result{}, fmt.Errorf("%w: generate-only parse failed: %v", ErrInvalidResponse, err)
+			return Result{}, fmt.Errorf("%w: generate-only parse failed: %w", ErrInvalidResponse, err)
 		}
-		return Result{}, fmt.Errorf("%w: structured path failed (%v); fallback parse failed: %v", ErrInvalidResponse, originalErr, err)
+		return Result{}, fmt.Errorf("%w: structured path failed (%s); fallback parse failed: %w", ErrInvalidResponse, originalErr.Error(), err)
 	}
 
 	result := s.buildResult(input, tags, extractTextFromModelText(generateResponse.Response))
@@ -640,11 +640,11 @@ func buildPrompt(input Request, knownTags []string, existingTags []string, maxTa
 	builder.WriteString("Use short lowercase phrases. Do not include generic media descriptions, camera details, demographic guesses, or anything not supported by the supplied evidence.\n")
 	builder.WriteString("Do not repeat existing tags. Existing archive tags are optional vocabulary hints, not topics you must use.\n")
 	builder.WriteString("Also copy any text, captions, or subtitles visible in the image into a field named text, exactly as written. Use an empty string when there is no readable text.\n")
-	builder.WriteString(fmt.Sprintf("Filename: %s\n", strings.TrimSpace(input.Filename)))
-	builder.WriteString(fmt.Sprintf("Content type: %s\n", strings.TrimSpace(input.ContentType)))
-	builder.WriteString(fmt.Sprintf("Image source: %s\n", strings.TrimSpace(input.Source)))
+	fmt.Fprintf(&builder, "Filename: %s\n", strings.TrimSpace(input.Filename))
+	fmt.Fprintf(&builder, "Content type: %s\n", strings.TrimSpace(input.ContentType))
+	fmt.Fprintf(&builder, "Image source: %s\n", strings.TrimSpace(input.Source))
 	if len(input.AssetPaths) > 1 {
-		builder.WriteString(fmt.Sprintf("Frame count: %d\n", len(input.AssetPaths)))
+		fmt.Fprintf(&builder, "Frame count: %d\n", len(input.AssetPaths))
 	}
 	if transcript := strings.TrimSpace(input.Transcript); transcript != "" {
 		builder.WriteString("Audio transcript (may be partial or imperfect): ")

@@ -9,11 +9,11 @@ import (
 func TestSanitizeDownloadFilename(t *testing.T) {
 	cases := map[string]string{
 		"memeindex-backup-20240101-000000.tar.gz": "memeindex-backup-20240101-000000.tar.gz",
-		`evil".tar.gz`:                             "evil.tar.gz",
-		"with\r\nnewline.tar.gz":                   "withnewline.tar.gz",
-		"../../etc/passwd":                         "passwd",
-		"":                                        "",
-		"..":                                      "",
+		`evil".tar.gz`:           "evil.tar.gz",
+		"with\r\nnewline.tar.gz": "withnewline.tar.gz",
+		"../../etc/passwd":       "passwd",
+		"":                       "",
+		"..":                     "",
 	}
 	for input, want := range cases {
 		if got := sanitizeDownloadFilename(input); got != want {

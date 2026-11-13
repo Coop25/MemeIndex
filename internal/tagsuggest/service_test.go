@@ -3,13 +3,48 @@ package tagsuggest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+// An unreachable Ollama is reported as unavailable and keeps the transport
+// error underneath, so logs and callers can see why.
+func TestReadyKeepsTransportCause(t *testing.T) {
+	server := httptest.NewServer(http.NotFoundHandler())
+	server.Close()
+
+	service := New(Config{OllamaURL: server.URL, Model: "test-vision", Timeout: 2 * time.Second})
+	_, err := service.ready(context.Background())
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("expected ErrUnavailable, got %v", err)
+	}
+	var urlErr *url.Error
+	if !errors.As(err, &urlErr) {
+		t.Fatalf("expected the transport error to stay wrapped, got %v", err)
+	}
+}
+
+// A missing image is a temporary "unavailable" failure: the worker retries it.
+// It must not also match os.ErrNotExist, which makes the worker drop the meme.
+func TestSuggestMissingAssetStaysUnavailable(t *testing.T) {
+	service := New(Config{OllamaURL: "http://127.0.0.1:9", Model: "test-vision", Timeout: 2 * time.Second})
+	_, err := service.Suggest(context.Background(), Request{
+		AssetPaths: []string{filepath.Join(t.TempDir(), "missing.png")},
+	})
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("expected ErrUnavailable, got %v", err)
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a missing asset must not match os.ErrNotExist: %v", err)
+	}
+}
 
 func TestExtractTagsFromModelText(t *testing.T) {
 	tests := []struct {

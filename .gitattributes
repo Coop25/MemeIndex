@@ -2,3 +2,9 @@
 # Docker image's entrypoint fails with `\r` in the shebang.
 *.sh text eol=lf
 docker-entrypoint.sh text eol=lf
+
+# Go sources stay LF on every OS so a local gofmt or golangci-lint run sees
+# exactly what CI sees (CRLF makes gofmt flag every file).
+*.go text eol=lf
+go.mod text eol=lf
+go.sum text eol=lf

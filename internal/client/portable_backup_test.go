@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -283,6 +284,53 @@ func waitForBackupStatus(t *testing.T, b *portableBackup, expected string) backu
 	}
 	t.Fatalf("backup did not reach %q; last status: %+v", expected, b.exportStatus())
 	return backupJobStatus{}
+}
+
+// Old tar writers mark regular files with a NUL type byte (the deprecated
+// tar.TypeRegA). Restores must still extract those entries.
+func TestExtractPortableArchiveAcceptsLegacyRegularFileType(t *testing.T) {
+	var raw bytes.Buffer
+	tw := tar.NewWriter(&raw)
+	if err := tw.WriteHeader(&tar.Header{Name: "uploads/legacy.txt", Typeflag: tar.TypeReg, Size: 5, Mode: 0o644}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte("hello")); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// tar.Writer promotes a NUL type to TypeReg, so write the legacy byte into
+	// the header block directly and recompute the header checksum.
+	block := raw.Bytes()[:512]
+	block[156] = '\x00'
+	copy(block[148:156], "        ")
+	sum := 0
+	for _, b := range block {
+		sum += int(b)
+	}
+	copy(block[148:156], fmt.Sprintf("%06o\x00 ", sum))
+
+	var archive bytes.Buffer
+	gz := gzip.NewWriter(&archive)
+	if _, err := gz.Write(raw.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	destination := t.TempDir()
+	if err := extractPortableArchive(bytes.NewReader(archive.Bytes()), destination); err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(destination, "uploads", "legacy.txt"))
+	if err != nil {
+		t.Fatalf("legacy entry was not extracted: %v", err)
+	}
+	if string(got) != "hello" {
+		t.Fatalf("extracted %q, want %q", got, "hello")
+	}
 }
 
 func TestExtractPortableArchiveRejectsPathTraversal(t *testing.T) {

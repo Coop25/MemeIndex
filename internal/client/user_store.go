@@ -468,7 +468,7 @@ func (s *postgresAuthUserStore) CreateUser(ctx context.Context, userID string) (
 	if err != nil {
 		return managedUserRecord{}, fmt.Errorf("begin create user: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	// Provision the row before clearing the re-add marker so a resurrected user
 	// starts one past the version captured at delete time, invalidating any token
@@ -506,7 +506,7 @@ func (s *postgresAuthUserStore) UpdateUserPermissions(ctx context.Context, userI
 	if err != nil {
 		return managedUserRecord{}, fmt.Errorf("begin update user permissions: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	// Same ordering as CreateUser: write the row (seeding session_version past the
 	// value captured at delete time when this doubles as a re-add) before the
@@ -619,7 +619,7 @@ func (s *postgresAuthUserStore) DeleteUser(ctx context.Context, userID string) e
 	if err != nil {
 		return fmt.Errorf("begin delete user: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	// Capture the outgoing session version before the row disappears so a later
 	// re-add can resume from a strictly higher number and orphaned tokens issued

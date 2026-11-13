@@ -342,7 +342,7 @@ func probeMigrationSource(ctx context.Context, client *http.Client, base *url.UR
 	if err != nil {
 		return info, fmt.Errorf("could not reach %s: %w", base.Host, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return info, describeMigrationResponse(resp)
 	}
@@ -457,7 +457,7 @@ func (s *Server) runMigrationImport(ctx context.Context, base *url.URL, token st
 	if err != nil {
 		return fmt.Errorf("could not reach %s: %w", base.Host, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return describeMigrationResponse(resp)
 	}
