@@ -22,10 +22,10 @@ func stubTagSuggester() *tagsuggest.Service {
 type tagOpsFakeStore struct {
 	*adminReadCacheStore
 
-	mergeCalls    int
-	mergeSource   string
-	mergeTarget   string
-	mergeAffected int
+	mergeCalls        int
+	mergeSource       string
+	mergeTarget       string
+	mergeAffected     int
 	mergeAudiobooks   int
 	mergeRestrictions int
 

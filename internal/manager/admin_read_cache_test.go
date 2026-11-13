@@ -83,7 +83,7 @@ func (s *adminReadCacheStore) callCount() int {
 }
 
 var (
-	_ accessor.Store            = (*adminReadCacheStore)(nil)
+	_ accessor.Store             = (*adminReadCacheStore)(nil)
 	_ accessor.SuggestedTagStore = (*adminReadCacheStore)(nil)
 	_ accessor.SystemAuditStore  = (*adminReadCacheStore)(nil)
 )

@@ -29,9 +29,5 @@ formatters:
     - gofmt
 
 issues:
-  # The codebase predates this config and carries a lint backlog (tracked
-  # separately). Gate CI on regressions only: anything the current change adds
-  # or touches must be clean, existing findings do not block.
-  new-from-merge-base: origin/master
   max-issues-per-linter: 0
   max-same-issues: 0

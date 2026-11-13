@@ -70,10 +70,6 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
-        with:
-          # golangci-lint compares against the merge base to gate on regressions
-          # only (see issues.new-from-merge-base in .golangci.yml).
-          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v7

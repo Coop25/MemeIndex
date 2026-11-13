@@ -463,7 +463,7 @@ When using the legacy file store:
 
 ## Next ideas
 
-- Folder import and duplicate detection
-- Drag-and-drop uploads
-- Thumbnail generation for videos and documents
+- Folder import in the browser (today a folder goes through `scripts/upload-memes.ps1`)
+- Near-duplicate detection for resized or re-encoded reposts (exact duplicates are already skipped by content hash)
+- Thumbnail generation for documents
 - Discord guild and role-based authorization
