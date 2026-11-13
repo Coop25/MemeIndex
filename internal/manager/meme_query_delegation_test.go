@@ -65,8 +65,8 @@ func TestListMemesSortedDelegatesToStore(t *testing.T) {
 	if store.queryCalls != 1 {
 		t.Fatalf("QueryMemes called %d times, want 1", store.queryCalls)
 	}
-	if store.adminReadCacheStore.callCount() != 0 {
-		t.Fatalf("in-memory List was used %d times, want 0", store.adminReadCacheStore.callCount())
+	if store.callCount() != 0 {
+		t.Fatalf("in-memory List was used %d times, want 0", store.callCount())
 	}
 	if store.lastQuery.Search != "cat" || store.lastQuery.View != "videos" || store.lastQuery.Sort != "oldest" || store.lastQuery.Limit != 50 {
 		t.Fatalf("query passed through incorrectly: %+v", store.lastQuery)
@@ -107,7 +107,7 @@ func TestListMemesSortedFallsBackWhenStoreErrors(t *testing.T) {
 
 	got := m.ListMemesSorted("u", "", false, "", "", "newest", 0, 10)
 
-	if store.adminReadCacheStore.callCount() == 0 {
+	if store.callCount() == 0 {
 		t.Fatal("expected fallback to the in-memory List after the query error")
 	}
 	if got.Counts.Total != 2 || len(got.Memes) != 2 {
@@ -130,8 +130,8 @@ func TestDashboardDelegatesToStore(t *testing.T) {
 
 	got := m.Dashboard("u")
 
-	if store.adminReadCacheStore.callCount() != 0 {
-		t.Fatalf("in-memory List used %d times, want 0", store.adminReadCacheStore.callCount())
+	if store.callCount() != 0 {
+		t.Fatalf("in-memory List used %d times, want 0", store.callCount())
 	}
 	if got.TotalItems != 7 || got.StorageBytes != 4096 || got.TagCount != 5 || got.Counts.Images != 6 {
 		t.Fatalf("dashboard not mapped: %+v", got)
@@ -154,8 +154,8 @@ func TestPopularTagsDelegatesToStore(t *testing.T) {
 
 	got := m.PopularTags("u", 10)
 
-	if store.adminReadCacheStore.callCount() != 0 {
-		t.Fatalf("in-memory List used %d times, want 0", store.adminReadCacheStore.callCount())
+	if store.callCount() != 0 {
+		t.Fatalf("in-memory List used %d times, want 0", store.callCount())
 	}
 	if len(got) != 2 || got[0].Name != "reaction" || got[0].Count != 12 || got[1].Name != "cat" {
 		t.Fatalf("PopularTags = %+v", got)

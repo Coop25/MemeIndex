@@ -40,8 +40,8 @@ func TestMemesByIDsUsesBatchWhenAvailable(t *testing.T) {
 	if store.bulkCalls != 1 {
 		t.Fatalf("bulk store queried %d times, want 1", store.bulkCalls)
 	}
-	if store.adminReadCacheStore.callCount() != 0 {
-		t.Fatalf("per-id fallback ran %d times, want 0", store.adminReadCacheStore.callCount())
+	if store.callCount() != 0 {
+		t.Fatalf("per-id fallback ran %d times, want 0", store.callCount())
 	}
 	if got["a"] != "Alpha" || got["b"] != "Bravo" {
 		t.Fatalf("names not resolved: %+v", got)

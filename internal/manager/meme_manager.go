@@ -2430,7 +2430,8 @@ func (m *MemeManager) suggestTagsForMeme(ctx context.Context, meme accessor.Meme
 				return tagsuggest.Result{}, err
 			}
 		}
-		return tagsuggest.Result{}, fmt.Errorf("%w: %v", errAutoSuggestExhausted, lastInvalidResponse)
+		// Text only: wrapping would also make this match ErrInvalidResponse.
+		return tagsuggest.Result{}, fmt.Errorf("%w: %s", errAutoSuggestExhausted, lastInvalidResponse.Error())
 	}
 	if lastUnavailable != nil {
 		return tagsuggest.Result{}, lastUnavailable
@@ -2502,17 +2503,9 @@ func shouldQueueTagSuggestionsForMeme(meme accessor.Meme) bool {
 	return len(meme.Tags) == 0 && len(meme.SuggestedTags) == 0 && !meme.AutoSuggestDisabled
 }
 
-func looksLikeTagVariant(left string, right string) bool {
-	left = strings.ToLower(strings.TrimSpace(left))
-	right = strings.ToLower(strings.TrimSpace(right))
-	if left == "" || right == "" || left == right {
-		return false
-	}
-	return tagKeysLookLikeVariant(compactTagKey(left), compactTagKey(right))
-}
-
-// tagKeysLookLikeVariant is the body of looksLikeTagVariant operating on compact
-// keys the caller already derived (see compactTagKey). computeTagHygieneReport
+// tagKeysLookLikeVariant reports whether two tags look like variants of one
+// another, given compact keys the caller already derived (see compactTagKey).
+// computeTagHygieneReport
 // precomputes one key per tag and calls this for every candidate pair, so the
 // per-pair work stays down to a length check and an occasional edit-distance.
 func tagKeysLookLikeVariant(leftKey string, rightKey string) bool {

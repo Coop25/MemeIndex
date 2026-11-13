@@ -46,8 +46,8 @@ func TestAdminDashboardUsesLeanMemeScan(t *testing.T) {
 	if store.leanCalls != 1 {
 		t.Fatalf("AdminDashboardMemes called %d times, want 1", store.leanCalls)
 	}
-	if store.adminReadCacheStore.callCount() != 0 {
-		t.Fatalf("List() fallback used %d times, want 0", store.adminReadCacheStore.callCount())
+	if store.callCount() != 0 {
+		t.Fatalf("List() fallback used %d times, want 0", store.callCount())
 	}
 	if stats.Counts.Total != 2 || stats.TotalSizeBytes != 30 {
 		t.Fatalf("stats not computed from lean scan: %+v", stats.Counts)
@@ -68,8 +68,8 @@ func TestAdminDashboardFallsBackToListOnLeanScanError(t *testing.T) {
 	if store.leanCalls != 1 {
 		t.Fatalf("AdminDashboardMemes called %d times, want 1", store.leanCalls)
 	}
-	if store.adminReadCacheStore.callCount() != 1 {
-		t.Fatalf("List() fallback used %d times, want 1", store.adminReadCacheStore.callCount())
+	if store.callCount() != 1 {
+		t.Fatalf("List() fallback used %d times, want 1", store.callCount())
 	}
 	if stats.Counts.Total != 1 || stats.TotalSizeBytes != 7 {
 		t.Fatalf("fallback stats wrong: %+v total=%d", stats.Counts, stats.TotalSizeBytes)

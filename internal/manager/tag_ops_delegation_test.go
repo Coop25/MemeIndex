@@ -162,7 +162,7 @@ func TestSeedTagSuggestionQueueUsesStoreIDs(t *testing.T) {
 
 func TestTagHygieneReportUsesTagUsageStore(t *testing.T) {
 	store := newTagOpsFakeStore()
-	store.usage = map[string]int{"buisness": 1, "business": 9}
+	store.usage = map[string]int{"buisness": 1, "business": 9} //nolint:misspell // deliberate typo: tag-variant fixture
 	m := NewMemeManager(store)
 
 	report := m.TagHygieneReport()
@@ -174,7 +174,7 @@ func TestTagHygieneReportUsesTagUsageStore(t *testing.T) {
 	for _, tag := range report.Tags {
 		counts[tag.Tag] = tag.Count
 	}
-	if counts["business"] != 9 || counts["buisness"] != 1 {
+	if counts["business"] != 9 || counts["buisness"] != 1 { //nolint:misspell // deliberate typo: tag-variant fixture
 		t.Fatalf("tag counts not carried from TagUsageCounts: %+v", counts)
 	}
 	if len(report.Pairs) == 0 {

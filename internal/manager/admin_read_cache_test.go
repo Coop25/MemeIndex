@@ -119,7 +119,7 @@ func TestAdminDashboardMemoizesWithinTTL(t *testing.T) {
 
 func TestTagHygieneReportMemoizedAndInvalidatedByMerge(t *testing.T) {
 	store := &adminReadCacheStore{memes: []accessor.Meme{
-		{ID: "a", Tags: []string{"buisness"}, CreatedAt: time.Now().UTC()},
+		{ID: "a", Tags: []string{"buisness"}, CreatedAt: time.Now().UTC()}, //nolint:misspell // deliberate typo: tag-variant fixture
 		{ID: "b", Tags: []string{"business"}, CreatedAt: time.Now().UTC()},
 	}}
 	manager := NewMemeManager(store)
@@ -130,7 +130,7 @@ func TestTagHygieneReportMemoizedAndInvalidatedByMerge(t *testing.T) {
 		t.Fatalf("TagHygieneReport scanned the store %d times, want 1", store.callCount())
 	}
 
-	if _, err := manager.MergeTags("buisness", "business", accessor.AuditActor{UserID: "admin"}); err != nil {
+	if _, err := manager.MergeTags("buisness", "business", accessor.AuditActor{UserID: "admin"}); err != nil { //nolint:misspell // deliberate typo: tag-variant fixture
 		t.Fatalf("MergeTags: %v", err)
 	}
 	before := store.callCount()
