@@ -35,7 +35,7 @@ $env:MEMEINDEX_ALLOW_ANONYMOUS='true'
 go run .
 ```
 
-Then open `http://localhost:8080`. This explicitly enables anonymous local operation. Use complete Discord configuration for a shared or production instance. Go 1.27.3 or newer is required (see `go.mod`).
+Then open `http://localhost:8080`. This explicitly enables anonymous local operation. Use complete Discord configuration for a shared or production instance. Go 1.27.4 or newer is required (see `go.mod`).
 
 ## Run with `.env`
 
