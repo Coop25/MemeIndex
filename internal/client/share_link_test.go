@@ -5,7 +5,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -110,6 +114,119 @@ func TestShareLinkServesFileToEveryUserAgent(t *testing.T) {
 	server.handleShareLink(recorder, httptest.NewRequest(http.MethodPost, "https://memes.example.com/s/"+share.Slug+".png", nil))
 	if recorder.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("POST status = %d", recorder.Code)
+	}
+}
+
+// Cloudflare may keep the file at its edge for a day, so a revoked or deleted
+// meme can go on loading from Cloudflare for up to that long. Only the exact
+// link the app hands out is cacheable; browsers and every other cache are
+// still told not to store it.
+func TestShareLinkLetsCloudflareCacheTheOfficialLinkForADay(t *testing.T) {
+	server, store, meme := newShareTestServer(t)
+	now := time.Now().UTC()
+	share, err := store.GetOrCreateMemeShare(meme.ID, "admin-1", now, now.Add(memeShareLifetime))
+	if err != nil {
+		t.Fatal(err)
+	}
+	official := "https://memes.example.com/s/" + share.Slug + ".png"
+
+	recorder := getShareLink(server, official)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("official link status = %d", recorder.Code)
+	}
+	if got := recorder.Header().Get("Cloudflare-CDN-Cache-Control"); got != "public, max-age=86400" {
+		t.Fatalf("Cloudflare-CDN-Cache-Control = %q, want a day at the edge", got)
+	}
+	if got := recorder.Header().Get("Cache-Control"); got != "no-store, max-age=0" {
+		t.Fatalf("Cache-Control = %q, browsers must not keep the file", got)
+	}
+	// Cloudflare ignores the other cache headers when Surrogate-Control is
+	// present, and the generic CDN header is passed on to other caches.
+	for _, name := range []string{"Surrogate-Control", "CDN-Cache-Control"} {
+		if got := recorder.Header().Get(name); got != "" {
+			t.Fatalf("%s = %q on a cacheable response", name, got)
+		}
+	}
+
+	assertNotEdgeCached := func(label string, recorder *httptest.ResponseRecorder) {
+		t.Helper()
+		if got := recorder.Header().Get("Cloudflare-CDN-Cache-Control"); got != "no-store" {
+			t.Fatalf("%s: Cloudflare-CDN-Cache-Control = %q, want no-store", label, got)
+		}
+	}
+	// Other spellings of the same link would each be a separate cache entry.
+	for _, target := range []string{
+		"https://memes.example.com/s/" + share.Slug,
+		"https://memes.example.com/s/" + share.Slug + ".gif",
+		"https://memes.example.com/s/" + share.Slug + ".PNG",
+		official + "?v=2",
+	} {
+		recorder := getShareLink(server, target)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d", target, recorder.Code)
+		}
+		assertNotEdgeCached(target, recorder)
+	}
+	assertNotEdgeCached("unknown code", getShareLink(server, "https://memes.example.com/s/00000000-0000-4000-8000-000000000000.png"))
+
+	legacy := httptest.NewRecorder()
+	server.handleMemeLink(legacy, httptest.NewRequest(http.MethodGet, "https://memes.example.com/m/"+meme.ID+"?share="+url.QueryEscape(server.signMemeShare(share)), nil))
+	if legacy.Code != http.StatusOK {
+		t.Fatalf("legacy link status = %d", legacy.Code)
+	}
+	assertNotEdgeCached("legacy signed link", legacy)
+
+	if err := store.RevokeMemeShare(meme.ID); err != nil {
+		t.Fatal(err)
+	}
+	revoked := getShareLink(server, official)
+	if revoked.Code != http.StatusFound {
+		t.Fatalf("revoked link status = %d", revoked.Code)
+	}
+	assertNotEdgeCached("revoked link redirect", revoked)
+}
+
+// A share close to its expiry must not outlive it at the edge.
+func TestShareLinkEdgeCacheNeverOutlivesTheShare(t *testing.T) {
+	server, store, meme := newShareTestServer(t)
+	now := time.Now().UTC()
+	share, err := store.GetOrCreateMemeShare(meme.ID, "admin-1", now, now.Add(2*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := getShareLink(server, "https://memes.example.com/s/"+share.Slug+".png")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d", recorder.Code)
+	}
+	header := recorder.Header().Get("Cloudflare-CDN-Cache-Control")
+	maxAge, found := strings.CutPrefix(header, "public, max-age=")
+	if !found {
+		t.Fatalf("Cloudflare-CDN-Cache-Control = %q", header)
+	}
+	seconds, err := strconv.Atoi(maxAge)
+	if err != nil || seconds <= 0 || seconds > 2*60*60 || seconds < 2*60*60-60 {
+		t.Fatalf("max-age = %q, want about two hours and never past the share's expiry", maxAge)
+	}
+}
+
+// An error from the file server, such as the file being gone from disk, must
+// not be cached at the edge for a day.
+func TestShareLinkErrorIsNotEdgeCached(t *testing.T) {
+	server, store, meme := newShareTestServer(t)
+	now := time.Now().UTC()
+	share, err := store.GetOrCreateMemeShare(meme.ID, "admin-1", now, now.Add(memeShareLifetime))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(server.managers.UploadDir(), meme.StoredName)); err != nil {
+		t.Fatal(err)
+	}
+	recorder := getShareLink(server, "https://memes.example.com/s/"+share.Slug+".png")
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 for a missing file", recorder.Code)
+	}
+	if got := recorder.Header().Get("Cloudflare-CDN-Cache-Control"); got != "no-store" {
+		t.Fatalf("Cloudflare-CDN-Cache-Control = %q on an error", got)
 	}
 }
 

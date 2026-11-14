@@ -49,7 +49,10 @@ type Server struct {
 	background  backgroundTasks
 	backup      *portableBackup
 	shareSecret []byte
-	draining    atomic.Bool
+	// shareWarm fetches new share links once so Cloudflare caches them
+	// (share_warm.go).
+	shareWarm shareCacheWarmer
+	draining  atomic.Bool
 	// restoring is set for the full duration of a portable-backup import, which
 	// truncates the database and swaps the uploads/thumbnails directories under
 	// the running server. While it is set, maintenanceGuard rejects mutating
