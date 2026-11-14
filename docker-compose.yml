@@ -38,9 +38,6 @@ services:
       # Origin used for share links regardless of which listener (ADDR or
       # LOCAL_ADDR) the request came in on, e.g. https://memes.example.com.
       # Leave blank to fall back to the request's own Host header.
-      # When set, the app also fetches each new share link once through this
-      # origin so Cloudflare caches the file before Discord asks for it (see
-      # "share link cache warm-up" lines in the log for what Cloudflare did).
       MEMEINDEX_PUBLIC_BASE_URL: ${MEMEINDEX_PUBLIC_BASE_URL:-}
       MEMEINDEX_DATA_DIR: ${MEMEINDEX_DATA_DIR:-data}
       MEMEINDEX_DATABASE_URL: postgres://${POSTGRES_USER:-memeindex}:${POSTGRES_PASSWORD:-memeindex}@postgres:5432/${POSTGRES_DB:-memeindex}?sslmode=disable
@@ -82,6 +79,11 @@ services:
       MEMEINDEX_DISCORD_CLIENT_SECRET: ${MEMEINDEX_DISCORD_CLIENT_SECRET:-}
       MEMEINDEX_DISCORD_REDIRECT_URL: ${MEMEINDEX_DISCORD_REDIRECT_URL:-}
       MEMEINDEX_DISCORD_DYNAMIC_REDIRECT: ${MEMEINDEX_DISCORD_DYNAMIC_REDIRECT:-false}
+      # Optional Discord webhook (in a private channel) that every new share
+      # link is posted to, so Discord fetches the file before you paste the
+      # link anywhere. Needs MEMEINDEX_PUBLIC_BASE_URL. Keep it secret: anyone
+      # with the URL can post to that channel.
+      MEMEINDEX_DISCORD_WARMUP_WEBHOOK_URL: ${MEMEINDEX_DISCORD_WARMUP_WEBHOOK_URL:-}
       MEMEINDEX_SESSION_SECRET: ${MEMEINDEX_SESSION_SECRET:-}
       MEMEINDEX_ALLOW_ANONYMOUS: ${MEMEINDEX_ALLOW_ANONYMOUS:-false}
       MEMEINDEX_MAX_UPLOAD_BYTES: ${MEMEINDEX_MAX_UPLOAD_BYTES:-268435456}

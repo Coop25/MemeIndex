@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -25,6 +26,10 @@ type Config struct {
 	DataDir                 string
 	DatabaseURL             string
 	PublicBaseURL           string
+	// DiscordWarmupWebhookURL is a Discord webhook that every new share link
+	// is posted to, so Discord fetches it before it is pasted anywhere for
+	// real (share_warm.go). It holds the webhook's token: never log it.
+	DiscordWarmupWebhookURL string
 	ShareSecret             string
 	MediaFetchYTDLPBinary   string
 	MediaFetchProxy         string
@@ -95,6 +100,7 @@ type rawConfig struct {
 	DataDir                         string   `envconfig:"DATA_DIR" default:"data"`
 	DatabaseURL                     string   `envconfig:"DATABASE_URL"`
 	PublicBaseURL                   string   `envconfig:"PUBLIC_BASE_URL"`
+	DiscordWarmupWebhookURL         string   `envconfig:"DISCORD_WARMUP_WEBHOOK_URL"`
 	MediaFetchYTDLPBinary           string   `envconfig:"MEDIAFETCH_YTDLP_BINARY" default:"yt-dlp"`
 	MediaFetchProxy                 string   `envconfig:"MEDIAFETCH_PROXY"`
 	RateLimitEnabled                bool     `envconfig:"RATE_LIMIT_ENABLED" default:"true"`
@@ -180,6 +186,7 @@ func LoadConfig() (Config, error) {
 		DataDir:                 strings.TrimSpace(raw.DataDir),
 		DatabaseURL:             strings.TrimSpace(raw.DatabaseURL),
 		PublicBaseURL:           strings.TrimSuffix(strings.TrimSpace(raw.PublicBaseURL), "/"),
+		DiscordWarmupWebhookURL: strings.TrimSpace(raw.DiscordWarmupWebhookURL),
 		ShareSecret:             firstNonEmpty(strings.TrimSpace(raw.ShareSecret), strings.TrimSpace(raw.SessionSecret)),
 		MediaFetchYTDLPBinary:   strings.TrimSpace(raw.MediaFetchYTDLPBinary),
 		MediaFetchProxy: firstNonEmpty(
@@ -254,7 +261,33 @@ func (c Config) validateSecurity() error {
 			return fmt.Errorf("MEMEINDEX_PUBLIC_BASE_URL must be an absolute http(s) URL")
 		}
 	}
+	// The webhook URL carries its token, so these errors never repeat it.
+	if c.DiscordWarmupWebhookURL != "" {
+		if !validDiscordWebhookURL(c.DiscordWarmupWebhookURL) {
+			return fmt.Errorf("MEMEINDEX_DISCORD_WARMUP_WEBHOOK_URL must be a Discord webhook URL (https://discord.com/api/webhooks/<id>/<token>)")
+		}
+		if c.PublicBaseURL == "" {
+			return fmt.Errorf("MEMEINDEX_DISCORD_WARMUP_WEBHOOK_URL needs MEMEINDEX_PUBLIC_BASE_URL, so the links it posts are reachable from Discord")
+		}
+	}
 	return nil
+}
+
+// discordWebhookPath matches the path of a Discord webhook URL, with or without
+// an API version.
+var discordWebhookPath = regexp.MustCompile(`^/api/(v[0-9]+/)?webhooks/[0-9]+/[A-Za-z0-9_-]+$`)
+
+func validDiscordWebhookURL(raw string) bool {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme != "https" || parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
+		return false
+	}
+	switch parsed.Host {
+	case "discord.com", "discordapp.com", "canary.discord.com", "ptb.discord.com":
+	default:
+		return false
+	}
+	return discordWebhookPath.MatchString(parsed.EscapedPath())
 }
 
 func strongSigningSecret(value string) bool {
