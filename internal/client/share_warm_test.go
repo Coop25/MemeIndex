@@ -301,6 +301,19 @@ func TestDiscordWarmupLogsNeitherShareCodeNorWebhookToken(t *testing.T) {
 	}
 }
 
+// The warm-up skips silently when the webhook is not set, so startup says
+// which way it is, and how to turn it on, without ever showing the token.
+func TestDiscordWarmupStatusSaysWhetherItIsOn(t *testing.T) {
+	on := Config{PublicBaseURL: "https://memes.example.com", DiscordWarmupWebhookURL: testWebhookURL}.DiscordWarmupStatus()
+	if !strings.HasPrefix(on, "on") || strings.Contains(on, testWebhookToken) || strings.Contains(on, "discord.com") {
+		t.Fatalf("status with a webhook = %q", on)
+	}
+	off := Config{PublicBaseURL: "https://memes.example.com"}.DiscordWarmupStatus()
+	if !strings.HasPrefix(off, "off") || !strings.Contains(off, "MEMEINDEX_DISCORD_WARMUP_WEBHOOK_URL") || !strings.Contains(off, "docker-compose.yml") {
+		t.Fatalf("status without a webhook = %q, want it off with how to turn it on", off)
+	}
+}
+
 func TestDiscordWarmupWebhookSettingIsValidated(t *testing.T) {
 	good := Config{MaxUploadBytes: 1024, AllowAnonymous: true, PublicBaseURL: "https://memes.example.com", DiscordWarmupWebhookURL: testWebhookURL}
 	if err := good.validateSecurity(); err != nil {

@@ -49,6 +49,17 @@ const (
 	discordMaxRetryWait = 30 * time.Second
 )
 
+// DiscordWarmupStatus describes, for the startup log, whether new share links
+// are posted to the Discord warm-up webhook. A missing webhook skips the
+// warm-up without a word, so this says how to turn it on. It never includes
+// the webhook URL, which holds the token.
+func (c Config) DiscordWarmupStatus() string {
+	if c.DiscordWarmupWebhookURL == "" {
+		return "off (set MEMEINDEX_DISCORD_WARMUP_WEBHOOK_URL in .env and list it under the app's environment in docker-compose.yml to turn it on)"
+	}
+	return "on (new share links are posted to the webhook)"
+}
+
 type shareCacheWarmer struct {
 	// client sends requests to Discord; nil means newDiscordWebhookClient.
 	client *http.Client
