@@ -25,6 +25,7 @@ func main() {
 	}
 
 	log.Printf("MemeIndex version: %s", client.BuildVersion())
+	log.Printf("MemeIndex Discord warm-up: %s", config.DiscordWarmupStatus())
 
 	var (
 		store accessor.Store
