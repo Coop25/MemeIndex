@@ -9,6 +9,7 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
+	"io"
 	"mime"
 	"net/http"
 	"net/url"
@@ -74,6 +75,7 @@ func (s *Server) createMemeShare(w http.ResponseWriter, r *http.Request, memeID 
 	// The link is the file itself, so one URL serves every purpose; the
 	// separate keys remain for clients written against the older response.
 	link := s.memeShareURL(r, share, meme)
+	s.warmShareLink(link, meme)
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"url":        link,
 		"page_url":   link,
@@ -117,17 +119,17 @@ func (s *Server) handleMemeLink(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if assetKind == "media" {
-				s.serveSharedMemeAsset(w, r, meme, false)
+				s.serveSharedMemeAsset(w, r, meme, false, 0)
 				return
 			}
 			if assetKind == "preview" {
-				s.serveSharedMemeAsset(w, r, meme, true)
+				s.serveSharedMemeAsset(w, r, meme, true, 0)
 				return
 			}
 			// A link from before share links pointed straight at the file.
 			// It now behaves like the newer /s/ links: every client gets the
 			// file itself, with no page or User-Agent sniffing in between.
-			s.serveSharedMemeAsset(w, r, meme, false)
+			s.serveSharedMemeAsset(w, r, meme, false, 0)
 			return
 		}
 		if assetKind == "" {
@@ -182,8 +184,16 @@ func (s *Server) handleShareLink(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if current && share.ExpiresAt.After(time.Now().UTC()) {
-		s.serveSharedMemeAsset(w, r, meme, false)
+	now := time.Now().UTC()
+	if current && share.ExpiresAt.After(now) {
+		// Only the exact link memeShareURL hands out may be cached: any other
+		// spelling of it (another extension, a query string) would be a
+		// separate cache entry for the same file.
+		edgeCacheFor := time.Duration(0)
+		if name == slug+filepath.Ext(sharedAssetFileName(meme, false)) && r.URL.RawQuery == "" && !r.URL.ForceQuery {
+			edgeCacheFor = min(shareLinkEdgeCacheTTL, share.ExpiresAt.Sub(now))
+		}
+		s.serveSharedMemeAsset(w, r, meme, false, edgeCacheFor)
 		return
 	}
 	http.Redirect(w, r, "/m/"+url.PathEscape(meme.ID), http.StatusFound)
@@ -191,6 +201,12 @@ func (s *Server) handleShareLink(w http.ResponseWriter, r *http.Request) {
 
 // shareSlugLength is the length of a share link code, a random UUID.
 const shareSlugLength = 36
+
+// shareLinkEdgeCacheTTL is how long Cloudflare may keep a shared file at its
+// edge, so chat apps load it without a round trip to this server. Nothing
+// purges that cache, so it is also how long a revoked share or a deleted meme
+// can go on loading from Cloudflare.
+const shareLinkEdgeCacheTTL = 24 * time.Hour
 
 func (s *Server) handleAdminShares(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/api/admin/shares" {
@@ -334,7 +350,10 @@ func (s *Server) validMemeShareToken(token string, share accessor.MemeShareState
 	return hmac.Equal([]byte(expected), []byte(token))
 }
 
-func (s *Server) serveSharedMemeAsset(w http.ResponseWriter, r *http.Request, meme accessor.Meme, preview bool) {
+// serveSharedMemeAsset serves a shared meme's file. A positive edgeCacheFor
+// lets Cloudflare, and only Cloudflare, cache a successful response for that
+// long; browsers and any other cache are always told not to store it.
+func (s *Server) serveSharedMemeAsset(w http.ResponseWriter, r *http.Request, meme accessor.Meme, preview bool, edgeCacheFor time.Duration) {
 	fileName := meme.StoredName
 	baseDir := s.managers.UploadDir()
 	contentType := strings.TrimSpace(meme.ContentType)
@@ -352,9 +371,19 @@ func (s *Server) serveSharedMemeAsset(w http.ResponseWriter, r *http.Request, me
 	w.Header().Set("X-Robots-Tag", "noindex, nofollow, noarchive")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-store, max-age=0")
-	w.Header().Set("CDN-Cache-Control", "no-store")
-	w.Header().Set("Cloudflare-CDN-Cache-Control", "no-store")
-	w.Header().Set("Surrogate-Control", "no-store")
+	if seconds := int64(edgeCacheFor / time.Second); seconds > 0 {
+		// Cloudflare reads its own header ahead of Cache-Control and never
+		// passes it on. It ignores every cache header when Surrogate-Control
+		// is present, and CDN-Cache-Control would reach other caches.
+		w.Header().Set("Cloudflare-CDN-Cache-Control", "public, max-age="+strconv.FormatInt(seconds, 10))
+		w.Header().Del("CDN-Cache-Control")
+		w.Header().Del("Surrogate-Control")
+		w = edgeCacheOnlySuccess{w}
+	} else {
+		w.Header().Set("CDN-Cache-Control", "no-store")
+		w.Header().Set("Cloudflare-CDN-Cache-Control", "no-store")
+		w.Header().Set("Surrogate-Control", "no-store")
+	}
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("Accept-Ranges", "bytes")
 	if contentType != "" {
@@ -367,6 +396,23 @@ func (s *Server) serveSharedMemeAsset(w http.ResponseWriter, r *http.Request, me
 	}
 	setUntrustedAssetHeaders(w, "/uploads/"+fileName)
 	http.ServeFile(w, r, filepath.Join(baseDir, fileName))
+}
+
+// edgeCacheOnlySuccess withdraws an edge-cacheable header when the file server
+// answers with an error, such as a file missing from disk, so Cloudflare does
+// not keep serving that error for the whole cache time.
+type edgeCacheOnlySuccess struct{ http.ResponseWriter }
+
+func (w edgeCacheOnlySuccess) WriteHeader(code int) {
+	if code != http.StatusOK && code != http.StatusPartialContent && code != http.StatusNotModified {
+		w.Header().Set("Cloudflare-CDN-Cache-Control", "no-store")
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+// ReadFrom keeps the file server's sendfile path for the underlying writer.
+func (w edgeCacheOnlySuccess) ReadFrom(src io.Reader) (int64, error) {
+	return io.Copy(w.ResponseWriter, src)
 }
 
 func sharedAssetFileName(meme accessor.Meme, preview bool) string {
