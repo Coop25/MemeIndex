@@ -121,7 +121,7 @@ func (w *shareCacheWarmer) fetch(ctx context.Context, link string) {
 		log.Printf("share link cache warm-up failed: %v", withoutRequestURL(err))
 		return
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 
 	cacheStatus := response.Header.Get("Cf-Cache-Status")
 	ray := response.Header.Get("Cf-Ray")
