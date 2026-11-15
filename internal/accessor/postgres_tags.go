@@ -153,7 +153,7 @@ func (s *PostgresStore) MergeTag(sourceTag, targetTag string, actor AuditActor) 
 	if err != nil {
 		return TagMergeCounts{}, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	var sourceID int64
 	if err := tx.QueryRow(ctx, `SELECT id FROM tags WHERE name = $1`, sourceTag).Scan(&sourceID); err != nil {

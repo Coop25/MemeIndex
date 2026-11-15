@@ -469,17 +469,9 @@ func (m *MemeManager) MergeTags(sourceTag string, targetTag string, actor access
 	return result, nil
 }
 
-func looksLikeTagVariant(left string, right string) bool {
-	left = strings.ToLower(strings.TrimSpace(left))
-	right = strings.ToLower(strings.TrimSpace(right))
-	if left == "" || right == "" || left == right {
-		return false
-	}
-	return tagKeysLookLikeVariant(compactTagKey(left), compactTagKey(right))
-}
-
-// tagKeysLookLikeVariant is the body of looksLikeTagVariant operating on compact
-// keys the caller already derived (see compactTagKey). computeTagHygieneReport
+// tagKeysLookLikeVariant reports whether two tags look like spelling variants
+// of each other, given compact keys the caller already derived (see
+// compactTagKey). computeTagHygieneReport
 // precomputes one key per tag and calls this for every candidate pair, so the
 // per-pair work stays down to a length check and an occasional edit-distance.
 func tagKeysLookLikeVariant(leftKey string, rightKey string) bool {

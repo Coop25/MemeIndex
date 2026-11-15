@@ -38,7 +38,7 @@ func (s *PostgresStore) importLegacyDataIfNeeded(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	for _, meme := range memes {
 		if _, err := tx.Exec(ctx, `
@@ -187,7 +187,7 @@ func (s *PostgresStore) importLegacyReelSessionsIfNeeded(ctx context.Context) er
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	for sessionID, session := range raw {
 		historyJSON, err := json.Marshal(session.History)
