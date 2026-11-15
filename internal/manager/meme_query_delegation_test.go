@@ -125,7 +125,7 @@ func TestQueryErrorsAreReturnedWithoutInMemoryScan(t *testing.T) {
 	if _, err := m.PopularTags(context.Background(), "u", 10); !errors.Is(err, store.err) {
 		t.Fatalf("PopularTags err = %v, want %v", err, store.err)
 	}
-	if calls := store.adminReadCacheStore.callCount(); calls != 0 {
+	if calls := store.callCount(); calls != 0 {
 		t.Fatalf("in-memory List used %d times after a query error, want 0", calls)
 	}
 }

@@ -789,7 +789,7 @@ func (m *MemeManager) suggestTagsForMeme(ctx context.Context, meme accessor.Meme
 				return tagsuggest.Result{}, err
 			}
 		}
-		return tagsuggest.Result{}, fmt.Errorf("%w: %v", errAutoSuggestExhausted, lastInvalidResponse)
+		return tagsuggest.Result{}, fmt.Errorf("%w: %w", errAutoSuggestExhausted, lastInvalidResponse)
 	}
 	if lastUnavailable != nil {
 		return tagsuggest.Result{}, lastUnavailable
