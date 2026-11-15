@@ -53,7 +53,22 @@ jobs:
         run: go vet ./...
 
       - name: Test
-        run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+        # -coverpkg counts code exercised from another package's tests (for
+        # example internal/audiobooks driven by the client handler tests).
+        run: go test -race -coverpkg=./... -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Enforce coverage floor
+        env:
+          # Total statement coverage was 53.7% when this floor was set. Raise
+          # it as coverage grows; lowering it should be a deliberate choice.
+          COVERAGE_MIN: "50"
+        run: |
+          total=$(go tool cover -func=coverage.out | awk '/^total:/ {sub("%", "", $3); print $3}')
+          echo "Total coverage: ${total}% (floor ${COVERAGE_MIN}%)"
+          if ! awk -v t="$total" -v min="$COVERAGE_MIN" 'BEGIN { exit !(t + 0 >= min + 0) }'; then
+            echo "::error::Go test coverage ${total}% is below the ${COVERAGE_MIN}% floor"
+            exit 1
+          fi
 
       - name: Upload coverage
         uses: actions/upload-artifact@v7
@@ -112,3 +127,7 @@ jobs:
 
       - name: Run frontend unit tests
         run: node --test scripts/*.test.cjs
+
+      - name: Type-check opted-in frontend files
+        # Checks every static/ file that starts with "// @ts-check".
+        run: npx --yes -p typescript@5.9.3 tsc -p tsconfig.json

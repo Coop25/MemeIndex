@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"memeindex/internal/audiobooks"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,16 +15,16 @@ import (
 // bookmarkExpiryStore keeps bookmarks in memory - just enough of the store
 // for the bookmark list/use handlers and the expiry sweeper.
 type bookmarkExpiryStore struct {
-	audiobookStore
-	bookmarks     []audiobookBookmark
+	audiobooks.Store
+	bookmarks     []audiobooks.Bookmark
 	touched       []string
 	deleteCutoffs []time.Time
 	// books, when set, is every audiobook that exists; nil means any id does.
-	books map[string]audiobookRecord
+	books map[string]audiobooks.Record
 }
 
-func (s *bookmarkExpiryStore) ListBookmarks(_ context.Context, audiobookID, userID string) ([]audiobookBookmark, error) {
-	out := []audiobookBookmark{}
+func (s *bookmarkExpiryStore) ListBookmarks(_ context.Context, audiobookID, userID string) ([]audiobooks.Bookmark, error) {
+	out := []audiobooks.Bookmark{}
 	for _, b := range s.bookmarks {
 		if b.AudiobookID == audiobookID && b.UserID == userID {
 			out = append(out, b)
@@ -34,7 +35,7 @@ func (s *bookmarkExpiryStore) ListBookmarks(_ context.Context, audiobookID, user
 
 // Mirrors the Postgres WHERE clause: same user, same book, and (unless
 // expiry is off) used after the cutoff.
-func (s *bookmarkExpiryStore) TouchBookmark(_ context.Context, audiobookID, id, userID string, usedSince time.Time) (audiobookBookmark, error) {
+func (s *bookmarkExpiryStore) TouchBookmark(_ context.Context, audiobookID, id, userID string, usedSince time.Time) (audiobooks.Bookmark, error) {
 	for i, b := range s.bookmarks {
 		if b.ID == id && b.UserID == userID && b.AudiobookID == audiobookID && (usedSince.IsZero() || b.LastUsedAt.After(usedSince)) {
 			s.bookmarks[i].LastUsedAt = time.Now()
@@ -42,7 +43,7 @@ func (s *bookmarkExpiryStore) TouchBookmark(_ context.Context, audiobookID, id, 
 			return s.bookmarks[i], nil
 		}
 	}
-	return audiobookBookmark{}, ErrAudiobookBookmarkNotFound
+	return audiobooks.Bookmark{}, audiobooks.ErrBookmarkNotFound
 }
 
 func (s *bookmarkExpiryStore) DeleteExpiredBookmarks(_ context.Context, cutoff time.Time) (int64, error) {
@@ -54,7 +55,7 @@ const sixMonths = 182 * 24 * time.Hour
 
 func TestListAudiobookBookmarksHidesExpiredAndReportsExpiry(t *testing.T) {
 	now := time.Now()
-	store := &bookmarkExpiryStore{bookmarks: []audiobookBookmark{
+	store := &bookmarkExpiryStore{bookmarks: []audiobooks.Bookmark{
 		{ID: "fresh", AudiobookID: "book", UserID: "", LastUsedAt: now.Add(-24 * time.Hour)},
 		{ID: "stale", AudiobookID: "book", UserID: "", LastUsedAt: now.Add(-sixMonths - time.Hour)},
 	}}
@@ -82,7 +83,7 @@ func TestListAudiobookBookmarksHidesExpiredAndReportsExpiry(t *testing.T) {
 }
 
 func TestListAudiobookBookmarksKeepsEverythingWhenExpiryDisabled(t *testing.T) {
-	store := &bookmarkExpiryStore{bookmarks: []audiobookBookmark{
+	store := &bookmarkExpiryStore{bookmarks: []audiobooks.Bookmark{
 		{ID: "ancient", AudiobookID: "book", LastUsedAt: time.Now().Add(-10 * sixMonths)},
 	}}
 	s := &Server{audiobooks: store}
@@ -105,7 +106,7 @@ func TestListAudiobookBookmarksKeepsEverythingWhenExpiryDisabled(t *testing.T) {
 }
 
 func TestUseAudiobookBookmarkRestartsExpiry(t *testing.T) {
-	store := &bookmarkExpiryStore{bookmarks: []audiobookBookmark{
+	store := &bookmarkExpiryStore{bookmarks: []audiobooks.Bookmark{
 		{ID: "b1", AudiobookID: "book", LastUsedAt: time.Now().Add(-100 * 24 * time.Hour)},
 	}}
 	s := &Server{audiobooks: store, config: Config{AudiobookBookmarkExpiry: sixMonths}}
@@ -128,7 +129,7 @@ func TestUseAudiobookBookmarkRestartsExpiry(t *testing.T) {
 }
 
 func TestUseAudiobookBookmarkRejectsOtherBookAndExpired(t *testing.T) {
-	store := &bookmarkExpiryStore{bookmarks: []audiobookBookmark{
+	store := &bookmarkExpiryStore{bookmarks: []audiobooks.Bookmark{
 		{ID: "b1", AudiobookID: "hidden-book", LastUsedAt: time.Now()},
 		{ID: "old", AudiobookID: "book", LastUsedAt: time.Now().Add(-sixMonths - time.Hour)},
 	}}
@@ -192,6 +193,7 @@ func TestNextAudiobookBookmarkSweepIsNextMidnight(t *testing.T) {
 
 func TestLoadConfigBookmarkExpiryDefaultsToSixMonths(t *testing.T) {
 	t.Setenv("MEMEINDEX_ALLOW_ANONYMOUS", "true")
+	t.Setenv("MEMEINDEX_DATABASE_URL", "postgres://memeindex@localhost/memeindex")
 	// Unset for this test even if the developer's shell exports it;
 	// t.Setenv first so the original value is restored afterwards.
 	t.Setenv("MEMEINDEX_AUDIOBOOK_BOOKMARK_EXPIRY_DAYS", "")
@@ -225,7 +227,7 @@ func TestLoadConfigBookmarkExpiryDefaultsToSixMonths(t *testing.T) {
 }
 
 // Mirrors the Postgres replace: same user, book and label, within the window.
-func (s *bookmarkExpiryStore) CreateBookmarkReplacingNearby(_ context.Context, audiobookID, userID string, positionSeconds float64, label string, windowSeconds float64) (audiobookBookmark, []string, error) {
+func (s *bookmarkExpiryStore) CreateBookmarkReplacingNearby(_ context.Context, audiobookID, userID string, positionSeconds float64, label string, windowSeconds float64) (audiobooks.Bookmark, []string, error) {
 	kept := s.bookmarks[:0]
 	replaced := []string{}
 	for _, b := range s.bookmarks {
@@ -240,20 +242,20 @@ func (s *bookmarkExpiryStore) CreateBookmarkReplacingNearby(_ context.Context, a
 		kept = append(kept, b)
 	}
 	s.bookmarks = kept
-	created := audiobookBookmark{ID: "new", AudiobookID: audiobookID, UserID: userID, PositionSeconds: positionSeconds, Label: label, CreatedAt: time.Now(), LastUsedAt: time.Now()}
+	created := audiobooks.Bookmark{ID: "new", AudiobookID: audiobookID, UserID: userID, PositionSeconds: positionSeconds, Label: label, CreatedAt: time.Now(), LastUsedAt: time.Now()}
 	s.bookmarks = append(s.bookmarks, created)
 	return created, replaced, nil
 }
 
-func (s *bookmarkExpiryStore) CreateBookmark(_ context.Context, audiobookID, userID string, positionSeconds float64, label string) (audiobookBookmark, error) {
-	created := audiobookBookmark{ID: "new", AudiobookID: audiobookID, UserID: userID, PositionSeconds: positionSeconds, Label: label, CreatedAt: time.Now(), LastUsedAt: time.Now()}
+func (s *bookmarkExpiryStore) CreateBookmark(_ context.Context, audiobookID, userID string, positionSeconds float64, label string) (audiobooks.Bookmark, error) {
+	created := audiobooks.Bookmark{ID: "new", AudiobookID: audiobookID, UserID: userID, PositionSeconds: positionSeconds, Label: label, CreatedAt: time.Now(), LastUsedAt: time.Now()}
 	s.bookmarks = append(s.bookmarks, created)
 	return created, nil
 }
 
 func TestSleepTimerBookmarkReplacesNearbySleepTimerBookmarks(t *testing.T) {
 	now := time.Now()
-	store := &bookmarkExpiryStore{bookmarks: []audiobookBookmark{
+	store := &bookmarkExpiryStore{bookmarks: []audiobooks.Bookmark{
 		{ID: "near-before", AudiobookID: "book", Label: audiobookSleepTimerBookmarkLabel, PositionSeconds: 10000 - 19*60, LastUsedAt: now},
 		{ID: "near-after", AudiobookID: "book", Label: audiobookSleepTimerBookmarkLabel, PositionSeconds: 10000 + 60, LastUsedAt: now},
 		{ID: "far", AudiobookID: "book", Label: audiobookSleepTimerBookmarkLabel, PositionSeconds: 10000 - 21*60, LastUsedAt: now},
@@ -291,7 +293,7 @@ func TestSleepTimerBookmarkReplacesNearbySleepTimerBookmarks(t *testing.T) {
 }
 
 func TestPlainBookmarkReplacesNothing(t *testing.T) {
-	store := &bookmarkExpiryStore{bookmarks: []audiobookBookmark{
+	store := &bookmarkExpiryStore{bookmarks: []audiobooks.Bookmark{
 		{ID: "sleep", AudiobookID: "book", Label: audiobookSleepTimerBookmarkLabel, PositionSeconds: 100, LastUsedAt: time.Now()},
 	}}
 	s := &Server{audiobooks: store}
@@ -309,23 +311,23 @@ func TestPlainBookmarkReplacesNothing(t *testing.T) {
 	}
 }
 
-func (s *bookmarkExpiryStore) GetAudiobook(_ context.Context, id string) (audiobookRecord, error) {
+func (s *bookmarkExpiryStore) GetAudiobook(_ context.Context, id string) (audiobooks.Record, error) {
 	if s.books == nil {
-		return audiobookRecord{ID: id}, nil
+		return audiobooks.Record{ID: id}, nil
 	}
 	record, ok := s.books[id]
 	if !ok {
-		return audiobookRecord{}, ErrAudiobookNotFound
+		return audiobooks.Record{}, audiobooks.ErrNotFound
 	}
 	return record, nil
 }
 
 func TestBookmarkEndpointsHonorTagRestrictionAndMissingBooks(t *testing.T) {
 	store := &bookmarkExpiryStore{
-		books: map[string]audiobookRecord{
+		books: map[string]audiobooks.Record{
 			"hidden": {ID: "hidden", Tags: []string{"adult"}},
 		},
-		bookmarks: []audiobookBookmark{
+		bookmarks: []audiobooks.Bookmark{
 			{ID: "b1", AudiobookID: "hidden", UserID: "u1", LastUsedAt: time.Now()},
 		},
 	}
@@ -372,16 +374,16 @@ func (s *bookmarkExpiryStore) DeleteBookmark(_ context.Context, audiobookID, id,
 			return nil
 		}
 	}
-	return ErrAudiobookBookmarkNotFound
+	return audiobooks.ErrBookmarkNotFound
 }
 
 func TestDeleteAudiobookBookmarkIsScopedToVisibleBook(t *testing.T) {
 	store := &bookmarkExpiryStore{
-		books: map[string]audiobookRecord{
+		books: map[string]audiobooks.Record{
 			"visible": {ID: "visible", Tags: []string{"kids"}},
 			"hidden":  {ID: "hidden", Tags: []string{"adult"}},
 		},
-		bookmarks: []audiobookBookmark{
+		bookmarks: []audiobooks.Bookmark{
 			{ID: "on-hidden", AudiobookID: "hidden", UserID: "u1"},
 			{ID: "on-visible", AudiobookID: "visible", UserID: "u1"},
 		},

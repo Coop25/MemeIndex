@@ -1,4 +1,4 @@
-package client
+package audiobooks
 
 import (
 	"context"
@@ -25,7 +25,7 @@ func TestAudiobookListeningStreak(t *testing.T) {
 			"2024-03-08": true,
 			"2024-03-06": true, // gap on the 7th breaks the streak here
 		}
-		if got := audiobookListeningStreak(listenedOn, now); got != 3 {
+		if got := ListeningStreak(listenedOn, now); got != 3 {
 			t.Fatalf("streak = %d, want 3", got)
 		}
 	})
@@ -35,7 +35,7 @@ func TestAudiobookListeningStreak(t *testing.T) {
 			"2024-03-09": true,
 			"2024-03-08": true,
 		}
-		if got := audiobookListeningStreak(listenedOn, now); got != 2 {
+		if got := ListeningStreak(listenedOn, now); got != 2 {
 			t.Fatalf("streak = %d, want 2", got)
 		}
 	})
@@ -44,13 +44,13 @@ func TestAudiobookListeningStreak(t *testing.T) {
 		listenedOn := map[string]bool{
 			"2024-03-01": true,
 		}
-		if got := audiobookListeningStreak(listenedOn, now); got != 0 {
+		if got := ListeningStreak(listenedOn, now); got != 0 {
 			t.Fatalf("streak = %d, want 0", got)
 		}
 	})
 
 	t.Run("empty map", func(t *testing.T) {
-		if got := audiobookListeningStreak(map[string]bool{}, now); got != 0 {
+		if got := ListeningStreak(map[string]bool{}, now); got != 0 {
 			t.Fatalf("streak = %d, want 0", got)
 		}
 	})
@@ -60,7 +60,7 @@ func TestAudiobookListeningStreak(t *testing.T) {
 // tests, skipping unless MEMEINDEX_TEST_DATABASE_URL is set. See
 // internal/accessor/postgres_store_integration_test.go for how to run one
 // locally.
-func newTestAudiobookStore(t *testing.T) *postgresAudiobookStore {
+func newTestAudiobookStore(t *testing.T) *PostgresStore {
 	t.Helper()
 	dsn := strings.TrimSpace(os.Getenv("MEMEINDEX_TEST_DATABASE_URL"))
 	if dsn == "" {
@@ -78,16 +78,16 @@ func newTestAudiobookStore(t *testing.T) *postgresAudiobookStore {
 	if err != nil {
 		t.Fatalf("apply meme schema: %v", err)
 	}
-	st, err := newAudiobookStore(context.Background(), dsn, t.TempDir())
+	st, err := NewPostgresStore(context.Background(), dsn, t.TempDir())
 	if err != nil {
-		t.Fatalf("newAudiobookStore: %v", err)
+		t.Fatalf("NewPostgresStore: %v", err)
 	}
-	store := st.(*postgresAudiobookStore)
+	store := st.(*PostgresStore)
 	t.Cleanup(store.pool.Close)
 	return store
 }
 
-func insertTestAudiobook(t *testing.T, store *postgresAudiobookStore, durationSeconds float64) (audiobookID, userID string) {
+func insertTestAudiobook(t *testing.T, store *PostgresStore, durationSeconds float64) (audiobookID, userID string) {
 	t.Helper()
 	ctx := context.Background()
 	audiobookID = uuid.Must(uuid.NewV6()).String()
@@ -108,7 +108,7 @@ func insertTestAudiobook(t *testing.T, store *postgresAudiobookStore, durationSe
 // TestHeartbeatAccumulatesListeningStats covers that a continuous run of
 // "playing" heartbeats accumulates roughly the real elapsed time into today's
 // listening-stats bucket, and that a gap longer than
-// audiobookListeningStatsMaxGap is clamped instead of fully credited.
+// ListeningStatsMaxGap is clamped instead of fully credited.
 func TestHeartbeatAccumulatesListeningStats(t *testing.T) {
 	store := newTestAudiobookStore(t)
 	ctx := context.Background()
@@ -132,7 +132,7 @@ func TestHeartbeatAccumulatesListeningStats(t *testing.T) {
 	}
 
 	// Simulate a long gap (suspended tab) before the next heartbeat - this
-	// must be clamped to audiobookListeningStatsMaxGap, not credited in full.
+	// must be clamped to ListeningStatsMaxGap, not credited in full.
 	if _, err := store.pool.Exec(ctx, `
 		UPDATE audiobook_playback_sessions SET updated_at = NOW() - INTERVAL '10 minutes'
 		WHERE audiobook_id = $1 AND user_id = $2 AND device_id = $3

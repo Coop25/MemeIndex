@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"net/textproto"
 	"os"
 	"strings"
@@ -69,7 +70,7 @@ func TestPostgresStoreIntegration(t *testing.T) {
 		t.Fatalf("Create video: %v", err)
 	}
 
-	page, err := store.QueryMemes(MemeQuery{Search: token, Limit: 50})
+	page, err := store.QueryMemes(context.Background(), MemeQuery{Search: token, Limit: 50})
 	if err != nil {
 		t.Fatalf("QueryMemes: %v", err)
 	}
@@ -84,7 +85,7 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	}
 
 	// Free-text search on a notes-only term.
-	onlyVideo, err := store.QueryMemes(MemeQuery{Search: token + " video", Limit: 50})
+	onlyVideo, err := store.QueryMemes(context.Background(), MemeQuery{Search: token + " video", Limit: 50})
 	if err != nil {
 		t.Fatalf("QueryMemes(search video): %v", err)
 	}
@@ -108,7 +109,7 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	if len(got.Tags) != 1 || got.Tags[0] != token+"-beta" {
 		t.Fatalf("updated tags = %v", got.Tags)
 	}
-	if page, err := store.QueryMemes(MemeQuery{Search: token, Limit: 50}); err != nil {
+	if page, err := store.QueryMemes(context.Background(), MemeQuery{Search: token, Limit: 50}); err != nil {
 		t.Fatalf("QueryMemes after tag update: %v", err)
 	} else if page.Counts.Untagged != 0 {
 		t.Fatalf("Untagged count after tagging both = %d, want 0", page.Counts.Untagged)
@@ -118,7 +119,7 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	if _, err := store.SetFavorite(actor.UserID, img.ID, true); err != nil {
 		t.Fatalf("SetFavorite: %v", err)
 	}
-	favs, err := store.QueryMemes(MemeQuery{UserID: actor.UserID, Search: token, FavoritesOnly: true, Limit: 50})
+	favs, err := store.QueryMemes(context.Background(), MemeQuery{UserID: actor.UserID, Search: token, FavoritesOnly: true, Limit: 50})
 	if err != nil {
 		t.Fatalf("QueryMemes(favorites): %v", err)
 	}
@@ -130,7 +131,7 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	if _, err := store.Delete(DeleteInput{ID: img.ID, Actor: actor}); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	after, err := store.QueryMemes(MemeQuery{Search: token, Limit: 50})
+	after, err := store.QueryMemes(context.Background(), MemeQuery{Search: token, Limit: 50})
 	if err != nil {
 		t.Fatalf("QueryMemes after delete: %v", err)
 	}
@@ -151,4 +152,22 @@ func randToken(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return hex.EncodeToString(b)
+}
+
+// A cancelled request context aborts the browse, dashboard and tag-count
+// queries instead of letting them run to the statement timeout.
+func TestQueryableReadsHonourCancelledContext(t *testing.T) {
+	store := newRegressionStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := store.QueryMemes(ctx, MemeQuery{Limit: 10}); !errors.Is(err, context.Canceled) {
+		t.Errorf("QueryMemes err = %v, want context.Canceled", err)
+	}
+	if _, err := store.MemeDashboard(ctx, "u"); !errors.Is(err, context.Canceled) {
+		t.Errorf("MemeDashboard err = %v, want context.Canceled", err)
+	}
+	if _, err := store.TagCounts(ctx, 10); !errors.Is(err, context.Canceled) {
+		t.Errorf("TagCounts err = %v, want context.Canceled", err)
+	}
 }

@@ -2,11 +2,9 @@ package manager
 
 import (
 	"errors"
-	"log"
+	"memeindex/internal/accessor"
 	"strings"
 	"time"
-
-	"memeindex/internal/accessor"
 )
 
 func (m *MemeManager) GetOrCreateMemeShare(memeID, userID string, now time.Time) (accessor.MemeShareState, error) {
@@ -134,36 +132,6 @@ func (m *MemeManager) ListActiveMemeSharesPage(now time.Time, offset, limit int)
 		}
 	}
 	return shares, total, offset, limit, nil
-}
-
-// memesByIDs resolves visible memes by id in one batch where the store supports
-// it (BulkMemeStore), falling back to per-id lookups otherwise. Missing ids are
-// simply absent from the map.
-func (m *MemeManager) memesByIDs(ids []string) map[string]accessor.Meme {
-	if bulk, ok := m.store.(accessor.BulkMemeStore); ok {
-		memes, err := bulk.MemesByIDs(ids)
-		if err == nil {
-			return memes
-		}
-		log.Printf("memes by ids: SQL batch failed, falling back to per-id reads: %v", err)
-	}
-	out := make(map[string]accessor.Meme, len(ids))
-	for _, id := range ids {
-		if meme, err := m.store.GetByID("", strings.TrimSpace(id)); err == nil {
-			out[meme.ID] = meme
-		}
-	}
-	return out
-}
-
-// memeNamesByIDs is memesByIDs reduced to just the original display name per id.
-func (m *MemeManager) memeNamesByIDs(ids []string) map[string]string {
-	memes := m.memesByIDs(ids)
-	names := make(map[string]string, len(memes))
-	for id, meme := range memes {
-		names[id] = meme.OriginalName
-	}
-	return names
 }
 
 func (m *MemeManager) RevokeMemeShare(memeID string) error {

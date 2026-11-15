@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -25,6 +26,7 @@ type Config struct {
 	LocalAddr               string
 	DataDir                 string
 	DatabaseURL             string
+	LogFormat               string
 	PublicBaseURL           string
 	// DiscordWarmupWebhookURL is a Discord webhook that every new share link
 	// is posted to, so Discord fetches it before it is pasted anywhere for
@@ -99,6 +101,7 @@ type rawConfig struct {
 	LocalAddr                       string   `envconfig:"LOCAL_ADDR"`
 	DataDir                         string   `envconfig:"DATA_DIR" default:"data"`
 	DatabaseURL                     string   `envconfig:"DATABASE_URL"`
+	LogFormat                       string   `envconfig:"LOG_FORMAT" default:"text"`
 	PublicBaseURL                   string   `envconfig:"PUBLIC_BASE_URL"`
 	DiscordWarmupWebhookURL         string   `envconfig:"DISCORD_WARMUP_WEBHOOK_URL"`
 	MediaFetchYTDLPBinary           string   `envconfig:"MEDIAFETCH_YTDLP_BINARY" default:"yt-dlp"`
@@ -185,6 +188,7 @@ func LoadConfig() (Config, error) {
 		LocalAddr:               strings.TrimSpace(raw.LocalAddr),
 		DataDir:                 strings.TrimSpace(raw.DataDir),
 		DatabaseURL:             strings.TrimSpace(raw.DatabaseURL),
+		LogFormat:               strings.ToLower(strings.TrimSpace(raw.LogFormat)),
 		PublicBaseURL:           strings.TrimSuffix(strings.TrimSpace(raw.PublicBaseURL), "/"),
 		DiscordWarmupWebhookURL: strings.TrimSpace(raw.DiscordWarmupWebhookURL),
 		ShareSecret:             firstNonEmpty(strings.TrimSpace(raw.ShareSecret), strings.TrimSpace(raw.SessionSecret)),
@@ -234,7 +238,40 @@ func LoadConfig() (Config, error) {
 			AddUserIDs:  toSet(raw.AddUserIDs),
 		},
 	}
+	if err := config.validateStorage(); err != nil {
+		return Config{}, err
+	}
 	return config, config.validateSecurity()
+}
+
+// legacyJSONStoreFiles are the files the removed local JSON store kept in the
+// data directory. PostgresStore imports all of them on its first start against
+// an empty database.
+var legacyJSONStoreFiles = []string{"index.json", "favorites.json", "reel_sessions.json"}
+
+// validateStorage requires Postgres. The local JSON store is no longer a
+// production backend, so a missing MEMEINDEX_DATABASE_URL is a startup error
+// rather than a silent switch to a store that lacks most features. When the
+// data directory still holds JSON store files, the error says how to move
+// them over.
+func (c Config) validateStorage() error {
+	if c.DatabaseURL != "" {
+		return nil
+	}
+	var found []string
+	for _, name := range legacyJSONStoreFiles {
+		if _, err := os.Stat(filepath.Join(c.DataDir, name)); err == nil {
+			found = append(found, name)
+		}
+	}
+	if len(found) > 0 {
+		return fmt.Errorf("MEMEINDEX_DATABASE_URL is required: the local JSON store has been removed. "+
+			"%s still holds JSON store data (%s); point MEMEINDEX_DATABASE_URL at an empty Postgres database "+
+			"and MemeIndex imports it on first start, leaving the JSON files in place",
+			c.DataDir, strings.Join(found, ", "))
+	}
+	return fmt.Errorf("MEMEINDEX_DATABASE_URL is required: set it to a Postgres connection string " +
+		"(docker-compose.yml runs Postgres for you)")
 }
 
 func (c Config) validateSecurity() error {
@@ -254,6 +291,9 @@ func (c Config) validateSecurity() error {
 	}
 	if c.MaxUploadBytes <= 0 {
 		return fmt.Errorf("MEMEINDEX_MAX_UPLOAD_BYTES must be positive")
+	}
+	if c.LogFormat != "" && c.LogFormat != LogFormatText && c.LogFormat != LogFormatJSON {
+		return fmt.Errorf("MEMEINDEX_LOG_FORMAT must be %q or %q", LogFormatText, LogFormatJSON)
 	}
 	if c.PublicBaseURL != "" {
 		parsed, err := url.Parse(c.PublicBaseURL)

@@ -560,7 +560,7 @@ func (b *portableBackup) writeArchive(ctx context.Context, output io.Writer) err
 
 	// Unlike memes.stored_name (a bare file name resolved against dataDir at
 	// read time), audiobooks.storage_path/cover_path are stored as absolute
-	// filesystem paths (see audiobook_store.go), so verify both that the file
+	// filesystem paths (see internal/audiobooks/store.go), so verify both that the file
 	// exists and that it still lives under this server's own audiobooks
 	// directory before it goes in the archive.
 	audiobooksDir := filepath.Join(b.dataDir, "audiobooks")
@@ -886,7 +886,7 @@ func validateRestoredMemes(staging string, formatVersion int) error {
 // referenced by the restored database has a matching file in the backup, and
 // that its recorded absolute path still falls under this server's own
 // audiobooks directory. Audiobooks store an absolute filesystem path rather
-// than a bare file name the way memes do (see audiobook_store.go), so a
+// than a bare file name the way memes do (see internal/audiobooks/store.go), so a
 // backup taken under a different MEMEINDEX_DATA_DIR would otherwise restore
 // database rows pointing at files that can never exist here.
 func validateRestoredAudiobooks(staging, dataDir string) error {

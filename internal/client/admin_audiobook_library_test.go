@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"memeindex/internal/audiobooks"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -12,13 +13,13 @@ import (
 )
 
 type adminAudiobooksBody struct {
-	Items    []adminAudiobookRow `json:"items"`
-	Total    int                 `json:"total"`
-	Page     int                 `json:"page"`
-	PageSize int                 `json:"page_size"`
+	Items    []audiobooks.AdminRow `json:"items"`
+	Total    int                   `json:"total"`
+	Page     int                   `json:"page"`
+	PageSize int                   `json:"page_size"`
 }
 
-func libraryTestServer(t *testing.T) (*storageTestServer, *postgresAudiobookStore) {
+func libraryTestServer(t *testing.T) (*storageTestServer, *audiobooks.PostgresStore) {
 	t.Helper()
 	store, _ := newIsolatedAudiobookStore(t)
 	ts := newStorageTestServer(t)
@@ -26,10 +27,10 @@ func libraryTestServer(t *testing.T) (*storageTestServer, *postgresAudiobookStor
 	return ts, store
 }
 
-func insertLibraryBook(t *testing.T, store *postgresAudiobookStore, title string, size int64, createdAt time.Time) string {
+func insertLibraryBook(t *testing.T, store *audiobooks.PostgresStore, title string, size int64, createdAt time.Time) string {
 	t.Helper()
 	id := insertActivityBook(t, store, title, "cover.jpg", "[]", "")
-	if _, err := store.pool.Exec(context.Background(), `UPDATE audiobooks SET size_bytes = $2, created_at = $3 WHERE id = $1`, id, size, createdAt); err != nil {
+	if _, err := store.Pool().Exec(context.Background(), `UPDATE audiobooks SET size_bytes = $2, created_at = $3 WHERE id = $1`, id, size, createdAt); err != nil {
 		t.Fatal(err)
 	}
 	return id
@@ -79,7 +80,7 @@ func TestAdminAudiobooksFilterNotConverted(t *testing.T) {
 	ts, store := libraryTestServer(t)
 	insertActivityBook(t, store, "M4B", "c.jpg", "[]", "")
 	mp3 := insertActivityBook(t, store, "MP3", "c.jpg", "[]", "")
-	if _, err := store.pool.Exec(context.Background(), `UPDATE audiobooks SET storage_path = '/tmp/x.MP3' WHERE id = $1`, mp3); err != nil {
+	if _, err := store.Pool().Exec(context.Background(), `UPDATE audiobooks SET storage_path = '/tmp/x.MP3' WHERE id = $1`, mp3); err != nil {
 		t.Fatal(err)
 	}
 	_, body := getLibrary(t, ts, "?filter=not-converted")
@@ -104,7 +105,7 @@ func TestAdminAudiobooksNotConvertedExcludesFailed(t *testing.T) {
 			t.Fatal(err)
 		}
 		id := insertActivityBook(t, store, name, "c.jpg", "[]", "")
-		if _, err := store.pool.Exec(ctx, `UPDATE audiobooks SET storage_path = $2, mime_type = 'audio/mpeg' WHERE id = $1`, id, p); err != nil {
+		if _, err := store.Pool().Exec(ctx, `UPDATE audiobooks SET storage_path = $2, mime_type = 'audio/mpeg' WHERE id = $1`, id, p); err != nil {
 			t.Fatal(err)
 		}
 		mp3IDs = append(mp3IDs, id)
@@ -173,7 +174,7 @@ func TestAdminAudiobooksSortInjection(t *testing.T) {
 		t.Fatalf("code %d body %+v", code, body)
 	}
 	var n int
-	if err := store.pool.QueryRow(context.Background(), `SELECT COUNT(*) FROM audiobooks`).Scan(&n); err != nil || n != 2 {
+	if err := store.Pool().QueryRow(context.Background(), `SELECT COUNT(*) FROM audiobooks`).Scan(&n); err != nil || n != 2 {
 		t.Fatalf("table damaged: n=%d err=%v", n, err)
 	}
 }
@@ -208,8 +209,8 @@ func TestAdminAudiobooksWithoutPostgres(t *testing.T) {
 func TestAdminWindowStart(t *testing.T) {
 	now := time.Date(2026, 11, 5, 23, 59, 0, 0, time.FixedZone("x", -8*3600)) // 2026-11-06 07:59 UTC
 	want := time.Date(2026, 10, 8, 0, 0, 0, 0, time.UTC)
-	if got := adminWindowStart(now); !got.Equal(want) {
-		t.Errorf("adminWindowStart = %v, want %v", got, want)
+	if got := audiobooks.AdminWindowStart(now); !got.Equal(want) {
+		t.Errorf("audiobooks.AdminWindowStart = %v, want %v", got, want)
 	}
 }
 

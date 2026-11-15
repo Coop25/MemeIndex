@@ -2,11 +2,11 @@ package manager
 
 import (
 	"errors"
+	"log"
+	"memeindex/internal/accessor"
 	"slices"
 	"strings"
 	"time"
-
-	"memeindex/internal/accessor"
 )
 
 // Recomputing the tag-hygiene report is a full O(n^2) pass over every distinct
@@ -370,6 +370,26 @@ func (m *MemeManager) computeTagHygieneReport() TagHygieneReport {
 	}
 }
 
+// tagUsageCounts returns tag name -> number of visible memes carrying it,
+// resolved in SQL where the store supports it and by a full scan otherwise.
+func (m *MemeManager) tagUsageCounts() map[string]int {
+	if tu, ok := m.store.(accessor.TagAdminStore); ok {
+		if counts, err := tu.TagUsageCounts(); err == nil {
+			return counts
+		} else {
+			log.Printf("tag usage counts: SQL failed, falling back to scan: %v", err)
+		}
+	}
+
+	counts := map[string]int{}
+	for _, meme := range m.store.List("", "", false, "") {
+		for _, tag := range meme.Tags {
+			counts[tag] += 1
+		}
+	}
+	return counts
+}
+
 func cloneTagHygieneReport(in TagHygieneReport) TagHygieneReport {
 	out := TagHygieneReport{
 		Tags:  make([]TagHygieneTag, len(in.Tags)),
@@ -397,7 +417,7 @@ func (m *MemeManager) MergeTags(sourceTag string, targetTag string, actor access
 
 	// Fast path: one transaction that repoints tag links in bulk, instead of
 	// rewriting every affected meme (each of which re-swept the tags table).
-	if tm, ok := m.store.(accessor.TagMaintenanceStore); ok {
+	if tm, ok := m.store.(accessor.TagAdminStore); ok {
 		counts, err := tm.MergeTag(sourceTag, targetTag, actor)
 		if err != nil {
 			return TagMergeResult{}, err
@@ -449,9 +469,9 @@ func (m *MemeManager) MergeTags(sourceTag string, targetTag string, actor access
 	return result, nil
 }
 
-// tagKeysLookLikeVariant reports whether two tags look like variants of one
-// another, given compact keys the caller already derived (see compactTagKey).
-// computeTagHygieneReport
+// tagKeysLookLikeVariant reports whether two tags look like spelling variants
+// of each other, given compact keys the caller already derived (see
+// compactTagKey). computeTagHygieneReport
 // precomputes one key per tag and calls this for every candidate pair, so the
 // per-pair work stays down to a length check and an occasional edit-distance.
 func tagKeysLookLikeVariant(leftKey string, rightKey string) bool {

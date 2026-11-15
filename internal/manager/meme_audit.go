@@ -2,13 +2,12 @@ package manager
 
 import (
 	"log"
-	"strings"
-
 	"memeindex/internal/accessor"
+	"strings"
 )
 
 func (m *MemeManager) ListMemeAudit(id string, limit int) ([]accessor.MemeAuditEntry, error) {
-	store, ok := m.store.(accessor.AuditLogStore)
+	store, ok := m.store.(accessor.AuditStore)
 	if !ok {
 		return nil, nil
 	}
@@ -16,7 +15,7 @@ func (m *MemeManager) ListMemeAudit(id string, limit int) ([]accessor.MemeAuditE
 }
 
 func (m *MemeManager) ListAuditFeed(offset int, limit int, actorUserID string) (accessor.PagedAuditFeed, error) {
-	store, ok := m.store.(accessor.AuditLogStore)
+	store, ok := m.store.(accessor.AuditStore)
 	if !ok {
 		return accessor.PagedAuditFeed{}, nil
 	}
@@ -24,7 +23,7 @@ func (m *MemeManager) ListAuditFeed(offset int, limit int, actorUserID string) (
 }
 
 func (m *MemeManager) ListPendingDeletes(offset int, limit int) (accessor.PagedPendingDeletes, error) {
-	store, ok := m.store.(accessor.AuditLogStore)
+	store, ok := m.store.(accessor.AuditStore)
 	if !ok {
 		return accessor.PagedPendingDeletes{}, nil
 	}
@@ -32,7 +31,7 @@ func (m *MemeManager) ListPendingDeletes(offset int, limit int) (accessor.PagedP
 }
 
 func (m *MemeManager) ApprovePendingDelete(id string, actor accessor.AuditActor) error {
-	store, ok := m.store.(accessor.AuditLogStore)
+	store, ok := m.store.(accessor.AuditStore)
 	if !ok {
 		return nil
 	}
@@ -41,7 +40,7 @@ func (m *MemeManager) ApprovePendingDelete(id string, actor accessor.AuditActor)
 }
 
 func (m *MemeManager) RejectPendingDelete(id string, actor accessor.AuditActor) error {
-	store, ok := m.store.(accessor.AuditLogStore)
+	store, ok := m.store.(accessor.AuditStore)
 	if !ok {
 		return nil
 	}
@@ -58,7 +57,7 @@ func (m *MemeManager) IsMemeHidden(id string) bool {
 	if id == "" {
 		return false
 	}
-	store, ok := m.store.(accessor.HiddenMemeStore)
+	store, ok := m.store.(accessor.AdminMemeStore)
 	if !ok {
 		return false
 	}

@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"memeindex/internal/audiobooks"
 	"memeindex/internal/dbschema"
 )
 
@@ -17,7 +18,7 @@ import (
 // Postgres schema, so global aggregates (counts, byte sums) are not polluted
 // by rows other tests leave in the shared test database. Skips unless
 // MEMEINDEX_TEST_DATABASE_URL is set.
-func newIsolatedAudiobookStore(t *testing.T) (*postgresAudiobookStore, string) {
+func newIsolatedAudiobookStore(t *testing.T) (*audiobooks.PostgresStore, string) {
 	t.Helper()
 	dsn := strings.TrimSpace(os.Getenv("MEMEINDEX_TEST_DATABASE_URL"))
 	if dsn == "" {
@@ -58,11 +59,11 @@ func newIsolatedAudiobookStore(t *testing.T) (*postgresAudiobookStore, string) {
 		t.Fatalf("apply meme schema: %v", err)
 	}
 	dataDir := t.TempDir()
-	st, err := newAudiobookStore(ctx, scoped, dataDir)
+	st, err := audiobooks.NewPostgresStore(ctx, scoped, dataDir)
 	if err != nil {
-		t.Fatalf("newAudiobookStore: %v", err)
+		t.Fatalf("audiobooks.NewPostgresStore: %v", err)
 	}
-	store := st.(*postgresAudiobookStore)
-	t.Cleanup(store.pool.Close)
+	store := st.(*audiobooks.PostgresStore)
+	t.Cleanup(store.Pool().Close)
 	return store, dataDir
 }

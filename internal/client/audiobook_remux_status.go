@@ -6,6 +6,7 @@ package client
 
 import (
 	"errors"
+	"memeindex/internal/audiobooks"
 	"net/http"
 	"os"
 	"sync"
@@ -43,7 +44,7 @@ func newAudiobookRemuxProgress() *audiobookRemuxProgress {
 	return &audiobookRemuxProgress{state: "waiting"}
 }
 
-func (p *audiobookRemuxProgress) begin(books []audiobookStoredMP3) {
+func (p *audiobookRemuxProgress) begin(books []audiobooks.StoredMP3) {
 	if p == nil {
 		return
 	}
@@ -57,7 +58,7 @@ func (p *audiobookRemuxProgress) begin(books []audiobookStoredMP3) {
 
 // add tracks one more book - an upload that finished converting on its own,
 // outside the startup run. A book already on the list is left as it is.
-func (p *audiobookRemuxProgress) add(book audiobookStoredMP3) {
+func (p *audiobookRemuxProgress) add(book audiobooks.StoredMP3) {
 	if p == nil {
 		return
 	}
@@ -66,7 +67,7 @@ func (p *audiobookRemuxProgress) add(book audiobookStoredMP3) {
 	p.addLocked(book)
 }
 
-func (p *audiobookRemuxProgress) addLocked(b audiobookStoredMP3) {
+func (p *audiobookRemuxProgress) addLocked(b audiobooks.StoredMP3) {
 	for _, item := range p.items {
 		if item.ID == b.ID {
 			return

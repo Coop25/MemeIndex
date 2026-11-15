@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -27,6 +30,13 @@ type PostgresStore struct {
 	// created. When false, filename/notes search falls back to slower scans and
 	// callers surface a "degraded" signal on /readyz and the admin dashboard.
 	searchTrgmReady atomic.Bool
+}
+
+// isUniqueViolation reports whether err is, or wraps, a Postgres
+// unique-constraint violation (SQLSTATE 23505).
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
 // SearchIndexAvailable reports whether the optional trigram search indexes are
@@ -193,33 +203,396 @@ func (s *PostgresStore) videoMemesForPreview(ctx context.Context) ([]Meme, error
 	return memes, rows.Err()
 }
 
-// tableExists reports whether a relation is present in the database. Used for
-// tables owned by other packages' schemas (audiobooks), which may not exist
-// when this package runs standalone.
-func tableExists(ctx context.Context, db queryable, name string) (bool, error) {
-	var exists bool
-	if err := db.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, name).Scan(&exists); err != nil {
-		return false, fmt.Errorf("check %s exists: %w", name, err)
-	}
-	return exists, nil
+func (s *PostgresStore) GetByID(userID, id string) (Meme, error) {
+	ctx := context.Background()
+	return s.getByID(ctx, s.pool, normalizeFavoriteUserID(userID), strings.TrimSpace(id))
 }
 
-func scanIDList(ctx context.Context, q queryable, sql string, args ...any) ([]string, error) {
-	rows, err := q.Query(ctx, sql, args...)
+func (s *PostgresStore) GetAnyByID(id string) (Meme, error) {
+	ctx := context.Background()
+	row := s.pool.QueryRow(ctx, `
+		SELECT
+			m.id,
+			m.original_name,
+			m.stored_name,
+			m.file_path,
+			m.content_type,
+			m.size_bytes,
+			COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL), '{}') AS tags,
+			COALESCE(m.suggested_tags, '{}') AS suggested_tags,
+			COALESCE(m.auto_suggest_disabled, FALSE) AS auto_suggest_disabled,
+			m.notes,
+			COALESCE(m.source_url, '') AS source_url,
+			FALSE AS favorite,
+			m.created_at,
+			m.updated_at
+		FROM memes m
+		LEFT JOIN meme_tags mt ON mt.meme_id = m.id
+		LEFT JOIN tags t ON t.id = mt.tag_id
+		WHERE m.id = $1
+		GROUP BY m.id
+	`, strings.TrimSpace(id))
+
+	meme, err := scanMemeRow(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Meme{}, os.ErrNotExist
+		}
+		return Meme{}, err
+	}
+	decoratePreviewPath(&meme, s.previewDir)
+	return meme, nil
+}
+
+// MemesByIDs resolves a batch of visible memes in one round trip, keyed by id.
+// Ids that do not match a visible meme are simply absent from the result, the
+// same outcome a per-id GetByID("", id) lookup would produce.
+func (s *PostgresStore) MemesByIDs(ids []string) (map[string]Meme, error) {
+	out := make(map[string]Meme, len(ids))
+	clean := make([]string, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		trimmed := strings.TrimSpace(id)
+		if trimmed == "" {
+			continue
+		}
+		if _, dup := seen[trimmed]; dup {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		clean = append(clean, trimmed)
+	}
+	if len(clean) == 0 {
+		return out, nil
+	}
+
+	rows, err := s.pool.Query(context.Background(), "SELECT"+memeRowSelectColumns+`
+		FROM memes m
+		WHERE m.id = ANY($2::text[])
+		  AND COALESCE(m.hidden_from_app, FALSE) = FALSE
+	`, normalizeFavoriteUserID(""), clean)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var out []string
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
+		meme, scanErr := scanMemeRow(rows)
+		if scanErr != nil {
+			return nil, scanErr
 		}
-		out = append(out, id)
+		decoratePreviewPath(&meme, s.previewDir)
+		out[meme.ID] = meme
 	}
 	return out, rows.Err()
+}
+
+func (s *PostgresStore) Random(excludedIDs []string) (Meme, error) {
+	ctx := context.Background()
+
+	normalizedExcluded := make([]string, 0, len(excludedIDs))
+	for _, id := range excludedIDs {
+		trimmed := strings.TrimSpace(id)
+		if trimmed == "" {
+			continue
+		}
+		normalizedExcluded = append(normalizedExcluded, trimmed)
+	}
+
+	var id string
+	err := s.pool.QueryRow(ctx, `
+		SELECT m.id
+		FROM memes m
+		WHERE COALESCE(m.hidden_from_app, FALSE) = FALSE
+			AND NOT (m.id = ANY($1::text[]))
+		ORDER BY random()
+		LIMIT 1
+	`, normalizedExcluded).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = s.pool.QueryRow(ctx, `
+			SELECT m.id
+			FROM memes m
+			WHERE COALESCE(m.hidden_from_app, FALSE) = FALSE
+			ORDER BY random()
+			LIMIT 1
+		`).Scan(&id)
+	}
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Meme{}, os.ErrNotExist
+		}
+		return Meme{}, err
+	}
+
+	return s.getByID(ctx, s.pool, normalizeFavoriteUserID(""), id)
+}
+
+func (s *PostgresStore) Create(input CreateInput) (Meme, error) {
+	id := uuid.Must(uuid.NewV6()).String()
+	ext := filepath.Ext(input.Filename)
+	storedName := id + ext
+	targetPath := filepath.Join(s.uploadDir, storedName)
+
+	dst, err := os.Create(targetPath)
+	if err != nil {
+		return Meme{}, fmt.Errorf("create upload file: %w", err)
+	}
+
+	hasher := newContentHashWriter()
+	size, err := io.Copy(io.MultiWriter(dst, hasher), input.File)
+	closeErr := dst.Close()
+	if err != nil {
+		_ = os.Remove(targetPath)
+		return Meme{}, fmt.Errorf("write upload file: %w", err)
+	}
+	if closeErr != nil {
+		_ = os.Remove(targetPath)
+		return Meme{}, fmt.Errorf("close upload file: %w", closeErr)
+	}
+
+	now := time.Now().UTC()
+	meme := Meme{
+		ID:                  id,
+		OriginalName:        input.Filename,
+		StoredName:          storedName,
+		FilePath:            "/uploads/" + storedName,
+		ContentType:         detectContentType(input.Header, input.ContentType, input.Filename),
+		ContentHash:         contentHashString(hasher),
+		SizeBytes:           size,
+		Tags:                normalizeTags(input.Tags),
+		SuggestedTags:       []string{},
+		AutoSuggestDisabled: false,
+		Notes:               strings.TrimSpace(input.Notes),
+		SourceURL:           strings.TrimSpace(input.SourceURL),
+		CreatedAt:           now,
+		UpdatedAt:           now,
+	}
+
+	ctx := context.Background()
+
+	// Check for a duplicate before generating a thumbnail: an ffmpeg run for a
+	// file that is about to be rejected is wasted work, and its thumbnail used
+	// to be left behind on disk.
+	if existing, err := s.getByHash(ctx, meme.ContentHash); err == nil {
+		_ = os.Remove(targetPath)
+		return Meme{}, s.duplicateError(ctx, existing)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		_ = os.Remove(targetPath)
+		return Meme{}, err
+	}
+
+	// Thumbnail generation is best-effort.
+	_ = ensurePreviewAsset(s.uploadDir, s.previewDir, &meme)
+	cleanup := func() { removeUploadAndThumbnail(s.uploadDir, s.previewDir, storedName) }
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		cleanup()
+		return Meme{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO memes (
+			id, original_name, stored_name, file_path, content_type, content_hash, size_bytes, notes, source_url, suggested_tags, auto_suggest_disabled, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+	`, meme.ID, meme.OriginalName, meme.StoredName, meme.FilePath, meme.ContentType, meme.ContentHash, meme.SizeBytes, meme.Notes, meme.SourceURL, meme.SuggestedTags, meme.AutoSuggestDisabled, meme.CreatedAt, meme.UpdatedAt); err != nil {
+		cleanup()
+		if isUniqueViolation(err) {
+			if existing, lookupErr := s.getByHash(ctx, meme.ContentHash); lookupErr == nil {
+				return Meme{}, s.duplicateError(ctx, existing)
+			}
+		}
+		return Meme{}, err
+	}
+
+	if err := s.replaceTags(ctx, tx, meme.ID, meme.Tags); err != nil {
+		cleanup()
+		return Meme{}, err
+	}
+
+	if err := s.insertAuditLog(ctx, tx, meme.ID, "uploaded", input.Actor, fmt.Sprintf("Uploaded %s", meme.OriginalName)); err != nil {
+		cleanup()
+		return Meme{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		cleanup()
+		return Meme{}, err
+	}
+
+	return meme, nil
+}
+
+// duplicateError builds the error for an upload whose content already exists.
+// When that existing copy is hidden pending delete approval it reports so,
+// instead of pointing the uploader at a meme they cannot open.
+func (s *PostgresStore) duplicateError(ctx context.Context, existing Meme) error {
+	var hidden bool
+	if err := s.pool.QueryRow(ctx, `SELECT COALESCE(hidden_from_app, FALSE) FROM memes WHERE id = $1`, existing.ID).Scan(&hidden); err == nil && hidden {
+		return &DuplicateMemeError{PendingDelete: true}
+	}
+	return &DuplicateMemeError{Existing: existing}
+}
+
+func (s *PostgresStore) Update(userID, id string, update MemeUpdate) (Meme, error) {
+	ctx := context.Background()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Meme{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	id = strings.TrimSpace(id)
+	update.Tags = normalizeTags(update.Tags)
+	update.Notes = strings.TrimSpace(update.Notes)
+
+	existing, err := s.getByID(ctx, tx, userID, id)
+	if err != nil {
+		return Meme{}, err
+	}
+
+	commandTag, err := tx.Exec(ctx, `
+		UPDATE memes
+		SET notes = $2, updated_at = $3
+		WHERE id = $1
+	`, id, update.Notes, time.Now().UTC())
+	if err != nil {
+		return Meme{}, err
+	}
+	if commandTag.RowsAffected() == 0 {
+		return Meme{}, os.ErrNotExist
+	}
+
+	if err := s.replaceTags(ctx, tx, id, update.Tags); err != nil {
+		return Meme{}, err
+	}
+	if err := s.setFavoriteInExecutor(ctx, tx, userID, id, update.Favorite); err != nil {
+		return Meme{}, err
+	}
+
+	addedTags, removedTags := diffAuditTags(existing.Tags, update.Tags)
+	for _, tag := range addedTags {
+		if err := s.insertAuditLog(ctx, tx, id, "tag_added", update.Actor, fmt.Sprintf("Added tag %q", tag)); err != nil {
+			return Meme{}, err
+		}
+	}
+	for _, tag := range removedTags {
+		if err := s.insertAuditLog(ctx, tx, id, "tag_removed", update.Actor, fmt.Sprintf("Removed tag %q", tag)); err != nil {
+			return Meme{}, err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return Meme{}, err
+	}
+
+	return s.GetByID(userID, id)
+}
+
+func (s *PostgresStore) SetFavorite(userID, id string, favorite bool) (Meme, error) {
+	ctx := context.Background()
+	if err := s.setFavoriteInExecutor(ctx, s.pool, userID, strings.TrimSpace(id), favorite); err != nil {
+		return Meme{}, err
+	}
+	return s.GetByID(userID, id)
+}
+
+func (s *PostgresStore) SetFavoriteWithActor(userID, id string, favorite bool, actor AuditActor) (Meme, error) {
+	ctx := context.Background()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Meme{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if err := s.setFavoriteInExecutor(ctx, tx, userID, strings.TrimSpace(id), favorite); err != nil {
+		return Meme{}, err
+	}
+	action := "favorited"
+	description := "Added meme to favorites"
+	if !favorite {
+		action = "unfavorited"
+		description = "Removed meme from favorites"
+	}
+	if err := s.insertAuditLog(ctx, tx, strings.TrimSpace(id), action, actor, description); err != nil {
+		return Meme{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Meme{}, err
+	}
+	return s.GetByID(userID, id)
+}
+
+// HiddenMemeIDs lists the memes hidden from the app pending delete approval.
+func (s *PostgresStore) HiddenMemeIDs() ([]string, error) {
+	return scanIDList(context.Background(), s.pool, `SELECT id FROM memes WHERE COALESCE(hidden_from_app, FALSE) = TRUE`)
+}
+
+func (s *PostgresStore) Delete(input DeleteInput) (DeleteResult, error) {
+	ctx := context.Background()
+	id := strings.TrimSpace(input.ID)
+	var storedName string
+	err := s.pool.QueryRow(ctx, `SELECT stored_name FROM memes WHERE id = $1`, id).Scan(&storedName)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return DeleteResult{}, os.ErrNotExist
+		}
+		return DeleteResult{}, err
+	}
+
+	if !input.Actor.IsSuperAdmin {
+		_, err := s.pool.Exec(ctx, `
+			UPDATE memes
+			SET hidden_from_app = TRUE,
+				pending_delete = TRUE,
+				delete_requested_by_user_id = $2,
+				delete_requested_at = NOW(),
+				updated_at = NOW()
+			WHERE id = $1
+		`, id, strings.TrimSpace(input.Actor.UserID))
+		if err != nil {
+			return DeleteResult{}, err
+		}
+		if err := s.insertAuditLog(ctx, s.pool, id, "delete_requested", input.Actor, "Requested delete approval"); err != nil {
+			return DeleteResult{}, err
+		}
+		return DeleteResult{PendingApproval: true}, nil
+	}
+
+	// Capture the meme's tags before the cascade drops its meme_tags rows so any
+	// that are left unreferenced can be pruned (replaceTags no longer sweeps the
+	// whole tags table, so each removal path cleans up after itself).
+	orphanCandidates, err := scanInt64List(ctx, s.pool, `SELECT tag_id FROM meme_tags WHERE meme_id = $1`, id)
+	if err != nil {
+		return DeleteResult{}, err
+	}
+
+	commandTag, err := s.pool.Exec(ctx, `DELETE FROM memes WHERE id = $1`, id)
+	if err != nil {
+		return DeleteResult{}, err
+	}
+	if commandTag.RowsAffected() == 0 {
+		return DeleteResult{}, os.ErrNotExist
+	}
+
+	if err := s.deleteOrphanTags(ctx, s.pool, orphanCandidates); err != nil {
+		return DeleteResult{}, err
+	}
+
+	if err := s.insertAuditLog(ctx, s.pool, id, "deleted", input.Actor, "Deleted meme"); err != nil {
+		return DeleteResult{}, err
+	}
+
+	targetPath := filepath.Join(s.uploadDir, storedName)
+	if err := os.Remove(targetPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return DeleteResult{}, fmt.Errorf("remove upload file: %w", err)
+	}
+	thumbnailPath := filepath.Join(s.previewDir, thumbnailFileName(storedName))
+	if err := os.Remove(thumbnailPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return DeleteResult{}, fmt.Errorf("remove thumbnail file: %w", err)
+	}
+	return DeleteResult{Deleted: true}, nil
 }
 
 func (s *PostgresStore) ensureSchema(ctx context.Context) error {
@@ -252,6 +625,51 @@ type queryable interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
+func (s *PostgresStore) getByID(ctx context.Context, db queryable, userID, id string) (Meme, error) {
+	rows, err := db.Query(ctx, `
+		SELECT
+			m.id,
+			m.original_name,
+			m.stored_name,
+			m.file_path,
+			m.content_type,
+			m.size_bytes,
+			COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL), '{}') AS tags,
+			COALESCE(m.suggested_tags, '{}') AS suggested_tags,
+			COALESCE(m.auto_suggest_disabled, FALSE) AS auto_suggest_disabled,
+			m.notes,
+			COALESCE(m.source_url, '') AS source_url,
+			EXISTS (
+				SELECT 1
+				FROM user_favorites uf
+				WHERE uf.user_id = $1 AND uf.meme_id = m.id
+			) AS favorite,
+			m.created_at,
+			m.updated_at
+		FROM memes m
+		LEFT JOIN meme_tags mt ON mt.meme_id = m.id
+		LEFT JOIN tags t ON t.id = mt.tag_id
+		WHERE m.id = $2
+			AND COALESCE(m.hidden_from_app, FALSE) = FALSE
+		GROUP BY m.id
+	`, userID, id)
+	if err != nil {
+		return Meme{}, err
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		return Meme{}, os.ErrNotExist
+	}
+
+	meme, err := scanMemeRow(rows)
+	if err != nil {
+		return Meme{}, err
+	}
+	decoratePreviewPath(&meme, s.previewDir)
+	return meme, nil
+}
+
 func scanInt64List(ctx context.Context, q queryable, sql string, args ...any) ([]int64, error) {
 	rows, err := q.Query(ctx, sql, args...)
 	if err != nil {
@@ -268,6 +686,69 @@ func scanInt64List(ctx context.Context, q queryable, sql string, args ...any) ([
 		out = append(out, id)
 	}
 	return out, rows.Err()
+}
+
+func (s *PostgresStore) setFavoriteInExecutor(ctx context.Context, db queryable, userID, memeID string, favorite bool) error {
+	userID = normalizeFavoriteUserID(userID)
+
+	var exists bool
+	if err := db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM memes WHERE id = $1)`, memeID).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return os.ErrNotExist
+	}
+
+	if favorite {
+		_, err := db.Exec(ctx, `
+			INSERT INTO user_favorites (user_id, meme_id)
+			VALUES ($1, $2)
+			ON CONFLICT DO NOTHING
+		`, userID, memeID)
+		return err
+	}
+
+	_, err := db.Exec(ctx, `DELETE FROM user_favorites WHERE user_id = $1 AND meme_id = $2`, userID, memeID)
+	return err
+}
+
+func (s *PostgresStore) getByHash(ctx context.Context, contentHash string) (Meme, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT
+			m.id,
+			m.original_name,
+			m.stored_name,
+			m.file_path,
+			m.content_type,
+			m.size_bytes,
+			COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL), '{}') AS tags,
+			COALESCE(m.suggested_tags, '{}') AS suggested_tags,
+			COALESCE(m.auto_suggest_disabled, FALSE) AS auto_suggest_disabled,
+			m.notes,
+			COALESCE(m.source_url, '') AS source_url,
+			FALSE AS favorite,
+			m.created_at,
+			m.updated_at
+		FROM memes m
+		LEFT JOIN meme_tags mt ON mt.meme_id = m.id
+		LEFT JOIN tags t ON t.id = mt.tag_id
+		WHERE m.content_hash = $1
+		GROUP BY m.id
+		LIMIT 1
+	`, strings.TrimSpace(contentHash))
+	if err != nil {
+		return Meme{}, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return Meme{}, os.ErrNotExist
+	}
+	meme, err := scanMemeRow(rows)
+	if err != nil {
+		return Meme{}, err
+	}
+	decoratePreviewPath(&meme, s.previewDir)
+	return meme, nil
 }
 
 // AllStoredFiles returns every meme row, hidden and pending-delete included.
@@ -289,22 +770,4 @@ func (s *PostgresStore) AllStoredFiles() ([]StoredFile, error) {
 		out = append(out, f)
 	}
 	return out, rows.Err()
-}
-
-func (s *PostgresStore) countByUser(query string, args ...any) (map[string]int, error) {
-	rows, err := s.pool.Query(context.Background(), query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	counts := map[string]int{}
-	for rows.Next() {
-		var id string
-		var n int
-		if err := rows.Scan(&id, &n); err != nil {
-			return nil, err
-		}
-		counts[id] = n
-	}
-	return counts, rows.Err()
 }

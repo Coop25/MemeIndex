@@ -8,6 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 func (s *PostgresStore) importLegacyDataIfNeeded(ctx context.Context) error {
@@ -49,6 +52,9 @@ func (s *PostgresStore) importLegacyDataIfNeeded(ctx context.Context) error {
 		if err := s.replaceTags(ctx, tx, meme.ID, normalizeTags(meme.Tags)); err != nil {
 			return err
 		}
+		if err := importLegacyShare(ctx, tx, meme); err != nil {
+			return err
+		}
 	}
 
 	for userID, memeIDs := range favoritesByUser {
@@ -65,6 +71,45 @@ func (s *PostgresStore) importLegacyDataIfNeeded(ctx context.Context) error {
 	}
 
 	return tx.Commit(ctx)
+}
+
+// importLegacyShare carries a JSON-store meme's share state into its row and
+// share-link history. Share tokens are an HMAC over the meme id and share
+// generation, so keeping the generation (and the link codes issued for each
+// one) keeps every link the instance has already handed out working.
+func importLegacyShare(ctx context.Context, tx pgx.Tx, meme Meme) error {
+	if meme.ShareGeneration <= 0 && len(meme.ShareSlugs) == 0 {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE memes
+		SET share_generation = $2, share_expires_at = $3, shared_at = $4, shared_by_user_id = $5
+		WHERE id = $1
+	`, meme.ID, meme.ShareGeneration, legacyTimestamp(meme.ShareExpiresAt), legacyTimestamp(meme.SharedAt), strings.TrimSpace(meme.SharedByUserID)); err != nil {
+		return fmt.Errorf("import legacy share for %s: %w", meme.ID, err)
+	}
+	for generation, slug := range meme.ShareSlugs {
+		slug = strings.TrimSpace(slug)
+		if slug == "" {
+			continue
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO meme_share_links (slug, meme_id, generation)
+			VALUES ($1, $2, $3)
+			ON CONFLICT DO NOTHING
+		`, slug, meme.ID, generation); err != nil {
+			return fmt.Errorf("import legacy share link for %s: %w", meme.ID, err)
+		}
+	}
+	return nil
+}
+
+// legacyTimestamp maps the JSON store's zero time ("never") to NULL.
+func legacyTimestamp(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t.UTC()
 }
 
 func (s *PostgresStore) backfillMissingContentHashes(ctx context.Context) error {
@@ -180,18 +225,28 @@ func (s *PostgresStore) readLegacyMemes() ([]Meme, error) {
 
 	memes := make([]Meme, 0, len(persisted))
 	for _, item := range persisted {
+		// Every field the JSON store persisted is carried over; dropping one
+		// here loses it for good, because this import runs only once.
 		memes = append(memes, Meme{
-			ID:            item.ID,
-			OriginalName:  item.OriginalName,
-			StoredName:    item.StoredName,
-			FilePath:      item.FilePath,
-			ContentType:   item.ContentType,
-			SizeBytes:     item.SizeBytes,
-			Tags:          normalizeTags(item.Tags),
-			SuggestedTags: normalizeTags(item.SuggestedTags),
-			Notes:         strings.TrimSpace(item.Notes),
-			CreatedAt:     item.CreatedAt,
-			UpdatedAt:     item.UpdatedAt,
+			ID:                  item.ID,
+			OriginalName:        item.OriginalName,
+			StoredName:          item.StoredName,
+			FilePath:            item.FilePath,
+			ContentType:         item.ContentType,
+			ContentHash:         item.ContentHash,
+			SizeBytes:           item.SizeBytes,
+			Tags:                normalizeTags(item.Tags),
+			SuggestedTags:       normalizeTags(item.SuggestedTags),
+			AutoSuggestDisabled: item.AutoSuggestDisabled,
+			Notes:               strings.TrimSpace(item.Notes),
+			SourceURL:           strings.TrimSpace(item.SourceURL),
+			CreatedAt:           item.CreatedAt,
+			UpdatedAt:           item.UpdatedAt,
+			ShareGeneration:     item.ShareGeneration,
+			ShareExpiresAt:      item.ShareExpiresAt,
+			SharedAt:            item.SharedAt,
+			SharedByUserID:      item.SharedByUserID,
+			ShareSlugs:          item.ShareSlugs,
 		})
 	}
 

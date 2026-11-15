@@ -75,9 +75,7 @@ func (s *tagOpsFakeStore) setUsage(usage map[string]int) {
 }
 
 var (
-	_ accessor.TagMaintenanceStore     = (*tagOpsFakeStore)(nil)
-	_ accessor.TagSuggestionQueryStore = (*tagOpsFakeStore)(nil)
-	_ accessor.TagUsageStore           = (*tagOpsFakeStore)(nil)
+	_ accessor.TagAdminStore = (*tagOpsFakeStore)(nil)
 )
 
 func newTagOpsFakeStore() *tagOpsFakeStore {
@@ -160,7 +158,7 @@ func TestSeedTagSuggestionQueueUsesStoreIDs(t *testing.T) {
 	}
 }
 
-func TestTagHygieneReportUsesTagUsageStore(t *testing.T) {
+func TestTagHygieneReportUsesTagAdminStore(t *testing.T) {
 	store := newTagOpsFakeStore()
 	store.usage = map[string]int{"buisness": 1, "business": 9} //nolint:misspell // deliberate typo: tag-variant fixture
 	m := NewMemeManager(store)

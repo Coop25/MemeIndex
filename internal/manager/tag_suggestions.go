@@ -5,20 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"memeindex/internal/accessor"
+	"memeindex/internal/tagsuggest"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
-
-	"memeindex/internal/accessor"
-	"memeindex/internal/tagsuggest"
 )
 
 var errAutoSuggestExhausted = errors.New("tag suggestion attempts exhausted")
-
-func (m *MemeManager) SuggestTags(prefix string, limit int) []string {
-	return m.store.SuggestTags(strings.TrimSpace(prefix), limit)
-}
 
 type MemeTagSuggestionResult struct {
 	Tags   []string `json:"tags"`
@@ -108,20 +103,17 @@ func (m *MemeManager) RefreshMemeTagSuggestions(ctx context.Context, userID stri
 		Source: result.Source,
 	}
 
-	suggestionStore, ok := m.store.(accessor.SuggestedTagStore)
-	if ok {
+	if suggestionStore, ok := m.store.(accessor.SuggestedTagStore); ok {
 		if err := suggestionStore.ReplaceSuggestedTags(meme.ID, output.Tags); err != nil {
 			return MemeTagSuggestionResult{}, err
 		}
 		if err := suggestionStore.SetAutoSuggestDisabled(meme.ID, false); err != nil {
 			return MemeTagSuggestionResult{}, err
 		}
-	}
-
-	// Persist the derived search text (on-image text + transcript) so it feeds
-	// meme search. Best-effort: a failure here must not fail the suggestion.
-	if searchTextStore, ok := m.store.(accessor.SearchTextStore); ok {
-		if err := searchTextStore.SetSearchText(meme.ID, result.Text); err != nil {
+		// Persist the derived search text (on-image text + transcript) so it
+		// feeds meme search. Best-effort: a failure here must not fail the
+		// suggestion.
+		if err := suggestionStore.SetSearchText(meme.ID, result.Text); err != nil {
 			log.Printf("tag suggestion: storing search text for meme %s failed: %v", meme.ID, err)
 		}
 	}
@@ -156,7 +148,6 @@ func (m *MemeManager) ResetTagSuggestionsAndRequeueUntagged(actor accessor.Audit
 	}
 
 	memes := m.store.List("", "", false, "")
-	searchTextStore, hasSearchText := m.store.(accessor.SearchTextStore)
 	result := ResetTagSuggestionQueueResult{}
 	for _, meme := range memes {
 		if len(meme.SuggestedTags) > 0 {
@@ -166,10 +157,8 @@ func (m *MemeManager) ResetTagSuggestionsAndRequeueUntagged(actor accessor.Audit
 			result.ClearedSuggestions += 1
 			// The same pass that produced those suggestions also set the
 			// derived search text; drop it so a re-run regenerates it cleanly.
-			if hasSearchText {
-				if err := searchTextStore.SetSearchText(meme.ID, ""); err != nil {
-					return ResetTagSuggestionQueueResult{}, err
-				}
+			if err := suggestionStore.SetSearchText(meme.ID, ""); err != nil {
+				return ResetTagSuggestionQueueResult{}, err
 			}
 		}
 		if meme.AutoSuggestDisabled {
@@ -185,7 +174,7 @@ func (m *MemeManager) ResetTagSuggestionsAndRequeueUntagged(actor accessor.Audit
 	}
 
 	m.invalidateAdminReadCache()
-	if writer, ok := m.store.(accessor.SystemAuditStore); ok {
+	if writer, ok := m.store.(accessor.AuditStore); ok {
 		description := fmt.Sprintf(
 			"Reset tag suggestions: cleared %d suggestion set(s), re-enabled %d exhausted, requeued %d untagged",
 			result.ClearedSuggestions, result.ClearedExhausted, result.QueuedUntagged,
@@ -226,7 +215,7 @@ func (m *MemeManager) RetryFailedTagSuggestions(actor accessor.AuditActor) (Retr
 	result.Queued = m.SeedTagSuggestionQueue()
 
 	m.invalidateAdminReadCache()
-	if writer, ok := m.store.(accessor.SystemAuditStore); ok {
+	if writer, ok := m.store.(accessor.AuditStore); ok {
 		description := fmt.Sprintf(
 			"Retried failed tag suggestions: re-enabled %d exhausted, queued %d untagged",
 			result.ReenabledExhausted, result.Queued,
@@ -289,7 +278,7 @@ func (m *MemeManager) TagSuggestionQueueStatus(reviewOffset int, reviewLimit int
 		}
 	}
 
-	if tq, ok := m.store.(accessor.TagSuggestionQueryStore); ok {
+	if tq, ok := m.store.(accessor.TagAdminStore); ok {
 		if filled, ok := m.fillTagSuggestionCountsFromSQL(tq, &status, reviewOffset, reviewLimit); ok {
 			return filled
 		}
@@ -302,7 +291,7 @@ func (m *MemeManager) TagSuggestionQueueStatus(reviewOffset int, reviewLimit int
 // fillTagSuggestionCountsFromSQL populates the untagged/pending counters and the
 // pending-review page from the database. It reports false (leaving status
 // untouched) if either query fails so the caller can fall back to a scan.
-func (m *MemeManager) fillTagSuggestionCountsFromSQL(tq accessor.TagSuggestionQueryStore, status *TagSuggestionQueueStatus, reviewOffset, reviewLimit int) (TagSuggestionQueueStatus, bool) {
+func (m *MemeManager) fillTagSuggestionCountsFromSQL(tq accessor.TagAdminStore, status *TagSuggestionQueueStatus, reviewOffset, reviewLimit int) (TagSuggestionQueueStatus, bool) {
 	untagged, err := tq.UntaggedWithoutSuggestionsCount()
 	if err != nil {
 		log.Printf("tag suggestion status: untagged count SQL failed, falling back to scan: %v", err)
@@ -372,7 +361,7 @@ func (m *MemeManager) SeedTagSuggestionQueue() int {
 		ids      []string
 		resolved bool
 	)
-	if tq, ok := m.store.(accessor.TagSuggestionQueryStore); ok {
+	if tq, ok := m.store.(accessor.TagAdminStore); ok {
 		if got, err := tq.UntaggedWithoutSuggestionIDs(); err == nil {
 			ids, resolved = got, true
 		} else {
@@ -677,6 +666,14 @@ func (m *MemeManager) ApplyMemeTagSuggestion(userID string, id string, tag strin
 	return m.store.GetByID(strings.TrimSpace(userID), meme.ID)
 }
 
+// SweepTagScratch removes leftover tag-suggestion working files from the
+// thumbnails directory and reports how many were deleted. Call it before the
+// suggestion worker starts so it cannot delete the files of a suggestion in
+// flight.
+func (m *MemeManager) SweepTagScratch() int {
+	return accessor.SweepTagScratch(m.ThumbnailDir())
+}
+
 func (m *MemeManager) suggestionRequestForMeme(ctx context.Context, meme accessor.Meme, options tagSuggestionAttemptOptions) (tagsuggest.Request, error) {
 	switch {
 	case strings.HasPrefix(meme.ContentType, "image/"):
@@ -792,8 +789,7 @@ func (m *MemeManager) suggestTagsForMeme(ctx context.Context, meme accessor.Meme
 				return tagsuggest.Result{}, err
 			}
 		}
-		// Text only: wrapping would also make this match ErrInvalidResponse.
-		return tagsuggest.Result{}, fmt.Errorf("%w: %s", errAutoSuggestExhausted, lastInvalidResponse.Error())
+		return tagsuggest.Result{}, fmt.Errorf("%w: %w", errAutoSuggestExhausted, lastInvalidResponse)
 	}
 	if lastUnavailable != nil {
 		return tagsuggest.Result{}, lastUnavailable
@@ -829,23 +825,6 @@ func (m *MemeManager) tagSuggestionAttemptsForMeme(meme accessor.Meme) []tagSugg
 	addAttempt(320, 1, 320, false, "+fast")
 	addAttempt(240, 1, 240, false, "+minimal")
 	return attempts
-}
-
-func removeTagValue(tags []string, remove string) []string {
-	normalizedRemove := strings.ToLower(strings.TrimSpace(remove))
-	if normalizedRemove == "" {
-		return normalizeTags(tags)
-	}
-
-	filtered := make([]string, 0, len(tags))
-	for _, tag := range tags {
-		normalizedTag := strings.ToLower(strings.TrimSpace(tag))
-		if normalizedTag == "" || normalizedTag == normalizedRemove {
-			continue
-		}
-		filtered = append(filtered, normalizedTag)
-	}
-	return normalizeTags(filtered)
 }
 
 func shouldQueueTagSuggestionsForMeme(meme accessor.Meme) bool {

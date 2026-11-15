@@ -1,13 +1,15 @@
 package manager
 
 import (
+	"errors"
 	"log"
+	"memeindex/internal/accessor"
 	"slices"
 	"strings"
 	"time"
-
-	"memeindex/internal/accessor"
 )
+
+const AdminReadCacheTTL = 5 * time.Second
 
 type AdminDashboardStats struct {
 	Counts                 MemeCounts                 `json:"counts"`
@@ -168,7 +170,7 @@ func (m *MemeManager) computeAdminDashboard() AdminDashboardStats {
 	}
 
 	favoriteDeltas := make([]int, len(stats.MetricSeries))
-	if analytics, ok := m.store.(accessor.AdminAnalyticsStore); ok {
+	if analytics, ok := m.store.(accessor.FavoriteAnalyticsStore); ok {
 		if totalFavorites, err := analytics.TotalFavoriteAssignments(); err == nil {
 			stats.Counts.Favorites = totalFavorites
 		}
@@ -244,10 +246,10 @@ func (m *MemeManager) computeAdminDashboard() AdminDashboardStats {
 // adminDashboardMemes returns every visible meme for the admin overview scan,
 // using the lean SQL projection (no per-row favourites subquery) where the store
 // offers it and falling back to a full List() otherwise. The admin favourites
-// total is sourced separately from AdminAnalyticsStore, so the dropped per-row
+// total is sourced separately from FavoriteAnalyticsStore, so the dropped per-row
 // flag does not change the rendered dashboard.
 func (m *MemeManager) adminDashboardMemes() []accessor.Meme {
-	if ads, ok := m.store.(accessor.AdminDashboardMemeStore); ok {
+	if ads, ok := m.store.(accessor.AdminMemeStore); ok {
 		if memes, err := ads.AdminDashboardMemes(); err == nil {
 			return memes
 		} else {
@@ -255,26 +257,6 @@ func (m *MemeManager) adminDashboardMemes() []accessor.Meme {
 		}
 	}
 	return m.store.List("", "", false, "")
-}
-
-// tagUsageCounts returns tag name -> number of visible memes carrying it,
-// resolved in SQL where the store supports it and by a full scan otherwise.
-func (m *MemeManager) tagUsageCounts() map[string]int {
-	if tu, ok := m.store.(accessor.TagUsageStore); ok {
-		if counts, err := tu.TagUsageCounts(); err == nil {
-			return counts
-		} else {
-			log.Printf("tag usage counts: SQL failed, falling back to scan: %v", err)
-		}
-	}
-
-	counts := map[string]int{}
-	for _, meme := range m.store.List("", "", false, "") {
-		for _, tag := range meme.Tags {
-			counts[tag] += 1
-		}
-	}
-	return counts
 }
 
 // invalidateAdminReadCache drops the memoized admin dashboard and marks the
@@ -308,4 +290,35 @@ func cloneAdminDashboardStats(in AdminDashboardStats) AdminDashboardStats {
 		out.RecentMemes[i] = meme
 	}
 	return out
+}
+
+// StoredMemeFiles lists the on-disk file names of every meme row, including
+// hidden and pending-delete ones. It errors when the store cannot enumerate
+// them, so a caller deciding what is safe to delete fails closed.
+func (m *MemeManager) StoredMemeFiles() ([]accessor.StoredFile, error) {
+	store, ok := m.store.(accessor.AdminMemeStore)
+	if !ok {
+		return nil, errors.New("meme store cannot list stored files")
+	}
+	return store.AllStoredFiles()
+}
+
+// CountAuditActionsByActor counts audit events with the given action per actor.
+// Stores without an audit log yield an empty map, not an error.
+func (m *MemeManager) CountAuditActionsByActor(action string) (map[string]int, error) {
+	store, ok := m.store.(accessor.AuditStore)
+	if !ok {
+		return map[string]int{}, nil
+	}
+	return store.CountAuditActionsByActor(action)
+}
+
+// CountFavoritesByUser counts favorites per user, or an empty map when the
+// store cannot report it.
+func (m *MemeManager) CountFavoritesByUser() (map[string]int, error) {
+	store, ok := m.store.(accessor.FavoriteAnalyticsStore)
+	if !ok {
+		return map[string]int{}, nil
+	}
+	return store.CountFavoritesByUser()
 }

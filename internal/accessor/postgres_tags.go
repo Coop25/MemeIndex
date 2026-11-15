@@ -10,41 +10,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// TagCounts returns the most-used tags across visible memes, most frequent
-// first, ties broken by name.
-func (s *PostgresStore) TagCounts(limit int) ([]TagCount, error) {
-	if limit <= 0 {
-		limit = 10
-	}
-	rows, err := s.pool.Query(context.Background(), `
-		SELECT t.name, COUNT(*) AS c
-		FROM meme_tags mt
-		JOIN tags t ON t.id = mt.tag_id
-		JOIN memes m ON m.id = mt.meme_id
-		WHERE COALESCE(m.hidden_from_app, FALSE) = FALSE
-		GROUP BY t.id, t.name
-		ORDER BY c DESC, t.name ASC
-		LIMIT $1
-	`, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	out := make([]TagCount, 0, limit)
-	for rows.Next() {
-		var tc TagCount
-		if err := rows.Scan(&tc.Name, &tc.Count); err != nil {
-			return nil, err
-		}
-		out = append(out, tc)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 // TagUsageCounts returns, for every tag on a visible meme, how many visible
 // memes carry it. It backs the admin tag-hygiene report.
 func (s *PostgresStore) TagUsageCounts() (map[string]int, error) {
@@ -72,8 +37,6 @@ func (s *PostgresStore) TagUsageCounts() (map[string]int, error) {
 	}
 	return out, rows.Err()
 }
-
-const visibleMemePredicate = "COALESCE(m.hidden_from_app, FALSE) = FALSE"
 
 // UntaggedWithoutSuggestionsCount counts visible memes with no tags, no stored
 // suggestions, and auto-suggest still enabled - the memes the suggestion worker
@@ -322,6 +285,35 @@ func (s *PostgresStore) MergeTag(sourceTag, targetTag string, actor AuditActor) 
 		return TagMergeCounts{}, err
 	}
 	return counts, nil
+}
+
+// tableExists reports whether a relation is present in the database. Used for
+// tables owned by other packages' schemas (audiobooks), which may not exist
+// when this package runs standalone.
+func tableExists(ctx context.Context, db queryable, name string) (bool, error) {
+	var exists bool
+	if err := db.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, name).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check %s exists: %w", name, err)
+	}
+	return exists, nil
+}
+
+func scanIDList(ctx context.Context, q queryable, sql string, args ...any) ([]string, error) {
+	rows, err := q.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }
 
 func (s *PostgresStore) SuggestTags(prefix string, limit int) []string {

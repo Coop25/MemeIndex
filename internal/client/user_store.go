@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"memeindex/internal/accessor"
+	"memeindex/internal/audiobooks"
 	"memeindex/internal/dbschema"
 )
 
@@ -556,7 +557,7 @@ func (s *postgresAuthUserStore) SetUserAudiobookTagRestriction(ctx context.Conte
 	if normalized == "" {
 		return managedUserRecord{}, errors.New("user id is required")
 	}
-	names := normalizeAudiobookTags(tags)
+	names := audiobooks.NormalizeTags(tags)
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -564,7 +565,7 @@ func (s *postgresAuthUserStore) SetUserAudiobookTagRestriction(ctx context.Conte
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	previousTagIDs, err := scanAudiobookInt64List(ctx, tx, `SELECT tag_id FROM app_user_audiobook_tag_restrictions WHERE user_id = $1`, normalized)
+	previousTagIDs, err := audiobooks.ScanInt64List(ctx, tx, `SELECT tag_id FROM app_user_audiobook_tag_restrictions WHERE user_id = $1`, normalized)
 	if err != nil {
 		return managedUserRecord{}, fmt.Errorf("list previous audiobook tag restriction ids: %w", err)
 	}

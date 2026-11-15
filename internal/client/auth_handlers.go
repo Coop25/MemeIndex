@@ -46,12 +46,14 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	s.auth.clearCookie(w, r, authReturnCookieName)
 
 	if !s.auth.consumeValidState(r) {
+		s.securityEvent(r, "login_invalid_state")
 		http.Error(w, "invalid oauth state", http.StatusBadRequest)
 		return
 	}
 
 	code := strings.TrimSpace(r.URL.Query().Get("code"))
 	if code == "" {
+		s.securityEvent(r, "login_missing_code")
 		http.Error(w, "missing oauth code", http.StatusBadRequest)
 		return
 	}
@@ -59,7 +61,7 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	redirectURL := s.auth.redirectURLForRequest(r)
 	accessToken, err := s.auth.exchangeCode(r.Context(), code, redirectURL)
 	if err != nil {
-		log.Printf("discord token exchange failed: %v", err)
+		s.securityEvent(r, "login_token_exchange_failed", "error", err.Error())
 		http.Error(w, "discord login failed", http.StatusBadGateway)
 		return
 	}
@@ -78,7 +80,7 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !session.Permissions.CanView {
-		log.Printf("discord login awaiting approval: user_id=%s username=%s", session.UserID, session.Username)
+		s.securityEvent(r, "login_awaiting_approval", "user_id", session.UserID, "username", session.Username)
 	}
 
 	s.auth.setSessionCookie(w, r, token, session.ExpiresAt)

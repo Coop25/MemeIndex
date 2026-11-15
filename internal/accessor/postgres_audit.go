@@ -8,9 +8,46 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
+
+func (s *PostgresStore) TotalFavoriteAssignments() (int, error) {
+	var total int
+	if err := s.pool.QueryRow(context.Background(), `SELECT COUNT(*) FROM user_favorites`).Scan(&total); err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
+func (s *PostgresStore) FavoriteActivitySince(since time.Time) ([]AdminFavoriteActivity, error) {
+	rows, err := s.pool.Query(context.Background(), `
+		SELECT
+			date_trunc('day', created_at) AS activity_day,
+			COUNT(*) FILTER (WHERE action = 'favorited') AS added,
+			COUNT(*) FILTER (WHERE action = 'unfavorited') AS removed
+		FROM meme_audit_logs
+		WHERE created_at >= $1
+			AND action IN ('favorited', 'unfavorited')
+		GROUP BY activity_day
+		ORDER BY activity_day
+	`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	activity := []AdminFavoriteActivity{}
+	for rows.Next() {
+		var day AdminFavoriteActivity
+		if err := rows.Scan(&day.Date, &day.Added, &day.Removed); err != nil {
+			return nil, err
+		}
+		activity = append(activity, day)
+	}
+	return activity, rows.Err()
+}
 
 func (s *PostgresStore) ListMemeAudit(id string, limit int) ([]MemeAuditEntry, error) {
 	if limit <= 0 {
@@ -323,4 +360,27 @@ func diffAuditTags(current []string, next []string) ([]string, []string) {
 // each actor has recorded, keyed by actor_user_id.
 func (s *PostgresStore) CountAuditActionsByActor(action string) (map[string]int, error) {
 	return s.countByUser(`SELECT actor_user_id, COUNT(*) FROM meme_audit_logs WHERE action = $1 GROUP BY actor_user_id`, action)
+}
+
+// CountFavoritesByUser returns how many memes each user has favorited.
+func (s *PostgresStore) CountFavoritesByUser() (map[string]int, error) {
+	return s.countByUser(`SELECT user_id, COUNT(*) FROM user_favorites GROUP BY user_id`)
+}
+
+func (s *PostgresStore) countByUser(query string, args ...any) (map[string]int, error) {
+	rows, err := s.pool.Query(context.Background(), query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	counts := map[string]int{}
+	for rows.Next() {
+		var id string
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		counts[id] = n
+	}
+	return counts, rows.Err()
 }

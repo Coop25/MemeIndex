@@ -1,4 +1,4 @@
-package client
+package audiobooks
 
 import (
 	"context"
@@ -28,11 +28,11 @@ func TestHeartbeatPlaybackSessionClearsStopRequested(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	st, err := newAudiobookStore(ctx, dsn, t.TempDir())
+	st, err := NewPostgresStore(ctx, dsn, t.TempDir())
 	if err != nil {
-		t.Fatalf("newAudiobookStore: %v", err)
+		t.Fatalf("NewPostgresStore: %v", err)
 	}
-	store := st.(*postgresAudiobookStore)
+	store := st.(*PostgresStore)
 	t.Cleanup(store.pool.Close)
 
 	audiobookID := uuid.Must(uuid.NewV6()).String()
@@ -103,11 +103,11 @@ func TestStalePlaybackStopRequestDoesNotPauseResumedDevice(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	st, err := newAudiobookStore(ctx, dsn, t.TempDir())
+	st, err := NewPostgresStore(ctx, dsn, t.TempDir())
 	if err != nil {
-		t.Fatalf("newAudiobookStore: %v", err)
+		t.Fatalf("NewPostgresStore: %v", err)
 	}
-	store := st.(*postgresAudiobookStore)
+	store := st.(*PostgresStore)
 	t.Cleanup(store.pool.Close)
 
 	audiobookID := uuid.Must(uuid.NewV6()).String()
