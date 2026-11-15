@@ -7,7 +7,7 @@ import (
 )
 
 type bulkFakeStore struct {
-	*adminReadCacheStore
+	adminMemeReadCache
 	bulkCalls int
 	lastIDs   []string
 }
@@ -26,13 +26,13 @@ func (s *bulkFakeStore) MemesByIDs(ids []string) (map[string]accessor.Meme, erro
 	return out, nil
 }
 
-var _ accessor.BulkMemeStore = (*bulkFakeStore)(nil)
+var _ accessor.AdminMemeStore = (*bulkFakeStore)(nil)
 
 func TestMemesByIDsUsesBatchWhenAvailable(t *testing.T) {
-	store := &bulkFakeStore{adminReadCacheStore: &adminReadCacheStore{memes: []accessor.Meme{
+	store := &bulkFakeStore{adminMemeReadCache: adminMemeReadCache{&adminReadCacheStore{memes: []accessor.Meme{
 		{ID: "a", OriginalName: "Alpha"},
 		{ID: "b", OriginalName: "Bravo"},
-	}}}
+	}}}}
 	m := NewMemeManager(store)
 
 	got := m.memeNamesByIDs([]string{"a", "b", "missing"})
@@ -60,7 +60,7 @@ func TestMemesByIDsFallsBackWithoutBulkCapability(t *testing.T) {
 
 	got := m.memesByIDs([]string{"a", "b"})
 
-	// adminReadCacheStore has no BulkMemeStore, so the only way these names come
+	// adminReadCacheStore has no AdminMemeStore, so the only way these names come
 	// back is the per-id GetByID fallback path.
 	if got["a"].OriginalName != "Alpha" || got["b"].OriginalName != "Bravo" {
 		t.Fatalf("fallback did not resolve memes: %+v", got)

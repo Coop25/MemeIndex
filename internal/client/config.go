@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -234,7 +235,40 @@ func LoadConfig() (Config, error) {
 			AddUserIDs:  toSet(raw.AddUserIDs),
 		},
 	}
+	if err := config.validateStorage(); err != nil {
+		return Config{}, err
+	}
 	return config, config.validateSecurity()
+}
+
+// legacyJSONStoreFiles are the files the removed local JSON store kept in the
+// data directory. PostgresStore imports all of them on its first start against
+// an empty database.
+var legacyJSONStoreFiles = []string{"index.json", "favorites.json", "reel_sessions.json"}
+
+// validateStorage requires Postgres. The local JSON store is no longer a
+// production backend, so a missing MEMEINDEX_DATABASE_URL is a startup error
+// rather than a silent switch to a store that lacks most features. When the
+// data directory still holds JSON store files, the error says how to move
+// them over.
+func (c Config) validateStorage() error {
+	if c.DatabaseURL != "" {
+		return nil
+	}
+	var found []string
+	for _, name := range legacyJSONStoreFiles {
+		if _, err := os.Stat(filepath.Join(c.DataDir, name)); err == nil {
+			found = append(found, name)
+		}
+	}
+	if len(found) > 0 {
+		return fmt.Errorf("MEMEINDEX_DATABASE_URL is required: the local JSON store has been removed. "+
+			"%s still holds JSON store data (%s); point MEMEINDEX_DATABASE_URL at an empty Postgres database "+
+			"and MemeIndex imports it on first start, leaving the JSON files in place",
+			c.DataDir, strings.Join(found, ", "))
+	}
+	return fmt.Errorf("MEMEINDEX_DATABASE_URL is required: set it to a Postgres connection string " +
+		"(docker-compose.yml runs Postgres for you)")
 }
 
 func (c Config) validateSecurity() error {

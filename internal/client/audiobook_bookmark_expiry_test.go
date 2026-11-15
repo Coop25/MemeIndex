@@ -192,6 +192,7 @@ func TestNextAudiobookBookmarkSweepIsNextMidnight(t *testing.T) {
 
 func TestLoadConfigBookmarkExpiryDefaultsToSixMonths(t *testing.T) {
 	t.Setenv("MEMEINDEX_ALLOW_ANONYMOUS", "true")
+	t.Setenv("MEMEINDEX_DATABASE_URL", "postgres://memeindex@localhost/memeindex")
 	// Unset for this test even if the developer's shell exports it;
 	// t.Setenv first so the original value is restored afterwards.
 	t.Setenv("MEMEINDEX_AUDIOBOOK_BOOKMARK_EXPIRY_DAYS", "")

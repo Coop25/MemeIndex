@@ -136,7 +136,7 @@ func TestFailedRemuxAudiobookIDs(t *testing.T) {
 // file-backed MemeStore stays the real store underneath.
 type pendingDeleteStore struct {
 	*accessor.MemeStore
-	accessor.AuditLogStore
+	accessor.AuditStore
 	pending int
 }
 

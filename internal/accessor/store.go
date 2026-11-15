@@ -83,9 +83,14 @@ type MemeDashboardData struct {
 	TopTags       []TagCount
 }
 
-// QueryableMemeStore is an optional capability: a store that can resolve browse,
-// dashboard, and popular-tag reads in the database. The manager falls back to
-// the in-memory Store methods for stores that do not implement it.
+// The capability interfaces below group the store methods beyond Store by
+// what they serve. PostgresStore, the only production store, implements every
+// one of them (see the assertions at the end of this file). The manager still
+// type-asserts each capability so the in-process MemeStore and the narrow test
+// fakes can stand in for the parts a test exercises.
+
+// QueryableMemeStore resolves browse, dashboard, and popular-tag reads in the
+// database.
 type QueryableMemeStore interface {
 	QueryMemes(q MemeQuery) (MemeQueryPage, error)
 	MemeDashboard(userID string) (MemeDashboardData, error)
@@ -119,33 +124,31 @@ type MemeShareStore interface {
 	RevokeAllMemeShares(now time.Time) (int, error)
 }
 
-// HiddenMemeStore is implemented by stores that can hide a meme from the app
-// without deleting it (a delete request awaiting approval). The file handlers
-// use it so a hidden meme's upload and thumbnail stop being served.
-type HiddenMemeStore interface {
-	HiddenMemeIDs() ([]string, error)
-}
-
-type AuditLogStore interface {
+// AuditStore is the audit log: per-meme history, the admin feed, the
+// pending-delete approval queue, entries not tied to one meme, and favorite
+// changes recorded in the same transaction as the favorite itself.
+type AuditStore interface {
 	ListMemeAudit(id string, limit int) ([]MemeAuditEntry, error)
 	ListAuditFeed(offset int, limit int, actorUserID string) (PagedAuditFeed, error)
 	ListPendingDeletes(offset int, limit int) (PagedPendingDeletes, error)
 	ApprovePendingDelete(id string, actor AuditActor) error
 	RejectPendingDelete(id string, actor AuditActor) error
-}
-
-// SystemAuditStore records audit entries that are not tied to a single meme
-// (for example, an admin resetting the tag-suggestion queue). Stores without an
-// audit log simply do not implement it.
-type SystemAuditStore interface {
+	// RecordSystemAudit records an entry that is not tied to a single meme
+	// (for example, an admin resetting the tag-suggestion queue).
 	RecordSystemAudit(action string, actor AuditActor, description string) error
+	// CountAuditActionsByActor counts audit events of one action per actor.
+	CountAuditActionsByActor(action string) (map[string]int, error)
+	SetFavoriteWithActor(userID, id string, favorite bool, actor AuditActor) (Meme, error)
 }
 
-// AdminAnalyticsStore exposes aggregate-only values that are intentionally
-// independent of the current viewer (for example, favorites across all users).
-type AdminAnalyticsStore interface {
+// FavoriteAnalyticsStore exposes favorite aggregates that are intentionally
+// independent of the current viewer.
+type FavoriteAnalyticsStore interface {
+	// TotalFavoriteAssignments counts favorites across all users.
 	TotalFavoriteAssignments() (int, error)
 	FavoriteActivitySince(since time.Time) ([]AdminFavoriteActivity, error)
+	// CountFavoritesByUser counts favorites per user.
+	CountFavoritesByUser() (map[string]int, error)
 }
 
 type AdminFavoriteActivity struct {
@@ -154,39 +157,38 @@ type AdminFavoriteActivity struct {
 	Removed int
 }
 
-// FavoriteAuditStore lets stores with an audit log record favorite changes in
-// the same transaction as the favorite itself. Legacy/local stores can keep
-// using Store.SetFavorite without implementing it.
-type FavoriteAuditStore interface {
-	SetFavoriteWithActor(userID, id string, favorite bool, actor AuditActor) (Meme, error)
-}
-
+// AdminMemeStore serves the admin views, which need memes regardless of who is
+// looking and, for storage and approval work, regardless of visibility.
 type AdminMemeStore interface {
+	// GetAnyByID returns a meme without applying a viewer's favorites.
 	GetAnyByID(id string) (Meme, error)
-}
-
-// BulkMemeStore resolves many visible memes by id in a single query. It backs
-// the admin panels that would otherwise issue one GetByID per queued or shared
-// meme on every poll.
-type BulkMemeStore interface {
+	// MemesByIDs resolves many visible memes by id in a single query. It backs
+	// the admin panels that would otherwise issue one GetByID per queued or
+	// shared meme on every poll.
 	MemesByIDs(ids []string) (map[string]Meme, error)
+	// AdminDashboardMemes returns every visible meme, newest first, without the
+	// per-row favourites subquery List would add: the admin overview takes
+	// favourite totals from FavoriteAnalyticsStore instead.
+	AdminDashboardMemes() ([]Meme, error)
+	// AllStoredFiles lists every meme row regardless of visibility. The admin
+	// storage scan uses it to decide which files under uploads/ and
+	// thumbnails/ are referenced: the visible-only listings would make a
+	// hidden or pending-delete meme's files look orphaned.
+	AllStoredFiles() ([]StoredFile, error)
+	// HiddenMemeIDs lists memes hidden from the app without being deleted (a
+	// delete request awaiting approval), so their files stop being served.
+	HiddenMemeIDs() ([]string, error)
 }
 
-// TagMaintenanceStore resolves bulk tag housekeeping in the database. The
-// in-memory fallback rewrites every affected meme one transaction at a time,
-// each of which also re-runs a whole-table orphan-tag sweep.
-type TagMaintenanceStore interface {
+// TagAdminStore resolves tag housekeeping and the tag-suggestion admin panel in
+// the database instead of scanning or rewriting every meme.
+type TagAdminStore interface {
 	// MergeTag repoints every meme_tags link from sourceTag onto targetTag,
 	// creating targetTag if needed and deleting sourceTag, in one transaction.
 	// Audiobook tag links and account audiobook-tag
 	// restrictions are re-pointed too. It returns how many memes, audiobooks
 	// and restrictions carried sourceTag.
 	MergeTag(sourceTag, targetTag string, actor AuditActor) (TagMergeCounts, error)
-}
-
-// TagSuggestionQueryStore resolves the tag-suggestion admin panel's counts and
-// its pending-review page in SQL instead of scanning every meme on each poll.
-type TagSuggestionQueryStore interface {
 	// UntaggedWithoutSuggestionsCount counts visible memes with no tags, no
 	// stored suggestions, and auto-suggest still enabled.
 	UntaggedWithoutSuggestionsCount() (int, error)
@@ -196,40 +198,23 @@ type TagSuggestionQueryStore interface {
 	// PendingSuggestionMemes returns the total number of visible memes that have
 	// stored suggestions plus one newest-first page of them.
 	PendingSuggestionMemes(offset, limit int) (total int, memes []Meme, err error)
-}
-
-// TagUsageStore returns how many visible memes carry each tag. It backs the
-// admin tag-hygiene report, whose only store input is that map.
-type TagUsageStore interface {
+	// TagUsageCounts returns how many visible memes carry each tag.
 	TagUsageCounts() (map[string]int, error)
 }
 
-// AdminDashboardMemeStore returns every visible meme, newest first, in the shape
-// the admin overview aggregates. It is List("", "", false, "") without the
-// per-row favourites subquery: the admin view sources favourite totals from
-// AdminAnalyticsStore, so that lookup is pure overhead across a full-archive
-// scan.
-type AdminDashboardMemeStore interface {
-	AdminDashboardMemes() ([]Meme, error)
+// SuggestedTagStore keeps the tag-suggestion pass's output: the suggested tags
+// awaiting review, the per-meme opt-out, and the free-text blob (on-image text
+// plus audio transcript) that is folded into search.
+type SuggestedTagStore interface {
+	ListSuggestedTags(id string) ([]string, error)
+	ReplaceSuggestedTags(id string, tags []string) error
+	SetAutoSuggestDisabled(id string, disabled bool) error
+	SetSearchText(id, text string) error
 }
 
 type PreviewAssetStore interface {
 	ThumbnailDir() string
 	EnsurePreviewAssets() error
-}
-
-type SuggestedTagStore interface {
-	ListSuggestedTags(id string) ([]string, error)
-	ReplaceSuggestedTags(id string, tags []string) error
-	SetAutoSuggestDisabled(id string, disabled bool) error
-}
-
-// SearchTextStore is an optional capability: a store that keeps a per-meme
-// free-text blob (on-image text + audio transcript, produced by the
-// tag-suggestion pass) and folds it into search. Stores without it simply do
-// not index that text.
-type SearchTextStore interface {
-	SetSearchText(id, text string) error
 }
 
 type ReelSessionRecord struct {
@@ -256,21 +241,16 @@ type StoredFile struct {
 	SizeBytes  int64
 }
 
-// StoredFileStore lists every meme row regardless of visibility. The admin
-// storage scan uses it to decide which files under uploads/ and thumbnails/
-// are referenced: the visible-only listings would make a hidden or
-// pending-delete meme's files look orphaned.
-type StoredFileStore interface {
-	AllStoredFiles() ([]StoredFile, error)
-}
-
-// AuditActionCountStore counts audit events per actor. Only stores that keep an
-// audit log implement it.
-type AuditActionCountStore interface {
-	CountAuditActionsByActor(action string) (map[string]int, error)
-}
-
-// FavoriteCountStore counts favorites per user.
-type FavoriteCountStore interface {
-	CountFavoritesByUser() (map[string]int, error)
-}
+// PostgresStore implements every capability.
+var (
+	_ Store                  = (*PostgresStore)(nil)
+	_ QueryableMemeStore     = (*PostgresStore)(nil)
+	_ MemeShareStore         = (*PostgresStore)(nil)
+	_ AuditStore             = (*PostgresStore)(nil)
+	_ FavoriteAnalyticsStore = (*PostgresStore)(nil)
+	_ AdminMemeStore         = (*PostgresStore)(nil)
+	_ TagAdminStore          = (*PostgresStore)(nil)
+	_ SuggestedTagStore      = (*PostgresStore)(nil)
+	_ PreviewAssetStore      = (*PostgresStore)(nil)
+	_ ReelSessionPersistence = (*PostgresStore)(nil)
+)

@@ -8,11 +8,11 @@ import (
 	"memeindex/internal/accessor"
 )
 
-// adminDashboardMemeFakeStore adds the optional AdminDashboardMemeStore
+// adminDashboardMemeFakeStore adds the optional AdminMemeStore
 // capability on top of the in-memory fake so the lean-scan delegation path is
 // exercised.
 type adminDashboardMemeFakeStore struct {
-	*adminReadCacheStore
+	adminMemeReadCache
 
 	leanCalls int
 	leanMemes []accessor.Meme
@@ -27,7 +27,7 @@ func (s *adminDashboardMemeFakeStore) AdminDashboardMemes() ([]accessor.Meme, er
 	return append([]accessor.Meme(nil), s.leanMemes...), nil
 }
 
-var _ accessor.AdminDashboardMemeStore = (*adminDashboardMemeFakeStore)(nil)
+var _ accessor.AdminMemeStore = (*adminDashboardMemeFakeStore)(nil)
 
 func TestAdminDashboardUsesLeanMemeScan(t *testing.T) {
 	now := time.Now().UTC()
@@ -36,7 +36,7 @@ func TestAdminDashboardUsesLeanMemeScan(t *testing.T) {
 		{ID: "b", ContentType: "video/mp4", SizeBytes: 20, CreatedAt: now.Add(-time.Hour)},
 	}
 	store := &adminDashboardMemeFakeStore{
-		adminReadCacheStore: &adminReadCacheStore{memes: memes},
+		adminMemeReadCache: adminMemeReadCache{&adminReadCacheStore{memes: memes}},
 		leanMemes:           memes,
 	}
 	m := NewMemeManager(store)
@@ -58,7 +58,7 @@ func TestAdminDashboardFallsBackToListOnLeanScanError(t *testing.T) {
 	now := time.Now().UTC()
 	memes := []accessor.Meme{{ID: "a", ContentType: "image/png", SizeBytes: 7, CreatedAt: now}}
 	store := &adminDashboardMemeFakeStore{
-		adminReadCacheStore: &adminReadCacheStore{memes: memes},
+		adminMemeReadCache: adminMemeReadCache{&adminReadCacheStore{memes: memes}},
 		leanErr:             errors.New("boom"),
 	}
 	m := NewMemeManager(store)
