@@ -395,7 +395,34 @@ func (s *Server) serveSharedMemeAsset(w http.ResponseWriter, r *http.Request, me
 		}
 	}
 	setUntrustedAssetHeaders(w, "/uploads/"+fileName)
+	if browserViewableMediaType(w.Header().Get("Content-Type")) {
+		w.Header().Set("Content-Security-Policy", sharedMediaContentSecurityPolicy)
+	}
 	http.ServeFile(w, r, filepath.Join(baseDir, fileName))
+}
+
+// sharedMediaContentSecurityPolicy replaces the upload sandbox on a shared
+// video, audio file or picture, so a share link opened in a browser plays in
+// the browser's own player. That player is a page the browser builds around
+// the file, which loads the file a second time; inside a sandboxed page that
+// load fails and Chromium shows a player stuck at 0:00. Nothing on the page
+// can run: default-src 'none' blocks every script, and with nosniff a media
+// type is never rendered as markup.
+const sharedMediaContentSecurityPolicy = "default-src 'none'; media-src 'self'; img-src 'self'; style-src 'unsafe-inline'"
+
+// browserViewableMediaType reports whether a browser opening a file of this
+// type shows it in its own player or image viewer rather than as a page that
+// could run script. SVG is left out: it is a document and can carry script.
+func browserViewableMediaType(contentType string) bool {
+	base := mediaTypeBase(contentType)
+	if strings.HasPrefix(base, "video/") || strings.HasPrefix(base, "audio/") {
+		return true
+	}
+	switch base {
+	case "image/png", "image/jpeg", "image/gif", "image/webp", "image/avif", "image/apng", "image/bmp":
+		return true
+	}
+	return false
 }
 
 // edgeCacheOnlySuccess withdraws an edge-cacheable header when the file server
