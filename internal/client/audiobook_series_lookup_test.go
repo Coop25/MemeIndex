@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"memeindex/internal/audiobooks"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -47,14 +48,14 @@ func TestAudibleSeriesLookupPicksMatchingListing(t *testing.T) {
 
 func TestAudiobookLookupTitleCleansEditionNoise(t *testing.T) {
 	cases := []struct {
-		record audiobookRecord
+		record audiobooks.Record
 		want   string
 	}{
-		{audiobookRecord{Title: "The Way of Kings (Unabridged)"}, "The Way of Kings"},
-		{audiobookRecord{Title: "Mistborn [Book 1]"}, "Mistborn"},
-		{audiobookRecord{Filename: "Project_Hail_Mary.m4b"}, "Project Hail Mary"},
-		{audiobookRecord{Title: "  Dune  ", Filename: "ignored.mp3"}, "Dune"},
-		{audiobookRecord{Title: "We Are Legion (We Are Bob) (Unabridged)"}, "We Are Legion (We Are Bob)"},
+		{audiobooks.Record{Title: "The Way of Kings (Unabridged)"}, "The Way of Kings"},
+		{audiobooks.Record{Title: "Mistborn [Book 1]"}, "Mistborn"},
+		{audiobooks.Record{Filename: "Project_Hail_Mary.m4b"}, "Project Hail Mary"},
+		{audiobooks.Record{Title: "  Dune  ", Filename: "ignored.mp3"}, "Dune"},
+		{audiobooks.Record{Title: "We Are Legion (We Are Bob) (Unabridged)"}, "We Are Legion (We Are Bob)"},
 	}
 	for _, c := range cases {
 		if got := audiobookLookupTitle(c.record); got != c.want {
@@ -115,7 +116,7 @@ func TestSuggestAudiobookSeriesGroupsAndOrders(t *testing.T) {
 		fail: map[string]bool{"Warbreaker": true},
 	}
 	lookup := newCachedSeriesLookup(fake)
-	books := []audiobookRecord{
+	books := []audiobooks.Record{
 		{ID: "oath", Title: "Oathbringer"},
 		{ID: "wok", Title: "The Way of Kings"},
 		{ID: "wor", Title: "Words of Radiance"},
@@ -124,7 +125,7 @@ func TestSuggestAudiobookSeriesGroupsAndOrders(t *testing.T) {
 		{ID: "elan", Title: "Elantris"},
 		{ID: "war", Title: "Warbreaker"},
 	}
-	existing := []audiobookSeries{{ID: "s-mist", Name: "mistborn"}}
+	existing := []audiobooks.Series{{ID: "s-mist", Name: "mistborn"}}
 
 	result := suggestAudiobookSeries(context.Background(), lookup, books, existing, true)
 	if len(result.suggestions) != 1 {
@@ -157,7 +158,7 @@ func TestSuggestAudiobookSeriesSkipsAssignedByDefault(t *testing.T) {
 	fake := &fakeSeriesLookup{results: map[string][]audiobookSeriesMatch{
 		"Mistborn": {{Key: "mistborn", Name: "Mistborn", Sequence: floatPtr(1)}},
 	}}
-	books := []audiobookRecord{{ID: "mist", Title: "Mistborn", SeriesID: "s-other"}}
+	books := []audiobooks.Record{{ID: "mist", Title: "Mistborn", SeriesID: "s-other"}}
 	result := suggestAudiobookSeries(context.Background(), newCachedSeriesLookup(fake), books, nil, false)
 	if fake.calls.Load() != 0 || len(result.suggestions) != 0 || result.checked != 0 {
 		t.Fatalf("assigned book was looked up: calls=%d result=%+v", fake.calls.Load(), result)
@@ -171,11 +172,11 @@ func TestSuggestAudiobookSeriesMatchesExistingSeriesByName(t *testing.T) {
 		"Mistborn":              {{Key: "mistborn", Name: "Mistborn", Sequence: floatPtr(1)}},
 		"The Well of Ascension": {{Key: "mistborn", Name: "Mistborn", Sequence: floatPtr(2)}},
 	}}
-	books := []audiobookRecord{
+	books := []audiobooks.Record{
 		{ID: "mist", Title: "Mistborn", SeriesID: "s-mist", SeriesSequence: floatPtr(1)},
 		{ID: "well", Title: "The Well of Ascension"},
 	}
-	existing := []audiobookSeries{{ID: "s-mist", Name: "Mistborn"}}
+	existing := []audiobooks.Series{{ID: "s-mist", Name: "Mistborn"}}
 	result := suggestAudiobookSeries(context.Background(), newCachedSeriesLookup(fake), books, existing, true)
 	if len(result.suggestions) != 1 || result.suggestions[0].existingSeriesID != "s-mist" || len(result.suggestions[0].books) != 2 {
 		t.Fatalf("suggestions = %+v", result.suggestions)
@@ -206,7 +207,7 @@ func TestSuggestAudiobookSeriesLooksUpDuplicatesOnce(t *testing.T) {
 	fake := &fakeSeriesLookup{results: map[string][]audiobookSeriesMatch{
 		"Mistborn": {{Key: "mistborn", Name: "Mistborn", Sequence: floatPtr(1)}},
 	}}
-	books := []audiobookRecord{{ID: "a", Title: "Mistborn"}, {ID: "b", Title: "Mistborn"}}
+	books := []audiobooks.Record{{ID: "a", Title: "Mistborn"}, {ID: "b", Title: "Mistborn"}}
 	result := suggestAudiobookSeries(context.Background(), newCachedSeriesLookup(fake), books, nil, false)
 	if fake.calls.Load() != 1 {
 		t.Fatalf("made %d catalog calls for two copies of one book, want 1", fake.calls.Load())
@@ -220,13 +221,13 @@ func TestSuggestAudiobookSeriesLooksUpDuplicatesOnce(t *testing.T) {
 // failures is followed by a scan that reaches the books behind them.
 func TestSuggestAudiobookSeriesTriesFailedBooksLast(t *testing.T) {
 	fake := &fakeSeriesLookup{results: map[string][]audiobookSeriesMatch{}, fail: map[string]bool{}}
-	var books []audiobookRecord
+	var books []audiobooks.Record
 	for i := range audiobookSeriesSuggestBatch {
 		title := fmt.Sprintf("Broken %d", i)
 		fake.fail[title] = true
-		books = append(books, audiobookRecord{ID: title, Title: title})
+		books = append(books, audiobooks.Record{ID: title, Title: title})
 	}
-	books = append(books, audiobookRecord{ID: "ok", Title: "Mistborn"})
+	books = append(books, audiobooks.Record{ID: "ok", Title: "Mistborn"})
 	fake.results["Mistborn"] = []audiobookSeriesMatch{{Key: "mistborn", Name: "Mistborn", Sequence: floatPtr(1)}}
 	lookup := newCachedSeriesLookup(fake)
 

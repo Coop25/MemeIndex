@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"fmt"
+	"memeindex/internal/audiobooks"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,10 +12,10 @@ import (
 	"github.com/google/uuid"
 )
 
-func insertAdminStatsBook(t *testing.T, store *postgresAudiobookStore, size int64, duration float64, createdAt time.Time, coverPath string) {
+func insertAdminStatsBook(t *testing.T, store *audiobooks.PostgresStore, size int64, duration float64, createdAt time.Time, coverPath string) {
 	t.Helper()
 	id := uuid.Must(uuid.NewV6()).String()
-	_, err := store.pool.Exec(context.Background(), `
+	_, err := store.Pool().Exec(context.Background(), `
 		INSERT INTO audiobooks (id, title, filename, size_bytes, duration_seconds, storage_path, cover_path, uploaded_by_user_id, created_at)
 		VALUES ($1, 'Book', 'book.mp3', $2, $3, '/tmp/book.mp3', $4, 'u-admin', $5)
 	`, id, size, duration, coverPath, createdAt)
@@ -28,15 +29,15 @@ func TestAudiobookAdminStats(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 
-	coverPath := filepath.Join(store.coversDir, "cover.jpg")
+	coverPath := filepath.Join(store.CoversDir(), "cover.jpg")
 	if err := os.WriteFile(coverPath, make([]byte, 10), 0o644); err != nil {
 		t.Fatalf("write cover: %v", err)
 	}
 	day := 24 * time.Hour
 	insertAdminStatsBook(t, store, 100, 3600, now.Add(-2*day), coverPath)
-	insertAdminStatsBook(t, store, 200, 3600, now.Add(-40*day), filepath.Join(store.coversDir, "missing.jpg"))
+	insertAdminStatsBook(t, store, 200, 3600, now.Add(-40*day), filepath.Join(store.CoversDir(), "missing.jpg"))
 	insertAdminStatsBook(t, store, 300, 3600, now.Add(-70*day), "")
-	if _, err := store.pool.Exec(ctx, `
+	if _, err := store.Pool().Exec(ctx, `
 		INSERT INTO audiobook_uploads (id, user_id, title, filename, mime_type, total_bytes, received_bytes, temp_path)
 		VALUES ($1, 'u-admin', 'T', 'f.mp3', 'audio/mpeg', 500, 50, '/tmp/x')
 	`, uuid.Must(uuid.NewV6()).String()); err != nil {

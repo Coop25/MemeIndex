@@ -40,6 +40,7 @@ services:
       # Leave blank to fall back to the request's own Host header.
       MEMEINDEX_PUBLIC_BASE_URL: ${MEMEINDEX_PUBLIC_BASE_URL:-}
       MEMEINDEX_DATA_DIR: ${MEMEINDEX_DATA_DIR:-data}
+      MEMEINDEX_LOG_FORMAT: ${MEMEINDEX_LOG_FORMAT:-text}
       MEMEINDEX_DATABASE_URL: postgres://${POSTGRES_USER:-memeindex}:${POSTGRES_PASSWORD:-memeindex}@postgres:5432/${POSTGRES_DB:-memeindex}?sslmode=disable
       MEMEINDEX_MEDIAFETCH_YTDLP_BINARY: ${MEMEINDEX_MEDIAFETCH_YTDLP_BINARY:-yt-dlp}
       # Downloader egress isolation. When MEMEINDEX_MEDIAFETCH_PROXY is set, both

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"memeindex/internal/audiobooks"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -168,7 +169,7 @@ var (
 
 // audiobookLookupTitle is the title to search for: the tagged title, or the
 // file name without its extension, minus edition noise like "(Unabridged)".
-func audiobookLookupTitle(record audiobookRecord) string {
+func audiobookLookupTitle(record audiobooks.Record) string {
 	title := strings.TrimSpace(record.Title)
 	if title == "" {
 		title = bookTitleFileTail.ReplaceAllString(strings.TrimSpace(record.Filename), "")
@@ -349,7 +350,7 @@ const (
 )
 
 type audiobookSeriesSuggestionBook struct {
-	record   audiobookRecord
+	record   audiobooks.Record
 	sequence *float64
 }
 
@@ -372,10 +373,10 @@ type audiobookSeriesSuggestResult struct {
 // unless includeAssigned) and groups them by catalog series. A group is kept
 // when it would change something: it matches no existing series, or it does
 // and some of its books aren't in it at that number yet.
-func suggestAudiobookSeries(ctx context.Context, lookup *cachedSeriesLookup, books []audiobookRecord, existing []audiobookSeries, includeAssigned bool) audiobookSeriesSuggestResult {
+func suggestAudiobookSeries(ctx context.Context, lookup *cachedSeriesLookup, books []audiobooks.Record, existing []audiobooks.Series, includeAssigned bool) audiobookSeriesSuggestResult {
 	var result audiobookSeriesSuggestResult
 	type job struct {
-		record        audiobookRecord
+		record        audiobooks.Record
 		title, author string
 	}
 	var jobs []job
@@ -561,7 +562,7 @@ func (s *Server) handleAudiobookSeriesSuggestions(w http.ResponseWriter, r *http
 	if s.auth.enabled() {
 		restrictToTags = session.Permissions.AudiobookTagRestriction
 	}
-	items, err := s.audiobooks.ListAudiobooks(r.Context(), currentAudiobookUserID(r), audiobookListFilter{RestrictToTags: restrictToTags})
+	items, err := s.audiobooks.ListAudiobooks(r.Context(), currentAudiobookUserID(r), audiobooks.ListFilter{RestrictToTags: restrictToTags})
 	if err != nil {
 		log.Printf("list audiobooks for series suggestions failed: %v", err)
 		http.Error(w, "failed to load audiobooks", http.StatusInternalServerError)
@@ -573,9 +574,9 @@ func (s *Server) handleAudiobookSeriesSuggestions(w http.ResponseWriter, r *http
 		http.Error(w, "failed to load series", http.StatusInternalServerError)
 		return
 	}
-	books := make([]audiobookRecord, 0, len(items))
+	books := make([]audiobooks.Record, 0, len(items))
 	for _, item := range items {
-		books = append(books, item.audiobookRecord)
+		books = append(books, item.Record)
 	}
 
 	result := suggestAudiobookSeries(r.Context(), s.audiobookSeriesLookupService(), books, existing, r.URL.Query().Get("scope") == "all")

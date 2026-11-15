@@ -2,6 +2,7 @@ package client
 
 import (
 	"log"
+	"memeindex/internal/audiobooks"
 	"net/http"
 	"time"
 )
@@ -49,9 +50,9 @@ func (s *Server) handleAdminUserActivity(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		log.Printf("admin user activity favorites failed: %v", err)
 	}
-	var books map[string]adminUserAudiobookTotals
+	var books map[string]audiobooks.UserTotals
 	if s.audiobooks != nil {
-		books, err = s.audiobooks.AdminUserAudiobookTotals(ctx, adminWindowStart(time.Now()))
+		books, err = s.audiobooks.AdminUserAudiobookTotals(ctx, audiobooks.AdminWindowStart(time.Now()))
 		if err != nil {
 			log.Printf("admin user activity audiobooks failed: %v", err)
 		}

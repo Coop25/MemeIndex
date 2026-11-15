@@ -1,0 +1,17 @@
+{
+  // Type-checks the browser JavaScript without a build step. Only files that
+  // start with "// @ts-check" are checked; the others are still parsed so
+  // their globals have types. Add the directive to a file once it passes
+  // (see "Frontend structure" in the README). CI runs:
+  //   npx --yes -p typescript@5.9.3 tsc -p tsconfig.json
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": false,
+    "noEmit": true,
+    "target": "es2022",
+    "lib": ["es2023", "dom", "dom.iterable"],
+    "skipLibCheck": true,
+    "strict": false
+  },
+  "include": ["static/**/*.js"]
+}

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"memeindex/internal/accessor"
+	"memeindex/internal/audiobooks"
 	"memeindex/internal/manager"
 )
 
@@ -297,9 +298,9 @@ func TestStorageOrphanDeleteFailsClosedOnReferenceError(t *testing.T) {
 	}
 }
 
-type failingStoragePathsStore struct{ audiobookStore }
+type failingStoragePathsStore struct{ audiobooks.Store }
 
-func (failingStoragePathsStore) ListStoragePaths(context.Context) ([]audiobookStoragePath, error) {
+func (failingStoragePathsStore) ListStoragePaths(context.Context) ([]audiobooks.StoragePath, error) {
 	return nil, errors.New("db down")
 }
 
@@ -375,15 +376,15 @@ func TestAdminDiscardUploadAndInProgressList(t *testing.T) {
 	store, _ := newIsolatedAudiobookStore(t)
 	ts.s.audiobooks = store
 	ctx := context.Background()
-	first, err := store.CreateUpload(ctx, audiobookUploadSeed{UserID: "u1", Title: "First", Filename: "a.mp3", MimeType: "audio/mpeg", TotalBytes: 10})
+	first, err := store.CreateUpload(ctx, audiobooks.UploadSeed{UserID: "u1", Title: "First", Filename: "a.mp3", MimeType: "audio/mpeg", TotalBytes: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := store.CreateUpload(ctx, audiobookUploadSeed{UserID: "u2", Title: "Second", Filename: "b.mp3", MimeType: "audio/mpeg", TotalBytes: 20})
+	second, err := store.CreateUpload(ctx, audiobooks.UploadSeed{UserID: "u2", Title: "Second", Filename: "b.mp3", MimeType: "audio/mpeg", TotalBytes: 20})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.pool.Exec(ctx, `UPDATE audiobook_uploads SET updated_at = NOW() - INTERVAL '1 hour' WHERE id = $1`, first.ID); err != nil {
+	if _, err := store.Pool().Exec(ctx, `UPDATE audiobook_uploads SET updated_at = NOW() - INTERVAL '1 hour' WHERE id = $1`, first.ID); err != nil {
 		t.Fatal(err)
 	}
 	uploads, err := store.ListInProgressUploads(ctx)
@@ -394,7 +395,7 @@ func TestAdminDiscardUploadAndInProgressList(t *testing.T) {
 	if err != nil || got.UserID != "u1" || got.TempPath != first.TempPath {
 		t.Fatalf("GetUploadByID = %+v, %v", got, err)
 	}
-	if _, err := store.GetUploadByID(ctx, "nope"); !errors.Is(err, ErrAudiobookUploadNotFound) {
+	if _, err := store.GetUploadByID(ctx, "nope"); !errors.Is(err, audiobooks.ErrUploadNotFound) {
 		t.Fatalf("missing upload err = %v", err)
 	}
 
@@ -413,7 +414,7 @@ func TestAdminDiscardUploadAndInProgressList(t *testing.T) {
 	if _, err := os.Stat(first.TempPath); !os.IsNotExist(err) {
 		t.Errorf("temp file still exists: %v", err)
 	}
-	if _, err := store.GetUploadByID(ctx, first.ID); !errors.Is(err, ErrAudiobookUploadNotFound) {
+	if _, err := store.GetUploadByID(ctx, first.ID); !errors.Is(err, audiobooks.ErrUploadNotFound) {
 		t.Errorf("row still present: %v", err)
 	}
 	if _, err := os.Stat(second.TempPath); err != nil {

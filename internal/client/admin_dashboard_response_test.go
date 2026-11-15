@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"memeindex/internal/audiobooks"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -67,44 +68,44 @@ func TestAdminDashboardWithoutPostgres(t *testing.T) {
 
 // dashboardStore serves configurable audiobook aggregates.
 type dashboardStore struct {
-	audiobookStore
+	audiobooks.Store
 	statsErr     bool
 	listeningErr bool
 	healthErr    bool
 	mp3sErr      bool
-	mp3s         []audiobookStoredMP3
+	mp3s         []audiobooks.StoredMP3
 	awaiting     int
 }
 
-func (d dashboardStore) AdminStats(context.Context, time.Time) (adminAudiobookStats, error) {
+func (d dashboardStore) AdminStats(context.Context, time.Time) (audiobooks.AdminStatsReport, error) {
 	if d.statsErr {
-		return adminAudiobookStats{}, os.ErrInvalid
+		return audiobooks.AdminStatsReport{}, os.ErrInvalid
 	}
-	return adminAudiobookStats{}, nil
+	return audiobooks.AdminStatsReport{}, nil
 }
 
-func (d dashboardStore) AdminListening(context.Context, time.Time) ([]adminDaySeconds, []adminTopBook, []adminTopListener, error) {
+func (d dashboardStore) AdminListening(context.Context, time.Time) ([]audiobooks.AdminDaySeconds, []audiobooks.AdminTopBook, []audiobooks.AdminTopListener, error) {
 	if d.listeningErr {
 		return nil, nil, nil, os.ErrInvalid
 	}
-	return []adminDaySeconds{}, []adminTopBook{}, []adminTopListener{}, nil
+	return []audiobooks.AdminDaySeconds{}, []audiobooks.AdminTopBook{}, []audiobooks.AdminTopListener{}, nil
 }
 
-func (d dashboardStore) AdminHealthCounts(context.Context) (adminAudiobookHealth, error) {
+func (d dashboardStore) AdminHealthCounts(context.Context) (audiobooks.AdminHealth, error) {
 	if d.healthErr {
-		return adminAudiobookHealth{}, os.ErrInvalid
+		return audiobooks.AdminHealth{}, os.ErrInvalid
 	}
-	return adminAudiobookHealth{AwaitingConversion: d.awaiting}, nil
+	return audiobooks.AdminHealth{AwaitingConversion: d.awaiting}, nil
 }
 
-func (d dashboardStore) ListStoredMP3s(context.Context) ([]audiobookStoredMP3, error) {
+func (d dashboardStore) ListStoredMP3s(context.Context) ([]audiobooks.StoredMP3, error) {
 	if d.mp3sErr {
 		return nil, os.ErrInvalid
 	}
 	return d.mp3s, nil
 }
 
-func dashboardWith(t *testing.T, store audiobookStore) (map[string]adminSystemHealth, adminWorkQueues) {
+func dashboardWith(t *testing.T, store audiobooks.Store) (map[string]adminSystemHealth, adminWorkQueues) {
 	t.Helper()
 	s, _, _ := newShareTestServer(t)
 	s.config.DataDir = t.TempDir()
@@ -165,13 +166,13 @@ func TestAdminDashboardAudiobooksHealthRow(t *testing.T) {
 
 func TestAdminDashboardConversionQueueExcludesFailed(t *testing.T) {
 	dir := t.TempDir()
-	var mp3s []audiobookStoredMP3
+	var mp3s []audiobooks.StoredMP3
 	for _, name := range []string{"a.mp3", "b.mp3", "c.mp3"} {
 		p := filepath.Join(dir, name)
 		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		mp3s = append(mp3s, audiobookStoredMP3{ID: name, StoragePath: p})
+		mp3s = append(mp3s, audiobooks.StoredMP3{ID: name, StoragePath: p})
 	}
 	recordAudiobookRemuxFailure(mp3s[0].StoragePath, os.ErrInvalid)
 	_, queues := dashboardWith(t, dashboardStore{mp3s: mp3s, awaiting: 3})

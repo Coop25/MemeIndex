@@ -1,3 +1,4 @@
+// @ts-check
 // Ticks once a second so the audiobook player's playback-sync timers
 // (heartbeat, progress save, "playing elsewhere" poll) stay on schedule even
 // while the tab is backgrounded. A plain setInterval in the page itself gets

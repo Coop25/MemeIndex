@@ -12,17 +12,18 @@ import (
 	"github.com/google/uuid"
 
 	"memeindex/internal/accessor"
+	"memeindex/internal/audiobooks"
 	"memeindex/internal/manager"
 )
 
-func insertActivityBook(t *testing.T, store *postgresAudiobookStore, title, coverPath, chapters, seriesID string) string {
+func insertActivityBook(t *testing.T, store *audiobooks.PostgresStore, title, coverPath, chapters, seriesID string) string {
 	t.Helper()
 	id := uuid.Must(uuid.NewV6()).String()
 	var series any
 	if seriesID != "" {
 		series = seriesID
 	}
-	_, err := store.pool.Exec(context.Background(), `
+	_, err := store.Pool().Exec(context.Background(), `
 		INSERT INTO audiobooks (id, title, filename, size_bytes, duration_seconds, storage_path, cover_path, uploaded_by_user_id, chapters, series_id)
 		VALUES ($1, $2, 'book.m4b', 1, 60, '/tmp/book.m4b', $3, 'u-admin', $4::jsonb, $5)
 	`, id, title, coverPath, chapters, series)
@@ -32,9 +33,9 @@ func insertActivityBook(t *testing.T, store *postgresAudiobookStore, title, cove
 	return id
 }
 
-func insertListening(t *testing.T, store *postgresAudiobookStore, user, book string, date time.Time, seconds float64) {
+func insertListening(t *testing.T, store *audiobooks.PostgresStore, user, book string, date time.Time, seconds float64) {
 	t.Helper()
-	if _, err := store.pool.Exec(context.Background(), `
+	if _, err := store.Pool().Exec(context.Background(), `
 		INSERT INTO audiobook_listening_stats (user_id, audiobook_id, listen_date, seconds_listened)
 		VALUES ($1, $2, $3, $4)
 	`, user, book, date.Format("2006-01-02"), seconds); err != nil {
@@ -77,7 +78,7 @@ func TestAdminListening(t *testing.T) {
 func TestAdminHealthCounts(t *testing.T) {
 	store, _ := newIsolatedAudiobookStore(t)
 	ctx := context.Background()
-	if _, err := store.pool.Exec(ctx, `INSERT INTO audiobook_series (id, name) VALUES ('s1', 'Series')`); err != nil {
+	if _, err := store.Pool().Exec(ctx, `INSERT INTO audiobook_series (id, name) VALUES ('s1', 'Series')`); err != nil {
 		t.Fatalf("insert series: %v", err)
 	}
 	one := `[{"title":"Ch 1","start_seconds":0,"end_seconds":10}]`
@@ -110,7 +111,7 @@ func TestFailedRemuxAudiobookIDs(t *testing.T) {
 	}
 	failedID, okID := uuid.Must(uuid.NewV6()).String(), uuid.Must(uuid.NewV6()).String()
 	for id, p := range map[string]string{failedID: failedPath, okID: okPath} {
-		if _, err := store.pool.Exec(ctx, `
+		if _, err := store.Pool().Exec(ctx, `
 			INSERT INTO audiobooks (id, title, filename, size_bytes, duration_seconds, storage_path, mime_type, uploaded_by_user_id)
 			VALUES ($1, 'T', 'a.mp3', 1, 1, $2, 'audio/mpeg', 'u')`, id, p); err != nil {
 			t.Fatal(err)
@@ -136,7 +137,7 @@ func TestFailedRemuxAudiobookIDs(t *testing.T) {
 // file-backed MemeStore stays the real store underneath.
 type pendingDeleteStore struct {
 	*accessor.MemeStore
-	accessor.AuditLogStore
+	accessor.AuditStore
 	pending int
 }
 
@@ -185,22 +186,22 @@ func TestAdminDashboardWorkQueues(t *testing.T) {
 
 // partialFailureStore fails health counts and conversions but serves listening.
 type partialFailureStore struct {
-	audiobookStore
+	audiobooks.Store
 	failListening bool
 }
 
-func (p partialFailureStore) AdminListening(context.Context, time.Time) ([]adminDaySeconds, []adminTopBook, []adminTopListener, error) {
+func (p partialFailureStore) AdminListening(context.Context, time.Time) ([]audiobooks.AdminDaySeconds, []audiobooks.AdminTopBook, []audiobooks.AdminTopListener, error) {
 	if p.failListening {
 		return nil, nil, nil, os.ErrInvalid
 	}
-	return []adminDaySeconds{{Date: "2026-11-05", Seconds: 42}}, nil, nil, nil
+	return []audiobooks.AdminDaySeconds{{Date: "2026-11-05", Seconds: 42}}, nil, nil, nil
 }
 
-func (p partialFailureStore) AdminHealthCounts(context.Context) (adminAudiobookHealth, error) {
-	return adminAudiobookHealth{}, os.ErrInvalid
+func (p partialFailureStore) AdminHealthCounts(context.Context) (audiobooks.AdminHealth, error) {
+	return audiobooks.AdminHealth{}, os.ErrInvalid
 }
 
-func (p partialFailureStore) ListStoredMP3s(context.Context) ([]audiobookStoredMP3, error) {
+func (p partialFailureStore) ListStoredMP3s(context.Context) ([]audiobooks.StoredMP3, error) {
 	return nil, os.ErrInvalid
 }
 
@@ -213,7 +214,7 @@ func TestCachedAudiobookActivityPartialFailure(t *testing.T) {
 	if len(got.DailySeconds) != 1 || got.DailySeconds[0].Seconds != 42 {
 		t.Errorf("daily = %+v, want listening kept", got.DailySeconds)
 	}
-	if got.Health != (adminAudiobookHealth{}) {
+	if got.Health != (audiobooks.AdminHealth{}) {
 		t.Errorf("health = %+v, want zeroed", got.Health)
 	}
 	if !got.Partial {

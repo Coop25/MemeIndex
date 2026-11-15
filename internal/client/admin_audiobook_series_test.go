@@ -4,20 +4,21 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"memeindex/internal/audiobooks"
 	"net/http"
 	"testing"
 )
 
-func insertSeries(t *testing.T, store *postgresAudiobookStore, id, name string) {
+func insertSeries(t *testing.T, store *audiobooks.PostgresStore, id, name string) {
 	t.Helper()
-	if _, err := store.pool.Exec(context.Background(), `INSERT INTO audiobook_series (id, name) VALUES ($1, $2)`, id, name); err != nil {
+	if _, err := store.Pool().Exec(context.Background(), `INSERT INTO audiobook_series (id, name) VALUES ($1, $2)`, id, name); err != nil {
 		t.Fatalf("insert series: %v", err)
 	}
 }
 
-func setBookSeries(t *testing.T, store *postgresAudiobookStore, book, series string, seq float64) {
+func setBookSeries(t *testing.T, store *audiobooks.PostgresStore, book, series string, seq float64) {
 	t.Helper()
-	if _, err := store.pool.Exec(context.Background(), `UPDATE audiobooks SET series_id = $2, series_sequence = $3 WHERE id = $1`, book, series, seq); err != nil {
+	if _, err := store.Pool().Exec(context.Background(), `UPDATE audiobooks SET series_id = $2, series_sequence = $3 WHERE id = $1`, book, series, seq); err != nil {
 		t.Fatalf("set series: %v", err)
 	}
 }
@@ -38,7 +39,7 @@ func TestMergeSeriesMovesBooksKeepingSequence(t *testing.T) {
 	if err != nil || moved != 2 {
 		t.Fatalf("moved=%d err=%v", moved, err)
 	}
-	rows, err := store.pool.Query(ctx, `SELECT series_sequence FROM audiobooks WHERE series_id = 'sb' ORDER BY series_sequence`)
+	rows, err := store.Pool().Query(ctx, `SELECT series_sequence FROM audiobooks WHERE series_id = 'sb' ORDER BY series_sequence`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,16 +56,16 @@ func TestMergeSeriesMovesBooksKeepingSequence(t *testing.T) {
 		t.Fatalf("sequences = %v", seqs)
 	}
 	var n int
-	if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM audiobook_series WHERE id = 'sa'`).Scan(&n); err != nil || n != 0 {
+	if err := store.Pool().QueryRow(ctx, `SELECT count(*) FROM audiobook_series WHERE id = 'sa'`).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("series A remaining = %d err=%v", n, err)
 	}
-	if _, err := store.MergeSeries(ctx, "sa", "sb"); !errors.Is(err, ErrAudiobookSeriesNotFound) {
+	if _, err := store.MergeSeries(ctx, "sa", "sb"); !errors.Is(err, audiobooks.ErrSeriesNotFound) {
 		t.Fatalf("missing from: %v", err)
 	}
-	if _, err := store.MergeSeries(ctx, "sb", "nope"); !errors.Is(err, ErrAudiobookSeriesNotFound) {
+	if _, err := store.MergeSeries(ctx, "sb", "nope"); !errors.Is(err, audiobooks.ErrSeriesNotFound) {
 		t.Fatalf("missing into: %v", err)
 	}
-	if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM audiobook_series WHERE id = 'sb'`).Scan(&n); err != nil || n != 1 {
+	if err := store.Pool().QueryRow(ctx, `SELECT count(*) FROM audiobook_series WHERE id = 'sb'`).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("series B should survive failed merge, n=%d err=%v", n, err)
 	}
 }
@@ -106,17 +107,17 @@ func TestAdminAudiobookTagUsage(t *testing.T) {
 	b2 := insertActivityBook(t, store, "b2", "c.jpg", "[]", "")
 	var scifi, lonely, memeOnly int64
 	for name, dst := range map[string]*int64{"scifi": &scifi, "lonely": &lonely, "memeonly": &memeOnly} {
-		if err := store.pool.QueryRow(ctx, `INSERT INTO tags (name) VALUES ($1) RETURNING id`, name).Scan(dst); err != nil {
+		if err := store.Pool().QueryRow(ctx, `INSERT INTO tags (name) VALUES ($1) RETURNING id`, name).Scan(dst); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := store.pool.Exec(ctx, `INSERT INTO memes (id, original_name, stored_name, file_path, content_type, size_bytes, created_at, updated_at)
+	if _, err := store.Pool().Exec(ctx, `INSERT INTO memes (id, original_name, stored_name, file_path, content_type, size_bytes, created_at, updated_at)
 		VALUES ('m1', 'cat.png', 'm1.png', '/uploads/m1.png', 'image/png', 1, NOW(), NOW())`); err != nil {
 		t.Fatal(err)
 	}
 	exec := func(q string, args ...any) {
 		t.Helper()
-		if _, err := store.pool.Exec(ctx, q, args...); err != nil {
+		if _, err := store.Pool().Exec(ctx, q, args...); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -137,7 +138,7 @@ func TestAdminAudiobookTagUsage(t *testing.T) {
 		t.Fatalf("status %d: %s", w.Code, w.Body.String())
 	}
 	var body struct {
-		Tags []adminAudiobookTagUsage `json:"tags"`
+		Tags []audiobooks.AdminTagUsage `json:"tags"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
@@ -149,7 +150,7 @@ func TestAdminAudiobookTagUsage(t *testing.T) {
 	if first.Tag != "scifi" || first.Audiobooks != 2 || first.Memes != 1 || len(first.RestrictedUsers) != 2 {
 		t.Fatalf("first = %+v", first)
 	}
-	if first.RestrictedUsers[0] != (adminRestrictedUser{UserID: "u1", DisplayName: "Alice"}) || first.RestrictedUsers[1] != (adminRestrictedUser{UserID: "u2", DisplayName: "bob"}) {
+	if first.RestrictedUsers[0] != (audiobooks.AdminRestrictedUser{UserID: "u1", DisplayName: "Alice"}) || first.RestrictedUsers[1] != (audiobooks.AdminRestrictedUser{UserID: "u2", DisplayName: "bob"}) {
 		t.Fatalf("restricted = %+v", first.RestrictedUsers)
 	}
 	if second := body.Tags[1]; second.Tag != "lonely" || second.Audiobooks != 1 || second.Memes != 0 || second.RestrictedUsers == nil || len(second.RestrictedUsers) != 0 {
