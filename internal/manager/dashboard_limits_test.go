@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
@@ -23,7 +24,7 @@ func TestDashboardFavoriteAndTagLimits(t *testing.T) {
 	}
 	m := NewMemeManager(&adminReadCacheStore{memes: memes})
 
-	got, err := m.Dashboard("u")
+	got, err := m.Dashboard(context.Background(), "u")
 	if err != nil {
 		t.Fatalf("Dashboard: %v", err)
 	}

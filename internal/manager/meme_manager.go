@@ -218,8 +218,8 @@ func (m *MemeManager) waitOrStop(d time.Duration) bool {
 // cannot ask the database (or the in-process test store) for an unbounded slice.
 const maxMemePageLimit = 500
 
-func (m *MemeManager) ListMemes(userID, query string, favoritesOnly bool, tag string, view string, offset int, limit int) (MemeListResult, error) {
-	return m.ListMemesSorted(userID, query, favoritesOnly, tag, view, "newest", offset, limit)
+func (m *MemeManager) ListMemes(ctx context.Context, userID, query string, favoritesOnly bool, tag string, view string, offset int, limit int) (MemeListResult, error) {
+	return m.ListMemesSorted(ctx, userID, query, favoritesOnly, tag, view, "newest", offset, limit)
 }
 
 // ListMemesSorted resolves one page of a browse or search. A store that can
@@ -228,7 +228,7 @@ func (m *MemeManager) ListMemes(userID, query string, favoritesOnly bool, tag st
 // while the database is already struggling, and it does not understand the
 // search operators, so results would silently change. Only a store that
 // cannot query at all (the in-process test store) is scanned in memory.
-func (m *MemeManager) ListMemesSorted(userID, query string, favoritesOnly bool, tag string, view string, sortBy string, offset int, limit int) (MemeListResult, error) {
+func (m *MemeManager) ListMemesSorted(ctx context.Context, userID, query string, favoritesOnly bool, tag string, view string, sortBy string, offset int, limit int) (MemeListResult, error) {
 	if offset < 0 {
 		offset = 0
 	}
@@ -240,7 +240,7 @@ func (m *MemeManager) ListMemesSorted(userID, query string, favoritesOnly bool, 
 	}
 
 	if qs, ok := m.store.(accessor.QueryableMemeStore); ok {
-		page, err := qs.QueryMemes(accessor.MemeQuery{
+		page, err := qs.QueryMemes(ctx, accessor.MemeQuery{
 			UserID:        strings.TrimSpace(userID),
 			Search:        strings.TrimSpace(query),
 			Tag:           strings.TrimSpace(tag),
@@ -299,9 +299,9 @@ func memeCountsFromCategory(c accessor.MemeCategoryCounts) MemeCounts {
 
 // Dashboard builds the home screen summary. As with ListMemesSorted, a
 // querying store's error is returned instead of falling back to a full scan.
-func (m *MemeManager) Dashboard(userID string) (VaultDashboard, error) {
+func (m *MemeManager) Dashboard(ctx context.Context, userID string) (VaultDashboard, error) {
 	if qs, ok := m.store.(accessor.QueryableMemeStore); ok {
-		data, err := qs.MemeDashboard(strings.TrimSpace(userID))
+		data, err := qs.MemeDashboard(ctx, strings.TrimSpace(userID))
 		if err != nil {
 			return VaultDashboard{}, fmt.Errorf("query dashboard: %w", err)
 		}
@@ -346,8 +346,8 @@ func (m *MemeManager) Dashboard(userID string) (VaultDashboard, error) {
 // NewestMemeID returns the id of the most recently added meme the user can
 // see, or "" for an empty vault. It is the cheap check behind the home
 // screen's "anything new?" poll.
-func (m *MemeManager) NewestMemeID(userID string) (string, error) {
-	page, err := m.ListMemesSorted(userID, "", false, "", "", "newest", 0, 1)
+func (m *MemeManager) NewestMemeID(ctx context.Context, userID string) (string, error) {
+	page, err := m.ListMemesSorted(ctx, userID, "", false, "", "", "newest", 0, 1)
 	if err != nil {
 		return "", err
 	}
@@ -389,14 +389,14 @@ func vaultTagStats(tags []accessor.TagCount) []VaultTagStat {
 
 // PopularTags returns the most used tags. A querying store's error is returned
 // instead of falling back to a full scan.
-func (m *MemeManager) PopularTags(userID string, limit int) ([]VaultTagStat, error) {
+func (m *MemeManager) PopularTags(ctx context.Context, userID string, limit int) ([]VaultTagStat, error) {
 	if limit <= 0 {
 		limit = 10
 	}
 	limit = min(limit, 50)
 
 	if qs, ok := m.store.(accessor.QueryableMemeStore); ok {
-		tags, err := qs.TagCounts(limit)
+		tags, err := qs.TagCounts(ctx, limit)
 		if err != nil {
 			return nil, fmt.Errorf("query tag counts: %w", err)
 		}

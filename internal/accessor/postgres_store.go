@@ -441,8 +441,7 @@ WHERE ` + where
 // QueryMemes resolves one browse/search page entirely in Postgres: filter, facet
 // counts, media-class view, favourites, sort, and limit/offset. It replaces the
 // previous path of loading every row and paging in the application.
-func (s *PostgresStore) QueryMemes(q MemeQuery) (MemeQueryPage, error) {
-	ctx := context.Background()
+func (s *PostgresStore) QueryMemes(ctx context.Context, q MemeQuery) (MemeQueryPage, error) {
 	uid := normalizeFavoriteUserID(q.UserID)
 	search := ParseMemeSearch(q.Search)
 
@@ -510,11 +509,11 @@ func (s *PostgresStore) QueryMemes(q MemeQuery) (MemeQueryPage, error) {
 
 // TagCounts returns the most-used tags across visible memes, most frequent
 // first, ties broken by name.
-func (s *PostgresStore) TagCounts(limit int) ([]TagCount, error) {
+func (s *PostgresStore) TagCounts(ctx context.Context, limit int) ([]TagCount, error) {
 	if limit <= 0 {
 		limit = 10
 	}
-	rows, err := s.pool.Query(context.Background(), `
+	rows, err := s.pool.Query(ctx, `
 		SELECT t.name, COUNT(*) AS c
 		FROM meme_tags mt
 		JOIN tags t ON t.id = mt.tag_id
@@ -854,12 +853,12 @@ func scanIDList(ctx context.Context, q queryable, sql string, args ...any) ([]st
 // MemeDashboard resolves the user home screen summary in Postgres instead of
 // scanning the whole archive into memory. The seven independent reads are run
 // concurrently on separate pooled connections; the first error cancels the rest.
-func (s *PostgresStore) MemeDashboard(userID string) (MemeDashboardData, error) {
+func (s *PostgresStore) MemeDashboard(ctx context.Context, userID string) (MemeDashboardData, error) {
 	uid := normalizeFavoriteUserID(userID)
 	const visible = "COALESCE(m.hidden_from_app, FALSE) = FALSE"
 
 	var data MemeDashboardData
-	g, ctx := errgroup.WithContext(context.Background())
+	g, ctx := errgroup.WithContext(ctx)
 
 	g.Go(func() error {
 		counts, err := s.memeCounts(ctx, visible, []any{uid})
@@ -904,7 +903,7 @@ func (s *PostgresStore) MemeDashboard(userID string) (MemeDashboardData, error) 
 		return err
 	})
 	g.Go(func() error {
-		tags, err := s.TagCounts(DashboardTopTagLimit)
+		tags, err := s.TagCounts(ctx, DashboardTopTagLimit)
 		data.TopTags = tags
 		return err
 	})
