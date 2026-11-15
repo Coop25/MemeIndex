@@ -395,7 +395,11 @@ func (s *Server) serveSharedMemeAsset(w http.ResponseWriter, r *http.Request, me
 		}
 	}
 	setUntrustedAssetHeaders(w, "/uploads/"+fileName)
-	if browserViewableMediaType(w.Header().Get("Content-Type")) {
+	if mediaType, ok := browserViewableMediaType(w.Header().Get("Content-Type")); ok {
+		// Send the one type that was checked, not the stored value: a browser
+		// reads the last type in a list, so `video/mp4, application/pdf`
+		// would otherwise reach it as a PDF without the sandbox.
+		w.Header().Set("Content-Type", mediaType)
 		w.Header().Set("Content-Security-Policy", sharedMediaContentSecurityPolicy)
 	}
 	http.ServeFile(w, r, filepath.Join(baseDir, fileName))
@@ -414,17 +418,23 @@ const sharedMediaContentSecurityPolicy = "default-src 'none'; media-src 'self'; 
 
 // browserViewableMediaType reports whether a browser opening a file of this
 // type shows it in its own player or image viewer rather than as a page that
-// could run script. SVG is left out: it is a document and can carry script.
-func browserViewableMediaType(contentType string) bool {
-	base := mediaTypeBase(contentType)
-	if strings.HasPrefix(base, "video/") || strings.HasPrefix(base, "audio/") {
-		return true
+// could run script, and returns the bare, lower-case media type to send. The
+// value must parse as exactly one media type: the stored type comes from the
+// uploader, and anything malformed or listing several types keeps the
+// sandbox. SVG is left out: it is a document and can carry script.
+func browserViewableMediaType(contentType string) (string, bool) {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return "", false
 	}
-	switch base {
+	if strings.HasPrefix(mediaType, "video/") || strings.HasPrefix(mediaType, "audio/") {
+		return mediaType, true
+	}
+	switch mediaType {
 	case "image/png", "image/jpeg", "image/gif", "image/webp", "image/avif", "image/apng", "image/bmp":
-		return true
+		return mediaType, true
 	}
-	return false
+	return "", false
 }
 
 // edgeCacheOnlySuccess withdraws an edge-cacheable header when the file server

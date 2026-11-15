@@ -145,6 +145,12 @@ func TestShareLinkLetsBrowsersPlaySharedMedia(t *testing.T) {
 		{create("drawing.svg", "image/svg+xml", "<svg xmlns='http://www.w3.org/2000/svg'/>"), false},
 		{create("page.mp4", "text/html", "<script>alert(1)</script>"), false},
 		{create("blob.bin", "application/octet-stream", "opaque bytes"), false},
+		// The stored type comes from the uploader. Browsers read the last
+		// type in a list, so one that starts with video/ but ends with
+		// something else must not lose the sandbox.
+		{create("listed.mp4", "video/mp4, application/pdf", "pdf bytes"), false},
+		{create("bad-param.mp4", "video/mp4; codecs", "bad-param video bytes"), false},
+		{create("codecs.mp4", `video/mp4; codecs="avc1.42E01E"`, "codecs video bytes"), true},
 	} {
 		now := time.Now().UTC()
 		share, err := store.GetOrCreateMemeShare(tc.meme.ID, "admin-1", now, now.Add(memeShareLifetime))
@@ -162,6 +168,10 @@ func TestShareLinkLetsBrowsersPlaySharedMedia(t *testing.T) {
 			}
 			if got := recorder.Header().Get("Content-Disposition"); !strings.HasPrefix(got, "inline") {
 				t.Fatalf("%s: Content-Disposition = %q, want inline", tc.meme.OriginalName, got)
+			}
+			// The browser gets exactly the one type that was checked.
+			if got := recorder.Header().Get("Content-Type"); strings.ContainsAny(got, ",;") || got == "" {
+				t.Fatalf("%s: Content-Type = %q, want a single bare media type", tc.meme.OriginalName, got)
 			}
 		} else if !strings.HasPrefix(csp, "sandbox") {
 			t.Fatalf("%s: Content-Security-Policy = %q, want the upload sandbox", tc.meme.OriginalName, csp)
