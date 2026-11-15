@@ -4850,15 +4850,97 @@ body.home-mode .dashboard-recent .preview-frame {
   object-fit: contain;
 }
 .home-spotlight-stage .file-icon { position: absolute; inset: 0; width: 100%; height: 100%; }
-.home-spotlight-audio {
+/* The audio element itself is never shown; the control bar drives it. */
+.home-spotlight-audio { display: none; }
+.home-spotlight-stage.is-playable { cursor: pointer; }
+
+/* The spotlight's own control bar, along the bottom of the player. */
+.spot-controls {
   position: absolute;
-  right: 10px;
-  bottom: 10px;
-  left: 10px;
-  width: calc(100% - 20px);
-  height: 44px;
-  border-radius: 999px;
+  right: 8px;
+  bottom: 8px;
+  left: 8px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid rgba(255, 255, 255, .08);
+  border-radius: 12px;
+  background: rgba(8, 8, 11, .78);
+  color: #f3eee8;
+  cursor: default;
+  backdrop-filter: blur(10px);
+  transition: opacity .2s ease;
 }
+/* While a video plays the bar steps back until the pointer comes near. */
+@media (hover: hover) {
+  .home-spotlight-stage.is-playing .spot-controls { opacity: 0; }
+  .home-spotlight-stage.is-playing:hover .spot-controls,
+  .home-spotlight-stage .spot-controls:focus-within { opacity: 1; }
+}
+.spot-control-button {
+  display: grid;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.spot-control-button:hover,
+.spot-control-button:focus-visible { background: rgba(255, 255, 255, .1); color: var(--green-bright); }
+.spot-control-button svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.spot-play svg path { fill: currentColor; stroke: none; }
+.spot-controls .spot-icon-pause,
+.spot-controls.is-playing .spot-icon-play { display: none; }
+.spot-controls.is-playing .spot-icon-pause { display: inline; }
+.spot-mute .spot-icon-speaker { fill: currentColor; }
+.spot-controls .spot-icon-off,
+.spot-controls.is-muted .spot-icon-waves { display: none; }
+.spot-controls.is-muted .spot-icon-off { display: inline; }
+.spot-time { flex: 0 0 auto; color: #c9c3bc; font-size: 11px; font-variant-numeric: tabular-nums; }
+.spot-progress,
+.spot-volume-slider {
+  --spot-fill: 0%;
+  height: 4px;
+  margin: 0;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--green-bright) var(--spot-fill), rgba(255, 255, 255, .22) var(--spot-fill));
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+}
+.spot-progress { flex: 1 1 auto; min-width: 40px; }
+.spot-progress::-webkit-slider-thumb,
+.spot-volume-slider::-webkit-slider-thumb { width: 13px; height: 13px; border: 0; border-radius: 50%; background: #fff; -webkit-appearance: none; }
+.spot-progress::-moz-range-thumb,
+.spot-volume-slider::-moz-range-thumb { width: 13px; height: 13px; border: 0; border-radius: 50%; background: #fff; }
+.spot-volume { position: relative; display: flex; flex: 0 0 auto; align-items: center; gap: 4px; }
+.spot-volume-pop { display: flex; align-items: center; gap: 8px; }
+.spot-volume-slider { width: 84px; }
+.spot-volume-value { min-width: 34px; color: #c9c3bc; font-size: 11px; font-variant-numeric: tabular-nums; }
+/* A narrow bar (app.js sets is-compact) opens the slider above the speaker. */
+.spot-controls.is-compact .spot-volume-pop {
+  position: absolute;
+  right: -4px;
+  bottom: calc(100% + 10px);
+  display: none;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, .1);
+  border-radius: 12px;
+  background: rgba(8, 8, 11, .92);
+  backdrop-filter: blur(10px);
+}
+.spot-controls.is-compact .spot-volume.is-open .spot-volume-pop { display: flex; }
+.spot-controls.is-compact .spot-volume-slider { width: 150px; }
+.spot-controls.is-compact .spot-time-duration { display: none; }
 .home-spotlight-nav {
   display: flex;
   align-items: center;
@@ -5076,6 +5158,12 @@ body.home-mode .dashboard-recent .preview-frame {
   .home-spotlight-stage { border-radius: 10px; }
   .home-spotlight-nav { width: 100%; }
   .home-spotlight-step { flex: 1 1 0; min-width: 0; min-height: 46px; }
+  .spot-controls { gap: 4px; padding: 4px 6px; }
+  .spot-control-button { width: 40px; height: 40px; }
+  .spot-time { font-size: 10px; }
+  .spot-volume-slider { height: 6px; }
+  .spot-progress::-webkit-slider-thumb,
+  .spot-volume-slider::-webkit-slider-thumb { width: 18px; height: 18px; }
   .home-spotlight-toggles { width: 100%; }
   .home-spotlight-toggle { flex: 1 1 0; justify-content: center; min-height: 42px; }
   .home-spotlight-info { flex: 0 0 auto; gap: 10px; padding: 12px 14px 16px; }

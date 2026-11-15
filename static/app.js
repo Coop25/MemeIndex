@@ -9269,6 +9269,131 @@ function prepareSpotlightMedia(media) {
 	});
 }
 
+// The spotlight's own control bar, matching the editor and reel rather than
+// the browser's built-in controls: play/pause, progress with times, a
+// speaker button with a volume slider and percentage, and fullscreen. The
+// slider reads and writes the same saved volume as every other player.
+function buildSpotlightControls(player) {
+	const isVideo = player instanceof HTMLVideoElement;
+	const bar = document.createElement("div");
+	bar.className = "spot-controls";
+	bar.innerHTML = `
+		<button class="spot-control-button spot-play" type="button" aria-label="Play">
+			<svg viewBox="0 0 24 24" aria-hidden="true"><path class="spot-icon-play" d="M8 5.5v13l10.5-6.5z" /><path class="spot-icon-pause" d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z" /></svg>
+		</button>
+		<span class="spot-time spot-time-current">0:00</span>
+		<input class="spot-progress" type="range" min="0" max="1000" value="0" step="1" aria-label="Playback progress">
+		<span class="spot-time spot-time-duration">0:00</span>
+		<div class="spot-volume">
+			<button class="spot-control-button spot-mute" type="button" aria-label="Mute" aria-expanded="false">
+				<svg viewBox="0 0 24 24" aria-hidden="true"><path class="spot-icon-speaker" d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" /><path class="spot-icon-waves" d="M15.5 9a4.5 4.5 0 0 1 0 6M18 6.5a8 8 0 0 1 0 11" /><path class="spot-icon-off" d="M16 9.5l5 5M21 9.5l-5 5" /></svg>
+			</button>
+			<div class="spot-volume-pop">
+				<input class="spot-volume-slider" type="range" min="0" max="100" step="1" aria-label="Volume">
+				<output class="spot-volume-value">10%</output>
+			</div>
+		</div>
+		${isVideo ? `<button class="spot-control-button spot-fullscreen" type="button" aria-label="Full screen">
+			<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5" /></svg>
+		</button>` : ""}`;
+	const playButton = bar.querySelector(".spot-play");
+	const progress = bar.querySelector(".spot-progress");
+	const current = bar.querySelector(".spot-time-current");
+	const duration = bar.querySelector(".spot-time-duration");
+	const volumeWrap = bar.querySelector(".spot-volume");
+	const muteButton = bar.querySelector(".spot-mute");
+	const slider = bar.querySelector(".spot-volume-slider");
+	const value = bar.querySelector(".spot-volume-value");
+	// A narrow bar (a phone, or a tall video on a wide screen) tucks the
+	// volume slider into a popover so the progress bar keeps its room.
+	const narrow = () => bar.classList.contains("is-compact");
+	if (typeof ResizeObserver === "function") {
+		new ResizeObserver(() => {
+			const compact = bar.clientWidth > 0 && bar.clientWidth < 420;
+			bar.classList.toggle("is-compact", compact);
+			if (!compact) volumeWrap.classList.remove("is-open");
+			syncVolume();
+		}).observe(bar);
+	}
+	let seeking = false;
+
+	const syncPlay = () => {
+		bar.classList.toggle("is-playing", !player.paused);
+		homeSpotlightStage.classList.toggle("is-playing", !player.paused);
+		playButton.setAttribute("aria-label", player.paused ? "Play" : "Pause");
+	};
+	const syncTime = () => {
+		const total = Number.isFinite(player.duration) ? player.duration : 0;
+		current.textContent = formatMediaTime(player.currentTime);
+		duration.textContent = formatMediaTime(total);
+		if (!seeking) progress.value = total > 0 ? String(Math.round((player.currentTime / total) * 1000)) : "0";
+		progress.style.setProperty("--spot-fill", `${Number(progress.value) / 10}%`);
+	};
+	const syncVolume = () => {
+		const level = player.muted ? 0 : Math.round(player.volume * 100);
+		slider.value = String(level);
+		slider.style.setProperty("--spot-fill", `${level}%`);
+		value.textContent = `${level}%`;
+		bar.classList.toggle("is-muted", level === 0);
+		muteButton.setAttribute("aria-label", narrow() ? "Volume" : (level === 0 ? "Unmute" : "Mute"));
+	};
+
+	playButton.addEventListener("click", () => {
+		if (player.paused) player.play().catch(() => {});
+		else player.pause();
+	});
+	progress.addEventListener("input", () => {
+		seeking = true;
+		const total = Number.isFinite(player.duration) ? player.duration : 0;
+		if (total > 0) player.currentTime = (Number(progress.value) / 1000) * total;
+		syncTime();
+	});
+	progress.addEventListener("change", () => {
+		seeking = false;
+	});
+	// On a phone the speaker opens the slider; on a wider screen the slider
+	// is always showing and the speaker mutes, as in the editor.
+	muteButton.addEventListener("click", () => {
+		if (narrow()) {
+			const open = !volumeWrap.classList.contains("is-open");
+			volumeWrap.classList.toggle("is-open", open);
+			muteButton.setAttribute("aria-expanded", open ? "true" : "false");
+			return;
+		}
+		delete player.dataset.autoMuted;
+		player.muted = !player.muted;
+		if (!player.muted && player.volume === 0) player.volume = DEFAULT_MEDIA_VOLUME;
+		syncStoredMediaVolumeFromElement(player);
+	});
+	slider.addEventListener("input", () => {
+		const level = Number(slider.value) / 100;
+		delete player.dataset.autoMuted;
+		player.volume = level;
+		player.muted = level === 0;
+		syncStoredMediaVolumeFromElement(player);
+		syncVolume();
+	});
+	bar.querySelector(".spot-fullscreen")?.addEventListener("click", () => {
+		if (document.fullscreenElement) {
+			document.exitFullscreen?.().catch(() => {});
+		} else if (homeSpotlightStage.requestFullscreen) {
+			homeSpotlightStage.requestFullscreen().catch(() => {});
+		} else if (typeof player.webkitEnterFullscreen === "function") {
+			player.webkitEnterFullscreen();
+		}
+	});
+	player.addEventListener("play", syncPlay);
+	player.addEventListener("pause", syncPlay);
+	player.addEventListener("timeupdate", syncTime);
+	player.addEventListener("loadedmetadata", syncTime);
+	player.addEventListener("durationchange", syncTime);
+	player.addEventListener("volumechange", syncVolume);
+	syncPlay();
+	syncTime();
+	syncVolume();
+	return bar;
+}
+
 function renderSpotlight() {
 	if (!homeSpotlight) return;
 	pauseSpotlightMedia();
@@ -9295,7 +9420,6 @@ function renderSpotlight() {
 		media.className = "home-spotlight-player-video";
 		media.src = meme.filePath;
 		if (meme.previewPath) media.poster = meme.previewPath;
-		media.controls = true;
 		media.playsInline = true;
 		media.preload = "metadata";
 		player = media;
@@ -9313,11 +9437,13 @@ function renderSpotlight() {
 		player = document.createElement("audio");
 		player.className = "home-spotlight-audio";
 		player.src = meme.filePath;
-		player.controls = true;
 		player.preload = "metadata";
 		children.push(player);
 	}
-	if (player) prepareSpotlightMedia(player);
+	if (player) {
+		prepareSpotlightMedia(player);
+		children.push(buildSpotlightControls(player));
+	}
 	homeSpotlightStage.replaceChildren(...children);
 	homeSpotlightStage.classList.toggle("is-playable", playable);
 	// A playable stage is a player, not a button: its clicks belong to the
@@ -9447,8 +9573,16 @@ function openSpotlightMeme() {
 }
 
 homeSpotlightStage?.addEventListener("click", (event) => {
-	if (homeSpotlightStage.classList.contains("is-playable")) return;
-	if (event.target.closest("video, audio")) return;
+	if (homeSpotlightStage.classList.contains("is-playable")) {
+		// Tapping the picture itself plays or pauses, like most players; the
+		// control bar handles its own clicks.
+		if (event.target.closest(".spot-controls")) return;
+		const player = spotlightMediaElements()[0];
+		if (!player) return;
+		if (player.paused) player.play().catch(() => {});
+		else player.pause();
+		return;
+	}
 	openSpotlightMeme();
 });
 homeSpotlightStage?.addEventListener("keydown", (event) => {

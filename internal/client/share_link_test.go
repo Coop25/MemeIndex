@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"memeindex/internal/accessor"
 )
 
 var shareFileLinkPath = regexp.MustCompile(`^/s/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}\.png$`)
@@ -114,6 +116,67 @@ func TestShareLinkServesFileToEveryUserAgent(t *testing.T) {
 	server.handleShareLink(recorder, httptest.NewRequest(http.MethodPost, "https://memes.example.com/s/"+share.Slug+".png", nil))
 	if recorder.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("POST status = %d", recorder.Code)
+	}
+}
+
+// A browser shows a shared video, audio file or picture in a player page of
+// its own that loads the file again, which fails inside a sandboxed page, so
+// those types drop the sandbox but still allow no script. Anything a browser
+// could render as a document keeps the sandbox.
+func TestShareLinkLetsBrowsersPlaySharedMedia(t *testing.T) {
+	server, store, png := newShareTestServer(t)
+	create := func(name, contentType, body string) accessor.Meme {
+		t.Helper()
+		meme, err := store.Create(accessor.CreateInput{File: strings.NewReader(body), Filename: name, ContentType: contentType})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return meme
+	}
+	for _, tc := range []struct {
+		meme     accessor.Meme
+		playable bool
+	}{
+		{png, true},
+		{create("clip.mp4", "video/mp4", "video bytes"), true},
+		{create("clip.mov", "video/quicktime", "quicktime bytes"), true},
+		{create("song.mp3", "audio/mpeg", "audio bytes"), true},
+		{create("pic.webp", "image/webp", "webp bytes"), true},
+		{create("drawing.svg", "image/svg+xml", "<svg xmlns='http://www.w3.org/2000/svg'/>"), false},
+		{create("page.mp4", "text/html", "<script>alert(1)</script>"), false},
+		{create("blob.bin", "application/octet-stream", "opaque bytes"), false},
+	} {
+		now := time.Now().UTC()
+		share, err := store.GetOrCreateMemeShare(tc.meme.ID, "admin-1", now, now.Add(memeShareLifetime))
+		if err != nil {
+			t.Fatal(err)
+		}
+		recorder := getShareLink(server, "https://memes.example.com/s/"+share.Slug+filepath.Ext(tc.meme.OriginalName))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d", tc.meme.OriginalName, recorder.Code)
+		}
+		csp := recorder.Header().Get("Content-Security-Policy")
+		if tc.playable {
+			if csp != sharedMediaContentSecurityPolicy {
+				t.Fatalf("%s: Content-Security-Policy = %q, want %q", tc.meme.OriginalName, csp, sharedMediaContentSecurityPolicy)
+			}
+			if got := recorder.Header().Get("Content-Disposition"); !strings.HasPrefix(got, "inline") {
+				t.Fatalf("%s: Content-Disposition = %q, want inline", tc.meme.OriginalName, got)
+			}
+		} else if !strings.HasPrefix(csp, "sandbox") {
+			t.Fatalf("%s: Content-Security-Policy = %q, want the upload sandbox", tc.meme.OriginalName, csp)
+		}
+		if got := recorder.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Fatalf("%s: X-Content-Type-Options = %q", tc.meme.OriginalName, got)
+		}
+	}
+	for _, directive := range []string{"default-src 'none'", "media-src 'self'", "img-src 'self'"} {
+		if !strings.Contains(sharedMediaContentSecurityPolicy, directive) {
+			t.Fatalf("shared media policy %q is missing %q", sharedMediaContentSecurityPolicy, directive)
+		}
+	}
+	if strings.Contains(sharedMediaContentSecurityPolicy, "script-src") {
+		t.Fatalf("shared media policy %q must not allow any script", sharedMediaContentSecurityPolicy)
 	}
 }
 
