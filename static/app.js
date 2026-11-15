@@ -1297,6 +1297,51 @@ const MEDIA_VOLUME_STORAGE_KEY = "memeindex.mediaVolume";
 const DEFAULT_MEDIA_VOLUME = 0.10;
 const MODAL_PROGRESS_SCALE_MAX = 1000;
 
+// The meme modal's and the random reel's control bars (see createMediaControls).
+// On a phone their speaker opens a volume popover instead of muting.
+const modalMediaControlBar = createMediaControls({
+  play: modalPlay,
+  playIcon: modalPlayIcon,
+  progressWrap: modalProgressWrap,
+  progress: modalProgress,
+  current: modalCurrentTime,
+  duration: modalDuration,
+  volumeWrap: modalVolumeWrap,
+  volumeToggle: modalVolumeToggle,
+  volumeIcon: modalVolumeIcon,
+  volume: modalVolume,
+  volumeValue: modalVolumeValue,
+}, {
+  getMedia: () => getModalMediaControlTarget(),
+  isCompact: () => mobileSearchHeaderMediaQuery.matches,
+  onInteract: () => showMemeModalUI(),
+  onSync(media) {
+    memeModal?.classList.toggle("has-video", media instanceof HTMLVideoElement);
+    memeModal?.classList.toggle("has-audio", media instanceof HTMLAudioElement);
+    modalMediaControls?.classList.toggle("hidden", !media);
+    // With nothing to play there is no reason to auto-hide the modal's UI.
+    if (!media) showMemeModalUI();
+  },
+});
+const randomReelMediaControlBar = createMediaControls({
+  play: randomReelPlay,
+  playIcon: randomReelPlayIcon,
+  playLabel: randomReelPlay?.querySelector(".random-reel-nav-label"),
+  progressWrap: randomReelProgressWrap,
+  progress: randomReelProgress,
+  current: randomReelCurrentTime,
+  duration: randomReelDuration,
+  volumeWrap: randomReelVolumeWrap,
+  volumeToggle: randomReelVolumeToggle,
+  volumeIcon: randomReelVolumeIcon,
+  volume: randomReelVolume,
+  volumeValue: randomReelVolumeValue,
+}, {
+  getMedia: () => getRandomReelMediaControlTarget(),
+  isCompact: () => mobileSearchHeaderMediaQuery.matches,
+  onInteract: () => showRandomReelUI(),
+});
+
 function getAuthInitials() {
   const label = state.auth.user?.display_name || state.auth.user?.username || "MemeIndex";
   const pieces = label.trim().split(/\s+/).filter(Boolean).slice(0, 2);
@@ -9240,6 +9285,24 @@ function pauseSpotlightMedia() {
 	});
 }
 
+// The ResizeObserver watching the current spotlight control bar, if any.
+let spotlightControlsObserver = null;
+
+// Stops the spotlight's current player before renderSpotlight replaces it:
+// pauses it, drops its source so the browser stops downloading a file nobody
+// will watch, and stops watching its control bar's size. The old player keeps
+// its listeners, so its controls also ignore events once it is off the stage.
+function retireSpotlightMedia() {
+	spotlightControlsObserver?.disconnect();
+	spotlightControlsObserver = null;
+	for (const media of spotlightMediaElements()) {
+		media.pause();
+		media.removeAttribute("src");
+		media.load();
+	}
+	homeSpotlightStage?.classList.remove("is-playing");
+}
+
 // Gives a spotlight video or audio element the shared volume preference and
 // keeps that preference in step when the viewer changes it.
 function prepareSpotlightMedia(media) {
@@ -9269,26 +9332,26 @@ function prepareSpotlightMedia(media) {
 	});
 }
 
-// The spotlight's own control bar, matching the editor and reel rather than
-// the browser's built-in controls: play/pause, progress with times, a
-// speaker button with a volume slider and percentage, and fullscreen. The
-// slider reads and writes the same saved volume as every other player.
+// The spotlight's own control bar in place of the browser's built-in controls:
+// play/pause, progress with times, a speaker button with a volume slider and
+// percentage, and fullscreen. It runs on createMediaControls, like the meme
+// modal and the reel, so it behaves the same and shares the saved volume.
 function buildSpotlightControls(player) {
 	const isVideo = player instanceof HTMLVideoElement;
 	const bar = document.createElement("div");
 	bar.className = "spot-controls";
 	bar.innerHTML = `
-		<button class="spot-control-button spot-play" type="button" aria-label="Play">
+		<button class="spot-control-button spot-play" type="button" aria-label="Play media">
 			<svg viewBox="0 0 24 24" aria-hidden="true"><path class="spot-icon-play" d="M8 5.5v13l10.5-6.5z" /><path class="spot-icon-pause" d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z" /></svg>
 		</button>
 		<span class="spot-time spot-time-current">0:00</span>
-		<input class="spot-progress" type="range" min="0" max="1000" value="0" step="1" aria-label="Playback progress">
+		<input class="spot-progress" type="range" min="0" max="${MODAL_PROGRESS_SCALE_MAX}" value="0" step="1" aria-label="Playback progress">
 		<span class="spot-time spot-time-duration">0:00</span>
 		<div class="spot-volume">
-			<button class="spot-control-button spot-mute" type="button" aria-label="Mute" aria-expanded="false">
+			<button class="spot-control-button spot-mute" type="button" aria-label="Mute media" aria-controls="home-spotlight-volume" aria-expanded="false">
 				<svg viewBox="0 0 24 24" aria-hidden="true"><path class="spot-icon-speaker" d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" /><path class="spot-icon-waves" d="M15.5 9a4.5 4.5 0 0 1 0 6M18 6.5a8 8 0 0 1 0 11" /><path class="spot-icon-off" d="M16 9.5l5 5M21 9.5l-5 5" /></svg>
 			</button>
-			<div class="spot-volume-pop">
+			<div class="spot-volume-pop" id="home-spotlight-volume">
 				<input class="spot-volume-slider" type="range" min="0" max="100" step="1" aria-label="Volume">
 				<output class="spot-volume-value">10%</output>
 			</div>
@@ -9296,83 +9359,43 @@ function buildSpotlightControls(player) {
 		${isVideo ? `<button class="spot-control-button spot-fullscreen" type="button" aria-label="Full screen">
 			<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5" /></svg>
 		</button>` : ""}`;
-	const playButton = bar.querySelector(".spot-play");
-	const progress = bar.querySelector(".spot-progress");
-	const current = bar.querySelector(".spot-time-current");
-	const duration = bar.querySelector(".spot-time-duration");
 	const volumeWrap = bar.querySelector(".spot-volume");
-	const muteButton = bar.querySelector(".spot-mute");
-	const slider = bar.querySelector(".spot-volume-slider");
-	const value = bar.querySelector(".spot-volume-value");
-	// A narrow bar (a phone, or a tall video on a wide screen) tucks the
-	// volume slider into a popover so the progress bar keeps its room.
-	const narrow = () => bar.classList.contains("is-compact");
+	const controls = createMediaControls({
+		play: bar.querySelector(".spot-play"),
+		progress: bar.querySelector(".spot-progress"),
+		current: bar.querySelector(".spot-time-current"),
+		duration: bar.querySelector(".spot-time-duration"),
+		volumeWrap,
+		volumeToggle: bar.querySelector(".spot-mute"),
+		volume: bar.querySelector(".spot-volume-slider"),
+		volumeValue: bar.querySelector(".spot-volume-value"),
+	}, {
+		getMedia: () => player,
+		// A narrow bar (a phone, or a tall video on a wide screen) tucks the
+		// volume slider into a popover so the progress bar keeps its room.
+		isCompact: () => bar.classList.contains("is-compact"),
+		seekAudio: true,
+		root: bar,
+		onSync() {
+			// A replaced player's late events (its metadata arriving after
+			// the viewer skipped ahead) must not change the new item's stage.
+			if (!homeSpotlightStage.contains(player)) return;
+			homeSpotlightStage.classList.toggle("is-playing", !player.paused);
+		},
+	});
 	if (typeof ResizeObserver === "function") {
-		new ResizeObserver(() => {
+		// retireSpotlightMedia disconnects this when the bar is replaced, even
+		// if the bar was never laid out (built while the home view was hidden).
+		spotlightControlsObserver?.disconnect();
+		spotlightControlsObserver = new ResizeObserver(() => {
 			const compact = bar.clientWidth > 0 && bar.clientWidth < 420;
 			bar.classList.toggle("is-compact", compact);
-			if (!compact) volumeWrap.classList.remove("is-open");
-			syncVolume();
-		}).observe(bar);
+			if (!compact) volumeWrap.classList.remove("is-expanded");
+			controls.sync();
+		});
+		spotlightControlsObserver.observe(bar);
 	}
-	let seeking = false;
 
-	const syncPlay = () => {
-		bar.classList.toggle("is-playing", !player.paused);
-		homeSpotlightStage.classList.toggle("is-playing", !player.paused);
-		playButton.setAttribute("aria-label", player.paused ? "Play" : "Pause");
-	};
-	const syncTime = () => {
-		const total = Number.isFinite(player.duration) ? player.duration : 0;
-		current.textContent = formatMediaTime(player.currentTime);
-		duration.textContent = formatMediaTime(total);
-		if (!seeking) progress.value = total > 0 ? String(Math.round((player.currentTime / total) * 1000)) : "0";
-		progress.style.setProperty("--spot-fill", `${Number(progress.value) / 10}%`);
-	};
-	const syncVolume = () => {
-		const level = player.muted ? 0 : Math.round(player.volume * 100);
-		slider.value = String(level);
-		slider.style.setProperty("--spot-fill", `${level}%`);
-		value.textContent = `${level}%`;
-		bar.classList.toggle("is-muted", level === 0);
-		muteButton.setAttribute("aria-label", narrow() ? "Volume" : (level === 0 ? "Unmute" : "Mute"));
-	};
-
-	playButton.addEventListener("click", () => {
-		if (player.paused) player.play().catch(() => {});
-		else player.pause();
-	});
-	progress.addEventListener("input", () => {
-		seeking = true;
-		const total = Number.isFinite(player.duration) ? player.duration : 0;
-		if (total > 0) player.currentTime = (Number(progress.value) / 1000) * total;
-		syncTime();
-	});
-	progress.addEventListener("change", () => {
-		seeking = false;
-	});
-	// On a phone the speaker opens the slider; on a wider screen the slider
-	// is always showing and the speaker mutes, as in the editor.
-	muteButton.addEventListener("click", () => {
-		if (narrow()) {
-			const open = !volumeWrap.classList.contains("is-open");
-			volumeWrap.classList.toggle("is-open", open);
-			muteButton.setAttribute("aria-expanded", open ? "true" : "false");
-			return;
-		}
-		delete player.dataset.autoMuted;
-		player.muted = !player.muted;
-		if (!player.muted && player.volume === 0) player.volume = DEFAULT_MEDIA_VOLUME;
-		syncStoredMediaVolumeFromElement(player);
-	});
-	slider.addEventListener("input", () => {
-		const level = Number(slider.value) / 100;
-		delete player.dataset.autoMuted;
-		player.volume = level;
-		player.muted = level === 0;
-		syncStoredMediaVolumeFromElement(player);
-		syncVolume();
-	});
 	bar.querySelector(".spot-fullscreen")?.addEventListener("click", () => {
 		if (document.fullscreenElement) {
 			document.exitFullscreen?.().catch(() => {});
@@ -9382,21 +9405,16 @@ function buildSpotlightControls(player) {
 			player.webkitEnterFullscreen();
 		}
 	});
-	player.addEventListener("play", syncPlay);
-	player.addEventListener("pause", syncPlay);
-	player.addEventListener("timeupdate", syncTime);
-	player.addEventListener("loadedmetadata", syncTime);
-	player.addEventListener("durationchange", syncTime);
-	player.addEventListener("volumechange", syncVolume);
-	syncPlay();
-	syncTime();
-	syncVolume();
+	for (const type of ["play", "pause", "timeupdate", "loadedmetadata", "durationchange", "volumechange"]) {
+		player.addEventListener(type, controls.sync);
+	}
+	controls.sync();
 	return bar;
 }
 
 function renderSpotlight() {
 	if (!homeSpotlight) return;
-	pauseSpotlightMedia();
+	retireSpotlightMedia();
 	const meme = currentSpotlightMeme();
 	homeSpotlight.classList.toggle("is-empty", !meme);
 	if (!meme) {
@@ -10364,6 +10382,189 @@ function applyDefaultMediaVolume(media) {
   media.defaultMuted = false;
 }
 
+// createMediaControls drives one player's control bar: a play/pause button, a
+// seek bar with times, and a speaker button with a volume slider. The meme
+// modal, the random reel and the home spotlight all use it, so they behave
+// alike and share the saved volume. The bar always controls whatever element
+// getMedia() returns right now, so it survives the player swapping its media.
+//
+// els holds the bar's parts. play, volumeWrap, volumeToggle and volume are
+// required; playIcon, playLabel, progressWrap, progress, current, duration,
+// volumeIcon and volumeValue are optional.
+//
+// options:
+//   getMedia()     the <video> or <audio> to control, or null for none
+//   isCompact()    true while the slider sits in a popover (a narrow bar): the
+//                  speaker then opens the slider instead of muting
+//   onInteract()   runs on every use of the bar, e.g. to show auto-hidden UI
+//   seekAudio      show and drive the seek bar for audio as well as video
+//   root           element given is-playing / is-muted classes, for CSS icons
+//   onSync(media)  extra state for this player, run at the end of every sync
+//
+// Returns { sync, togglePlay }. Call sync whenever the media changes state.
+// If a required part is missing from the page, the bar does nothing rather
+// than stopping the script that creates it.
+function createMediaControls(els, options) {
+  const {
+    getMedia,
+    isCompact = () => false,
+    onInteract = () => {},
+    seekAudio = false,
+    root = null,
+    onSync = () => {},
+  } = options;
+  if (!els.play || !els.volumeWrap || !els.volumeToggle || !els.volume) {
+    console.warn("Media control bar is missing parts of its markup; its controls are inactive");
+    return { sync() {}, async togglePlay() {} };
+  }
+  // The element whose seek bar is being dragged, so playback updates do not
+  // pull the thumb back under the pointer. It is tied to one element: when the
+  // bar moves on to other media mid-drag, the new media is not held up.
+  let seekingMedia = null;
+  const isSeeking = () => seekingMedia !== null && seekingMedia === getMedia();
+  // A drag can end without a "change" event: Chromium fires change only when
+  // the value differs from where the drag began, and a cancelled touch or a
+  // lost focus fires none. Any of these ends the drag.
+  const endSeek = () => {
+    if (seekingMedia === null) return;
+    seekingMedia = null;
+    sync();
+  };
+
+  const seekable = (media) => media instanceof HTMLVideoElement
+    || (seekAudio && media instanceof HTMLAudioElement);
+  const mediaDuration = (media) => (media && Number.isFinite(media.duration) ? media.duration : 0);
+  // --media-fill lets a stylesheet paint the played or set part of a slider.
+  const setFill = (input) => {
+    const max = Number(input.max) || 100;
+    input.style.setProperty("--media-fill", `${(Number(input.value) / max) * 100}%`);
+  };
+
+  function sync() {
+    const media = getMedia();
+    // A drag left open when the bar moved on to other media is over: forget
+    // it, so returning to that same element later does not find it frozen.
+    if (seekingMedia !== null && seekingMedia !== media) seekingMedia = null;
+    const hasMedia = !!media;
+    const paused = !hasMedia || media.paused;
+    const muted = hasMedia && (media.muted || media.volume === 0);
+    const level = hasMedia
+      ? Math.round((media.muted ? 0 : media.volume) * 100)
+      : Math.round(loadPreferredMediaVolume() * 100);
+    const expanded = hasMedia && els.volumeWrap.classList.contains("is-expanded");
+
+    els.play.disabled = !hasMedia;
+    els.volumeToggle.disabled = !hasMedia;
+    els.volume.disabled = !hasMedia;
+    els.play.classList.toggle("hidden", !hasMedia);
+    els.volumeWrap.classList.toggle("hidden", !hasMedia);
+    els.progressWrap?.classList.toggle("hidden", !seekable(media));
+
+    els.play.setAttribute("aria-label", paused ? "Play media" : "Pause media");
+    if (els.play.hasAttribute("data-tooltip")) els.play.setAttribute("data-tooltip", paused ? "Play" : "Pause");
+    if (els.playIcon) els.playIcon.innerHTML = paused ? "&#9654;" : "&#10074;&#10074;";
+    if (els.playLabel) els.playLabel.textContent = paused ? "Play" : "Pause";
+
+    els.volumeToggle.setAttribute(
+      "aria-label",
+      isCompact()
+        ? (expanded ? "Close volume control" : "Adjust volume")
+        : (muted ? "Unmute media" : "Mute media"),
+    );
+    els.volumeToggle.setAttribute("aria-expanded", String(expanded));
+    if (els.volumeIcon) els.volumeIcon.innerHTML = muted ? "&#128263;" : "&#128266;";
+    els.volume.value = String(level);
+    setFill(els.volume);
+    if (els.volumeValue) els.volumeValue.textContent = `${level}%`;
+
+    const duration = mediaDuration(media);
+    const currentTime = hasMedia && Number.isFinite(media.currentTime) ? media.currentTime : 0;
+    if (els.current) els.current.textContent = formatMediaTime(currentTime);
+    if (els.duration) els.duration.textContent = formatMediaTime(duration);
+    if (els.progress) {
+      if (!isSeeking()) {
+        const value = duration > 0 ? Math.round((currentTime / duration) * MODAL_PROGRESS_SCALE_MAX) : 0;
+        els.progress.value = String(Math.max(0, Math.min(MODAL_PROGRESS_SCALE_MAX, value)));
+      }
+      els.progress.disabled = duration <= 0;
+      setFill(els.progress);
+    }
+
+    root?.classList.toggle("is-playing", !paused);
+    root?.classList.toggle("is-muted", muted);
+    onSync(media);
+  }
+
+  async function togglePlay() {
+    const media = getMedia();
+    if (!media) return;
+    try {
+      if (media.paused) {
+        await media.play();
+      } else {
+        media.pause();
+      }
+    } catch (error) {
+      console.error(error);
+    }
+    sync();
+  }
+
+  els.play.addEventListener("click", () => {
+    onInteract();
+    togglePlay();
+  });
+
+  els.volumeToggle.addEventListener("click", (event) => {
+    onInteract();
+    const media = getMedia();
+    if (!media) return;
+    if (isCompact()) {
+      event.preventDefault();
+      els.volumeWrap.classList.toggle("is-expanded");
+      sync();
+      return;
+    }
+    // A deliberate mute or unmute replaces any automatic mute, and unmuting a
+    // player whose volume was dragged to zero brings back the default level
+    // rather than leaving it silent.
+    delete media.dataset.autoMuted;
+    media.muted = !media.muted;
+    if (!media.muted && media.volume === 0) media.volume = DEFAULT_MEDIA_VOLUME;
+    syncStoredMediaVolumeFromElement(media);
+    sync();
+  });
+
+  els.volume.addEventListener("input", () => {
+    onInteract();
+    const media = getMedia();
+    if (!media) return;
+    const volume = Number(els.volume.value) / 100;
+    delete media.dataset.autoMuted;
+    media.volume = volume;
+    media.muted = volume === 0;
+    syncStoredMediaVolumeFromElement(media);
+    sync();
+  });
+
+  els.progress?.addEventListener("input", () => {
+    onInteract();
+    const media = getMedia();
+    if (!seekable(media)) return;
+    const duration = mediaDuration(media);
+    if (duration <= 0) return;
+    seekingMedia = media;
+    const ratio = Number(els.progress.value) / MODAL_PROGRESS_SCALE_MAX;
+    media.currentTime = Math.max(0, Math.min(duration, duration * ratio));
+    sync();
+  });
+  for (const type of ["change", "pointerup", "pointercancel", "lostpointercapture", "blur"]) {
+    els.progress?.addEventListener(type, endSeek);
+  }
+
+  return { sync, togglePlay };
+}
+
 function buildModalPreview(meme) {
   if (meme.contentType.startsWith("image/")) {
     const img = document.createElement("img");
@@ -10657,70 +10858,7 @@ function getRandomReelMediaControlTarget() {
 }
 
 function syncRandomReelMediaControls() {
-  const media = getRandomReelMediaControlTarget();
-  const supportsMediaControls = !!media;
-  const isVideo = media instanceof HTMLVideoElement;
-  const playLabel = randomReelPlay.querySelector(".random-reel-nav-label");
-
-  randomReelPlay.disabled = !supportsMediaControls;
-  randomReelVolumeToggle.disabled = !supportsMediaControls;
-  randomReelVolume.disabled = !supportsMediaControls;
-  randomReelPlay.classList.toggle("hidden", !supportsMediaControls);
-  randomReelVolumeWrap.classList.toggle("hidden", !supportsMediaControls);
-  randomReelProgressWrap?.classList.toggle("hidden", !isVideo);
-
-  if (!supportsMediaControls) {
-    randomReelPlay.setAttribute("aria-label", "Play media");
-    randomReelPlay.setAttribute("data-tooltip", "Play");
-    randomReelPlayIcon.innerHTML = "&#9654;";
-    if (playLabel) playLabel.textContent = "Play";
-    randomReelVolumeToggle.setAttribute("aria-label", mobileSearchHeaderMediaQuery.matches ? "Adjust volume" : "Mute media");
-    randomReelVolumeToggle.setAttribute("aria-expanded", "false");
-    randomReelVolumeIcon.innerHTML = "&#128266;";
-    randomReelVolume.value = `${Math.round(loadPreferredMediaVolume() * 100)}`;
-    if (randomReelVolumeValue) randomReelVolumeValue.textContent = `${randomReelVolume.value}%`;
-    if (randomReelCurrentTime) randomReelCurrentTime.textContent = "0:00";
-    if (randomReelDuration) randomReelDuration.textContent = "0:00";
-    if (randomReelProgress) randomReelProgress.value = "0";
-    return;
-  }
-
-  const paused = media.paused;
-  const muted = media.muted || media.volume === 0;
-
-  randomReelPlay.setAttribute("aria-label", paused ? "Play media" : "Pause media");
-  randomReelPlay.setAttribute("data-tooltip", paused ? "Play" : "Pause");
-  randomReelPlayIcon.innerHTML = paused ? "&#9654;" : "&#10074;&#10074;";
-  if (playLabel) playLabel.textContent = paused ? "Play" : "Pause";
-
-  const volumeControlExpanded = randomReelVolumeWrap?.classList.contains("is-expanded") || false;
-  randomReelVolumeToggle.setAttribute(
-    "aria-label",
-    mobileSearchHeaderMediaQuery.matches
-      ? (volumeControlExpanded ? "Close volume control" : "Adjust volume")
-      : (muted ? "Unmute media" : "Mute media"),
-  );
-  randomReelVolumeToggle.setAttribute("aria-expanded", String(volumeControlExpanded));
-  randomReelVolumeIcon.innerHTML = muted ? "&#128263;" : "&#128266;";
-  randomReelVolume.value = `${Math.round((media.muted ? 0 : media.volume) * 100)}`;
-  if (randomReelVolumeValue) randomReelVolumeValue.textContent = `${randomReelVolume.value}%`;
-
-  if (!isVideo) {
-    return;
-  }
-
-  const duration = Number.isFinite(media.duration) ? media.duration : 0;
-  const currentTime = Number.isFinite(media.currentTime) ? media.currentTime : 0;
-  const progressValue = duration > 0
-    ? Math.round((currentTime / duration) * MODAL_PROGRESS_SCALE_MAX)
-    : 0;
-
-  if (randomReelCurrentTime) randomReelCurrentTime.textContent = formatMediaTime(currentTime);
-  if (randomReelDuration) randomReelDuration.textContent = formatMediaTime(duration);
-  if (randomReelProgress) {
-    randomReelProgress.value = `${Math.max(0, Math.min(MODAL_PROGRESS_SCALE_MAX, progressValue))}`;
-    randomReelProgress.disabled = duration <= 0;
-  }
+  randomReelMediaControlBar.sync();
 }
 
 function clearRandomReelUIHideTimer() {
@@ -11397,75 +11535,7 @@ function getModalMediaControlTarget() {
 }
 
 function syncModalMediaControls() {
-  const media = getModalMediaControlTarget();
-  const supportsMediaControls = !!media;
-  const isVideo = media instanceof HTMLVideoElement;
-  const isAudio = media instanceof HTMLAudioElement;
-
-  memeModal?.classList.toggle("has-video", isVideo);
-  memeModal?.classList.toggle("has-audio", isAudio);
-  modalMediaControls?.classList.toggle("hidden", !supportsMediaControls);
-  modalPlay.disabled = !supportsMediaControls;
-  modalVolumeToggle.disabled = !supportsMediaControls;
-  modalVolume.disabled = !supportsMediaControls;
-  modalVolumeWrap.classList.toggle("hidden", !supportsMediaControls);
-  modalProgressWrap?.classList.toggle("hidden", !isVideo);
-
-  if (!supportsMediaControls) {
-    showMemeModalUI();
-    modalPlay.setAttribute("aria-label", "Play media");
-    modalPlay.setAttribute("data-tooltip", "Play");
-    modalPlayIcon.innerHTML = "&#9654;";
-    modalVolumeToggle.setAttribute("aria-label", mobileSearchHeaderMediaQuery.matches ? "Adjust volume" : "Mute media");
-    modalVolumeToggle.setAttribute("aria-expanded", "false");
-    modalVolumeIcon.innerHTML = "&#128266;";
-    modalVolume.value = `${Math.round(loadPreferredMediaVolume() * 100)}`;
-    if (modalVolumeValue) modalVolumeValue.textContent = `${modalVolume.value}%`;
-    if (modalCurrentTime) modalCurrentTime.textContent = "0:00";
-    if (modalDuration) modalDuration.textContent = "0:00";
-    if (modalProgress) modalProgress.value = "0";
-    return;
-  }
-
-  const paused = media.paused;
-  const muted = media.muted || media.volume === 0;
-
-  modalPlay.setAttribute("aria-label", paused ? "Play media" : "Pause media");
-  modalPlay.setAttribute("data-tooltip", paused ? "Play" : "Pause");
-  modalPlayIcon.innerHTML = paused ? "&#9654;" : "&#10074;&#10074;";
-
-  const volumeControlExpanded = modalVolumeWrap?.classList.contains("is-expanded") || false;
-  modalVolumeToggle.setAttribute(
-    "aria-label",
-    mobileSearchHeaderMediaQuery.matches
-      ? (volumeControlExpanded ? "Close volume control" : "Adjust volume")
-      : (muted ? "Unmute media" : "Mute media"),
-  );
-  modalVolumeToggle.setAttribute("aria-expanded", String(volumeControlExpanded));
-  modalVolumeIcon.innerHTML = muted ? "&#128263;" : "&#128266;";
-  modalVolume.value = `${Math.round((media.muted ? 0 : media.volume) * 100)}`;
-  if (modalVolumeValue) modalVolumeValue.textContent = `${modalVolume.value}%`;
-
-  if (!isVideo) {
-    return;
-  }
-
-  const duration = Number.isFinite(media.duration) ? media.duration : 0;
-  const currentTime = Number.isFinite(media.currentTime) ? media.currentTime : 0;
-  const progressValue = duration > 0
-    ? Math.round((currentTime / duration) * MODAL_PROGRESS_SCALE_MAX)
-    : 0;
-
-  if (modalCurrentTime) {
-    modalCurrentTime.textContent = formatMediaTime(currentTime);
-  }
-  if (modalDuration) {
-    modalDuration.textContent = formatMediaTime(duration);
-  }
-  if (modalProgress) {
-    modalProgress.value = `${Math.max(0, Math.min(MODAL_PROGRESS_SCALE_MAX, progressValue))}`;
-    modalProgress.disabled = duration <= 0;
-  }
+  modalMediaControlBar.sync();
 }
 
 function splitTags(raw) {
@@ -13679,89 +13749,14 @@ modalPreviewWrap?.addEventListener("mouseenter", () => {
   showMemeModalUI();
 });
 
-modalPreview?.addEventListener("click", async (event) => {
+modalPreview?.addEventListener("click", (event) => {
   const media = modalPreview.querySelector("video");
   if (!media || event.target !== media) {
     return;
   }
 
   showMemeModalUI();
-
-  try {
-    if (media.paused) {
-      await media.play();
-    } else {
-      media.pause();
-    }
-  } catch (error) {
-    console.error(error);
-  }
-
-  syncModalMediaControls();
-});
-
-modalPlay?.addEventListener("click", async () => {
-  showMemeModalUI();
-  const media = getModalMediaControlTarget();
-  if (!media) return;
-
-  try {
-    if (media.paused) {
-      await media.play();
-    } else {
-      media.pause();
-    }
-  } catch (error) {
-    console.error(error);
-  }
-
-  syncModalMediaControls();
-});
-
-modalVolumeToggle?.addEventListener("click", (event) => {
-  showMemeModalUI();
-  const media = getModalMediaControlTarget();
-  if (!media) return;
-
-  if (mobileSearchHeaderMediaQuery.matches) {
-    event.preventDefault();
-    modalVolumeWrap.classList.toggle("is-expanded");
-    syncModalMediaControls();
-    return;
-  }
-
-  media.muted = !media.muted;
-  syncStoredMediaVolumeFromElement(media);
-  syncModalMediaControls();
-});
-
-modalVolume?.addEventListener("input", () => {
-  showMemeModalUI();
-  const media = getModalMediaControlTarget();
-  if (!media) return;
-
-  const volume = Number(modalVolume.value) / 100;
-  media.volume = volume;
-  media.muted = volume === 0;
-  syncStoredMediaVolumeFromElement(media);
-  syncModalMediaControls();
-});
-
-modalProgress?.addEventListener("input", () => {
-  showMemeModalUI();
-  const media = getModalMediaControlTarget();
-  if (!(media instanceof HTMLVideoElement)) {
-    return;
-  }
-
-  const duration = Number.isFinite(media.duration) ? media.duration : 0;
-  if (duration <= 0) {
-    return;
-  }
-
-  const progressRatio = Number(modalProgress.value) / MODAL_PROGRESS_SCALE_MAX;
-  media.currentTime = Math.max(0, Math.min(duration, duration * progressRatio));
-  syncModalMediaControls();
+  modalMediaControlBar.togglePlay();
 });
 
 randomReelClose?.addEventListener("click", () => {
@@ -13791,67 +13786,7 @@ randomReelFavorite?.addEventListener("click", async () => {
   syncRandomReelFavoriteUI(updatedMeme);
 });
 
-randomReelPlay?.addEventListener("click", async () => {
-  showRandomReelUI();
-  const media = getRandomReelMediaControlTarget();
-  if (!media) return;
-
-  try {
-    if (media.paused) {
-      await media.play();
-    } else {
-      media.pause();
-    }
-  } catch (error) {
-    console.error(error);
-  }
-
-  syncRandomReelMediaControls();
-});
-
-randomReelVolumeToggle?.addEventListener("click", (event) => {
-  showRandomReelUI();
-  const media = getRandomReelMediaControlTarget();
-  if (!media) return;
-
-  if (mobileSearchHeaderMediaQuery.matches) {
-    event.preventDefault();
-    randomReelVolumeWrap.classList.toggle("is-expanded");
-    syncRandomReelMediaControls();
-    return;
-  }
-
-  media.muted = !media.muted;
-  syncStoredMediaVolumeFromElement(media);
-  syncRandomReelMediaControls();
-});
-
-randomReelVolume?.addEventListener("input", () => {
-  showRandomReelUI();
-  const media = getRandomReelMediaControlTarget();
-  if (!media) return;
-
-  const volume = Number(randomReelVolume.value) / 100;
-  media.volume = volume;
-  media.muted = volume === 0;
-  syncStoredMediaVolumeFromElement(media);
-  syncRandomReelMediaControls();
-});
-
-randomReelProgress?.addEventListener("input", () => {
-  showRandomReelUI();
-  const media = getRandomReelMediaControlTarget();
-  if (!(media instanceof HTMLVideoElement)) return;
-
-  const duration = Number.isFinite(media.duration) ? media.duration : 0;
-  if (duration <= 0) return;
-
-  const progressRatio = Number(randomReelProgress.value) / MODAL_PROGRESS_SCALE_MAX;
-  media.currentTime = Math.max(0, Math.min(duration, duration * progressRatio));
-  syncRandomReelMediaControls();
-});
-
-randomReelMedia?.addEventListener("click", async (event) => {
+randomReelMedia?.addEventListener("click", (event) => {
   if (randomReelControlsContains(event.target)) {
     return;
   }
@@ -13864,18 +13799,7 @@ randomReelMedia?.addEventListener("click", async (event) => {
   }
 
   showRandomReelUI();
-
-  try {
-    if (media.paused) {
-      await media.play();
-    } else {
-      media.pause();
-    }
-  } catch (error) {
-    console.error(error);
-  }
-
-  syncRandomReelMediaControls();
+  randomReelMediaControlBar.togglePlay();
 });
 
 randomReelStage?.addEventListener("click", (event) => {

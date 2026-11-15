@@ -4907,16 +4907,21 @@ body.home-mode .dashboard-recent .preview-frame {
 .spot-time { flex: 0 0 auto; color: #c9c3bc; font-size: 11px; font-variant-numeric: tabular-nums; }
 .spot-progress,
 .spot-volume-slider {
-  --spot-fill: 0%;
+  --media-fill: 0%;
   height: 4px;
   margin: 0;
   border-radius: 999px;
-  background: linear-gradient(90deg, var(--green-bright) var(--spot-fill), rgba(255, 255, 255, .22) var(--spot-fill));
+  background: linear-gradient(90deg, var(--green-bright) var(--media-fill), rgba(255, 255, 255, .22) var(--media-fill));
   cursor: pointer;
   appearance: none;
   -webkit-appearance: none;
 }
 .spot-progress { flex: 1 1 auto; min-width: 40px; }
+/* Seek bars keep a touch drag to themselves. Otherwise a phone may take the
+   gesture over for scrolling mid-drag (pointercancel), which ends the seek. */
+.spot-progress,
+.modal-progress-slider,
+.random-reel-progress-slider { touch-action: none; }
 .spot-progress::-webkit-slider-thumb,
 .spot-volume-slider::-webkit-slider-thumb { width: 13px; height: 13px; border: 0; border-radius: 50%; background: #fff; -webkit-appearance: none; }
 .spot-progress::-moz-range-thumb,
@@ -4938,7 +4943,7 @@ body.home-mode .dashboard-recent .preview-frame {
   background: rgba(8, 8, 11, .92);
   backdrop-filter: blur(10px);
 }
-.spot-controls.is-compact .spot-volume.is-open .spot-volume-pop { display: flex; }
+.spot-controls.is-compact .spot-volume.is-expanded .spot-volume-pop { display: flex; }
 .spot-controls.is-compact .spot-volume-slider { width: 150px; }
 .spot-controls.is-compact .spot-time-duration { display: none; }
 .home-spotlight-nav {
