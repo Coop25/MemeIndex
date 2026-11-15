@@ -1,12 +1,13 @@
 // admin-pages.js - page modules for the admin workspace tabs that live outside
-// app.js. Loaded after app.js (classic script), so it shares app.js's globals
-// (state, escapeHTML, formatSize, formatRelativeTime, ...). Top-level function
-// declarations become globals, so app.js can call window.renderAdmin<Page>?.().
+// the main app scripts. Loaded last (classic script), so it shares the globals
+// of app.js and static/js/ (state, escapeHTML, formatSize, formatRelativeTime,
+// ...). Top-level function declarations become globals, so the app can call
+// window.renderAdmin<Page>?.().
 //
 // Structure: shared helpers first, then one clearly delimited section per
 // page. Each section has pure builders (html strings; unit-tested by
-// scripts/admin-pages.test.cjs), a render function that app.js calls from
-// renderContentMode, and a load function that the page's ADMIN_TAB_LOADERS
+// scripts/admin-pages.test.cjs), a render function that js/navigation.js calls
+// from renderContentMode, and a load function that the page's ADMIN_TAB_LOADERS
 // entry calls. To add a page, append a section below.
 
 /* ======================= Shared helpers ======================= */
@@ -469,7 +470,7 @@ async function loadAdminAudiobookLibrary() {
 }
 
 // openAdminLibraryAudiobook fetches the full record (the list rows are
-// summaries) and hands it to the shared audiobook edit modal in app.js.
+// summaries) and hands it to the shared audiobook edit modal in js/audiobooks.js.
 // The status line and re-render default to the Library page's; the Storage
 // page passes its own.
 async function openAdminLibraryAudiobook(id, s = adminLibraryState(), render = renderAdminAudiobookLibrary) {

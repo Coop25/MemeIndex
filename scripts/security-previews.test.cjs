@@ -1,16 +1,10 @@
 const assert = require("node:assert/strict");
-const { readFileSync } = require("node:fs");
-const { resolve } = require("node:path");
 const { test } = require("node:test");
 const vm = require("node:vm");
-const source = readFileSync(resolve(__dirname, "../static/app.js"), "utf8");
+const { readAppSource, extractFunction } = require("./app-source.cjs");
+const source = readAppSource();
 
-function extract(name) {
-  const start = source.indexOf(`function ${name}(`);
-  assert.ok(start >= 0);
-  const end = source.indexOf("\nfunction ", start + 1);
-  return source.slice(start, end);
-}
+const extract = (name) => extractFunction(source, name);
 
 for (const name of ["buildPreview", "buildModalPreview", "buildRandomReelPreview", "renderUploadPreview"]) {
   test(`${name} renders hostile file metadata as text`, () => {

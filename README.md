@@ -8,6 +8,16 @@ MemeIndex is a self-hosted meme organizer built with Go and a lightweight fronte
 - `internal/manager`: application orchestration and normalization
 - `internal/accessor`: file persistence and metadata storage
 
+## Frontend structure
+
+The frontend is plain JavaScript with no build step, served from `static/`:
+
+- `static/js/*.js`: one file per area (library, home, meme modal, reel, audiobooks, admin, and so on), holding that area's functions and any state only it uses. These files only declare things, so they never run code when they load.
+- `static/app.js`: shared state, page-element lookups, event wiring, and start-up. `index.html` loads it after the area files.
+- `static/admin-pages.js`: the admin workspace tabs, loaded after `app.js`.
+
+`scripts/app-scripts.test.cjs` checks that the area files read nothing but a few built-ins (such as `Map` and `Object`) while loading, that `app.js` declares no functions, and that no name is declared twice. It cannot see inside a call to one of the app's own functions, so keep area-file state to plain values. Run the frontend tests with `node --test scripts/*.test.cjs`.
+
 ## Features
 
 - Upload any file type through the browser

@@ -1,18 +1,13 @@
 // Run with: node --test scripts/meme-pagination.test.cjs
 const assert = require("node:assert/strict");
-const { readFileSync } = require("node:fs");
-const { resolve } = require("node:path");
 const { test } = require("node:test");
 const vm = require("node:vm");
+const { readAppSource, extractAll } = require("./app-source.cjs");
 
-const source = readFileSync(resolve(__dirname, "../static/app.js"), "utf8");
+const source = readAppSource();
 
 const context = vm.createContext({});
-const paginationStart = source.indexOf("function canAppendMemePage(");
-const paginationEnd = source.indexOf("\nfunction ensureMemeGridObserver(", paginationStart);
-assert.notEqual(paginationStart, -1);
-assert.notEqual(paginationEnd, -1);
-vm.runInContext(source.slice(paginationStart, paginationEnd), context);
+vm.runInContext(extractAll(source, ["canAppendMemePage", "canRequestMemeAutoPage"]), context);
 
 test("append requests must be the next page and cannot overlap", () => {
   assert.equal(context.canAppendMemePage({

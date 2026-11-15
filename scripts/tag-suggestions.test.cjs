@@ -1,16 +1,11 @@
 // Run with: node --test scripts/tag-suggestions.test.cjs
 const assert = require("node:assert/strict");
-const { readFileSync } = require("node:fs");
-const { resolve } = require("node:path");
 const { test } = require("node:test");
 const vm = require("node:vm");
-const source = readFileSync(resolve(__dirname, "../static/app.js"), "utf8");
+const { readAppSource, extractFunction } = require("./app-source.cjs");
+const source = readAppSource();
 
-function functionSource(name) {
-  const start = source.indexOf(`function ${name}(`);
-  assert.notEqual(start, -1);
-  return source.slice(start, source.indexOf("\n}", start) + 2);
-}
+const functionSource = (name) => extractFunction(source, name);
 
 class Element {
   constructor(id = "") {

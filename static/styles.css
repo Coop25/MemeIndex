@@ -3941,7 +3941,7 @@ body.admin-mode .admin-tab.is-active .admin-tab-badge { background: var(--green-
 .audiobook-player-volume-wrap { position: relative; }
 /* A vertical popover anchored under its toggle button rather than a row the
    bottombar always had to make room for - it only exists while open, and
-   closes itself (see the auto-hide timer in app.js) instead of permanently
+   closes itself (see the auto-hide timer in js/audiobook-player.js) instead of permanently
    costing a slot in the already-tight transport controls. */
 .audiobook-player-volume-popover {
   position: absolute; top: calc(100% + 10px); left: 50%; z-index: 20;
@@ -4043,7 +4043,7 @@ body.admin-mode .admin-tab.is-active .admin-tab-badge { background: var(--green-
 }
 
 /* The seek bar draws its own track so it can show three bands: played, then
-   downloaded-but-not-played (--buffered, set from audio.buffered in app.js),
+   downloaded-but-not-played (--buffered, set from audio.buffered in js/audiobook-player.js),
    then not loaded yet. */
 #audiobook-player-progress {
   --played: 0%; --buffered: 0%;
@@ -4161,7 +4161,7 @@ body.admin-mode .admin-tab.is-active .admin-tab-badge { background: var(--green-
 /* Minimized audiobook player: a slim bar docked to the bottom of the screen
    that slides up into view (and back down on close) rather than just
    appearing/disappearing. It's not a second copy of the controls -
-   minimizeAudiobookPlayer() in app.js physically moves the real
+   minimizeAudiobookPlayer() in js/audiobook-player.js physically moves the real
    .audiobook-player-progress-wrap and .audiobook-player-controls nodes in
    here (and back again on expand/close), so there is exactly one seek slider
    and one set of transport buttons, never two drifting out of sync. Tapping
@@ -4647,7 +4647,7 @@ button.admin-health-row:hover, button.admin-health-row:focus-visible { backgroun
 .admin-series-muted { color: var(--muted); }
 .admin-series-tag-table { min-width: 520px; }
 
-/* Meme previews sized to the picture. app.js sets --preview-ratio (width /
+/* Meme previews sized to the picture. js/library.js and js/home.js set --preview-ratio (width /
    height) on each card once the image's real shape is known; until then a
    card is square. Everything below keeps items in their original order. */
 
@@ -4684,7 +4684,7 @@ body:not(.library-list-view) .meme-grid .preview-frame,
 .dashboard-recent .dashboard-empty,
 .dashboard-feature-items .dashboard-empty { flex: 1 1 100%; }
 
-/* Recently added: a single row. app.js shows as many of the newest items as
+/* Recently added: a single row. js/home.js shows as many of the newest items as
    span the row at about this height and sets the exact height that makes them
    fill it edge to edge. */
 .dashboard-recent,
@@ -4815,7 +4815,7 @@ body.home-mode .dashboard-recent .preview-frame {
   pointer-events: none;
 }
 /* The player column holds the stage and its Previous / Next bar. The stage
-   takes the picture's own shape (app.js sets --spot-ratio, width / height,
+   takes the picture's own shape (js/home.js sets --spot-ratio, width / height,
    once it is known): as tall as the panel allows, or for a wide picture as
    wide as its share of the panel allows. */
 .home-spotlight-player {
@@ -4873,7 +4873,7 @@ body.home-mode .dashboard-recent .preview-frame {
   backdrop-filter: blur(10px);
   transition: opacity .2s ease;
 }
-/* While a video plays the bar steps back until the pointer comes near. */
+/* While the spotlight plays (video or audio), the bar steps back until the pointer comes near. */
 @media (hover: hover) {
   .home-spotlight-stage.is-playing .spot-controls { opacity: 0; }
   .home-spotlight-stage.is-playing:hover .spot-controls,
@@ -4930,7 +4930,7 @@ body.home-mode .dashboard-recent .preview-frame {
 .spot-volume-pop { display: flex; align-items: center; gap: 8px; }
 .spot-volume-slider { width: 84px; }
 .spot-volume-value { min-width: 34px; color: #c9c3bc; font-size: 11px; font-variant-numeric: tabular-nums; }
-/* A narrow bar (app.js sets is-compact) opens the slider above the speaker. */
+/* A narrow bar (js/home.js sets is-compact) opens the slider above the speaker. */
 .spot-controls.is-compact .spot-volume-pop {
   position: absolute;
   right: -4px;
@@ -5122,7 +5122,7 @@ body.home-mode .dashboard-recent .preview-frame {
   text-align: center;
 }
 
-/* Popular tags as a cloud: app.js sets --tag-weight (0 to 1) from how often
+/* Popular tags as a cloud: js/home.js sets --tag-weight (0 to 1) from how often
    each tag is used. */
 .home-tag-cloud { display: flex; flex-wrap: wrap; align-items: center; gap: 9px 10px; padding-bottom: 30px; }
 .home-tag {
