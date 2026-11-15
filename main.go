@@ -24,6 +24,7 @@ func main() {
 		log.Fatalf("config load failed: %v", err)
 	}
 
+	client.ConfigureLogging(config.LogFormat)
 	log.Printf("MemeIndex version: %s", client.BuildVersion())
 	log.Printf("MemeIndex Discord warm-up: %s", config.DiscordWarmupStatus())
 

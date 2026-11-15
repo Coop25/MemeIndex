@@ -199,6 +199,17 @@ Then add both callback URLs in the Discord developer portal, for example:
 
 When enabled, MemeIndex will use whichever host you started from in the browser.
 
+## Logging
+
+`MEMEINDEX_LOG_FORMAT` picks the log output:
+
+- `text` (default): the plain lines MemeIndex has always written, such as `GET /api/memes 200 (12ms)`. Existing log scraping keeps working.
+- `json`: one JSON object per line, for a log pipeline. Request records carry `request_id`, `method`, `path` (never the query string), `status` and `duration_ms`. Every other log line uses the same format.
+
+Every response carries an `X-Request-ID` header that matches `request_id` in the JSON logs, so a user's error report can be traced to the server's log lines. A well-formed `X-Request-ID` from an upstream proxy (8-64 characters of letters, digits, `.`, `_` or `-`) is kept; anything else is replaced.
+
+Authentication and authorization failures are logged at `WARN` as `security event` records, with an `event` (`login_invalid_state`, `login_missing_code`, `login_token_exchange_failed`, `login_awaiting_approval`, `permission_denied`), the client IP (resolved the same way as for rate limiting), the path and, when signed in, the user id. Alert on these to spot login probing or permission misconfiguration.
+
 ## Health checks
 
 MemeIndex exposes two unauthenticated probes for orchestration and load balancers:

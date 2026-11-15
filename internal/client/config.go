@@ -26,6 +26,7 @@ type Config struct {
 	LocalAddr               string
 	DataDir                 string
 	DatabaseURL             string
+	LogFormat               string
 	PublicBaseURL           string
 	// DiscordWarmupWebhookURL is a Discord webhook that every new share link
 	// is posted to, so Discord fetches it before it is pasted anywhere for
@@ -100,6 +101,7 @@ type rawConfig struct {
 	LocalAddr                       string   `envconfig:"LOCAL_ADDR"`
 	DataDir                         string   `envconfig:"DATA_DIR" default:"data"`
 	DatabaseURL                     string   `envconfig:"DATABASE_URL"`
+	LogFormat                       string   `envconfig:"LOG_FORMAT" default:"text"`
 	PublicBaseURL                   string   `envconfig:"PUBLIC_BASE_URL"`
 	DiscordWarmupWebhookURL         string   `envconfig:"DISCORD_WARMUP_WEBHOOK_URL"`
 	MediaFetchYTDLPBinary           string   `envconfig:"MEDIAFETCH_YTDLP_BINARY" default:"yt-dlp"`
@@ -186,6 +188,7 @@ func LoadConfig() (Config, error) {
 		LocalAddr:               strings.TrimSpace(raw.LocalAddr),
 		DataDir:                 strings.TrimSpace(raw.DataDir),
 		DatabaseURL:             strings.TrimSpace(raw.DatabaseURL),
+		LogFormat:               strings.ToLower(strings.TrimSpace(raw.LogFormat)),
 		PublicBaseURL:           strings.TrimSuffix(strings.TrimSpace(raw.PublicBaseURL), "/"),
 		DiscordWarmupWebhookURL: strings.TrimSpace(raw.DiscordWarmupWebhookURL),
 		ShareSecret:             firstNonEmpty(strings.TrimSpace(raw.ShareSecret), strings.TrimSpace(raw.SessionSecret)),
@@ -288,6 +291,9 @@ func (c Config) validateSecurity() error {
 	}
 	if c.MaxUploadBytes <= 0 {
 		return fmt.Errorf("MEMEINDEX_MAX_UPLOAD_BYTES must be positive")
+	}
+	if c.LogFormat != "" && c.LogFormat != LogFormatText && c.LogFormat != LogFormatJSON {
+		return fmt.Errorf("MEMEINDEX_LOG_FORMAT must be %q or %q", LogFormatText, LogFormatJSON)
 	}
 	if c.PublicBaseURL != "" {
 		parsed, err := url.Parse(c.PublicBaseURL)
