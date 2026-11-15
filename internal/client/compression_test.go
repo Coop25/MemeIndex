@@ -125,13 +125,27 @@ func TestStaticAssetHandlerMarksFingerprintedURLsImmutable(t *testing.T) {
 	}
 	handler := staticAssetHandler(dir)
 
+	hash := assetContentHash(filepath.Join(dir, "app.js"))
 	withHash := httptest.NewRecorder()
-	handler.ServeHTTP(withHash, httptest.NewRequest(http.MethodGet, "/static/app.js?v=1&h=deadbeef", nil))
+	handler.ServeHTTP(withHash, httptest.NewRequest(http.MethodGet, "/static/app.js?v=1&h="+hash, nil))
 	if withHash.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", withHash.Code)
 	}
 	if cc := withHash.Header().Get("Cache-Control"); !strings.Contains(cc, "immutable") || !strings.Contains(cc, "private") {
 		t.Fatalf("fingerprinted asset Cache-Control = %q, want private + immutable", cc)
+	}
+
+	// A fingerprint this file does not have (an old instance answering a new
+	// shell's URL mid-deploy) must not pin the wrong file for a year.
+	stale := httptest.NewRecorder()
+	handler.ServeHTTP(stale, httptest.NewRequest(http.MethodGet, "/static/app.js?v=1&h=deadbeefdeadbeef", nil))
+	if cc := stale.Header().Get("Cache-Control"); cc != "private, no-cache" {
+		t.Fatalf("mismatched fingerprint Cache-Control = %q, want revalidation", cc)
+	}
+	versionOnly := httptest.NewRecorder()
+	handler.ServeHTTP(versionOnly, httptest.NewRequest(http.MethodGet, "/static/app.js?v=1", nil))
+	if cc := versionOnly.Header().Get("Cache-Control"); cc != "private, no-cache" {
+		t.Fatalf("version-only URL Cache-Control = %q, want revalidation", cc)
 	}
 
 	plain := httptest.NewRecorder()
