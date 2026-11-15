@@ -490,7 +490,8 @@ To upgrade, point `MEMEINDEX_DATABASE_URL` at an **empty** Postgres database and
 - every meme's metadata, tags, suggested tags, notes, source link, content hash and auto-suggest setting
 - each user's favorites
 - share state and share-link codes, so links already handed out keep working
-- reel sessions
+
+Reel sessions follow in a second transaction, which runs whenever the `reel_sessions` table is empty.
 
 Uploaded files stay where they are under `data/uploads/`. The JSON files are left in place but no longer read, and the import never runs again once the database holds memes. Back up the data directory first; to retry an import, empty the `memes` table and restart.
 
