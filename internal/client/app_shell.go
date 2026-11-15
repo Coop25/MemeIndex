@@ -9,35 +9,16 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 )
 
-func (s *Server) handleWebManifest(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	w.Header().Set("Content-Type", "application/manifest+json")
-	w.Header().Set("Cache-Control", "public, max-age=3600")
-	http.ServeFile(w, r, filepath.Join("static", "manifest.webmanifest"))
-}
-
-func (s *Server) handleServiceWorker(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Service-Worker-Allowed", "/")
-	http.ServeFile(w, r, filepath.Join("static", "service-worker.js"))
-}
-
 // staticAssetHandler serves the bundled frontend assets. When the request URL
-// carries a cache-busting fingerprint (…?v=&h=, produced by buildAssetURL) the
+// carries a cache-busting fingerprint (…?v=&h=, produced by assetURLWithHash) the
 // body for that URL can never change, so it is marked immutable for a year.
 // The directive stays "private": the bundle is served behind session auth and
 // must not be retained by a shared proxy or CDN.
@@ -48,73 +29,133 @@ func staticAssetHandler(dir string) http.Handler {
 			http.NotFound(w, r)
 			return
 		}
-		if q := r.URL.Query(); q.Get("h") != "" || q.Get("v") != "" {
+		if h := r.URL.Query().Get("h"); h != "" && h == assetContentHash(staticAssetPath(dir, r.URL.Path)) {
 			w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
 		} else {
 			// No fingerprint means the URL never changes across deploys (the
 			// audiobook sync worker, favicons). Without an explicit policy the
 			// browser guesses a freshness lifetime from Last-Modified and can
 			// keep running an old script next to a new app.js, so make it
-			// revalidate; an unchanged file costs one 304.
+			// revalidate; an unchanged file costs one 304. The same goes for
+			// a fingerprint this file does not have: with several instances
+			// mid-deploy, an old one can receive a new shell's URL, and must
+			// not let the browser keep its old file under that URL for a year.
 			w.Header().Set("Cache-Control", "private, no-cache")
 		}
 		fs.ServeHTTP(w, r)
 	})
 }
 
+// staticAssetPath maps a /static/ request path to the file it serves under
+// dir, cleaned so it cannot climb out of dir (http.Dir applies the same rule
+// when it serves the file).
+func staticAssetPath(dir, urlPath string) string {
+	rel := path.Clean("/" + strings.TrimPrefix(urlPath, "/static/"))
+	return filepath.Join(dir, filepath.FromSlash(rel))
+}
+
+// indexAssetPattern finds the scripts and stylesheets the app shell loads from
+// /static/ (app.js, the area scripts under /static/js/, admin-pages.js and
+// styles.css), so each one's URL can carry its own content fingerprint.
+// It matches only a double-quoted src or href holding a bare path: a
+// single-quoted attribute, or a URL that already has a query string, is left
+// as written and gets no fingerprint.
+var indexAssetPattern = regexp.MustCompile(`(?:src|href)="(/static/[A-Za-z0-9_./-]+\.(?:js|css))"`)
+
 // indexShellState memoises the transformed app-shell HTML. The shell is
 // identical for every viewer; only its embedded asset URLs move, and those
-// change only when index.html, the JS bundle, the stylesheet, or the build
-// version changes. Caching it avoids re-reading and rewriting ~50 KB of HTML on
-// every "/" hit and every meme deep link.
+// change only when index.html, one of the scripts or stylesheets it loads, or
+// the build version changes. Caching it avoids re-reading and rewriting ~50 KB
+// of HTML on every "/" hit and every meme deep link.
 var indexShellState struct {
 	mu   sync.Mutex
 	key  string
 	body []byte
+	// template is index.html as last read, and assets the /static/ scripts
+	// and stylesheets it references; both are refreshed when index.html's
+	// size or modification time (templateStamp) changes.
+	templateStamp string
+	template      string
+	assets        []string
 }
 
 func renderIndexShell(refreshToken string) ([]byte, error) {
 	indexPath := filepath.Join("static", "index.html")
-	stylesRel := filepath.Join("static", "styles.css")
-	appRel := filepath.Join("static", "app.js")
-	adminRel := filepath.Join("static", "admin-pages.js")
-
-	stylesHash := assetContentHash(stylesRel)
-	appHash := assetContentHash(appRel)
-	adminHash := assetContentHash(adminRel)
-
-	var key string
-	if info, err := os.Stat(indexPath); err == nil {
-		key = fmt.Sprintf("%d:%d:%s:%s:%s:%s:%s", info.Size(), info.ModTime().UnixNano(), BuildVersion(), stylesHash, appHash, adminHash, refreshToken)
+	info, err := os.Stat(indexPath)
+	if err != nil {
+		return nil, err
 	}
-
-	if key != "" {
-		indexShellState.mu.Lock()
-		if indexShellState.body != nil && indexShellState.key == key {
-			body := indexShellState.body
-			indexShellState.mu.Unlock()
-			return body, nil
-		}
-		indexShellState.mu.Unlock()
+	absIndex, err := filepath.Abs(indexPath)
+	if err != nil {
+		return nil, err
 	}
+	stamp := fmt.Sprintf("%s:%d:%d", absIndex, info.Size(), info.ModTime().UnixNano())
 
-	content, err := os.ReadFile(indexPath)
+	template, assets, err := indexShellTemplate(indexPath, stamp)
 	if err != nil {
 		return nil, err
 	}
 
-	replaced := strings.ReplaceAll(string(content), "/static/styles.css", html.EscapeString(buildAssetURL("/static/styles.css", refreshToken)))
-	replaced = strings.ReplaceAll(replaced, "/static/app.js", html.EscapeString(buildAssetURL("/static/app.js", refreshToken)))
-	replaced = strings.ReplaceAll(replaced, "/static/admin-pages.js", html.EscapeString(buildAssetURL("/static/admin-pages.js", refreshToken)))
-	body := []byte(replaced)
-
-	if key != "" {
-		indexShellState.mu.Lock()
-		indexShellState.key = key
-		indexShellState.body = body
-		indexShellState.mu.Unlock()
+	// Hash every asset once, outside the lock: assetContentHash only re-reads
+	// a file whose size or modification time moved, so this is a stat per
+	// asset. The same hashes build the cache key and the rendered URLs.
+	hashes := make(map[string]string, len(assets))
+	var key strings.Builder
+	key.WriteString(stamp + ":" + BuildVersion() + ":" + refreshToken)
+	for _, asset := range assets {
+		hash := assetContentHash(filepath.FromSlash(strings.TrimPrefix(asset, "/")))
+		hashes[asset] = hash
+		key.WriteString(":" + asset + "=" + hash)
 	}
+
+	indexShellState.mu.Lock()
+	if indexShellState.body != nil && indexShellState.key == key.String() {
+		body := indexShellState.body
+		indexShellState.mu.Unlock()
+		return body, nil
+	}
+	indexShellState.mu.Unlock()
+
+	body := []byte(indexAssetPattern.ReplaceAllStringFunc(template, func(match string) string {
+		asset := indexAssetPattern.FindStringSubmatch(match)[1]
+		return strings.Replace(match, asset, html.EscapeString(assetURLWithHash(asset, hashes[asset], refreshToken)), 1)
+	}))
+
+	indexShellState.mu.Lock()
+	indexShellState.key = key.String()
+	indexShellState.body = body
+	indexShellState.mu.Unlock()
 	return body, nil
+}
+
+// indexShellTemplate returns index.html and the /static/ assets it references,
+// re-reading the file only when its stamp (path, size and modification time)
+// moved. The lock covers only the cache itself, never the disk read.
+func indexShellTemplate(indexPath, stamp string) (string, []string, error) {
+	indexShellState.mu.Lock()
+	if indexShellState.templateStamp == stamp {
+		template, assets := indexShellState.template, indexShellState.assets
+		indexShellState.mu.Unlock()
+		return template, assets, nil
+	}
+	indexShellState.mu.Unlock()
+
+	content, err := os.ReadFile(indexPath)
+	if err != nil {
+		return "", nil, err
+	}
+	template := string(content)
+	var assets []string
+	for _, match := range indexAssetPattern.FindAllStringSubmatch(template, -1) {
+		assets = append(assets, match[1])
+	}
+
+	indexShellState.mu.Lock()
+	indexShellState.templateStamp = stamp
+	indexShellState.template = template
+	indexShellState.assets = assets
+	indexShellState.mu.Unlock()
+	return template, assets, nil
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -203,12 +244,14 @@ func (s *Server) handleAccessDeniedPage(w http.ResponseWriter, r *http.Request) 
 	_, _ = w.Write([]byte(page))
 }
 
-func buildAssetURL(path string, refreshToken string) string {
+// assetURLWithHash builds a static asset's versioned URL from its content hash
+// (empty when the file could not be read, which leaves h off the URL).
+func assetURLWithHash(path, hash, refreshToken string) string {
 	query := url.Values{}
 	query.Set("v", BuildVersion())
 	// Image tags such as "main" and local builds can retain the same version.
 	// Fingerprint the files themselves so frontend edits always get a new URL.
-	if hash := assetContentHash(filepath.FromSlash(strings.TrimPrefix(path, "/"))); hash != "" {
+	if hash != "" {
 		query.Set("h", hash)
 	}
 	if refreshToken != "" {

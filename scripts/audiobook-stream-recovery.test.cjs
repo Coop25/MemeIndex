@@ -1,16 +1,19 @@
 // Run with: node --test scripts/audiobook-stream-recovery.test.cjs
 const assert = require("node:assert/strict");
-const { readFileSync } = require("node:fs");
-const { resolve } = require("node:path");
 const { test } = require("node:test");
 const vm = require("node:vm");
+const { readAppSource, extractAll } = require("./app-source.cjs");
 
-const source = readFileSync(resolve(__dirname, "../static/app.js"), "utf8");
-const recoveryStart = source.indexOf("// The server can replace a book's file mid-listen");
-const recoveryEnd = source.indexOf("// --- Media Session (lock screen", recoveryStart);
-assert.notEqual(recoveryStart, -1);
-assert.notEqual(recoveryEnd, -1);
-const recoverySource = source.slice(recoveryStart, recoveryEnd);
+const source = readAppSource();
+const recoverySource = extractAll(source, [
+  "AUDIOBOOK_STREAM_RETRY_DELAYS_MS", "AUDIOBOOK_STREAM_RETRY_WINDOW_MS", "AUDIOBOOK_STREAM_ATTEMPT_TIMEOUT_MS",
+  "AUDIOBOOK_STREAM_STALL_MS", "AUDIOBOOK_RECONNECTING_STATUS", "AUDIOBOOK_PLAYBACK_ERROR_STATUS",
+  "AUDIOBOOK_TAP_TO_KEEP_LISTENING_STATUS", "audiobookStreamRecovery", "audiobookStreamActivityAt",
+  "audiobookStreamFailedAt", "noteAudiobookStreamActivity", "cancelAudiobookStreamRecovery",
+  "resetAudiobookStreamRecovery", "finishAudiobookStreamRecovery", "beginAudiobookStreamRecovery",
+  "handleAudiobookStreamError", "retryAudiobookStreamNow", "isAudiobookStreamStalled",
+  "tickAudiobookStreamRecovery", "reloadAudiobookStream",
+]);
 
 const STREAM_URL = "/audiobook-media/book-1";
 const HAVE_NOTHING = 0;

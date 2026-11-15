@@ -244,3 +244,28 @@ func normalizePermissionTags(tags []string) []string {
 	}
 	return out
 }
+
+func diffTags(current []string, next []string) ([]string, []string) {
+	currentSet := map[string]struct{}{}
+	nextSet := map[string]struct{}{}
+	for _, tag := range current {
+		currentSet[tag] = struct{}{}
+	}
+	for _, tag := range next {
+		nextSet[tag] = struct{}{}
+	}
+
+	added := []string{}
+	removed := []string{}
+	for tag := range nextSet {
+		if _, exists := currentSet[tag]; !exists {
+			added = append(added, tag)
+		}
+	}
+	for tag := range currentSet {
+		if _, exists := nextSet[tag]; !exists {
+			removed = append(removed, tag)
+		}
+	}
+	return added, removed
+}

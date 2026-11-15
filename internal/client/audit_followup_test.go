@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"html"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -66,6 +68,102 @@ func TestIndexFingerprintsAdminPagesScript(t *testing.T) {
 	}
 }
 
+// The app's area scripts live under /static/js/. Each gets its own content
+// fingerprint, so changing one gives only that script a new URL.
+func TestIndexFingerprintsEachAreaScript(t *testing.T) {
+	writeStaticFixture(t, map[string]string{
+		"index.html": `<!-- /static/js/ only declares functions -->` +
+			`<script src="/static/js/core.js" defer></script>` +
+			`<script src="/static/js/reel.js" defer></script>` +
+			`<script src="/static/app.js" defer></script>`,
+		"app.js": "app",
+	})
+	if err := os.Mkdir(filepath.Join("static", "js"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeArea := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join("static", "js", name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeArea("core.js", "function core() {}")
+	writeArea("reel.js", "function reel() {}")
+	pattern := regexp.MustCompile(`src="(/static/[^"]+)"`)
+	render := func() map[string]string {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		(&Server{}).handleIndex(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+		body := recorder.Body.String()
+		if !strings.Contains(body, "<!-- /static/js/ only declares functions -->") {
+			t.Fatalf("a comment mentioning /static/js/ was rewritten: %s", body)
+		}
+		urls := map[string]string{}
+		for _, match := range pattern.FindAllStringSubmatch(body, -1) {
+			parsed, err := url.Parse(html.UnescapeString(match[1]))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(parsed.Query().Get("h")) != 16 {
+				t.Fatalf("script %q has no content fingerprint", match[1])
+			}
+			urls[parsed.Path] = parsed.Query().Get("h")
+		}
+		if len(urls) != 3 {
+			t.Fatalf("found %d scripts, want 3: %s", len(urls), body)
+		}
+		return urls
+	}
+
+	first := render()
+	writeArea("reel.js", "function reel() { return 'changed'; }")
+	second := render()
+	if second["/static/js/reel.js"] == first["/static/js/reel.js"] {
+		t.Fatal("reel.js kept its fingerprint after it changed")
+	}
+	if second["/static/js/core.js"] != first["/static/js/core.js"] || second["/static/app.js"] != first["/static/app.js"] {
+		t.Fatal("unchanged scripts received new fingerprints")
+	}
+}
+
+// Editing index.html (adding a script) is picked up without a restart, and a
+// script missing from disk keeps its tag but gets no content hash rather than
+// breaking the page.
+func TestIndexShellFollowsIndexChangesAndMissingAssets(t *testing.T) {
+	writeStaticFixture(t, map[string]string{
+		"index.html": `<script src="/static/app.js" defer></script>`,
+		"app.js":     "app",
+	})
+	render := func() string {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		(&Server{}).handleIndex(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status = %d", recorder.Code)
+		}
+		return recorder.Body.String()
+	}
+	if body := render(); !strings.Contains(body, `src="/static/app.js?h=`) {
+		t.Fatalf("app.js is not fingerprinted: %s", body)
+	}
+
+	// A different length guarantees a new size even on a coarse-mtime disk.
+	updated := `<script src="/static/js/missing.js" defer></script><script src="/static/app.js" defer></script>`
+	if err := os.WriteFile(filepath.Join("static", "index.html"), []byte(updated), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	body := render()
+	if !strings.Contains(body, `src="/static/js/missing.js?`) {
+		t.Fatalf("the newly added script is missing or unversioned: %s", body)
+	}
+	if strings.Contains(body, `missing.js?h=`) {
+		t.Fatalf("a script missing from disk was given a content hash: %s", body)
+	}
+	if !strings.Contains(body, `src="/static/app.js?h=`) {
+		t.Fatalf("app.js lost its fingerprint after index.html changed: %s", body)
+	}
+}
+
 func TestUnfingerprintedStaticAssetsRevalidate(t *testing.T) {
 	writeStaticFixture(t, map[string]string{"worker.js": "worker"})
 	handler := staticAssetHandler("static")
@@ -77,7 +175,8 @@ func TestUnfingerprintedStaticAssetsRevalidate(t *testing.T) {
 	}
 
 	fingerprinted := httptest.NewRecorder()
-	handler.ServeHTTP(fingerprinted, httptest.NewRequest(http.MethodGet, "/static/worker.js?v=1&h=abc", nil))
+	hash := assetContentHash(filepath.Join("static", "worker.js"))
+	handler.ServeHTTP(fingerprinted, httptest.NewRequest(http.MethodGet, "/static/worker.js?v=1&h="+hash, nil))
 	if got := fingerprinted.Header().Get("Cache-Control"); !strings.Contains(got, "immutable") {
 		t.Fatalf("fingerprinted asset Cache-Control = %q, want immutable", got)
 	}

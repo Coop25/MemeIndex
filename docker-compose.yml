@@ -79,6 +79,11 @@ services:
       MEMEINDEX_DISCORD_CLIENT_SECRET: ${MEMEINDEX_DISCORD_CLIENT_SECRET:-}
       MEMEINDEX_DISCORD_REDIRECT_URL: ${MEMEINDEX_DISCORD_REDIRECT_URL:-}
       MEMEINDEX_DISCORD_DYNAMIC_REDIRECT: ${MEMEINDEX_DISCORD_DYNAMIC_REDIRECT:-false}
+      # Optional Discord webhook (in a private channel) that every new share
+      # link is posted to, so Discord fetches the file before you paste the
+      # link anywhere. Needs MEMEINDEX_PUBLIC_BASE_URL. Keep it secret: anyone
+      # with the URL can post to that channel.
+      MEMEINDEX_DISCORD_WARMUP_WEBHOOK_URL: ${MEMEINDEX_DISCORD_WARMUP_WEBHOOK_URL:-}
       MEMEINDEX_SESSION_SECRET: ${MEMEINDEX_SESSION_SECRET:-}
       MEMEINDEX_ALLOW_ANONYMOUS: ${MEMEINDEX_ALLOW_ANONYMOUS:-false}
       MEMEINDEX_MAX_UPLOAD_BYTES: ${MEMEINDEX_MAX_UPLOAD_BYTES:-268435456}

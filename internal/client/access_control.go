@@ -192,9 +192,7 @@ func allowsAnonymousLinkPreview(r *http.Request) bool {
 	}
 
 	switch r.URL.Path {
-	case "/":
-		return true
-	case "/og-image.svg":
+	case "/", "/og-image.svg":
 		return true
 	default:
 		return false
@@ -272,12 +270,7 @@ func (s *Server) protectAuditFeedForResponse(r *http.Request, feed accessor.Page
 }
 
 func allowsAuthenticatedShellOnly(path string) bool {
-	switch path {
-	case "/forbidden":
-		return true
-	default:
-		return false
-	}
+	return path == "/forbidden"
 }
 
 func (s *Server) withAPIAuth(next http.Handler, minimum permissionLevel) http.Handler {

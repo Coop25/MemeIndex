@@ -1,10 +1,13 @@
 package client
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"strings"
 	"time"
+
+	"memeindex/internal/accessor"
 )
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -179,4 +182,31 @@ func (s *Server) handleAuthSession(w http.ResponseWriter, r *http.Request) {
 		"audiobooks_available":         s.audiobooks != nil,
 		"public_base_url":              s.publicOrigin(r),
 	})
+}
+
+func currentAuditActor(r *http.Request) accessor.AuditActor {
+	session, ok := sessionFromContext(r.Context())
+	if !ok {
+		return accessor.AuditActor{}
+	}
+
+	return accessor.AuditActor{
+		UserID:       session.UserID,
+		Username:     session.Username,
+		DisplayName:  session.DisplayName,
+		AvatarURL:    session.AvatarURL,
+		IsSuperAdmin: session.Permissions.CanManageUsers,
+	}
+}
+
+func contextWithSession(ctx context.Context, session authSession) context.Context {
+	return context.WithValue(ctx, authSessionContextKey, session)
+}
+
+func currentUserID(r *http.Request) string {
+	session, ok := sessionFromContext(r.Context())
+	if !ok {
+		return ""
+	}
+	return session.UserID
 }

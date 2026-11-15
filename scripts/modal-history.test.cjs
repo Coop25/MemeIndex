@@ -1,16 +1,14 @@
 // Run with: node --test scripts/modal-history.test.cjs
 const assert = require("node:assert/strict");
-const { readFileSync } = require("node:fs");
-const { resolve } = require("node:path");
 const { test } = require("node:test");
 const vm = require("node:vm");
+const { readAppSource, extractAll } = require("./app-source.cjs");
 
-const source = readFileSync(resolve(__dirname, "../static/app.js"), "utf8");
-const historyStart = source.indexOf("const MODAL_HISTORY_STATE_KEY");
-const historyEnd = source.indexOf("\nlet memeGridObserver", historyStart);
-assert.notEqual(historyStart, -1);
-assert.notEqual(historyEnd, -1);
-const historySource = source.slice(historyStart, historyEnd);
+const source = readAppSource();
+const historySource = extractAll(source, [
+  "MODAL_HISTORY_STATE_KEY", "suppressNextModalHistoryPop", "currentModalHistoryState",
+  "pushModalHistoryState", "unwindModalHistoryState", "handleModalHistoryPop",
+]);
 
 function createContext() {
   const context = vm.createContext({});

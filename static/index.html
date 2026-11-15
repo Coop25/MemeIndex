@@ -1476,6 +1476,28 @@
 
     <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="false"></div>
 
+    <!-- The files in /static/js/ only declare things (functions, and constants
+         or variables whose starting value runs no code), so they must load
+         before app.js, which runs the app with them (deferred scripts run in
+         document order). -->
+    <script src="/static/js/core.js" defer></script>
+    <script src="/static/js/auth.js" defer></script>
+    <script src="/static/js/navigation.js" defer></script>
+    <script src="/static/js/media.js" defer></script>
+    <script src="/static/js/library.js" defer></script>
+    <script src="/static/js/home.js" defer></script>
+    <script src="/static/js/meme-modal.js" defer></script>
+    <script src="/static/js/sharing.js" defer></script>
+    <script src="/static/js/upload.js" defer></script>
+    <script src="/static/js/reel.js" defer></script>
+    <script src="/static/js/audiobooks.js" defer></script>
+    <script src="/static/js/audiobook-series.js" defer></script>
+    <script src="/static/js/audiobook-upload.js" defer></script>
+    <script src="/static/js/audiobook-player.js" defer></script>
+    <script src="/static/js/admin.js" defer></script>
+    <script src="/static/js/admin-dashboard.js" defer></script>
+    <script src="/static/js/admin-backup.js" defer></script>
+    <script src="/static/js/admin-tags.js" defer></script>
     <script src="/static/app.js" defer></script>
     <script src="/static/admin-pages.js" defer></script>
   </body>

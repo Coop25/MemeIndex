@@ -5,6 +5,8 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"net/textproto"
+	"net/url"
 	"os"
 	"strings"
 
@@ -284,6 +286,82 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	dashboard.FavoriteItems = s.protectMemesForResponse(r, dashboard.FavoriteItems)
 	dashboard.RandomItems = s.protectMemesForResponse(r, dashboard.RandomItems)
 	writeJSON(w, http.StatusOK, dashboard)
+}
+
+func (s *Server) handleSaveLink(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.enforceRateLimit(w, r, s.linkImportLimiter, "linkimport") {
+		return
+	}
+	var payload struct {
+		URL      string   `json:"url"`
+		Title    string   `json:"title"`
+		Notes    string   `json:"notes"`
+		Tags     []string `json:"tags"`
+		Favorite bool     `json:"favorite"`
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+	if err := decoder.Decode(&payload); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	parsed, err := url.Parse(strings.TrimSpace(payload.URL))
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" || parsed.User != nil {
+		http.Error(w, "a public HTTP or HTTPS URL is required", http.StatusBadRequest)
+		return
+	}
+	title := strings.TrimSpace(payload.Title)
+	if title == "" {
+		title = parsed.Hostname()
+	}
+	filename := safeLinkFilename(title) + ".url"
+	body := "[InternetShortcut]\r\nURL=" + parsed.String() + "\r\n"
+	header := textproto.MIMEHeader{}
+	header.Set("Content-Type", "application/internet-shortcut")
+	meme, err := s.managers.CreateMemeAsWithSource(currentAuditActor(r), strings.NewReader(body), header, filename, payload.Tags, payload.Notes, parsed.String())
+	if err != nil {
+		var duplicateErr *accessor.DuplicateMemeError
+		if errors.As(err, &duplicateErr) {
+			message := "this link is already saved"
+			if duplicateErr.PendingDelete {
+				message = "this link is already saved, but is waiting for a delete request to be reviewed"
+			}
+			writeJSON(w, http.StatusConflict, map[string]any{"error": message, "existing": s.protectMemeForResponse(r, duplicateErr.Existing)})
+			return
+		}
+		log.Printf("save external link failed: %v", err)
+		http.Error(w, "failed to save link", http.StatusInternalServerError)
+		return
+	}
+	if payload.Favorite {
+		if updated, favoriteErr := s.managers.SetFavorite(currentUserID(r), meme.ID, true); favoriteErr == nil {
+			meme = updated
+		}
+	}
+	writeJSON(w, http.StatusCreated, s.protectMemeForResponse(r, meme))
+}
+
+func safeLinkFilename(value string) string {
+	value = strings.TrimSpace(value)
+	var output strings.Builder
+	for _, char := range value {
+		if char == '/' || char == '\\' || char == ':' || char == '*' || char == '?' || char == '"' || char == '<' || char == '>' || char == '|' || char < 32 {
+			output.WriteRune('-')
+			continue
+		}
+		output.WriteRune(char)
+		if output.Len() >= 120 {
+			break
+		}
+	}
+	clean := strings.Trim(strings.TrimSpace(output.String()), ".")
+	if clean == "" {
+		return "saved-link"
+	}
+	return clean
 }
 
 func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {

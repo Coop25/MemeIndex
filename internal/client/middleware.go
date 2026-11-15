@@ -3,8 +3,10 @@ package client
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -45,8 +47,39 @@ func LoggingMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(recorder, r)
 		// Sanitize request-derived fields so a client cannot inject newlines and
 		// forge additional log lines.
-		log.Printf("%s %s %d (%s)", sanitizeLogField(r.Method), sanitizeLogField(loggedRequestPath(r.URL.Path)), recorder.status, time.Since(start).Round(time.Millisecond))
+		line := fmt.Sprintf("%s %s %d (%s)", sanitizeLogField(r.Method), sanitizeLogField(loggedRequestPath(r.URL.Path)), recorder.status, time.Since(start).Round(time.Millisecond))
+		if strings.HasPrefix(r.URL.Path, "/s/") {
+			// Say who fetched a shared file and through which Cloudflare data
+			// center, so a Discord fetch that missed the cache is plain to see
+			// (cache hits never reach this server). Quoting escapes anything a
+			// client could use to forge a log line.
+			line += " colo=" + cloudflareColo(r.Header.Get("Cf-Ray")) + " ua=" + strconv.Quote(truncateForLog(r.Header.Get("User-Agent"), 120))
+		}
+		log.Print(line)
 	})
+}
+
+// cloudflareColo is the data center code at the end of a Cloudflare ray ID
+// ("8f1c2a3b4c5d6e7f-ORD"), or "-" when there is none. With Tiered Cache on,
+// it can name the upper-tier data center rather than the visitor's.
+func cloudflareColo(rayID string) string {
+	colo := rayID[strings.LastIndex(rayID, "-")+1:]
+	if len(colo) != 3 {
+		return "-"
+	}
+	for _, r := range colo {
+		if r < 'A' || r > 'Z' {
+			return "-"
+		}
+	}
+	return colo
+}
+
+func truncateForLog(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	return strings.ToValidUTF8(value[:limit], "") + "…"
 }
 
 // sanitizeLogField strips control characters (including CR and LF) from a value

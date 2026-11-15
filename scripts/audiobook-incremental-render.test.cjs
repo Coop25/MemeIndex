@@ -1,23 +1,24 @@
 // Run with: node --test scripts/audiobook-incremental-render.test.cjs
 const assert = require("node:assert/strict");
-const { readFileSync } = require("node:fs");
-const { resolve } = require("node:path");
 const { test } = require("node:test");
 const vm = require("node:vm");
+const { readAppSource, extractAll } = require("./app-source.cjs");
 
-const source = readFileSync(resolve(__dirname, "../static/app.js"), "utf8");
+const source = readAppSource();
 
-function slice(startMarker, endMarker) {
-  const start = source.indexOf(startMarker);
-  const end = source.indexOf(endMarker, start);
-  assert.notEqual(start, -1, startMarker);
-  assert.notEqual(end, -1, endMarker);
-  return source.slice(start, end);
-}
-
-const fetchSource = slice("// The books grid is fetched a page at a time", "async function fetchAudiobookSeries");
-const loaderSource = slice("// Audiobook lists load a chunk at a time", "// renderAudiobookStatsView");
-const gridSource = slice("// The main grid shows either books", "async function toggleAudiobookFavorite");
+const fetchSource = extractAll(source, [
+  "AUDIOBOOK_PAGE_SIZE", "AUDIOBOOK_MAX_PAGE_SIZE", "audiobooksFetchSeq", "audiobooksLoadedListKey",
+  "audiobooksListKey", "fetchAudiobooks",
+]);
+const loaderSource = extractAll(source, [
+  "AUDIOBOOK_RENDER_CHUNK", "audiobookIncrementalRender", "createAudiobookScrollLoader",
+  "audiobookStatsFinishedLimit", "audiobookStatsFinishedLoader", "loadMoreAudiobookStatsFinished",
+]);
+const gridSource = extractAll(source, [
+  "audiobooksGridLimit", "audiobooksGridShown", "audiobooksGridLoader", "audiobooksGridEntries",
+  "renderAudiobooksGrid", "appendAudiobooksGridEntries", "syncAudiobooksGridSentinel",
+  "loadMoreAudiobooksGrid", "wireAudiobookCards",
+]);
 
 class FakeClassList {
   constructor(initial = []) { this.set = new Set(initial); }

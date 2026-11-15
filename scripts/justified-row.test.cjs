@@ -1,18 +1,13 @@
 // Run with: node --test scripts/justified-row.test.cjs
 const assert = require("node:assert/strict");
-const { readFileSync } = require("node:fs");
-const { resolve } = require("node:path");
 const { test } = require("node:test");
 const vm = require("node:vm");
+const { readAppSource, extractFunction } = require("./app-source.cjs");
 
-const source = readFileSync(resolve(__dirname, "../static/app.js"), "utf8");
+const source = readAppSource();
 
 const context = vm.createContext({});
-const start = source.indexOf("function pickJustifiedRow(");
-const end = source.indexOf("const DASHBOARD_RECENT_MOBILE_COUNT", start);
-assert.notEqual(start, -1);
-assert.notEqual(end, -1);
-vm.runInContext(source.slice(start, end), context);
+vm.runInContext(extractFunction(source, "pickJustifiedRow"), context);
 
 const rowWidth = (ratios, row, gap) =>
   ratios.slice(0, row.count).reduce((sum, ratio) => sum + ratio * row.height, 0) + gap * (row.count - 1);
