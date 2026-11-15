@@ -1,3 +1,4 @@
+// @ts-check
 // Shared media behaviour: the saved volume preference and the control bar
 // used by the meme modal, the random reel and the home spotlight.
 
