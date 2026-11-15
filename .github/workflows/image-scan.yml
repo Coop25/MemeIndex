@@ -43,6 +43,19 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
+      # Left at its default, the Dockerfile resolves yt-dlp's "latest" release
+      # through the GitHub API without a token. Shared runner IPs exhaust that
+      # anonymous rate limit, and the build then fails with a 403 before
+      # anything is scanned. Resolve the tag here with the job token instead.
+      - name: Resolve the latest yt-dlp release
+        id: ytdlp
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(gh api repos/yt-dlp/yt-dlp/releases/latest --jq .tag_name)"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       - name: Build image (amd64, not pushed)
         uses: docker/build-push-action@v7
         with:
@@ -52,6 +65,8 @@ jobs:
           push: false
           platforms: linux/amd64
           tags: memeindex:scan
+          build-args: |
+            YTDLP_VERSION=${{ steps.ytdlp.outputs.version }}
 
       - name: Scan image (report)
         uses: aquasecurity/trivy-action@v0.36.0
@@ -77,5 +92,6 @@ jobs:
           exit-code: "1"
           ignore-unfixed: true
           severity: CRITICAL,HIGH
-          # Reuse the database downloaded by the report step.
+          # The report step already installed Trivy; skip installing it again.
+          # Its vulnerability database is reused from the action's cache.
           skip-setup-trivy: true
