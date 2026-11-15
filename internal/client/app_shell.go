@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -28,18 +29,29 @@ func staticAssetHandler(dir string) http.Handler {
 			http.NotFound(w, r)
 			return
 		}
-		if q := r.URL.Query(); q.Get("h") != "" || q.Get("v") != "" {
+		if h := r.URL.Query().Get("h"); h != "" && h == assetContentHash(staticAssetPath(dir, r.URL.Path)) {
 			w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
 		} else {
 			// No fingerprint means the URL never changes across deploys (the
 			// audiobook sync worker, favicons). Without an explicit policy the
 			// browser guesses a freshness lifetime from Last-Modified and can
 			// keep running an old script next to a new app.js, so make it
-			// revalidate; an unchanged file costs one 304.
+			// revalidate; an unchanged file costs one 304. The same goes for
+			// a fingerprint this file does not have: with several instances
+			// mid-deploy, an old one can receive a new shell's URL, and must
+			// not let the browser keep its old file under that URL for a year.
 			w.Header().Set("Cache-Control", "private, no-cache")
 		}
 		fs.ServeHTTP(w, r)
 	})
+}
+
+// staticAssetPath maps a /static/ request path to the file it serves under
+// dir, cleaned so it cannot climb out of dir (http.Dir applies the same rule
+// when it serves the file).
+func staticAssetPath(dir, urlPath string) string {
+	rel := path.Clean("/" + strings.TrimPrefix(urlPath, "/static/"))
+	return filepath.Join(dir, filepath.FromSlash(rel))
 }
 
 // indexAssetPattern finds the scripts and stylesheets the app shell loads from

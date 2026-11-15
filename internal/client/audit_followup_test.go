@@ -175,7 +175,8 @@ func TestUnfingerprintedStaticAssetsRevalidate(t *testing.T) {
 	}
 
 	fingerprinted := httptest.NewRecorder()
-	handler.ServeHTTP(fingerprinted, httptest.NewRequest(http.MethodGet, "/static/worker.js?v=1&h=abc", nil))
+	hash := assetContentHash(filepath.Join("static", "worker.js"))
+	handler.ServeHTTP(fingerprinted, httptest.NewRequest(http.MethodGet, "/static/worker.js?v=1&h="+hash, nil))
 	if got := fingerprinted.Header().Get("Cache-Control"); !strings.Contains(got, "immutable") {
 		t.Fatalf("fingerprinted asset Cache-Control = %q, want immutable", got)
 	}
