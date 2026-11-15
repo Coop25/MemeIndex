@@ -1,3 +1,4 @@
+// @ts-check
 // Shared helpers used across the app: API error handling, formatting of
 // dates, durations and sizes, HTML escaping, toasts, and confirm dialogs.
 
@@ -257,6 +258,10 @@ function forceFreshHTMLReload() {
 // only if the Confirm button is clicked, and false for Cancel, Escape, or any
 // other way the dialog closes. Falls back to window.confirm if the modal
 // markup is missing for some reason.
+/**
+ * @param {{ title?: string, message?: string, confirmLabel?: string, cancelLabel?: string, danger?: boolean }} [options]
+ * @returns {Promise<boolean>}
+ */
 function confirmViaModal({ title, message, confirmLabel = "Confirm", cancelLabel = "Cancel", danger = true } = {}) {
   return new Promise((resolve) => {
     if (!confirmModal || !confirmModalConfirmButton || !confirmModalCancelButton) {

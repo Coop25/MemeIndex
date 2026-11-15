@@ -116,3 +116,7 @@ jobs:
 
       - name: Run frontend unit tests
         run: node --test scripts/*.test.cjs
+
+      - name: Type-check opted-in frontend files
+        # Checks every static/ file that starts with "// @ts-check".
+        run: npx --yes -p typescript@5.9.3 tsc -p tsconfig.json

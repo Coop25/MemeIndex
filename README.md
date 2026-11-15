@@ -19,6 +19,8 @@ The frontend is plain JavaScript with no build step, served from `static/`:
 
 `scripts/app-scripts.test.cjs` checks that the area files read nothing but a few built-ins (such as `Map` and `Object`) while loading, that `app.js` declares no functions, and that no name is declared twice. It cannot see inside a call to one of the app's own functions, so keep area-file state to plain values. Run the frontend tests with `node --test scripts/*.test.cjs`.
 
+Files that begin with `// @ts-check` are type-checked by TypeScript in CI, with no build step and nothing emitted: `npx --yes -p typescript@5.9.3 tsc -p tsconfig.json`. The check catches misspelled properties and calls with the wrong arguments. To bring another file in, add the directive, fix what `tsc` reports (usually a JSDoc `/** @type {HTMLInputElement} */ (...)` cast on a `querySelector` result in `app.js`), and commit both.
+
 ## Features
 
 - Upload any file type through the browser

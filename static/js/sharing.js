@@ -1,3 +1,4 @@
+// @ts-check
 // Share links and deep links: copying share URLs, the share target, and
 // opening a linked meme or audiobook.
 

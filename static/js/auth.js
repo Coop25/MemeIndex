@@ -1,3 +1,4 @@
+// @ts-check
 // Signed-in user, permissions, the account menu, and installing the app.
 
 function getAuthInitials() {
@@ -19,7 +20,7 @@ function toggleAuthMenu() {
 }
 
 function isStandaloneApp() {
-  return window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
+  return window.matchMedia("(display-mode: standalone)").matches || /** @type {Navigator & { standalone?: boolean }} */ (window.navigator).standalone === true;
 }
 
 function isIOSDevice() {
