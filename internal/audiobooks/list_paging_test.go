@@ -1,4 +1,4 @@
-package client
+package audiobooks
 
 import (
 	"context"
@@ -24,7 +24,7 @@ func TestListAudiobooksPaging(t *testing.T) {
 		}
 	}
 
-	all, err := store.ListAudiobooks(ctx, "", audiobookListFilter{Tag: tag})
+	all, err := store.ListAudiobooks(ctx, "", ListFilter{Tag: tag})
 	if err != nil {
 		t.Fatalf("list all: %v", err)
 	}
@@ -34,7 +34,7 @@ func TestListAudiobooksPaging(t *testing.T) {
 
 	var paged []string
 	for offset := 0; offset < total; offset += 3 {
-		page, err := store.ListAudiobooks(ctx, "", audiobookListFilter{Tag: tag, Limit: 3, Offset: offset})
+		page, err := store.ListAudiobooks(ctx, "", ListFilter{Tag: tag, Limit: 3, Offset: offset})
 		if err != nil {
 			t.Fatalf("list page at %d: %v", offset, err)
 		}

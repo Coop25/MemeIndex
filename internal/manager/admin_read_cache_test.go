@@ -83,9 +83,9 @@ func (s *adminReadCacheStore) callCount() int {
 }
 
 var (
-	_ accessor.Store            = (*adminReadCacheStore)(nil)
+	_ accessor.Store             = (*adminReadCacheStore)(nil)
 	_ accessor.SuggestedTagStore = (*adminReadCacheStore)(nil)
-	_ accessor.AuditStore  = (*adminReadCacheStore)(nil)
+	_ accessor.AuditStore        = (*adminReadCacheStore)(nil)
 )
 
 func TestAdminDashboardMemoizesWithinTTL(t *testing.T) {

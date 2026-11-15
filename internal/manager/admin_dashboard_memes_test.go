@@ -37,7 +37,7 @@ func TestAdminDashboardUsesLeanMemeScan(t *testing.T) {
 	}
 	store := &adminDashboardMemeFakeStore{
 		adminMemeReadCache: adminMemeReadCache{&adminReadCacheStore{memes: memes}},
-		leanMemes:           memes,
+		leanMemes:          memes,
 	}
 	m := NewMemeManager(store)
 
@@ -59,7 +59,7 @@ func TestAdminDashboardFallsBackToListOnLeanScanError(t *testing.T) {
 	memes := []accessor.Meme{{ID: "a", ContentType: "image/png", SizeBytes: 7, CreatedAt: now}}
 	store := &adminDashboardMemeFakeStore{
 		adminMemeReadCache: adminMemeReadCache{&adminReadCacheStore{memes: memes}},
-		leanErr:             errors.New("boom"),
+		leanErr:            errors.New("boom"),
 	}
 	m := NewMemeManager(store)
 

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"memeindex/internal/accessor"
+	"memeindex/internal/audiobooks"
 	"memeindex/internal/manager"
 )
 
@@ -143,12 +144,12 @@ func TestFindOrphans(t *testing.T) {
 }
 
 type storagePathsStore struct {
-	audiobookStore
-	books []audiobookStoragePath
+	audiobooks.Store
+	books []audiobooks.StoragePath
 	temps []string
 }
 
-func (s storagePathsStore) ListStoragePaths(context.Context) ([]audiobookStoragePath, error) {
+func (s storagePathsStore) ListStoragePaths(context.Context) ([]audiobooks.StoragePath, error) {
 	return s.books, nil
 }
 func (s storagePathsStore) ListUploadTempPaths(context.Context) ([]string, error) {
@@ -191,7 +192,7 @@ func TestCollectStorageReferences(t *testing.T) {
 		config:   Config{DataDir: dataDir},
 		managers: manager.NewMemeManager(store),
 		audiobooks: storagePathsStore{
-			books: []audiobookStoragePath{
+			books: []audiobooks.StoragePath{
 				{ID: "b1", Title: "B", StoragePath: bookFile, CoverPath: coverFile},
 				{ID: "b2", Title: "NoCover", StoragePath: filepath.Join(dataDir, "audiobooks", "gone.m4b")},
 			},
@@ -249,7 +250,7 @@ func TestListStoragePathsAndUploadTempPaths(t *testing.T) {
 	if len(books) != 1 || books[0].ID != id || books[0].Title != "Book" || books[0].StoragePath != "/tmp/book.m4b" || books[0].CoverPath != "/c/a.jpg" {
 		t.Errorf("books = %+v", books)
 	}
-	upload, err := store.CreateUpload(ctx, audiobookUploadSeed{UserID: "u1", Title: "T", Filename: "t.mp3", MimeType: "audio/mpeg", TotalBytes: 10})
+	upload, err := store.CreateUpload(ctx, audiobooks.UploadSeed{UserID: "u1", Title: "T", Filename: "t.mp3", MimeType: "audio/mpeg", TotalBytes: 10})
 	if err != nil {
 		t.Fatal(err)
 	}

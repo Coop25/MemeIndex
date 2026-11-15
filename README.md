@@ -6,7 +6,8 @@ MemeIndex is a self-hosted meme organizer built with Go and a lightweight fronte
 
 - `internal/client`: HTTP-facing layer, routing, config, and middleware
 - `internal/manager`: application orchestration and normalization
-- `internal/accessor`: file persistence and metadata storage
+- `internal/accessor`: meme persistence (Postgres) and file storage
+- `internal/audiobooks`: audiobook persistence (Postgres) and its admin queries
 
 ## Frontend structure
 

@@ -1,4 +1,4 @@
-package client
+package audiobooks
 
 import (
 	"mime"
@@ -6,15 +6,15 @@ import (
 	"strings"
 )
 
-// audiobookSniffLooksLikeMedia reports whether a sniffed Content-Type is one
+// SniffLooksLikeMedia reports whether a sniffed Content-Type is one
 // an audio file could plausibly produce. http.DetectContentType only knows a
 // handful of audio signatures (an MP3 without an ID3 header, AAC, FLAC and
 // friends all come back as application/octet-stream), so this is a denylist
 // of things that are definitely not audio rather than an allowlist: anything
 // textual (which includes HTML, XML, SVG and scripts), images, PDFs, archives
 // and fonts.
-func audiobookSniffLooksLikeMedia(sniffed string) bool {
-	base := mediaTypeBase(sniffed)
+func SniffLooksLikeMedia(sniffed string) bool {
+	base := MediaTypeBase(sniffed)
 	switch {
 	case base == "":
 		return false
@@ -37,13 +37,13 @@ func audiobookSniffLooksLikeMedia(sniffed string) bool {
 	return true
 }
 
-// audiobookServableMimeType narrows whatever an audiobook's bytes sniffed as
+// ServableMimeType narrows whatever an audiobook's bytes sniffed as
 // to a Content-Type that browsers will only ever play or download, never
 // render as a document. A generic sniff is upgraded from the file extension
 // when that names an audio type, so an MP3 without an ID3 header still plays.
-func audiobookServableMimeType(sniffed, filename string) string {
-	base := mediaTypeBase(sniffed)
-	if audiobookPlayableMimeType(base) {
+func ServableMimeType(sniffed, filename string) string {
+	base := MediaTypeBase(sniffed)
+	if PlayableMimeType(base) {
 		return base
 	}
 	// The common audiobook extensions are mapped here, before asking the OS:
@@ -56,16 +56,16 @@ func audiobookServableMimeType(sniffed, filename string) string {
 	case ".mp3":
 		return "audio/mpeg"
 	}
-	if byExt := mediaTypeBase(mime.TypeByExtension(strings.ToLower(filepath.Ext(filename)))); strings.HasPrefix(byExt, "audio/") {
+	if byExt := MediaTypeBase(mime.TypeByExtension(strings.ToLower(filepath.Ext(filename)))); strings.HasPrefix(byExt, "audio/") {
 		return byExt
 	}
 	return "application/octet-stream"
 }
 
-// audiobookPlayableMimeType is the allowlist the media endpoint serves as-is.
+// PlayableMimeType is the allowlist the media endpoint serves as-is.
 // Anything else - including a hostile type stored before upload validation
 // existed - goes out as application/octet-stream.
-func audiobookPlayableMimeType(base string) bool {
+func PlayableMimeType(base string) bool {
 	switch {
 	case strings.HasPrefix(base, "audio/"):
 		return true
@@ -75,7 +75,7 @@ func audiobookPlayableMimeType(base string) bool {
 	return false
 }
 
-func mediaTypeBase(value string) string {
+func MediaTypeBase(value string) string {
 	base, _, _ := strings.Cut(strings.ToLower(strings.TrimSpace(value)), ";")
 	return strings.TrimSpace(base)
 }

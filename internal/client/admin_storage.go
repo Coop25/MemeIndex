@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"memeindex/internal/audiobooks"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -687,7 +688,7 @@ func (s *Server) handleAdminAudiobookUpload(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	upload, err := s.audiobooks.GetUploadByID(r.Context(), id)
-	if errors.Is(err, ErrAudiobookUploadNotFound) {
+	if errors.Is(err, audiobooks.ErrUploadNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "upload not found"})
 		return
 	}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"memeindex/internal/audiobooks"
 	"net/http"
 	"os"
 	"strconv"
@@ -59,7 +60,7 @@ func (s *Server) handleAudiobooks(w http.ResponseWriter, r *http.Request) {
 
 	session, _ := sessionFromContext(r.Context())
 	userID := currentAudiobookUserID(r)
-	filter := audiobookListFilter{
+	filter := audiobooks.ListFilter{
 		SeriesID: strings.TrimSpace(r.URL.Query().Get("series_id")),
 		Author:   strings.TrimSpace(r.URL.Query().Get("author")),
 		Tag:      strings.ToLower(strings.TrimSpace(r.URL.Query().Get("tag"))),
@@ -185,7 +186,7 @@ func (s *Server) handleAudiobookByID(w http.ResponseWriter, r *http.Request) {
 // authPermissions.AudiobookTagRestriction) is allowed to see this particular
 // audiobook. An account with no restriction set, or when auth is disabled
 // entirely, can see everything it otherwise has permission to.
-func audiobookVisibleToSession(session authSession, record audiobookRecord, authEnabled bool) bool {
+func audiobookVisibleToSession(session authSession, record audiobooks.Record, authEnabled bool) bool {
 	if !authEnabled {
 		return true
 	}
@@ -207,35 +208,35 @@ func audiobookVisibleToSession(session authSession, record audiobookRecord, auth
 // 404 (missing, or hidden by a tag restriction - the same answer either way,
 // so a restricted account can't probe for hidden ids) or a 500 and returning
 // ok=false when the caller should stop.
-func (s *Server) loadVisibleAudiobook(w http.ResponseWriter, r *http.Request, id string) (audiobookRecord, authSession, bool) {
+func (s *Server) loadVisibleAudiobook(w http.ResponseWriter, r *http.Request, id string) (audiobooks.Record, authSession, bool) {
 	session, _ := sessionFromContext(r.Context())
 	record, err := s.audiobooks.GetAudiobook(r.Context(), id)
-	if errors.Is(err, ErrAudiobookNotFound) {
+	if errors.Is(err, audiobooks.ErrNotFound) {
 		http.NotFound(w, r)
-		return audiobookRecord{}, session, false
+		return audiobooks.Record{}, session, false
 	}
 	if err != nil {
 		log.Printf("get audiobook failed: %v", err)
 		http.Error(w, "failed to load audiobook", http.StatusInternalServerError)
-		return audiobookRecord{}, session, false
+		return audiobooks.Record{}, session, false
 	}
 	if !audiobookVisibleToSession(session, record, s.auth.enabled()) {
 		http.NotFound(w, r)
-		return audiobookRecord{}, session, false
+		return audiobooks.Record{}, session, false
 	}
 	return record, session, true
 }
 
 // loadEditableAudiobook is loadVisibleAudiobook plus the edit check shared by
 // the metadata, cover and tag endpoints.
-func (s *Server) loadEditableAudiobook(w http.ResponseWriter, r *http.Request, id string) (audiobookRecord, bool) {
+func (s *Server) loadEditableAudiobook(w http.ResponseWriter, r *http.Request, id string) (audiobooks.Record, bool) {
 	record, session, ok := s.loadVisibleAudiobook(w, r, id)
 	if !ok {
-		return audiobookRecord{}, false
+		return audiobooks.Record{}, false
 	}
 	if !audiobookEditAllowed(session, record, s.auth.enabled()) {
 		writeJSON(w, http.StatusForbidden, map[string]any{"error": "only the uploader or someone with delete-audiobooks access can edit this audiobook"})
-		return audiobookRecord{}, false
+		return audiobooks.Record{}, false
 	}
 	return record, true
 }
@@ -282,7 +283,7 @@ func (s *Server) deleteAudiobook(w http.ResponseWriter, r *http.Request, id stri
 // to delete an audiobook outright is trusted to fix its metadata, which is
 // strictly less destructive, so this reuses permissionDeleteAudiobooks rather
 // than adding a whole separate permission just for edits.
-func audiobookEditAllowed(session authSession, record audiobookRecord, authEnabled bool) bool {
+func audiobookEditAllowed(session authSession, record audiobooks.Record, authEnabled bool) bool {
 	if !authEnabled {
 		return true
 	}
@@ -331,7 +332,7 @@ func (s *Server) updateAudiobookMetadata(w http.ResponseWriter, r *http.Request,
 	}
 
 	updated, err := s.audiobooks.UpdateAudiobookMetadata(r.Context(), id, payload.Title, payload.Author, payload.Narrator)
-	if errors.Is(err, ErrAudiobookNotFound) {
+	if errors.Is(err, audiobooks.ErrNotFound) {
 		http.NotFound(w, r)
 		return
 	}
@@ -362,7 +363,7 @@ func (s *Server) replaceAudiobookCover(w http.ResponseWriter, r *http.Request, i
 		return
 	}
 	// Sniffed from the bytes themselves, the same reasoning as
-	// sniffAudiobookMimeType: never trust a client-supplied Content-Type for
+	// audiobooks.SniffMimeType: never trust a client-supplied Content-Type for
 	// something that gets served back out to other viewers.
 	switch http.DetectContentType(data) {
 	case "image/jpeg", "image/png", "image/webp", "image/gif":
@@ -372,7 +373,7 @@ func (s *Server) replaceAudiobookCover(w http.ResponseWriter, r *http.Request, i
 	}
 
 	updated, err := s.audiobooks.SetAudiobookCover(r.Context(), id, data)
-	if errors.Is(err, ErrAudiobookNotFound) {
+	if errors.Is(err, audiobooks.ErrNotFound) {
 		http.NotFound(w, r)
 		return
 	}
@@ -390,7 +391,7 @@ func (s *Server) removeAudiobookCover(w http.ResponseWriter, r *http.Request, id
 	}
 
 	updated, err := s.audiobooks.RemoveAudiobookCover(r.Context(), id)
-	if errors.Is(err, ErrAudiobookNotFound) {
+	if errors.Is(err, audiobooks.ErrNotFound) {
 		http.NotFound(w, r)
 		return
 	}
@@ -647,7 +648,7 @@ func (s *Server) createAudiobookBookmark(w http.ResponseWriter, r *http.Request,
 
 	userID := currentAudiobookUserID(r)
 	var (
-		bookmark audiobookBookmark
+		bookmark audiobooks.Bookmark
 		replaced []string
 		err      error
 	)
@@ -703,7 +704,7 @@ func (s *Server) useAudiobookBookmark(w http.ResponseWriter, r *http.Request, au
 		usedSince = time.Now().Add(-s.config.AudiobookBookmarkExpiry)
 	}
 	bookmark, err := s.audiobooks.TouchBookmark(r.Context(), audiobookID, bookmarkID, currentAudiobookUserID(r), usedSince)
-	if errors.Is(err, ErrAudiobookBookmarkNotFound) {
+	if errors.Is(err, audiobooks.ErrBookmarkNotFound) {
 		http.NotFound(w, r)
 		return
 	}
@@ -726,7 +727,7 @@ func (s *Server) deleteAudiobookBookmark(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	err := s.audiobooks.DeleteBookmark(r.Context(), audiobookID, bookmarkID, currentAudiobookUserID(r))
-	if errors.Is(err, ErrAudiobookBookmarkNotFound) {
+	if errors.Is(err, audiobooks.ErrBookmarkNotFound) {
 		http.NotFound(w, r)
 		return
 	}
@@ -806,7 +807,7 @@ func (s *Server) handleAudiobookStatsOverview(w http.ResponseWriter, r *http.Req
 func (s *Server) getAudiobookListeningHistory(w http.ResponseWriter, r *http.Request, id string) {
 	session, _ := sessionFromContext(r.Context())
 	record, err := s.audiobooks.GetAudiobook(r.Context(), id)
-	if errors.Is(err, ErrAudiobookNotFound) {
+	if errors.Is(err, audiobooks.ErrNotFound) {
 		http.NotFound(w, r)
 		return
 	}
@@ -854,7 +855,7 @@ func (s *Server) setAudiobookSeries(w http.ResponseWriter, r *http.Request, id s
 	}
 
 	record, err := s.audiobooks.SetAudiobookSeries(r.Context(), id, seriesID, payload.Sequence)
-	if errors.Is(err, ErrAudiobookNotFound) {
+	if errors.Is(err, audiobooks.ErrNotFound) {
 		http.NotFound(w, r)
 		return
 	}
@@ -931,7 +932,7 @@ func (s *Server) createAudiobookSeries(w http.ResponseWriter, r *http.Request) {
 	}
 
 	series, err := s.audiobooks.CreateSeries(r.Context(), name, currentAudiobookUserID(r))
-	if errors.Is(err, ErrAudiobookSeriesNameTaken) {
+	if errors.Is(err, audiobooks.ErrSeriesNameTaken) {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "a series with that name already exists"})
 		return
 	}
@@ -993,11 +994,11 @@ func (s *Server) renameAudiobookSeries(w http.ResponseWriter, r *http.Request, i
 	}
 
 	series, err := s.audiobooks.RenameSeries(r.Context(), id, name)
-	if errors.Is(err, ErrAudiobookSeriesNotFound) {
+	if errors.Is(err, audiobooks.ErrSeriesNotFound) {
 		http.NotFound(w, r)
 		return
 	}
-	if errors.Is(err, ErrAudiobookSeriesNameTaken) {
+	if errors.Is(err, audiobooks.ErrSeriesNameTaken) {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "a series with that name already exists"})
 		return
 	}
@@ -1011,7 +1012,7 @@ func (s *Server) renameAudiobookSeries(w http.ResponseWriter, r *http.Request, i
 
 func (s *Server) deleteAudiobookSeries(w http.ResponseWriter, r *http.Request, id string) {
 	err := s.audiobooks.DeleteSeries(r.Context(), id)
-	if errors.Is(err, ErrAudiobookSeriesNotFound) {
+	if errors.Is(err, audiobooks.ErrSeriesNotFound) {
 		http.NotFound(w, r)
 		return
 	}
@@ -1068,7 +1069,7 @@ func (s *Server) handleAudiobookUploads(w http.ResponseWriter, r *http.Request) 
 	// Title/author are left exactly as typed, including blank: CompleteUpload
 	// fills in whatever ffprobe reads from the file's own tags first, and only
 	// falls back to the filename if neither the user nor the file supplied one.
-	upload, err := s.audiobooks.CreateUpload(r.Context(), audiobookUploadSeed{
+	upload, err := s.audiobooks.CreateUpload(r.Context(), audiobooks.UploadSeed{
 		UserID:     currentAudiobookUserID(r),
 		Title:      strings.TrimSpace(payload.Title),
 		Author:     strings.TrimSpace(payload.Author),
@@ -1125,7 +1126,7 @@ func (s *Server) handleAudiobookUploadByID(w http.ResponseWriter, r *http.Reques
 
 func (s *Server) getAudiobookUploadStatus(w http.ResponseWriter, r *http.Request, id string) {
 	upload, err := s.audiobooks.GetUpload(r.Context(), id, currentAudiobookUserID(r))
-	if errors.Is(err, ErrAudiobookUploadNotFound) {
+	if errors.Is(err, audiobooks.ErrUploadNotFound) {
 		http.NotFound(w, r)
 		return
 	}
@@ -1159,7 +1160,7 @@ func (s *Server) appendAudiobookUploadChunk(w http.ResponseWriter, r *http.Reque
 	defer lock.RUnlock()
 
 	upload, err := s.audiobooks.GetUpload(r.Context(), id, userID)
-	if errors.Is(err, ErrAudiobookUploadNotFound) {
+	if errors.Is(err, audiobooks.ErrUploadNotFound) {
 		http.NotFound(w, r)
 		return
 	}
@@ -1218,7 +1219,7 @@ func (s *Server) appendAudiobookUploadChunk(w http.ResponseWriter, r *http.Reque
 	}
 
 	updated, err := s.audiobooks.RecordUploadRange(r.Context(), id, userID, offset, offset+written)
-	if errors.Is(err, ErrAudiobookUploadNotFound) {
+	if errors.Is(err, audiobooks.ErrUploadNotFound) {
 		http.NotFound(w, r)
 		return
 	}
@@ -1248,7 +1249,7 @@ func (s *Server) completeAudiobookUpload(w http.ResponseWriter, r *http.Request,
 
 	userID := currentAudiobookUserID(r)
 	record, err := s.audiobooks.CompleteUpload(r.Context(), id, userID, payload.DurationSeconds)
-	if errors.Is(err, ErrAudiobookUploadNotFound) {
+	if errors.Is(err, audiobooks.ErrUploadNotFound) {
 		http.NotFound(w, r)
 		return
 	}
@@ -1268,7 +1269,7 @@ func (s *Server) abortAudiobookUpload(w http.ResponseWriter, r *http.Request, id
 	defer lock.Unlock()
 
 	upload, err := s.audiobooks.AbortUpload(r.Context(), id, currentAudiobookUserID(r))
-	if errors.Is(err, ErrAudiobookUploadNotFound) {
+	if errors.Is(err, audiobooks.ErrUploadNotFound) {
 		http.NotFound(w, r)
 		return
 	}
@@ -1351,7 +1352,7 @@ func (s *Server) sweepExpiredAudiobookBookmarks(ctx context.Context, now time.Ti
 // so it can't delete the temp file (or the row) out from under a request that
 // is still writing to it. Used by the stale-upload sweeper and the admin
 // discard endpoint.
-func (s *Server) discardAudiobookUpload(ctx context.Context, upload audiobookUpload) error {
+func (s *Server) discardAudiobookUpload(ctx context.Context, upload audiobooks.Upload) error {
 	lock := lockAudiobookUpload(upload.ID)
 	lock.Lock()
 	if err := os.Remove(upload.TempPath); err != nil && !os.IsNotExist(err) {
@@ -1452,8 +1453,8 @@ func (s *Server) handleAudiobookMedia(w http.ResponseWriter, r *http.Request) {
 	// hostile type stored before uploads were validated) goes out as opaque
 	// bytes. The sandbox CSP is a second wall: even if a document did render
 	// here, it could run no script and would get a unique opaque origin.
-	contentType := mediaTypeBase(record.MimeType)
-	if !audiobookPlayableMimeType(contentType) {
+	contentType := audiobooks.MediaTypeBase(record.MimeType)
+	if !audiobooks.PlayableMimeType(contentType) {
 		contentType = "application/octet-stream"
 		w.Header().Set("Content-Disposition", "attachment")
 	}
@@ -1503,7 +1504,7 @@ func (s *Server) handleAudiobookCover(w http.ResponseWriter, r *http.Request) {
 
 	// Sniffed from the file's own bytes rather than assumed from the historical
 	// ".jpg" extension - a user-replaced cover can be PNG/WEBP/GIF now too.
-	coverType := mediaTypeBase(sniffAudiobookMimeType(record.CoverPath))
+	coverType := audiobooks.MediaTypeBase(audiobooks.SniffMimeType(record.CoverPath))
 	switch coverType {
 	case "image/jpeg", "image/png", "image/webp", "image/gif":
 	default:
@@ -1533,7 +1534,7 @@ func nonNilStrings(values []string) []string {
 	return values
 }
 
-func audiobookJSON(record audiobookRecord) map[string]any {
+func audiobookJSON(record audiobooks.Record) map[string]any {
 	payload := map[string]any{
 		"id":               record.ID,
 		"title":            record.Title,
@@ -1564,8 +1565,8 @@ func audiobookJSON(record audiobookRecord) map[string]any {
 	return payload
 }
 
-func audiobookWithProgressJSON(item audiobookWithProgress) map[string]any {
-	payload := audiobookJSON(item.audiobookRecord)
+func audiobookWithProgressJSON(item audiobooks.WithProgress) map[string]any {
+	payload := audiobookJSON(item.Record)
 	payload["position_seconds"] = item.PositionSeconds
 	payload["is_favorite"] = item.IsFavorite
 	if !item.ProgressAt.IsZero() {
@@ -1574,7 +1575,7 @@ func audiobookWithProgressJSON(item audiobookWithProgress) map[string]any {
 	return payload
 }
 
-func audiobookSeriesJSON(series audiobookSeries) map[string]any {
+func audiobookSeriesJSON(series audiobooks.Series) map[string]any {
 	topBooks := make([]map[string]any, 0, len(series.TopBooks))
 	for _, book := range series.TopBooks {
 		entry := map[string]any{"id": book.ID}
@@ -1592,7 +1593,7 @@ func audiobookSeriesJSON(series audiobookSeries) map[string]any {
 	}
 }
 
-func (s *Server) audiobookBookmarkJSON(bookmark audiobookBookmark) map[string]any {
+func (s *Server) audiobookBookmarkJSON(bookmark audiobooks.Bookmark) map[string]any {
 	out := map[string]any{
 		"id":               bookmark.ID,
 		"position_seconds": bookmark.PositionSeconds,
@@ -1609,22 +1610,22 @@ func (s *Server) audiobookBookmarkJSON(bookmark audiobookBookmark) map[string]an
 
 // audiobookBookmarkExpiresAt is when an unused bookmark will be deleted, or
 // false when expiry is turned off.
-func (s *Server) audiobookBookmarkExpiresAt(bookmark audiobookBookmark) (time.Time, bool) {
+func (s *Server) audiobookBookmarkExpiresAt(bookmark audiobooks.Bookmark) (time.Time, bool) {
 	if s.config.AudiobookBookmarkExpiry <= 0 || bookmark.LastUsedAt.IsZero() {
 		return time.Time{}, false
 	}
 	return bookmark.LastUsedAt.Add(s.config.AudiobookBookmarkExpiry), true
 }
 
-func (s *Server) audiobookBookmarkExpired(bookmark audiobookBookmark, now time.Time) bool {
+func (s *Server) audiobookBookmarkExpired(bookmark audiobooks.Bookmark, now time.Time) bool {
 	expiresAt, ok := s.audiobookBookmarkExpiresAt(bookmark)
 	return ok && !now.Before(expiresAt)
 }
 
-func audiobookUploadJSON(upload audiobookUpload) map[string]any {
+func audiobookUploadJSON(upload audiobooks.Upload) map[string]any {
 	ranges := upload.ReceivedRanges
 	if ranges == nil {
-		ranges = []uploadByteRange{}
+		ranges = []audiobooks.ByteRange{}
 	}
 	return map[string]any{
 		"upload_id":       upload.ID,
