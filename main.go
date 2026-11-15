@@ -27,23 +27,14 @@ func main() {
 	log.Printf("MemeIndex version: %s", client.BuildVersion())
 	log.Printf("MemeIndex Discord warm-up: %s", config.DiscordWarmupStatus())
 
-	var (
-		store accessor.Store
-	)
-
-	if config.DatabaseURL != "" {
-		store, err = accessor.NewPostgresStore(context.Background(), config.DatabaseURL, config.DataDir)
-		if err != nil {
-			log.Fatalf("postgres store init failed: %v", err)
-		}
-		log.Printf("MemeIndex storage: postgres")
-	} else {
-		store, err = accessor.NewMemeStore(config.DataDir)
-		if err != nil {
-			log.Fatalf("store init failed: %v", err)
-		}
-		log.Printf("MemeIndex storage: local files")
+	// LoadConfig guarantees a database URL. On the first start against an
+	// empty database, NewPostgresStore imports any data a previous local JSON
+	// store left in the data directory.
+	store, err := accessor.NewPostgresStore(context.Background(), config.DatabaseURL, config.DataDir)
+	if err != nil {
+		log.Fatalf("postgres store init failed: %v", err)
 	}
+	log.Printf("MemeIndex storage: postgres")
 
 	tagSuggester := tagsuggest.New(tagsuggest.Config{
 		OllamaURL:    config.TagSuggestions.OllamaURL,
@@ -163,10 +154,8 @@ func main() {
 	memeManager.StopBackgroundWorkers(10 * time.Second)
 	bg.Wait()
 
-	if closer, ok := store.(interface{ Close() }); ok {
-		closer.Close()
-		log.Printf("storage connections closed")
-	}
+	store.Close()
+	log.Printf("storage connections closed")
 
 	log.Printf("shutdown complete")
 }

@@ -139,6 +139,11 @@ type CreateInput struct {
 	Actor       AuditActor
 }
 
+// MemeStore is an in-process store backed by JSON files in a data directory.
+// It is no longer a production backend (the server requires Postgres); it
+// remains as a lightweight Store for tests and as the writer of the
+// index.json/favorites.json format that PostgresStore imports when an
+// instance upgrades from it.
 type MemeStore struct {
 	mu              sync.RWMutex
 	dataFile        string

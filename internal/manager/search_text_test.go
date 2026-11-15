@@ -25,7 +25,7 @@ func (s *searchTextFakeStore) SetSearchText(id, text string) error {
 	return nil
 }
 
-var _ accessor.SearchTextStore = (*searchTextFakeStore)(nil)
+var _ accessor.SuggestedTagStore = (*searchTextFakeStore)(nil)
 
 func TestResetTagSuggestionsClearsSearchTextForSuggestedMemes(t *testing.T) {
 	store := &searchTextFakeStore{adminReadCacheStore: &adminReadCacheStore{memes: []accessor.Meme{

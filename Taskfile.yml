@@ -9,6 +9,16 @@ tasks:
     cmds:
       - go run .
 
+  dev-db-up:
+    desc: Start a local Postgres for go run / task run, matching .env.example's MEMEINDEX_DATABASE_URL
+    cmds:
+      - docker start memeindex-dev-db || docker run -d --name memeindex-dev-db -e POSTGRES_USER=memeindex -e POSTGRES_PASSWORD=memeindex -e POSTGRES_DB=memeindex -p 127.0.0.1:5432:5432 -v memeindex-dev-db:/var/lib/postgresql/data postgres:17
+
+  dev-db-down:
+    desc: Stop the local development Postgres (its data volume is kept)
+    cmds:
+      - docker stop memeindex-dev-db
+
   build:
     desc: Build MemeIndex with environment variables loaded from .env
     cmds:

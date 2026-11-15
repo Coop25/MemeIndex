@@ -7,8 +7,8 @@ import (
 )
 
 // readinessChecker is implemented by stores whose backing datastore can be
-// reached out to. The file-backed JSON store does not implement it, so a
-// deployment on that store always reports its datastore check as skipped.
+// reached out to. PostgresStore implements it; a store without it (the
+// in-process test store) reports its datastore check as skipped.
 type readinessChecker interface {
 	Ping(ctx context.Context) error
 }

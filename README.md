@@ -22,10 +22,10 @@ The frontend is plain JavaScript with no build step, served from `static/`:
 
 - Upload any file type through the browser
 - Download supported YouTube, Facebook, Reddit, Instagram, TikTok, and Twitter/X links, plus direct image and video URLs, from the Import Media Link modal
-- Store metadata in Postgres with a dedicated tags table for suggestions
+- Store metadata in Postgres (required) with a dedicated tags table for suggestions
 - Compute content hashes on upload so duplicate files can be skipped
 - Generate video thumbnails for lighter grid previews when `ffmpeg` is installed, and downscaled thumbnails for large JPEG and PNG images (no `ffmpeg` needed)
-- Upload, organize into series, and listen to audiobooks with synced progress, bookmarks, a sleep timer, and listening stats (requires Postgres)
+- Upload, organize into series, and listen to audiobooks with synced progress, bookmarks, a sleep timer, and listening stats
 - Suggest reviewable tags for images and videos through an optional local Ollama model, and index the text the model reads off the image (plus any video transcript) so memes are searchable by their on-image caption
 - Keep the original source link attached to imported link-based memes
 - Preview image and video files inline
@@ -38,10 +38,14 @@ The frontend is plain JavaScript with no build step, served from `static/`:
 
 ## Run locally
 
+MemeIndex needs Postgres. For local development, start a throwaway one with `task dev-db-up` (or the `docker run` line below), then run the app against it:
+
 ```powershell
+docker run -d --name memeindex-dev-db -e POSTGRES_USER=memeindex -e POSTGRES_PASSWORD=memeindex -e POSTGRES_DB=memeindex -p 127.0.0.1:5432:5432 postgres:17
 $env:GOTELEMETRY='off'
 $env:MEMEINDEX_ADDR='127.0.0.1:8080'
 $env:MEMEINDEX_ALLOW_ANONYMOUS='true'
+$env:MEMEINDEX_DATABASE_URL='postgres://memeindex:memeindex@localhost:5432/memeindex?sslmode=disable'
 go run .
 ```
 
@@ -111,7 +115,7 @@ Leave out both `-SessionToken` and `-CookieValue` only for a server running with
 - `MEMEINDEX_ADDR`: server bind address, default `:8080`
 - `MEMEINDEX_DEBUG_ADDR`: optional bind address for a separate diagnostics listener that serves Prometheus metrics at `/metrics` and `net/http/pprof` at `/debug/pprof/`. Unset by default (nothing extra is exposed). Bind it to loopback or a private interface only, e.g. `127.0.0.1:6060`; it is never mounted on the main `MEMEINDEX_ADDR` port
 - `MEMEINDEX_DATA_DIR`: data directory, default `data`
-- `MEMEINDEX_DATABASE_URL`: Postgres connection string. When empty, MemeIndex falls back to the legacy JSON store
+- `MEMEINDEX_DATABASE_URL`: Postgres connection string. Required: MemeIndex refuses to start without it (see [Upgrading from the JSON store](#upgrading-from-the-json-store))
 - `MEMEINDEX_MEDIAFETCH_YTDLP_BINARY`: path to the `yt-dlp` binary used for social-site link downloads, default `yt-dlp`
 - `MEMEINDEX_MEDIAFETCH_PROXY`: optional forward proxy for downloader egress. When set, `yt-dlp` (`--proxy`) and the Go media-fetch HTTP client both route through it, so it can be an allowlist that only permits the public media hosts. When unset, MemeIndex falls back to `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY`; if none are set it pins outbound downloader connections to public IP addresses only and refuses private, loopback, link-local, and reserved ranges at connect time. See [Downloader network isolation](#downloader-network-isolation)
 - Import Media Link also downloads direct picture and video URLs, including Discord CDN attachments, without `yt-dlp`. Direct downloads are limited to 256 MB, retain the source URL, and use the normal duplicate detection. Paste the complete Discord attachment URL including its query parameters; unavailable or expired attachments require a fresh link.
@@ -164,7 +168,7 @@ If the Ollama env vars are not set or the model is offline, MemeIndex still work
 - `UPLOAD AUDIOBOOKS`: everything in `VIEW AUDIOBOOKS`, plus upload new audiobooks
 - `SUPER ADMIN`: full access plus the users modal, where all non-super-admin permissions can be toggled and stored in Postgres
 
-When Postgres is enabled, MemeIndex imports any missing IDs from `VIEW_USER_IDS` and `ADD_USER_IDS` into the users table on startup. Super admins come from env, while all other user permissions are stored in the database and recalculated on every request without rotating auth cookies.
+On startup, MemeIndex imports any missing IDs from `VIEW_USER_IDS` and `ADD_USER_IDS` into the users table on startup. Super admins come from env, while all other user permissions are stored in the database and recalculated on every request without rotating auth cookies.
 
 Example local setup:
 
@@ -199,7 +203,7 @@ When enabled, MemeIndex will use whichever host you started from in the browser.
 MemeIndex exposes two unauthenticated probes for orchestration and load balancers:
 
 - `GET /healthz` — liveness. Returns `200` with `{"status":"ok"}` as long as the process can serve HTTP. It never touches the database.
-- `GET /readyz` — readiness. Returns `200` only when the server is not draining and its backing store answers a ping (`{"checks":{"accepting_traffic":"ok","datastore":"ok"}}`). Returns `503` during shutdown or when Postgres is unreachable. On the legacy JSON store the datastore check reports `"skipped"`. When the optional `pg_trgm` search indexes could not be created (a locked-down database role), `readyz` still returns `200` but adds `"search_index":"degraded"`, and the admin dashboard's system-health panel shows **Search Index: Degraded**.
+- `GET /readyz` — readiness. Returns `200` only when the server is not draining and its backing store answers a ping (`{"checks":{"accepting_traffic":"ok","datastore":"ok"}}`). Returns `503` during shutdown or when Postgres is unreachable. When the optional `pg_trgm` search indexes could not be created (a locked-down database role), `readyz` still returns `200` but adds `"search_index":"degraded"`, and the admin dashboard's system-health panel shows **Search Index: Degraded**.
 
 Neither path is written to the request log. The bundled `Dockerfile` and `docker-compose.yml` wire `/healthz` into their container health checks.
 
@@ -304,9 +308,9 @@ Notes:
 - `OLLAMA_KEEP_ALIVE=5m` in the compose file only covers a model loaded by a manual "suggest tags" on a single meme
 - the frames, resized image and audio the suggester prepares for the model are deleted after each attempt; leftovers in `data/thumbnails/tagframes`, `tagimages` and `tagaudio` are removed at startup
 - if Ollama is down, still starting, or missing the configured model, the app stays online and tag suggestions simply return unavailable
-- Postgres also stores random reel sessions when `MEMEINDEX_DATABASE_URL` is enabled
+- Postgres also stores random reel sessions
 - on startup MemeIndex tries to create the bundled `pg_trgm` extension and trigram indexes so substring search is index-accelerated; if the database role may not create extensions this step is skipped with a log line and search still works, just with a sequential scan
-- on first Postgres startup, if the database is empty and legacy `data/index.json` or `data/favorites.json` files exist, MemeIndex imports them automatically
+- on first Postgres startup, if the database is empty and JSON store files exist in the data directory, MemeIndex imports them automatically (see [Upgrading from the JSON store](#upgrading-from-the-json-store))
 - stale reel sessions are cleaned by the app every night at `00:00 UTC`
 - Postgres is not exposed by the compose file, so the app remains the only service talking to the database
 
@@ -456,8 +460,6 @@ The included `.gitignore` is set up for that flow already.
 
 ## Storage layout
 
-When using Postgres:
-
 - `data/uploads/`: stored files
 - Postgres `memes`: metadata rows
 - Postgres `tags`: normalized tag catalog for suggestions
@@ -465,11 +467,18 @@ When using Postgres:
 - Postgres `user_favorites`: per-user favorites
 - Postgres `reel_sessions`: random reel history and position state
 
-When using the legacy file store:
+### Upgrading from the JSON store
 
-- `data/index.json`: metadata catalog
-- `data/favorites.json`: per-user favorite meme IDs
-- `data/uploads/`: stored files
+Older versions ran without a database when `MEMEINDEX_DATABASE_URL` was empty, keeping metadata in `data/index.json`, favorites in `data/favorites.json` and reel history in `data/reel_sessions.json`. That store has been removed, and an instance still configured that way stops at startup with an error that names the files it found.
+
+To upgrade, point `MEMEINDEX_DATABASE_URL` at an **empty** Postgres database and keep `MEMEINDEX_DATA_DIR` where it was. On its first start MemeIndex imports, in one transaction:
+
+- every meme's metadata, tags, suggested tags, notes, source link, content hash and auto-suggest setting
+- each user's favorites
+- share state and share-link codes, so links already handed out keep working
+- reel sessions
+
+Uploaded files stay where they are under `data/uploads/`. The JSON files are left in place but no longer read, and the import never runs again once the database holds memes. Back up the data directory first; to retry an import, empty the `memes` table and restart.
 
 ## Next ideas
 

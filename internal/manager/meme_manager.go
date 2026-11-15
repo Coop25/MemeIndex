@@ -502,7 +502,7 @@ func (m *MemeManager) SetFavorite(userID, id string, favorite bool) (accessor.Me
 }
 
 func (m *MemeManager) SetFavoriteAs(userID, id string, favorite bool, actor accessor.AuditActor) (accessor.Meme, error) {
-	if store, ok := m.store.(accessor.FavoriteAuditStore); ok {
+	if store, ok := m.store.(accessor.AuditStore); ok {
 		return store.SetFavoriteWithActor(strings.TrimSpace(userID), strings.TrimSpace(id), favorite, actor)
 	}
 	return m.SetFavorite(userID, id, favorite)
@@ -640,10 +640,10 @@ func (m *MemeManager) ListActiveMemeSharesPage(now time.Time, offset, limit int)
 }
 
 // memesByIDs resolves visible memes by id in one batch where the store supports
-// it (BulkMemeStore), falling back to per-id lookups otherwise. Missing ids are
+// it (AdminMemeStore), falling back to per-id lookups otherwise. Missing ids are
 // simply absent from the map.
 func (m *MemeManager) memesByIDs(ids []string) map[string]accessor.Meme {
-	if bulk, ok := m.store.(accessor.BulkMemeStore); ok {
+	if bulk, ok := m.store.(accessor.AdminMemeStore); ok {
 		memes, err := bulk.MemesByIDs(ids)
 		if err == nil {
 			return memes
@@ -905,20 +905,17 @@ func (m *MemeManager) RefreshMemeTagSuggestions(ctx context.Context, userID stri
 		Source: result.Source,
 	}
 
-	suggestionStore, ok := m.store.(accessor.SuggestedTagStore)
-	if ok {
+	if suggestionStore, ok := m.store.(accessor.SuggestedTagStore); ok {
 		if err := suggestionStore.ReplaceSuggestedTags(meme.ID, output.Tags); err != nil {
 			return MemeTagSuggestionResult{}, err
 		}
 		if err := suggestionStore.SetAutoSuggestDisabled(meme.ID, false); err != nil {
 			return MemeTagSuggestionResult{}, err
 		}
-	}
-
-	// Persist the derived search text (on-image text + transcript) so it feeds
-	// meme search. Best-effort: a failure here must not fail the suggestion.
-	if searchTextStore, ok := m.store.(accessor.SearchTextStore); ok {
-		if err := searchTextStore.SetSearchText(meme.ID, result.Text); err != nil {
+		// Persist the derived search text (on-image text + transcript) so it
+		// feeds meme search. Best-effort: a failure here must not fail the
+		// suggestion.
+		if err := suggestionStore.SetSearchText(meme.ID, result.Text); err != nil {
 			log.Printf("tag suggestion: storing search text for meme %s failed: %v", meme.ID, err)
 		}
 	}
@@ -953,7 +950,6 @@ func (m *MemeManager) ResetTagSuggestionsAndRequeueUntagged(actor accessor.Audit
 	}
 
 	memes := m.store.List("", "", false, "")
-	searchTextStore, hasSearchText := m.store.(accessor.SearchTextStore)
 	result := ResetTagSuggestionQueueResult{}
 	for _, meme := range memes {
 		if len(meme.SuggestedTags) > 0 {
@@ -963,10 +959,8 @@ func (m *MemeManager) ResetTagSuggestionsAndRequeueUntagged(actor accessor.Audit
 			result.ClearedSuggestions += 1
 			// The same pass that produced those suggestions also set the
 			// derived search text; drop it so a re-run regenerates it cleanly.
-			if hasSearchText {
-				if err := searchTextStore.SetSearchText(meme.ID, ""); err != nil {
-					return ResetTagSuggestionQueueResult{}, err
-				}
+			if err := suggestionStore.SetSearchText(meme.ID, ""); err != nil {
+				return ResetTagSuggestionQueueResult{}, err
 			}
 		}
 		if meme.AutoSuggestDisabled {
@@ -982,7 +976,7 @@ func (m *MemeManager) ResetTagSuggestionsAndRequeueUntagged(actor accessor.Audit
 	}
 
 	m.invalidateAdminReadCache()
-	if writer, ok := m.store.(accessor.SystemAuditStore); ok {
+	if writer, ok := m.store.(accessor.AuditStore); ok {
 		description := fmt.Sprintf(
 			"Reset tag suggestions: cleared %d suggestion set(s), re-enabled %d exhausted, requeued %d untagged",
 			result.ClearedSuggestions, result.ClearedExhausted, result.QueuedUntagged,
@@ -1023,7 +1017,7 @@ func (m *MemeManager) RetryFailedTagSuggestions(actor accessor.AuditActor) (Retr
 	result.Queued = m.SeedTagSuggestionQueue()
 
 	m.invalidateAdminReadCache()
-	if writer, ok := m.store.(accessor.SystemAuditStore); ok {
+	if writer, ok := m.store.(accessor.AuditStore); ok {
 		description := fmt.Sprintf(
 			"Retried failed tag suggestions: re-enabled %d exhausted, queued %d untagged",
 			result.ReenabledExhausted, result.Queued,
@@ -1138,7 +1132,7 @@ func (m *MemeManager) computeAdminDashboard() AdminDashboardStats {
 	}
 
 	favoriteDeltas := make([]int, len(stats.MetricSeries))
-	if analytics, ok := m.store.(accessor.AdminAnalyticsStore); ok {
+	if analytics, ok := m.store.(accessor.FavoriteAnalyticsStore); ok {
 		if totalFavorites, err := analytics.TotalFavoriteAssignments(); err == nil {
 			stats.Counts.Favorites = totalFavorites
 		}
@@ -1505,10 +1499,10 @@ func (m *MemeManager) computeTagHygieneReport() TagHygieneReport {
 // adminDashboardMemes returns every visible meme for the admin overview scan,
 // using the lean SQL projection (no per-row favourites subquery) where the store
 // offers it and falling back to a full List() otherwise. The admin favourites
-// total is sourced separately from AdminAnalyticsStore, so the dropped per-row
+// total is sourced separately from FavoriteAnalyticsStore, so the dropped per-row
 // flag does not change the rendered dashboard.
 func (m *MemeManager) adminDashboardMemes() []accessor.Meme {
-	if ads, ok := m.store.(accessor.AdminDashboardMemeStore); ok {
+	if ads, ok := m.store.(accessor.AdminMemeStore); ok {
 		if memes, err := ads.AdminDashboardMemes(); err == nil {
 			return memes
 		} else {
@@ -1521,7 +1515,7 @@ func (m *MemeManager) adminDashboardMemes() []accessor.Meme {
 // tagUsageCounts returns tag name -> number of visible memes carrying it,
 // resolved in SQL where the store supports it and by a full scan otherwise.
 func (m *MemeManager) tagUsageCounts() map[string]int {
-	if tu, ok := m.store.(accessor.TagUsageStore); ok {
+	if tu, ok := m.store.(accessor.TagAdminStore); ok {
 		if counts, err := tu.TagUsageCounts(); err == nil {
 			return counts
 		} else {
@@ -1598,7 +1592,7 @@ func (m *MemeManager) MergeTags(sourceTag string, targetTag string, actor access
 
 	// Fast path: one transaction that repoints tag links in bulk, instead of
 	// rewriting every affected meme (each of which re-swept the tags table).
-	if tm, ok := m.store.(accessor.TagMaintenanceStore); ok {
+	if tm, ok := m.store.(accessor.TagAdminStore); ok {
 		counts, err := tm.MergeTag(sourceTag, targetTag, actor)
 		if err != nil {
 			return TagMergeResult{}, err
@@ -1701,7 +1695,7 @@ func (m *MemeManager) TagSuggestionQueueStatus(reviewOffset int, reviewLimit int
 		}
 	}
 
-	if tq, ok := m.store.(accessor.TagSuggestionQueryStore); ok {
+	if tq, ok := m.store.(accessor.TagAdminStore); ok {
 		if filled, ok := m.fillTagSuggestionCountsFromSQL(tq, &status, reviewOffset, reviewLimit); ok {
 			return filled
 		}
@@ -1714,7 +1708,7 @@ func (m *MemeManager) TagSuggestionQueueStatus(reviewOffset int, reviewLimit int
 // fillTagSuggestionCountsFromSQL populates the untagged/pending counters and the
 // pending-review page from the database. It reports false (leaving status
 // untouched) if either query fails so the caller can fall back to a scan.
-func (m *MemeManager) fillTagSuggestionCountsFromSQL(tq accessor.TagSuggestionQueryStore, status *TagSuggestionQueueStatus, reviewOffset, reviewLimit int) (TagSuggestionQueueStatus, bool) {
+func (m *MemeManager) fillTagSuggestionCountsFromSQL(tq accessor.TagAdminStore, status *TagSuggestionQueueStatus, reviewOffset, reviewLimit int) (TagSuggestionQueueStatus, bool) {
 	untagged, err := tq.UntaggedWithoutSuggestionsCount()
 	if err != nil {
 		log.Printf("tag suggestion status: untagged count SQL failed, falling back to scan: %v", err)
@@ -1784,7 +1778,7 @@ func (m *MemeManager) SeedTagSuggestionQueue() int {
 		ids      []string
 		resolved bool
 	)
-	if tq, ok := m.store.(accessor.TagSuggestionQueryStore); ok {
+	if tq, ok := m.store.(accessor.TagAdminStore); ok {
 		if got, err := tq.UntaggedWithoutSuggestionIDs(); err == nil {
 			ids, resolved = got, true
 		} else {
@@ -2171,7 +2165,7 @@ func (m *MemeManager) EnsurePreviewAssets() error {
 }
 
 func (m *MemeManager) ListMemeAudit(id string, limit int) ([]accessor.MemeAuditEntry, error) {
-	store, ok := m.store.(accessor.AuditLogStore)
+	store, ok := m.store.(accessor.AuditStore)
 	if !ok {
 		return nil, nil
 	}
@@ -2179,7 +2173,7 @@ func (m *MemeManager) ListMemeAudit(id string, limit int) ([]accessor.MemeAuditE
 }
 
 func (m *MemeManager) ListAuditFeed(offset int, limit int, actorUserID string) (accessor.PagedAuditFeed, error) {
-	store, ok := m.store.(accessor.AuditLogStore)
+	store, ok := m.store.(accessor.AuditStore)
 	if !ok {
 		return accessor.PagedAuditFeed{}, nil
 	}
@@ -2187,7 +2181,7 @@ func (m *MemeManager) ListAuditFeed(offset int, limit int, actorUserID string) (
 }
 
 func (m *MemeManager) ListPendingDeletes(offset int, limit int) (accessor.PagedPendingDeletes, error) {
-	store, ok := m.store.(accessor.AuditLogStore)
+	store, ok := m.store.(accessor.AuditStore)
 	if !ok {
 		return accessor.PagedPendingDeletes{}, nil
 	}
@@ -2195,7 +2189,7 @@ func (m *MemeManager) ListPendingDeletes(offset int, limit int) (accessor.PagedP
 }
 
 func (m *MemeManager) ApprovePendingDelete(id string, actor accessor.AuditActor) error {
-	store, ok := m.store.(accessor.AuditLogStore)
+	store, ok := m.store.(accessor.AuditStore)
 	if !ok {
 		return nil
 	}
@@ -2204,7 +2198,7 @@ func (m *MemeManager) ApprovePendingDelete(id string, actor accessor.AuditActor)
 }
 
 func (m *MemeManager) RejectPendingDelete(id string, actor accessor.AuditActor) error {
-	store, ok := m.store.(accessor.AuditLogStore)
+	store, ok := m.store.(accessor.AuditStore)
 	if !ok {
 		return nil
 	}
@@ -2221,7 +2215,7 @@ func (m *MemeManager) IsMemeHidden(id string) bool {
 	if id == "" {
 		return false
 	}
-	store, ok := m.store.(accessor.HiddenMemeStore)
+	store, ok := m.store.(accessor.AdminMemeStore)
 	if !ok {
 		return false
 	}
@@ -2636,7 +2630,7 @@ func absInt(value int) int {
 // hidden and pending-delete ones. It errors when the store cannot enumerate
 // them, so a caller deciding what is safe to delete fails closed.
 func (m *MemeManager) StoredMemeFiles() ([]accessor.StoredFile, error) {
-	store, ok := m.store.(accessor.StoredFileStore)
+	store, ok := m.store.(accessor.AdminMemeStore)
 	if !ok {
 		return nil, errors.New("meme store cannot list stored files")
 	}
@@ -2646,7 +2640,7 @@ func (m *MemeManager) StoredMemeFiles() ([]accessor.StoredFile, error) {
 // CountAuditActionsByActor counts audit events with the given action per actor.
 // Stores without an audit log yield an empty map, not an error.
 func (m *MemeManager) CountAuditActionsByActor(action string) (map[string]int, error) {
-	store, ok := m.store.(accessor.AuditActionCountStore)
+	store, ok := m.store.(accessor.AuditStore)
 	if !ok {
 		return map[string]int{}, nil
 	}
@@ -2656,7 +2650,7 @@ func (m *MemeManager) CountAuditActionsByActor(action string) (map[string]int, e
 // CountFavoritesByUser counts favorites per user, or an empty map when the
 // store cannot report it.
 func (m *MemeManager) CountFavoritesByUser() (map[string]int, error) {
-	store, ok := m.store.(accessor.FavoriteCountStore)
+	store, ok := m.store.(accessor.FavoriteAnalyticsStore)
 	if !ok {
 		return map[string]int{}, nil
 	}

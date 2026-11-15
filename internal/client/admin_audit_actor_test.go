@@ -15,7 +15,7 @@ import (
 // test proves the handler passes ?actor= through and returns filtered paging.
 type auditFeedStore struct {
 	*accessor.MemeStore
-	accessor.AuditLogStore
+	accessor.AuditStore
 	events    []accessor.GlobalMemeAuditEntry
 	gotActors []string
 }
