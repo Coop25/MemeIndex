@@ -266,7 +266,13 @@ func (s *Server) listMemes(w http.ResponseWriter, r *http.Request) {
 	offset := parseQueryInt(r, "offset", 0)
 	limit := parseQueryInt(r, "limit", 72)
 
-	writeJSON(w, http.StatusOK, s.protectMemeListForResponse(r, s.managers.ListMemesSorted(userID, query, favoritesOnly, tag, view, sortBy, offset, limit)))
+	page, err := s.managers.ListMemesSorted(userID, query, favoritesOnly, tag, view, sortBy, offset, limit)
+	if err != nil {
+		log.Printf("list memes: %v", err)
+		http.Error(w, "failed to load memes", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.protectMemeListForResponse(r, page))
 }
 
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
@@ -278,10 +284,21 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	// background poll with a single id, instead of rebuilding and shipping the
 	// whole dashboard every few seconds per open tab.
 	if r.URL.Query().Get("probe") == "newest" {
-		writeJSON(w, http.StatusOK, map[string]any{"newest_id": s.managers.NewestMemeID(currentUserID(r))})
+		newestID, err := s.managers.NewestMemeID(currentUserID(r))
+		if err != nil {
+			log.Printf("dashboard newest probe: %v", err)
+			http.Error(w, "failed to load dashboard", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"newest_id": newestID})
 		return
 	}
-	dashboard := s.managers.Dashboard(currentUserID(r))
+	dashboard, err := s.managers.Dashboard(currentUserID(r))
+	if err != nil {
+		log.Printf("dashboard: %v", err)
+		http.Error(w, "failed to load dashboard", http.StatusInternalServerError)
+		return
+	}
 	dashboard.RecentItems = s.protectMemesForResponse(r, dashboard.RecentItems)
 	dashboard.FavoriteItems = s.protectMemesForResponse(r, dashboard.FavoriteItems)
 	dashboard.RandomItems = s.protectMemesForResponse(r, dashboard.RandomItems)
@@ -692,9 +709,13 @@ func (s *Server) handlePopularTags(w http.ResponseWriter, r *http.Request) {
 	}
 
 	limit := parseQueryInt(r, "limit", 10)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"tags": s.managers.PopularTags(currentUserID(r), limit),
-	})
+	tags, err := s.managers.PopularTags(currentUserID(r), limit)
+	if err != nil {
+		log.Printf("popular tags: %v", err)
+		http.Error(w, "failed to load tags", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tags": tags})
 }
 
 func (s *Server) handleRandomMeme(w http.ResponseWriter, r *http.Request) {

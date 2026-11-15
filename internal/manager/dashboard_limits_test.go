@@ -23,7 +23,10 @@ func TestDashboardFavoriteAndTagLimits(t *testing.T) {
 	}
 	m := NewMemeManager(&adminReadCacheStore{memes: memes})
 
-	got := m.Dashboard("u")
+	got, err := m.Dashboard("u")
+	if err != nil {
+		t.Fatalf("Dashboard: %v", err)
+	}
 
 	if got.Favorites != total {
 		t.Fatalf("Favorites = %d, want %d", got.Favorites, total)
