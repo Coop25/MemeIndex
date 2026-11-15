@@ -170,7 +170,7 @@ func TestShareLinkLetsBrowsersPlaySharedMedia(t *testing.T) {
 			t.Fatalf("%s: X-Content-Type-Options = %q", tc.meme.OriginalName, got)
 		}
 	}
-	for _, directive := range []string{"default-src 'none'", "media-src 'self'", "img-src 'self'"} {
+	for _, directive := range []string{"default-src 'none'", "media-src 'self'", "img-src 'self'", "form-action 'none'", "frame-ancestors 'none'", "base-uri 'none'"} {
 		if !strings.Contains(sharedMediaContentSecurityPolicy, directive) {
 			t.Fatalf("shared media policy %q is missing %q", sharedMediaContentSecurityPolicy, directive)
 		}
