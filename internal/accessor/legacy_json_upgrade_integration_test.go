@@ -156,7 +156,7 @@ func TestLegacyJSONStoreUpgradesIntoEmptyPostgres(t *testing.T) {
 		t.Errorf("cat upload not found in place: %v", err)
 	}
 
-	page, err := store.QueryMemes(MemeQuery{UserID: "discord-user-1", Search: "tag:dog", Limit: 10})
+	page, err := store.QueryMemes(context.Background(), MemeQuery{UserID: "discord-user-1", Search: "tag:dog", Limit: 10})
 	if err != nil {
 		t.Fatalf("QueryMemes: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestLegacyJSONStoreUpgradesIntoEmptyPostgres(t *testing.T) {
 		t.Fatalf("second NewPostgresStore: %v", err)
 	}
 	t.Cleanup(again.Close)
-	all, err := again.QueryMemes(MemeQuery{UserID: "discord-user-1", Limit: 10})
+	all, err := again.QueryMemes(context.Background(), MemeQuery{UserID: "discord-user-1", Limit: 10})
 	if err != nil {
 		t.Fatalf("QueryMemes after restart: %v", err)
 	}

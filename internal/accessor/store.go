@@ -1,6 +1,9 @@
 package accessor
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 type Store interface {
 	List(userID, query string, favoritesOnly bool, tag string) []Meme
@@ -90,11 +93,13 @@ type MemeDashboardData struct {
 // fakes can stand in for the parts a test exercises.
 
 // QueryableMemeStore resolves browse, dashboard, and popular-tag reads in the
-// database.
+// database. They are the reads a viewer triggers most and that cost the most,
+// so they take the request's context: a browser that navigates away cancels
+// its query instead of leaving it to run to the statement timeout.
 type QueryableMemeStore interface {
-	QueryMemes(q MemeQuery) (MemeQueryPage, error)
-	MemeDashboard(userID string) (MemeDashboardData, error)
-	TagCounts(limit int) ([]TagCount, error)
+	QueryMemes(ctx context.Context, q MemeQuery) (MemeQueryPage, error)
+	MemeDashboard(ctx context.Context, userID string) (MemeDashboardData, error)
+	TagCounts(ctx context.Context, limit int) ([]TagCount, error)
 }
 
 type MemeShareState struct {

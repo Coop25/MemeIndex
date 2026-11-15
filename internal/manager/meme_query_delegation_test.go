@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -21,7 +22,7 @@ type queryableFakeStore struct {
 	err        error
 }
 
-func (s *queryableFakeStore) QueryMemes(q accessor.MemeQuery) (accessor.MemeQueryPage, error) {
+func (s *queryableFakeStore) QueryMemes(_ context.Context, q accessor.MemeQuery) (accessor.MemeQueryPage, error) {
 	s.queryCalls++
 	s.lastQuery = q
 	if s.err != nil {
@@ -30,14 +31,14 @@ func (s *queryableFakeStore) QueryMemes(q accessor.MemeQuery) (accessor.MemeQuer
 	return s.page, nil
 }
 
-func (s *queryableFakeStore) MemeDashboard(string) (accessor.MemeDashboardData, error) {
+func (s *queryableFakeStore) MemeDashboard(context.Context, string) (accessor.MemeDashboardData, error) {
 	if s.err != nil {
 		return accessor.MemeDashboardData{}, s.err
 	}
 	return s.dashboard, nil
 }
 
-func (s *queryableFakeStore) TagCounts(int) ([]accessor.TagCount, error) {
+func (s *queryableFakeStore) TagCounts(context.Context, int) ([]accessor.TagCount, error) {
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -60,7 +61,7 @@ func TestListMemesSortedDelegatesToStore(t *testing.T) {
 	}
 	m := NewMemeManager(store)
 
-	got, err := m.ListMemesSorted("user-1", "  cat  ", false, "", "videos", "oldest", 0, 50)
+	got, err := m.ListMemesSorted(context.Background(), "user-1", "  cat  ", false, "", "videos", "oldest", 0, 50)
 	if err != nil {
 		t.Fatalf("ListMemesSorted: %v", err)
 	}
@@ -89,7 +90,7 @@ func TestListMemesSortedClampsLimit(t *testing.T) {
 	store := newQueryableFakeStore()
 	m := NewMemeManager(store)
 
-	if _, err := m.ListMemesSorted("u", "", false, "", "", "", -5, 100000); err != nil {
+	if _, err := m.ListMemesSorted(context.Background(), "u", "", false, "", "", "", -5, 100000); err != nil {
 		t.Fatalf("ListMemesSorted: %v", err)
 	}
 
@@ -112,16 +113,16 @@ func TestQueryErrorsAreReturnedWithoutInMemoryScan(t *testing.T) {
 	store.err = errors.New("db unavailable")
 	m := NewMemeManager(store)
 
-	if _, err := m.ListMemesSorted("u", "", false, "", "", "newest", 0, 10); !errors.Is(err, store.err) {
+	if _, err := m.ListMemesSorted(context.Background(), "u", "", false, "", "", "newest", 0, 10); !errors.Is(err, store.err) {
 		t.Fatalf("ListMemesSorted err = %v, want %v", err, store.err)
 	}
-	if _, err := m.NewestMemeID("u"); !errors.Is(err, store.err) {
+	if _, err := m.NewestMemeID(context.Background(), "u"); !errors.Is(err, store.err) {
 		t.Fatalf("NewestMemeID err = %v, want %v", err, store.err)
 	}
-	if _, err := m.Dashboard("u"); !errors.Is(err, store.err) {
+	if _, err := m.Dashboard(context.Background(), "u"); !errors.Is(err, store.err) {
 		t.Fatalf("Dashboard err = %v, want %v", err, store.err)
 	}
-	if _, err := m.PopularTags("u", 10); !errors.Is(err, store.err) {
+	if _, err := m.PopularTags(context.Background(), "u", 10); !errors.Is(err, store.err) {
 		t.Fatalf("PopularTags err = %v, want %v", err, store.err)
 	}
 	if calls := store.adminReadCacheStore.callCount(); calls != 0 {
@@ -142,7 +143,7 @@ func TestDashboardDelegatesToStore(t *testing.T) {
 	}
 	m := NewMemeManager(store)
 
-	got, err := m.Dashboard("u")
+	got, err := m.Dashboard(context.Background(), "u")
 	if err != nil {
 		t.Fatalf("Dashboard: %v", err)
 	}
@@ -169,7 +170,7 @@ func TestPopularTagsDelegatesToStore(t *testing.T) {
 	store.tagCounts = []accessor.TagCount{{Name: "reaction", Count: 12}, {Name: "cat", Count: 9}}
 	m := NewMemeManager(store)
 
-	got, err := m.PopularTags("u", 10)
+	got, err := m.PopularTags(context.Background(), "u", 10)
 	if err != nil {
 		t.Fatalf("PopularTags: %v", err)
 	}

@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -266,10 +267,9 @@ func (s *Server) listMemes(w http.ResponseWriter, r *http.Request) {
 	offset := parseQueryInt(r, "offset", 0)
 	limit := parseQueryInt(r, "limit", 72)
 
-	page, err := s.managers.ListMemesSorted(userID, query, favoritesOnly, tag, view, sortBy, offset, limit)
+	page, err := s.managers.ListMemesSorted(r.Context(), userID, query, favoritesOnly, tag, view, sortBy, offset, limit)
 	if err != nil {
-		log.Printf("list memes: %v", err)
-		http.Error(w, "failed to load memes", http.StatusInternalServerError)
+		memeReadFailed(w, r, "list memes", "failed to load memes", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, s.protectMemeListForResponse(r, page))
@@ -284,19 +284,17 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	// background poll with a single id, instead of rebuilding and shipping the
 	// whole dashboard every few seconds per open tab.
 	if r.URL.Query().Get("probe") == "newest" {
-		newestID, err := s.managers.NewestMemeID(currentUserID(r))
+		newestID, err := s.managers.NewestMemeID(r.Context(), currentUserID(r))
 		if err != nil {
-			log.Printf("dashboard newest probe: %v", err)
-			http.Error(w, "failed to load dashboard", http.StatusInternalServerError)
+			memeReadFailed(w, r, "dashboard newest probe", "failed to load dashboard", err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"newest_id": newestID})
 		return
 	}
-	dashboard, err := s.managers.Dashboard(currentUserID(r))
+	dashboard, err := s.managers.Dashboard(r.Context(), currentUserID(r))
 	if err != nil {
-		log.Printf("dashboard: %v", err)
-		http.Error(w, "failed to load dashboard", http.StatusInternalServerError)
+		memeReadFailed(w, r, "dashboard", "failed to load dashboard", err)
 		return
 	}
 	dashboard.RecentItems = s.protectMemesForResponse(r, dashboard.RecentItems)
@@ -702,6 +700,18 @@ func (s *Server) handleTags(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// memeReadFailed answers a failed browse/dashboard read. When the request
+// itself was cancelled (the viewer navigated away), the query was aborted on
+// purpose: nobody is waiting for the response and it is not a server error,
+// so it is neither logged nor counted as a 500.
+func memeReadFailed(w http.ResponseWriter, r *http.Request, what, message string, err error) {
+	if r.Context().Err() != nil && errors.Is(err, context.Canceled) {
+		return
+	}
+	log.Printf("%s: %v", what, err)
+	http.Error(w, message, http.StatusInternalServerError)
+}
+
 func (s *Server) handlePopularTags(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -709,10 +719,9 @@ func (s *Server) handlePopularTags(w http.ResponseWriter, r *http.Request) {
 	}
 
 	limit := parseQueryInt(r, "limit", 10)
-	tags, err := s.managers.PopularTags(currentUserID(r), limit)
+	tags, err := s.managers.PopularTags(r.Context(), currentUserID(r), limit)
 	if err != nil {
-		log.Printf("popular tags: %v", err)
-		http.Error(w, "failed to load tags", http.StatusInternalServerError)
+		memeReadFailed(w, r, "popular tags", "failed to load tags", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"tags": tags})
