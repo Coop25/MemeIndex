@@ -407,8 +407,10 @@ func (s *Server) serveSharedMemeAsset(w http.ResponseWriter, r *http.Request, me
 // the file, which loads the file a second time; inside a sandboxed page that
 // load fails and Chromium shows a player stuck at 0:00. Nothing on the page
 // can run: default-src 'none' blocks every script, and with nosniff a media
-// type is never rendered as markup.
-const sharedMediaContentSecurityPolicy = "default-src 'none'; media-src 'self'; img-src 'self'; style-src 'unsafe-inline'"
+// type is never rendered as markup. Dropping the sandbox also drops its block
+// on forms and framing, so form-action, frame-ancestors and base-uri put those
+// back explicitly.
+const sharedMediaContentSecurityPolicy = "default-src 'none'; media-src 'self'; img-src 'self'; style-src 'unsafe-inline'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'"
 
 // browserViewableMediaType reports whether a browser opening a file of this
 // type shows it in its own player or image viewer rather than as a page that
