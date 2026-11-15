@@ -215,14 +215,20 @@ func (m *MemeManager) waitOrStop(d time.Duration) bool {
 }
 
 // maxMemePageLimit caps a single browse/search page so a caller-supplied limit
-// cannot ask the database (or the in-memory fallback) for an unbounded slice.
+// cannot ask the database (or the in-process test store) for an unbounded slice.
 const maxMemePageLimit = 500
 
-func (m *MemeManager) ListMemes(userID, query string, favoritesOnly bool, tag string, view string, offset int, limit int) MemeListResult {
+func (m *MemeManager) ListMemes(userID, query string, favoritesOnly bool, tag string, view string, offset int, limit int) (MemeListResult, error) {
 	return m.ListMemesSorted(userID, query, favoritesOnly, tag, view, "newest", offset, limit)
 }
 
-func (m *MemeManager) ListMemesSorted(userID, query string, favoritesOnly bool, tag string, view string, sortBy string, offset int, limit int) MemeListResult {
+// ListMemesSorted resolves one page of a browse or search. A store that can
+// query (Postgres) answers it in SQL, and its errors are returned rather than
+// retried as a full in-memory scan: that scan would load the whole archive
+// while the database is already struggling, and it does not understand the
+// search operators, so results would silently change. Only a store that
+// cannot query at all (the in-process test store) is scanned in memory.
+func (m *MemeManager) ListMemesSorted(userID, query string, favoritesOnly bool, tag string, view string, sortBy string, offset int, limit int) (MemeListResult, error) {
 	if offset < 0 {
 		offset = 0
 	}
@@ -244,19 +250,19 @@ func (m *MemeManager) ListMemesSorted(userID, query string, favoritesOnly bool, 
 			Offset:        offset,
 			Limit:         limit,
 		})
-		if err == nil {
-			memes := page.Memes
-			if memes == nil {
-				memes = []accessor.Meme{}
-			}
-			return MemeListResult{
-				Memes:      memes,
-				Counts:     memeCountsFromCategory(page.Counts),
-				HasMore:    page.HasMore,
-				NextOffset: page.NextOffset,
-			}
+		if err != nil {
+			return MemeListResult{}, fmt.Errorf("query memes: %w", err)
 		}
-		log.Printf("meme list: SQL query failed, falling back to in-memory scan: %v", err)
+		memes := page.Memes
+		if memes == nil {
+			memes = []accessor.Meme{}
+		}
+		return MemeListResult{
+			Memes:      memes,
+			Counts:     memeCountsFromCategory(page.Counts),
+			HasMore:    page.HasMore,
+			NextOffset: page.NextOffset,
+		}, nil
 	}
 
 	source := m.store.List(strings.TrimSpace(userID), strings.TrimSpace(query), false, strings.TrimSpace(tag))
@@ -276,7 +282,7 @@ func (m *MemeManager) ListMemesSorted(userID, query string, favoritesOnly bool, 
 		Counts:     counts,
 		HasMore:    end < len(visible),
 		NextOffset: end,
-	}
+	}, nil
 }
 
 func memeCountsFromCategory(c accessor.MemeCategoryCounts) MemeCounts {
@@ -291,13 +297,15 @@ func memeCountsFromCategory(c accessor.MemeCategoryCounts) MemeCounts {
 	}
 }
 
-func (m *MemeManager) Dashboard(userID string) VaultDashboard {
+// Dashboard builds the home screen summary. As with ListMemesSorted, a
+// querying store's error is returned instead of falling back to a full scan.
+func (m *MemeManager) Dashboard(userID string) (VaultDashboard, error) {
 	if qs, ok := m.store.(accessor.QueryableMemeStore); ok {
 		data, err := qs.MemeDashboard(strings.TrimSpace(userID))
-		if err == nil {
-			return vaultDashboardFromData(data)
+		if err != nil {
+			return VaultDashboard{}, fmt.Errorf("query dashboard: %w", err)
 		}
-		log.Printf("dashboard: SQL query failed, falling back to in-memory scan: %v", err)
+		return vaultDashboardFromData(data), nil
 	}
 
 	items := m.store.List(strings.TrimSpace(userID), "", false, "")
@@ -332,18 +340,21 @@ func (m *MemeManager) Dashboard(userID string) VaultDashboard {
 	}
 	dashboard.TagCount = len(tagCounts)
 	dashboard.TopTags = topTagStats(tagCounts, accessor.DashboardTopTagLimit)
-	return dashboard
+	return dashboard, nil
 }
 
 // NewestMemeID returns the id of the most recently added meme the user can
 // see, or "" for an empty vault. It is the cheap check behind the home
 // screen's "anything new?" poll.
-func (m *MemeManager) NewestMemeID(userID string) string {
-	page := m.ListMemesSorted(userID, "", false, "", "", "newest", 0, 1)
-	if len(page.Memes) == 0 {
-		return ""
+func (m *MemeManager) NewestMemeID(userID string) (string, error) {
+	page, err := m.ListMemesSorted(userID, "", false, "", "", "newest", 0, 1)
+	if err != nil {
+		return "", err
 	}
-	return page.Memes[0].ID
+	if len(page.Memes) == 0 {
+		return "", nil
+	}
+	return page.Memes[0].ID, nil
 }
 
 func vaultDashboardFromData(data accessor.MemeDashboardData) VaultDashboard {
@@ -376,7 +387,9 @@ func vaultTagStats(tags []accessor.TagCount) []VaultTagStat {
 	return stats
 }
 
-func (m *MemeManager) PopularTags(userID string, limit int) []VaultTagStat {
+// PopularTags returns the most used tags. A querying store's error is returned
+// instead of falling back to a full scan.
+func (m *MemeManager) PopularTags(userID string, limit int) ([]VaultTagStat, error) {
 	if limit <= 0 {
 		limit = 10
 	}
@@ -384,10 +397,10 @@ func (m *MemeManager) PopularTags(userID string, limit int) []VaultTagStat {
 
 	if qs, ok := m.store.(accessor.QueryableMemeStore); ok {
 		tags, err := qs.TagCounts(limit)
-		if err == nil {
-			return vaultTagStats(tags)
+		if err != nil {
+			return nil, fmt.Errorf("query tag counts: %w", err)
 		}
-		log.Printf("popular tags: SQL query failed, falling back to in-memory scan: %v", err)
+		return vaultTagStats(tags), nil
 	}
 
 	tagCounts := map[string]int{}
@@ -399,7 +412,7 @@ func (m *MemeManager) PopularTags(userID string, limit int) []VaultTagStat {
 			}
 		}
 	}
-	return topTagStats(tagCounts, limit)
+	return topTagStats(tagCounts, limit), nil
 }
 
 func topTagStats(tagCounts map[string]int, limit int) []VaultTagStat {

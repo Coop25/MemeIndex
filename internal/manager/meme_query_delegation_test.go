@@ -60,7 +60,10 @@ func TestListMemesSortedDelegatesToStore(t *testing.T) {
 	}
 	m := NewMemeManager(store)
 
-	got := m.ListMemesSorted("user-1", "  cat  ", false, "", "videos", "oldest", 0, 50)
+	got, err := m.ListMemesSorted("user-1", "  cat  ", false, "", "videos", "oldest", 0, 50)
+	if err != nil {
+		t.Fatalf("ListMemesSorted: %v", err)
+	}
 
 	if store.queryCalls != 1 {
 		t.Fatalf("QueryMemes called %d times, want 1", store.queryCalls)
@@ -86,7 +89,9 @@ func TestListMemesSortedClampsLimit(t *testing.T) {
 	store := newQueryableFakeStore()
 	m := NewMemeManager(store)
 
-	m.ListMemesSorted("u", "", false, "", "", "", -5, 100000)
+	if _, err := m.ListMemesSorted("u", "", false, "", "", "", -5, 100000); err != nil {
+		t.Fatalf("ListMemesSorted: %v", err)
+	}
 
 	if store.lastQuery.Limit != maxMemePageLimit {
 		t.Fatalf("Limit = %d, want clamp to %d", store.lastQuery.Limit, maxMemePageLimit)
@@ -96,7 +101,9 @@ func TestListMemesSortedClampsLimit(t *testing.T) {
 	}
 }
 
-func TestListMemesSortedFallsBackWhenStoreErrors(t *testing.T) {
+// A failing SQL query must surface as an error, not as a full in-memory scan
+// of the archive with different search semantics.
+func TestQueryErrorsAreReturnedWithoutInMemoryScan(t *testing.T) {
 	now := time.Now().UTC()
 	store := newQueryableFakeStore(
 		accessor.Meme{ID: "a", ContentType: "image/png", CreatedAt: now},
@@ -105,13 +112,20 @@ func TestListMemesSortedFallsBackWhenStoreErrors(t *testing.T) {
 	store.err = errors.New("db unavailable")
 	m := NewMemeManager(store)
 
-	got := m.ListMemesSorted("u", "", false, "", "", "newest", 0, 10)
-
-	if store.adminReadCacheStore.callCount() == 0 {
-		t.Fatal("expected fallback to the in-memory List after the query error")
+	if _, err := m.ListMemesSorted("u", "", false, "", "", "newest", 0, 10); !errors.Is(err, store.err) {
+		t.Fatalf("ListMemesSorted err = %v, want %v", err, store.err)
 	}
-	if got.Counts.Total != 2 || len(got.Memes) != 2 {
-		t.Fatalf("fallback result wrong: counts=%+v memes=%d", got.Counts, len(got.Memes))
+	if _, err := m.NewestMemeID("u"); !errors.Is(err, store.err) {
+		t.Fatalf("NewestMemeID err = %v, want %v", err, store.err)
+	}
+	if _, err := m.Dashboard("u"); !errors.Is(err, store.err) {
+		t.Fatalf("Dashboard err = %v, want %v", err, store.err)
+	}
+	if _, err := m.PopularTags("u", 10); !errors.Is(err, store.err) {
+		t.Fatalf("PopularTags err = %v, want %v", err, store.err)
+	}
+	if calls := store.adminReadCacheStore.callCount(); calls != 0 {
+		t.Fatalf("in-memory List used %d times after a query error, want 0", calls)
 	}
 }
 
@@ -128,7 +142,10 @@ func TestDashboardDelegatesToStore(t *testing.T) {
 	}
 	m := NewMemeManager(store)
 
-	got := m.Dashboard("u")
+	got, err := m.Dashboard("u")
+	if err != nil {
+		t.Fatalf("Dashboard: %v", err)
+	}
 
 	if store.adminReadCacheStore.callCount() != 0 {
 		t.Fatalf("in-memory List used %d times, want 0", store.adminReadCacheStore.callCount())
@@ -152,7 +169,10 @@ func TestPopularTagsDelegatesToStore(t *testing.T) {
 	store.tagCounts = []accessor.TagCount{{Name: "reaction", Count: 12}, {Name: "cat", Count: 9}}
 	m := NewMemeManager(store)
 
-	got := m.PopularTags("u", 10)
+	got, err := m.PopularTags("u", 10)
+	if err != nil {
+		t.Fatalf("PopularTags: %v", err)
+	}
 
 	if store.adminReadCacheStore.callCount() != 0 {
 		t.Fatalf("in-memory List used %d times, want 0", store.adminReadCacheStore.callCount())
