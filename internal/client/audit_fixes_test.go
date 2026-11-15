@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"memeindex/internal/accessor"
+	"memeindex/internal/audiobooks"
 	"memeindex/internal/manager"
 )
 
@@ -34,27 +35,27 @@ func TestAudiobookUploadRejectsMarkupAndNarrowsServedType(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sniffed := http.DetectContentType([]byte(tc.bytes))
-			if got := audiobookSniffLooksLikeMedia(sniffed); got != tc.allowed {
-				t.Fatalf("audiobookSniffLooksLikeMedia(%q) = %v, want %v", sniffed, got, tc.allowed)
+			if got := audiobooks.SniffLooksLikeMedia(sniffed); got != tc.allowed {
+				t.Fatalf("audiobooks.SniffLooksLikeMedia(%q) = %v, want %v", sniffed, got, tc.allowed)
 			}
 			if !tc.allowed {
 				return
 			}
-			if got := audiobookServableMimeType(sniffed, tc.file); got != tc.served {
-				t.Fatalf("audiobookServableMimeType(%q, %q) = %q, want %q", sniffed, tc.file, got, tc.served)
+			if got := audiobooks.ServableMimeType(sniffed, tc.file); got != tc.served {
+				t.Fatalf("audiobooks.ServableMimeType(%q, %q) = %q, want %q", sniffed, tc.file, got, tc.served)
 			}
 		})
 	}
 }
 
 type singleAudiobookStore struct {
-	audiobookStore
-	record audiobookRecord
+	audiobooks.Store
+	record audiobooks.Record
 }
 
-func (s singleAudiobookStore) GetAudiobook(_ context.Context, id string) (audiobookRecord, error) {
+func (s singleAudiobookStore) GetAudiobook(_ context.Context, id string) (audiobooks.Record, error) {
 	if id != s.record.ID {
-		return audiobookRecord{}, ErrAudiobookNotFound
+		return audiobooks.Record{}, audiobooks.ErrNotFound
 	}
 	return s.record, nil
 }
@@ -66,7 +67,7 @@ func TestAudiobookMediaNeverServesStoredMarkupType(t *testing.T) {
 	if err := os.WriteFile(path, []byte("<!DOCTYPE html><script src=/uploads/x.js></script>"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	server := &Server{audiobooks: singleAudiobookStore{record: audiobookRecord{ID: "b1", Filename: "evil.mp3", MimeType: "text/html; charset=utf-8", StoragePath: path}}}
+	server := &Server{audiobooks: singleAudiobookStore{record: audiobooks.Record{ID: "b1", Filename: "evil.mp3", MimeType: "text/html; charset=utf-8", StoragePath: path}}}
 
 	rec := httptest.NewRecorder()
 	server.handleAudiobookMedia(rec, httptest.NewRequest(http.MethodGet, "/audiobook-media/b1", nil))
@@ -81,7 +82,7 @@ func TestAudiobookMediaNeverServesStoredMarkupType(t *testing.T) {
 	}
 
 	// A real audio type is still served as-is so the player works.
-	server.audiobooks = singleAudiobookStore{record: audiobookRecord{ID: "b1", Filename: "ok.mp3", MimeType: "audio/mpeg", StoragePath: path}}
+	server.audiobooks = singleAudiobookStore{record: audiobooks.Record{ID: "b1", Filename: "ok.mp3", MimeType: "audio/mpeg", StoragePath: path}}
 	rec = httptest.NewRecorder()
 	server.handleAudiobookMedia(rec, httptest.NewRequest(http.MethodGet, "/audiobook-media/b1", nil))
 	if got := rec.Header().Get("Content-Type"); got != "audio/mpeg" {

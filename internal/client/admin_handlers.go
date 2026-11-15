@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"memeindex/internal/accessor"
+	"memeindex/internal/audiobooks"
 	"memeindex/internal/manager"
 	"memeindex/internal/tagsuggest"
 )
@@ -28,7 +29,7 @@ type adminDashboardResponse struct {
 	ActiveShares      int                             `json:"active_share_count"`
 	RecentActivity    []accessor.GlobalMemeAuditEntry `json:"recent_activity"`
 	BackupStatus      *backupJobStatus                `json:"backup_status,omitempty"`
-	AudiobookStats    *adminAudiobookStats            `json:"audiobook_stats,omitempty"`
+	AudiobookStats    *audiobooks.AdminStatsReport    `json:"audiobook_stats,omitempty"`
 	AudiobookActivity *adminAudiobookActivity         `json:"audiobook_activity,omitempty"`
 	WorkQueues        adminWorkQueues                 `json:"work_queues"`
 	Disk              *adminDiskStats                 `json:"disk,omitempty"`

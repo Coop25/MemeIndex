@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"memeindex/internal/audiobooks"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -15,20 +16,20 @@ func TestAdminUserTotals(t *testing.T) {
 	now := time.Now().UTC()
 	b1 := insertActivityBook(t, store, "One", "", "[]", "")
 	b2 := insertActivityBook(t, store, "Two", "", "[]", "")
-	if _, err := store.pool.Exec(ctx, `UPDATE audiobooks SET uploaded_by_user_id = 'u1' WHERE id = ANY($1)`, []string{b1, b2}); err != nil {
+	if _, err := store.Pool().Exec(ctx, `UPDATE audiobooks SET uploaded_by_user_id = 'u1' WHERE id = ANY($1)`, []string{b1, b2}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.pool.Exec(ctx, `INSERT INTO audiobook_progress (audiobook_id, user_id, position_seconds, finished_at) VALUES ($1, 'u1', 60, NOW()), ($2, 'u1', 10, NULL)`, b1, b2); err != nil {
+	if _, err := store.Pool().Exec(ctx, `INSERT INTO audiobook_progress (audiobook_id, user_id, position_seconds, finished_at) VALUES ($1, 'u1', 60, NOW()), ($2, 'u1', 10, NULL)`, b1, b2); err != nil {
 		t.Fatal(err)
 	}
 	insertListening(t, store, "u1", b1, now, 600)
 	insertListening(t, store, "u1", b1, now.AddDate(0, 0, -40), 900)
 
-	totals, err := store.AdminUserAudiobookTotals(ctx, adminWindowStart(now))
+	totals, err := store.AdminUserAudiobookTotals(ctx, audiobooks.AdminWindowStart(now))
 	if err != nil {
 		t.Fatalf("AdminUserAudiobookTotals: %v", err)
 	}
-	want := adminUserAudiobookTotals{Uploaded: 2, Seconds30d: 600, SecondsAllTime: 1500, Finished: 1}
+	want := audiobooks.UserTotals{Uploaded: 2, Seconds30d: 600, SecondsAllTime: 1500, Finished: 1}
 	if got := totals["u1"]; got != want {
 		t.Fatalf("u1 totals = %+v, want %+v", got, want)
 	}
@@ -106,7 +107,7 @@ func TestAdminUserTotalsWindowBoundary(t *testing.T) {
 	b1 := insertActivityBook(t, store, "One", "", "[]", "")
 	insertListening(t, store, "in", b1, now.AddDate(0, 0, -29), 100)
 	insertListening(t, store, "out", b1, now.AddDate(0, 0, -30), 100)
-	totals, err := store.AdminUserAudiobookTotals(ctx, adminWindowStart(now))
+	totals, err := store.AdminUserAudiobookTotals(ctx, audiobooks.AdminWindowStart(now))
 	if err != nil {
 		t.Fatal(err)
 	}

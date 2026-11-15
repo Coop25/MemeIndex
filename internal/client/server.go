@@ -9,8 +9,10 @@ import (
 	"sync"
 	"sync/atomic"
 
-	mediafetch "github.com/Coop25/mediafetch-go"
+	"memeindex/internal/audiobooks"
 	"memeindex/internal/manager"
+
+	mediafetch "github.com/Coop25/mediafetch-go"
 )
 
 type Server struct {
@@ -18,7 +20,7 @@ type Server struct {
 	managers            *manager.MemeManager
 	auth                *authService
 	users               authUserStore
-	audiobooks          audiobookStore
+	audiobooks          audiobooks.Store
 	audiobookAdminStats audiobookAdminStatsCache
 	audiobookActivity   audiobookActivityCache
 	mediaClient         *mediafetch.Client
@@ -78,7 +80,7 @@ func NewServer(config Config, memeManager *manager.MemeManager) *Server {
 			log.Fatalf("auth user bootstrap failed: %v", err)
 		}
 	}
-	audiobookStore, err := newAudiobookStore(context.Background(), config.DatabaseURL, config.DataDir)
+	audiobookStore, err := audiobooks.NewPostgresStore(context.Background(), config.DatabaseURL, config.DataDir)
 	if err != nil {
 		log.Fatalf("audiobook store init failed: %v", err)
 	}

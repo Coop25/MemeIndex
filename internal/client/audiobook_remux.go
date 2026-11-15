@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"memeindex/internal/accessor"
+	"memeindex/internal/audiobooks"
 )
 
 // errAudiobookNotMP3 is remuxStoredMP3's "nothing to do" result, as opposed
@@ -52,11 +53,11 @@ func (s *Server) remuxStoredAudiobookMP3s(ctx context.Context) {
 // than inside it: a long book takes a minute or more, longer than a proxy in
 // front (Cloudflare's tunnel allows 100 s) will hold a response open, and the
 // book is playable as an MP3 in the meantime.
-func (s *Server) remuxUploadedAudiobookMP3(record audiobookRecord) {
+func (s *Server) remuxUploadedAudiobookMP3(record audiobooks.Record) {
 	if !isAudiobookMP3(record.StoragePath, record.MimeType) {
 		return
 	}
-	book := audiobookStoredMP3{
+	book := audiobooks.StoredMP3{
 		ID: record.ID, Title: record.Title, Filename: record.Filename,
 		StoragePath: record.StoragePath, MimeType: record.MimeType, SizeBytes: record.SizeBytes,
 	}
@@ -70,7 +71,7 @@ func (s *Server) remuxUploadedAudiobookMP3(record audiobookRecord) {
 // writing the same .m4b (the backfill's list can include an upload that
 // finished while it was starting up). The row is re-read under the lock for
 // the same reason - whichever got there first has already converted it.
-func (s *Server) remuxAudiobookMP3(ctx context.Context, book audiobookStoredMP3) bool {
+func (s *Server) remuxAudiobookMP3(ctx context.Context, book audiobooks.StoredMP3) bool {
 	s.audiobookRemuxMu.Lock()
 	defer s.audiobookRemuxMu.Unlock()
 
@@ -80,7 +81,7 @@ func (s *Server) remuxAudiobookMP3(ctx context.Context, book audiobookStoredMP3)
 		return false
 	}
 	current, err := s.audiobooks.GetAudiobook(ctx, book.ID)
-	if errors.Is(err, ErrAudiobookNotFound) {
+	if errors.Is(err, audiobooks.ErrNotFound) {
 		s.audiobookRemuxProgress.itemSkipped(book.ID, "deleted before it was converted")
 		return false
 	}
@@ -100,14 +101,14 @@ func (s *Server) remuxAudiobookMP3(ctx context.Context, book audiobookStoredMP3)
 	return true
 }
 
-func (s *Server) swapAudiobookToRemuxedM4B(ctx context.Context, book audiobookStoredMP3) (int64, error) {
+func (s *Server) swapAudiobookToRemuxedM4B(ctx context.Context, book audiobooks.StoredMP3) (int64, error) {
 	m4bPath, size, err := remuxStoredMP3(book.StoragePath, book.MimeType)
 	if err != nil {
 		return 0, err
 	}
 	if err := s.audiobooks.RecordRemuxedM4B(ctx, book, m4bPath, size); err != nil {
 		_ = os.Remove(m4bPath)
-		if errors.Is(err, ErrAudiobookNotFound) {
+		if errors.Is(err, audiobooks.ErrNotFound) {
 			return 0, errors.New("audiobook was deleted or replaced during the remux")
 		}
 		return 0, err

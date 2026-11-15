@@ -1,4 +1,4 @@
-package client
+package audiobooks
 
 import (
 	"context"
@@ -23,33 +23,33 @@ import (
 	"memeindex/internal/dbschema"
 )
 
-// ErrAudiobookUploadNotFound is returned when an upload session id does not
+// ErrUploadNotFound is returned when an upload session id does not
 // exist, has already been finalized/aborted, or belongs to a different user.
-var ErrAudiobookUploadNotFound = errors.New("audiobook upload not found")
+var ErrUploadNotFound = errors.New("audiobook upload not found")
 
-// ErrAudiobookNotFound is returned when a finished audiobook id does not exist.
-var ErrAudiobookNotFound = errors.New("audiobook not found")
+// ErrNotFound is returned when a finished audiobook id does not exist.
+var ErrNotFound = errors.New("audiobook not found")
 
-// ErrAudiobookBookmarkNotFound is returned when a bookmark id does not exist
+// ErrBookmarkNotFound is returned when a bookmark id does not exist
 // or belongs to a different user.
-var ErrAudiobookBookmarkNotFound = errors.New("audiobook bookmark not found")
+var ErrBookmarkNotFound = errors.New("audiobook bookmark not found")
 
-// ErrAudiobookSeriesNotFound is returned when a series id does not exist.
-var ErrAudiobookSeriesNotFound = errors.New("audiobook series not found")
+// ErrSeriesNotFound is returned when a series id does not exist.
+var ErrSeriesNotFound = errors.New("audiobook series not found")
 
-// ErrAudiobookSeriesNameTaken is returned when creating or renaming a series
+// ErrSeriesNameTaken is returned when creating or renaming a series
 // to a name (case-insensitive) that another series already has.
-var ErrAudiobookSeriesNameTaken = errors.New("audiobook series name already in use")
+var ErrSeriesNameTaken = errors.New("audiobook series name already in use")
 
-// ErrAudiobookDuplicateTitle is returned by CompleteUpload when the library
+// ErrDuplicateTitle is returned by CompleteUpload when the library
 // already has an audiobook with the same title (case-insensitive).
-var ErrAudiobookDuplicateTitle = errors.New("an audiobook with this title already exists")
+var ErrDuplicateTitle = errors.New("an audiobook with this title already exists")
 
-// ErrAudiobookNotAudio is returned by CompleteUpload when the uploaded bytes
+// ErrNotAudio is returned by CompleteUpload when the uploaded bytes
 // are recognisably not an audio file (markup, plain text, images, ...).
-var ErrAudiobookNotAudio = errors.New("that file is not an audio file")
+var ErrNotAudio = errors.New("that file is not an audio file")
 
-type audiobookRecord struct {
+type Record struct {
 	ID               string
 	Title            string
 	Author           string
@@ -60,7 +60,7 @@ type audiobookRecord struct {
 	DurationSeconds  float64
 	StoragePath      string
 	CoverPath        string
-	Chapters         []audiobookChapter
+	Chapters         []Chapter
 	UploadedByUserID string
 	CreatedAt        time.Time
 	SeriesID         string
@@ -69,9 +69,9 @@ type audiobookRecord struct {
 	Tags             []string
 }
 
-// audiobookSeries is a named grouping of audiobooks (e.g. "Bobiverse"), with
+// Series is a named grouping of audiobooks (e.g. "Bobiverse"), with
 // BookCount filled in by ListSeries for display purposes.
-type audiobookSeries struct {
+type Series struct {
 	ID              string
 	Name            string
 	CreatedByUserID string
@@ -79,21 +79,21 @@ type audiobookSeries struct {
 	BookCount       int
 	// TopBooks holds up to the first 4 books in the series, in series order,
 	// for a card-style thumbnail preview - never the whole series.
-	TopBooks []audiobookSeriesTopBook
+	TopBooks []SeriesTopBook
 }
 
-// audiobookSeriesTopBook is one entry in audiobookSeries.TopBooks: just
+// SeriesTopBook is one entry in Series.TopBooks: just
 // enough to build a thumbnail (or an empty placeholder, when CoverPath is
 // blank) without fetching the full audiobook record.
-type audiobookSeriesTopBook struct {
+type SeriesTopBook struct {
 	ID        string `json:"id"`
 	CoverPath string `json:"cover_path"`
 }
 
-// audiobookListFilter narrows ListAudiobooks to one of the library's
+// ListFilter narrows ListAudiobooks to one of the library's
 // subsections. At most one of Favorite/Started/Finished is expected to be
 // set; SeriesID can be combined with any of them.
-type audiobookListFilter struct {
+type ListFilter struct {
 	Favorite bool
 	Started  bool
 	Finished bool
@@ -120,18 +120,18 @@ type audiobookListFilter struct {
 	Offset int
 }
 
-// audiobookChapter is one chapter marker read from the file's own chapter
+// Chapter is one chapter marker read from the file's own chapter
 // atom (common in M4B audiobooks). JSON tags are snake_case since this struct
 // is both the JSONB payload stored in Postgres and, via writeJSON, the shape
 // sent straight to the frontend.
-type audiobookChapter struct {
+type Chapter struct {
 	Title        string  `json:"title"`
 	StartSeconds float64 `json:"start_seconds"`
 	EndSeconds   float64 `json:"end_seconds"`
 }
 
-// audiobookStoredMP3 is one ListStoredMP3s row: just what remuxing it needs.
-type audiobookStoredMP3 struct {
+// StoredMP3 is one ListStoredMP3s row: just what remuxing it needs.
+type StoredMP3 struct {
 	ID          string
 	Title       string
 	Filename    string
@@ -140,18 +140,18 @@ type audiobookStoredMP3 struct {
 	SizeBytes   int64
 }
 
-type audiobookWithProgress struct {
-	audiobookRecord
+type WithProgress struct {
+	Record
 	PositionSeconds float64
 	ProgressAt      time.Time
 	IsFavorite      bool
 }
 
-// audiobookBookmark is a user-created marker at a point in an audiobook -
+// Bookmark is a user-created marker at a point in an audiobook -
 // either made by hand ("+ Bookmark") or automatically when a sleep timer is
 // started, so a listener who drifted off has a marker for roughly where that
 // happened.
-type audiobookBookmark struct {
+type Bookmark struct {
 	ID              string
 	AudiobookID     string
 	UserID          string
@@ -163,15 +163,15 @@ type audiobookBookmark struct {
 	LastUsedAt time.Time
 }
 
-// audiobookPlaybackSession is a snapshot of another device's most recent
+// PlaybackSession is a snapshot of another device's most recent
 // heartbeat for the same audiobook+user - enough to tell the listener "you're
 // also playing this somewhere else right now, at 12:34".
-type audiobookPlaybackSession struct {
+type PlaybackSession struct {
 	PositionSeconds float64
 	UpdatedAt       time.Time
 }
 
-type audiobookUpload struct {
+type Upload struct {
 	ID             string
 	UserID         string
 	Title          string
@@ -180,31 +180,31 @@ type audiobookUpload struct {
 	MimeType       string
 	TotalBytes     int64
 	ReceivedBytes  int64
-	ReceivedRanges []uploadByteRange
+	ReceivedRanges []ByteRange
 	TempPath       string
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 }
 
-// uploadByteRange is a half-open [Start, End) span of an upload's temp file
+// ByteRange is a half-open [Start, End) span of an upload's temp file
 // that has been fully written to disk. Chunked uploads record one of these
 // per successful PATCH; several can land out of order when a client sends
 // multiple chunks over concurrent connections, so progress is tracked as a
 // merged set of ranges rather than a single running offset.
-type uploadByteRange struct {
+type ByteRange struct {
 	Start int64 `json:"start"`
 	End   int64 `json:"end"`
 }
 
-// mergeUploadRanges inserts [start, end) into ranges and collapses any
+// MergeUploadRanges inserts [start, end) into ranges and collapses any
 // overlapping or touching spans, returning a sorted, disjoint result. It is
 // idempotent: re-adding a range (a retried chunk, or two concurrent requests
 // racing on the same bytes) never double-counts it.
-func mergeUploadRanges(ranges []uploadByteRange, start, end int64) []uploadByteRange {
-	combined := append(append([]uploadByteRange{}, ranges...), uploadByteRange{Start: start, End: end})
+func MergeUploadRanges(ranges []ByteRange, start, end int64) []ByteRange {
+	combined := append(append([]ByteRange{}, ranges...), ByteRange{Start: start, End: end})
 	sort.Slice(combined, func(i, j int) bool { return combined[i].Start < combined[j].Start })
 
-	merged := make([]uploadByteRange, 0, len(combined))
+	merged := make([]ByteRange, 0, len(combined))
 	for _, r := range combined {
 		if n := len(merged); n > 0 && r.Start <= merged[n-1].End {
 			if r.End > merged[n-1].End {
@@ -217,7 +217,7 @@ func mergeUploadRanges(ranges []uploadByteRange, start, end int64) []uploadByteR
 	return merged
 }
 
-func sumUploadRanges(ranges []uploadByteRange) int64 {
+func SumUploadRanges(ranges []ByteRange) int64 {
 	var total int64
 	for _, r := range ranges {
 		total += r.End - r.Start
@@ -225,9 +225,9 @@ func sumUploadRanges(ranges []uploadByteRange) int64 {
 	return total
 }
 
-// audiobookUploadSeed is the client-supplied metadata for a new upload
+// UploadSeed is the client-supplied metadata for a new upload
 // session.
-type audiobookUploadSeed struct {
+type UploadSeed struct {
 	UserID     string
 	Title      string
 	Author     string
@@ -236,32 +236,32 @@ type audiobookUploadSeed struct {
 	TotalBytes int64
 }
 
-type audiobookStore interface {
-	CreateUpload(ctx context.Context, seed audiobookUploadSeed) (audiobookUpload, error)
-	GetUpload(ctx context.Context, id, userID string) (audiobookUpload, error)
-	RecordUploadRange(ctx context.Context, id, userID string, start, end int64) (audiobookUpload, error)
-	CompleteUpload(ctx context.Context, id, userID string, durationSeconds float64) (audiobookRecord, error)
-	AbortUpload(ctx context.Context, id, userID string) (audiobookUpload, error)
-	StaleUploads(ctx context.Context, olderThan time.Time) ([]audiobookUpload, error)
+type Store interface {
+	CreateUpload(ctx context.Context, seed UploadSeed) (Upload, error)
+	GetUpload(ctx context.Context, id, userID string) (Upload, error)
+	RecordUploadRange(ctx context.Context, id, userID string, start, end int64) (Upload, error)
+	CompleteUpload(ctx context.Context, id, userID string, durationSeconds float64) (Record, error)
+	AbortUpload(ctx context.Context, id, userID string) (Upload, error)
+	StaleUploads(ctx context.Context, olderThan time.Time) ([]Upload, error)
 	// ListInProgressUploads returns every user's unfinished upload, most
 	// recently updated first; GetUploadByID looks one up without the owner
 	// check GetUpload applies (admin use only).
-	ListInProgressUploads(ctx context.Context) ([]audiobookUpload, error)
-	GetUploadByID(ctx context.Context, id string) (audiobookUpload, error)
+	ListInProgressUploads(ctx context.Context) ([]Upload, error)
+	GetUploadByID(ctx context.Context, id string) (Upload, error)
 	DiscardUpload(ctx context.Context, id string) error
-	AdminStats(ctx context.Context, now time.Time) (adminAudiobookStats, error)
-	AdminListening(ctx context.Context, now time.Time) ([]adminDaySeconds, []adminTopBook, []adminTopListener, error)
-	AdminHealthCounts(ctx context.Context) (adminAudiobookHealth, error)
-	AdminListAudiobooks(ctx context.Context, query adminAudiobookQuery) ([]adminAudiobookRow, int, error)
-	AdminUserAudiobookTotals(ctx context.Context, since time.Time) (map[string]adminUserAudiobookTotals, error)
+	AdminStats(ctx context.Context, now time.Time) (AdminStatsReport, error)
+	AdminListening(ctx context.Context, now time.Time) ([]AdminDaySeconds, []AdminTopBook, []AdminTopListener, error)
+	AdminHealthCounts(ctx context.Context) (AdminHealth, error)
+	AdminListAudiobooks(ctx context.Context, query AdminQuery) ([]AdminRow, int, error)
+	AdminUserAudiobookTotals(ctx context.Context, since time.Time) (map[string]UserTotals, error)
 	// ListStoragePaths and ListUploadTempPaths report every file location the
 	// database references, for the admin storage orphan scan.
-	ListStoragePaths(ctx context.Context) ([]audiobookStoragePath, error)
+	ListStoragePaths(ctx context.Context) ([]StoragePath, error)
 	ListUploadTempPaths(ctx context.Context) ([]string, error)
 
-	ListAudiobooks(ctx context.Context, userID string, filter audiobookListFilter) ([]audiobookWithProgress, error)
-	GetAudiobook(ctx context.Context, id string) (audiobookRecord, error)
-	DeleteAudiobook(ctx context.Context, id string) (audiobookRecord, error)
+	ListAudiobooks(ctx context.Context, userID string, filter ListFilter) ([]WithProgress, error)
+	GetAudiobook(ctx context.Context, id string) (Record, error)
+	DeleteAudiobook(ctx context.Context, id string) (Record, error)
 	SaveProgress(ctx context.Context, audiobookID, userID string, positionSeconds float64) error
 	// GetProgress returns this user's saved position for one audiobook, or
 	// ok=false if they have never played it.
@@ -270,12 +270,12 @@ type audiobookStore interface {
 	// UpdateAudiobookMetadata overwrites title/author/narrator with whichever of
 	// the three pointers are non-nil (a nil pointer leaves that column as is),
 	// so this fixes metadata that a file's own tags got wrong or never had.
-	UpdateAudiobookMetadata(ctx context.Context, id string, title, author, narrator *string) (audiobookRecord, error)
+	UpdateAudiobookMetadata(ctx context.Context, id string, title, author, narrator *string) (Record, error)
 	// SetAudiobookCover replaces the audiobook's cover image with imageBytes
 	// (already validated as a real image by the caller), deleting whatever
 	// cover file - embedded or previously user-supplied - it had before.
-	SetAudiobookCover(ctx context.Context, id string, imageBytes []byte) (audiobookRecord, error)
-	RemoveAudiobookCover(ctx context.Context, id string) (audiobookRecord, error)
+	SetAudiobookCover(ctx context.Context, id string, imageBytes []byte) (Record, error)
+	RemoveAudiobookCover(ctx context.Context, id string) (Record, error)
 
 	ListAudiobookTags(ctx context.Context, audiobookID string) ([]string, error)
 	// ReplaceAudiobookTags overwrites an audiobook's whole tag set and returns
@@ -285,18 +285,18 @@ type audiobookStore interface {
 	AddFavorite(ctx context.Context, audiobookID, userID string) error
 	RemoveFavorite(ctx context.Context, audiobookID, userID string) error
 
-	CreateSeries(ctx context.Context, name, createdByUserID string) (audiobookSeries, error)
-	ListSeries(ctx context.Context, restrictToTags []string) ([]audiobookSeries, error)
-	RenameSeries(ctx context.Context, id, name string) (audiobookSeries, error)
+	CreateSeries(ctx context.Context, name, createdByUserID string) (Series, error)
+	ListSeries(ctx context.Context, restrictToTags []string) ([]Series, error)
+	RenameSeries(ctx context.Context, id, name string) (Series, error)
 	DeleteSeries(ctx context.Context, id string) error
 	// MergeSeries moves every book of fromID into intoID (keeping sequence
 	// numbers) and deletes fromID, in one transaction. It returns the number
-	// of books moved, or ErrAudiobookSeriesNotFound if either series is missing.
+	// of books moved, or ErrSeriesNotFound if either series is missing.
 	MergeSeries(ctx context.Context, fromID, intoID string) (int, error)
 	// AdminAudiobookTagUsage lists tags used by at least one audiobook, with
 	// audiobook and meme counts, most-used first (admin use only).
-	AdminAudiobookTagUsage(ctx context.Context) ([]adminAudiobookTagUsage, error)
-	SetAudiobookSeries(ctx context.Context, audiobookID string, seriesID *string, sequence *float64) (audiobookRecord, error)
+	AdminAudiobookTagUsage(ctx context.Context) ([]AdminTagUsage, error)
+	SetAudiobookSeries(ctx context.Context, audiobookID string, seriesID *string, sequence *float64) (Record, error)
 
 	// BackfillMetadata re-probes already-stored audiobooks that are still
 	// missing cover art, chapters, or a real duration - typically ones
@@ -307,25 +307,25 @@ type audiobookStore interface {
 	// ListStoredMP3s returns every audiobook still stored as an MP3 - ones
 	// uploaded before CompleteUpload started remuxing to .m4b, or whose remux
 	// failed - oldest first.
-	ListStoredMP3s(ctx context.Context) ([]audiobookStoredMP3, error)
+	ListStoredMP3s(ctx context.Context) ([]StoredMP3, error)
 	// RecordRemuxedM4B points an audiobook at its remuxed .m4b in place of the
-	// MP3 it was listed with. ErrAudiobookNotFound means the row was deleted
+	// MP3 it was listed with. ErrNotFound means the row was deleted
 	// or its file changed meanwhile, and the caller should discard the .m4b.
-	RecordRemuxedM4B(ctx context.Context, book audiobookStoredMP3, m4bPath string, sizeBytes int64) error
+	RecordRemuxedM4B(ctx context.Context, book StoredMP3, m4bPath string, sizeBytes int64) error
 
-	CreateBookmark(ctx context.Context, audiobookID, userID string, positionSeconds float64, label string) (audiobookBookmark, error)
+	CreateBookmark(ctx context.Context, audiobookID, userID string, positionSeconds float64, label string) (Bookmark, error)
 	// CreateBookmarkReplacingNearby creates a bookmark and, in the same
 	// transaction, deletes the user's other bookmarks on that book that
 	// carry the same label and sit within windowSeconds of its position.
 	// Returns the ids it deleted.
-	CreateBookmarkReplacingNearby(ctx context.Context, audiobookID, userID string, positionSeconds float64, label string, windowSeconds float64) (audiobookBookmark, []string, error)
-	ListBookmarks(ctx context.Context, audiobookID, userID string) ([]audiobookBookmark, error)
+	CreateBookmarkReplacingNearby(ctx context.Context, audiobookID, userID string, positionSeconds float64, label string, windowSeconds float64) (Bookmark, []string, error)
+	ListBookmarks(ctx context.Context, audiobookID, userID string) ([]Bookmark, error)
 	DeleteBookmark(ctx context.Context, audiobookID, id, userID string) error
 	// TouchBookmark marks a bookmark as just used (jumped to), restarting its
-	// expiry clock. ErrAudiobookBookmarkNotFound if it is not the user's, not
+	// expiry clock. ErrBookmarkNotFound if it is not the user's, not
 	// on that audiobook, or last used at or before usedSince (already
 	// expired). A zero usedSince skips the expiry check.
-	TouchBookmark(ctx context.Context, audiobookID, id, userID string, usedSince time.Time) (audiobookBookmark, error)
+	TouchBookmark(ctx context.Context, audiobookID, id, userID string, usedSince time.Time) (Bookmark, error)
 	// DeleteExpiredBookmarks removes every bookmark last used before cutoff
 	// and reports how many went.
 	DeleteExpiredBookmarks(ctx context.Context, cutoff time.Time) (int64, error)
@@ -340,7 +340,7 @@ type audiobookStore interface {
 	// OtherActivePlaybackSession returns the most recently updated OTHER
 	// device's playback session for this audiobook+user that is still playing
 	// and newer than activeSince, or ok=false if there is none.
-	OtherActivePlaybackSession(ctx context.Context, audiobookID, userID, deviceID string, activeSince time.Time) (session audiobookPlaybackSession, ok bool, err error)
+	OtherActivePlaybackSession(ctx context.Context, audiobookID, userID, deviceID string, activeSince time.Time) (session PlaybackSession, ok bool, err error)
 	// RequestOtherPlaybackSessionsStop asks every other device that is still
 	// playing this audiobook+user to pause on its next heartbeat.
 	RequestOtherPlaybackSessionsStop(ctx context.Context, audiobookID, userID, deviceID string) error
@@ -354,25 +354,25 @@ type audiobookStore interface {
 	// their whole library: all-time total seconds listened, the current
 	// day-streak, the last 30 days of daily totals, and every book they've
 	// finished (most recently finished first). restrictToTags mirrors
-	// audiobookListFilter.RestrictToTags: when non-empty, the finished-books
+	// ListFilter.RestrictToTags: when non-empty, the finished-books
 	// list is narrowed to books carrying one of those tags, the same
 	// tag-restriction a tag-restricted account sees everywhere else.
-	GetListeningOverview(ctx context.Context, userID string, restrictToTags []string) (audiobookListeningOverview, error)
+	GetListeningOverview(ctx context.Context, userID string, restrictToTags []string) (ListeningOverview, error)
 	// GetBookListeningHistory returns one user's day-by-day listened seconds
 	// for a single audiobook, most recent day first.
-	GetBookListeningHistory(ctx context.Context, audiobookID, userID string) ([]audiobookListeningDay, error)
+	GetBookListeningHistory(ctx context.Context, audiobookID, userID string) ([]ListeningDay, error)
 }
 
-// audiobookListeningDay is one day's worth of accumulated listening time,
+// ListeningDay is one day's worth of accumulated listening time,
 // either for a single book (GetBookListeningHistory) or summed across the
-// whole library (audiobookListeningOverview.DailyTotals).
-type audiobookListeningDay struct {
+// whole library (ListeningOverview.DailyTotals).
+type ListeningDay struct {
 	Date            string  `json:"date"`
 	SecondsListened float64 `json:"seconds_listened"`
 }
 
-// audiobookFinishedBook is one entry in a user's finished-books history.
-type audiobookFinishedBook struct {
+// FinishedBook is one entry in a user's finished-books history.
+type FinishedBook struct {
 	ID         string    `json:"id"`
 	Title      string    `json:"title"`
 	Author     string    `json:"author"`
@@ -380,23 +380,32 @@ type audiobookFinishedBook struct {
 	FinishedAt time.Time `json:"finished_at"`
 }
 
-// audiobookListeningOverview is the payload behind the audiobooks "Stats"
+// ListeningOverview is the payload behind the audiobooks "Stats"
 // view.
-type audiobookListeningOverview struct {
-	TotalSecondsListened float64                 `json:"total_seconds_listened"`
-	StreakDays           int                     `json:"streak_days"`
-	DailyTotals          []audiobookListeningDay `json:"daily_totals"`
-	FinishedBooks        []audiobookFinishedBook `json:"finished_books"`
+type ListeningOverview struct {
+	TotalSecondsListened float64        `json:"total_seconds_listened"`
+	StreakDays           int            `json:"streak_days"`
+	DailyTotals          []ListeningDay `json:"daily_totals"`
+	FinishedBooks        []FinishedBook `json:"finished_books"`
 }
 
-type postgresAudiobookStore struct {
+type PostgresStore struct {
 	pool      *pgxpool.Pool
 	dir       string
 	tmpDir    string
 	coversDir string
 }
 
-func newAudiobookStore(ctx context.Context, databaseURL, dataDir string) (audiobookStore, error) {
+// Pool is the store's connection pool. Tests seed fixture rows through it.
+func (s *PostgresStore) Pool() *pgxpool.Pool { return s.pool }
+
+// CoversDir is where uploaded and extracted cover art is kept.
+func (s *PostgresStore) CoversDir() string { return s.coversDir }
+
+// Close releases the store's database connections.
+func (s *PostgresStore) Close() { s.pool.Close() }
+
+func NewPostgresStore(ctx context.Context, databaseURL, dataDir string) (Store, error) {
 	if strings.TrimSpace(databaseURL) == "" {
 		return nil, nil
 	}
@@ -418,7 +427,7 @@ func newAudiobookStore(ctx context.Context, databaseURL, dataDir string) (audiob
 		return nil, fmt.Errorf("create audiobook covers directory: %w", err)
 	}
 
-	store := &postgresAudiobookStore{pool: pool, dir: dir, tmpDir: tmpDir, coversDir: coversDir}
+	store := &PostgresStore{pool: pool, dir: dir, tmpDir: tmpDir, coversDir: coversDir}
 	if err := dbschema.Apply(ctx, pool, "015_audiobooks.sql", "016_audiobook_cover_art.sql", "017_audiobook_chapters.sql", "018_audiobook_narrator.sql", "019_audiobook_bookmarks.sql", "021_audiobook_series.sql", "022_audiobook_favorites.sql", "024_audiobook_upload_ranges.sql", "025_audiobook_playback_sessions.sql", "026_audiobook_tags.sql", "028_audiobook_listening_stats.sql", "029_audiobook_bookmark_last_used.sql"); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("ensure audiobooks schema: %w", err)
@@ -426,13 +435,13 @@ func newAudiobookStore(ctx context.Context, databaseURL, dataDir string) (audiob
 	return store, nil
 }
 
-func (s *postgresAudiobookStore) CreateUpload(ctx context.Context, seed audiobookUploadSeed) (audiobookUpload, error) {
+func (s *PostgresStore) CreateUpload(ctx context.Context, seed UploadSeed) (Upload, error) {
 	id := uuid.Must(uuid.NewV6()).String()
 	tempPath := filepath.Join(s.tmpDir, id+".part")
 
 	file, err := os.OpenFile(tempPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 	if err != nil {
-		return audiobookUpload{}, fmt.Errorf("create upload temp file: %w", err)
+		return Upload{}, fmt.Errorf("create upload temp file: %w", err)
 	}
 	// Pre-size the temp file to its final length up front. Chunks now land at
 	// arbitrary offsets from several concurrent requests instead of only ever
@@ -442,14 +451,14 @@ func (s *postgresAudiobookStore) CreateUpload(ctx context.Context, seed audioboo
 	closeErr := file.Close()
 	if truncErr != nil {
 		_ = os.Remove(tempPath)
-		return audiobookUpload{}, fmt.Errorf("preallocate upload temp file: %w", truncErr)
+		return Upload{}, fmt.Errorf("preallocate upload temp file: %w", truncErr)
 	}
 	if closeErr != nil {
 		_ = os.Remove(tempPath)
-		return audiobookUpload{}, fmt.Errorf("create upload temp file: %w", closeErr)
+		return Upload{}, fmt.Errorf("create upload temp file: %w", closeErr)
 	}
 
-	var upload audiobookUpload
+	var upload Upload
 	err = s.pool.QueryRow(ctx, `
 		INSERT INTO audiobook_uploads (id, user_id, title, author, filename, mime_type, total_bytes, temp_path)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -460,22 +469,22 @@ func (s *postgresAudiobookStore) CreateUpload(ctx context.Context, seed audioboo
 	)
 	if err != nil {
 		_ = os.Remove(tempPath)
-		return audiobookUpload{}, fmt.Errorf("record audiobook upload: %w", err)
+		return Upload{}, fmt.Errorf("record audiobook upload: %w", err)
 	}
-	upload.ReceivedRanges = []uploadByteRange{}
+	upload.ReceivedRanges = []ByteRange{}
 	return upload, nil
 }
 
-func (s *postgresAudiobookStore) GetUpload(ctx context.Context, id, userID string) (audiobookUpload, error) {
+func (s *PostgresStore) GetUpload(ctx context.Context, id, userID string) (Upload, error) {
 	return s.getUpload(ctx, `WHERE id = $1 AND user_id = $2`, id, userID)
 }
 
-func (s *postgresAudiobookStore) GetUploadByID(ctx context.Context, id string) (audiobookUpload, error) {
+func (s *PostgresStore) GetUploadByID(ctx context.Context, id string) (Upload, error) {
 	return s.getUpload(ctx, `WHERE id = $1`, id)
 }
 
-func (s *postgresAudiobookStore) getUpload(ctx context.Context, where string, args ...any) (audiobookUpload, error) {
-	var upload audiobookUpload
+func (s *PostgresStore) getUpload(ctx context.Context, where string, args ...any) (Upload, error) {
+	var upload Upload
 	var rangesJSON []byte
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, user_id, title, author, filename, mime_type, total_bytes, received_bytes, received_ranges, temp_path, created_at, updated_at
@@ -485,13 +494,13 @@ func (s *postgresAudiobookStore) getUpload(ctx context.Context, where string, ar
 		&upload.TotalBytes, &upload.ReceivedBytes, &rangesJSON, &upload.TempPath, &upload.CreatedAt, &upload.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return audiobookUpload{}, ErrAudiobookUploadNotFound
+		return Upload{}, ErrUploadNotFound
 	}
 	if err != nil {
-		return audiobookUpload{}, fmt.Errorf("get audiobook upload: %w", err)
+		return Upload{}, fmt.Errorf("get audiobook upload: %w", err)
 	}
 	if err := json.Unmarshal(rangesJSON, &upload.ReceivedRanges); err != nil {
-		return audiobookUpload{}, fmt.Errorf("decode audiobook upload ranges: %w", err)
+		return Upload{}, fmt.Errorf("decode audiobook upload ranges: %w", err)
 	}
 	return upload, nil
 }
@@ -504,15 +513,15 @@ func (s *postgresAudiobookStore) getUpload(ctx context.Context, where string, ar
 // because chunks can now arrive out of order from several concurrent
 // requests for the same upload - merging is idempotent, so a retried or
 // overlapping range is simply absorbed rather than rejected.
-func (s *postgresAudiobookStore) RecordUploadRange(ctx context.Context, id, userID string, start, end int64) (audiobookUpload, error) {
+func (s *PostgresStore) RecordUploadRange(ctx context.Context, id, userID string, start, end int64) (Upload, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return audiobookUpload{}, fmt.Errorf("begin audiobook upload range: %w", err)
+		return Upload{}, fmt.Errorf("begin audiobook upload range: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	var rangesJSON []byte
-	var upload audiobookUpload
+	var upload Upload
 	err = tx.QueryRow(ctx, `
 		SELECT id, user_id, title, author, filename, mime_type, total_bytes, received_bytes, received_ranges, temp_path, created_at, updated_at
 		FROM audiobook_uploads
@@ -523,32 +532,32 @@ func (s *postgresAudiobookStore) RecordUploadRange(ctx context.Context, id, user
 		&upload.TotalBytes, &upload.ReceivedBytes, &rangesJSON, &upload.TempPath, &upload.CreatedAt, &upload.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return audiobookUpload{}, ErrAudiobookUploadNotFound
+		return Upload{}, ErrUploadNotFound
 	}
 	if err != nil {
-		return audiobookUpload{}, fmt.Errorf("lock audiobook upload: %w", err)
+		return Upload{}, fmt.Errorf("lock audiobook upload: %w", err)
 	}
 
-	var ranges []uploadByteRange
+	var ranges []ByteRange
 	if err := json.Unmarshal(rangesJSON, &ranges); err != nil {
-		return audiobookUpload{}, fmt.Errorf("decode audiobook upload ranges: %w", err)
+		return Upload{}, fmt.Errorf("decode audiobook upload ranges: %w", err)
 	}
-	merged := mergeUploadRanges(ranges, start, end)
+	merged := MergeUploadRanges(ranges, start, end)
 	mergedJSON, err := json.Marshal(merged)
 	if err != nil {
-		return audiobookUpload{}, fmt.Errorf("encode audiobook upload ranges: %w", err)
+		return Upload{}, fmt.Errorf("encode audiobook upload ranges: %w", err)
 	}
-	receivedBytes := sumUploadRanges(merged)
+	receivedBytes := SumUploadRanges(merged)
 
 	if _, err := tx.Exec(ctx, `
 		UPDATE audiobook_uploads
 		SET received_ranges = $3, received_bytes = $4, updated_at = NOW()
 		WHERE id = $1 AND user_id = $2
 	`, id, userID, mergedJSON, receivedBytes); err != nil {
-		return audiobookUpload{}, fmt.Errorf("update audiobook upload range: %w", err)
+		return Upload{}, fmt.Errorf("update audiobook upload range: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return audiobookUpload{}, fmt.Errorf("commit audiobook upload range: %w", err)
+		return Upload{}, fmt.Errorf("commit audiobook upload range: %w", err)
 	}
 
 	upload.ReceivedRanges = merged
@@ -556,20 +565,20 @@ func (s *postgresAudiobookStore) RecordUploadRange(ctx context.Context, id, user
 	return upload, nil
 }
 
-func (s *postgresAudiobookStore) CompleteUpload(ctx context.Context, id, userID string, fallbackDurationSeconds float64) (audiobookRecord, error) {
+func (s *PostgresStore) CompleteUpload(ctx context.Context, id, userID string, fallbackDurationSeconds float64) (Record, error) {
 	upload, err := s.GetUpload(ctx, id, userID)
 	if err != nil {
-		return audiobookRecord{}, err
+		return Record{}, err
 	}
 	if upload.ReceivedBytes != upload.TotalBytes {
-		return audiobookRecord{}, fmt.Errorf("upload incomplete: received %d of %d bytes", upload.ReceivedBytes, upload.TotalBytes)
+		return Record{}, fmt.Errorf("upload incomplete: received %d of %d bytes", upload.ReceivedBytes, upload.TotalBytes)
 	}
 
 	ext := strings.ToLower(filepath.Ext(upload.Filename))
 	finalID := uuid.Must(uuid.NewV6()).String()
 	finalPath := filepath.Join(s.dir, finalID+ext)
 	if err := os.Rename(upload.TempPath, finalPath); err != nil {
-		return audiobookRecord{}, fmt.Errorf("move completed audiobook: %w", err)
+		return Record{}, fmt.Errorf("move completed audiobook: %w", err)
 	}
 	// Rename keeps the .part file's old mtime; refresh it so the orphan scan's
 	// grace window protects a just-completed upload.
@@ -588,14 +597,14 @@ func (s *postgresAudiobookStore) CompleteUpload(ctx context.Context, id, userID 
 	// Sniffing alone is not enough, though: http.DetectContentType happily
 	// reports markup as text/html, so a file that is plainly not audio is
 	// refused outright, and whatever is stored is narrowed to a type that can
-	// only ever play, never render (see audiobookServableMimeType).
-	sniffed := sniffAudiobookMimeType(finalPath)
-	if !audiobookSniffLooksLikeMedia(sniffed) {
+	// only ever play, never render (see ServableMimeType).
+	sniffed := SniffMimeType(finalPath)
+	if !SniffLooksLikeMedia(sniffed) {
 		_ = os.Remove(finalPath)
 		_ = s.DiscardUpload(ctx, id)
-		return audiobookRecord{}, ErrAudiobookNotAudio
+		return Record{}, ErrNotAudio
 	}
-	mimeType := audiobookServableMimeType(sniffed, upload.Filename)
+	mimeType := ServableMimeType(sniffed, upload.Filename)
 
 	// Prefer whatever the file itself says over a user-typed title/author and
 	// the client's best-effort duration: an audiobook's ID3/MP4 tags are
@@ -603,7 +612,7 @@ func (s *postgresAudiobookStore) CompleteUpload(ctx context.Context, id, userID 
 	// typing into an upload form.
 	title, author, duration := upload.Title, upload.Author, fallbackDurationSeconds
 	var narrator string
-	var chapters []audiobookChapter
+	var chapters []Chapter
 	if probed, probeErr := accessor.ProbeAudioMetadata(finalPath); probeErr == nil {
 		if title == "" {
 			title = probed.Title
@@ -616,7 +625,7 @@ func (s *postgresAudiobookStore) CompleteUpload(ctx context.Context, id, userID 
 			duration = probed.DurationSeconds
 		}
 		for _, c := range probed.Chapters {
-			chapters = append(chapters, audiobookChapter{Title: c.Title, StartSeconds: c.StartSeconds, EndSeconds: c.EndSeconds})
+			chapters = append(chapters, Chapter{Title: c.Title, StartSeconds: c.StartSeconds, EndSeconds: c.EndSeconds})
 		}
 	} else {
 		log.Printf("audiobooks: metadata probe for %s failed (continuing without it): %v", upload.Filename, probeErr)
@@ -632,16 +641,16 @@ func (s *postgresAudiobookStore) CompleteUpload(ctx context.Context, id, userID 
 	// library, rather than silently stacking two copies of the same title.
 	if duplicate, err := s.audiobookTitleExists(ctx, title); err != nil {
 		_ = os.Remove(finalPath)
-		return audiobookRecord{}, fmt.Errorf("check for duplicate audiobook: %w", err)
+		return Record{}, fmt.Errorf("check for duplicate audiobook: %w", err)
 	} else if duplicate {
 		_ = os.Remove(finalPath)
 		_ = s.DiscardUpload(ctx, id)
-		return audiobookRecord{}, ErrAudiobookDuplicateTitle
+		return Record{}, ErrDuplicateTitle
 	}
 
 	chaptersJSON, err := json.Marshal(chapters)
 	if err != nil {
-		return audiobookRecord{}, fmt.Errorf("encode audiobook chapters: %w", err)
+		return Record{}, fmt.Errorf("encode audiobook chapters: %w", err)
 	}
 
 	coverPath := filepath.Join(s.coversDir, finalID+".jpg")
@@ -657,11 +666,11 @@ func (s *postgresAudiobookStore) CompleteUpload(ctx context.Context, id, userID 
 		if coverPath != "" {
 			_ = os.Remove(coverPath)
 		}
-		return audiobookRecord{}, fmt.Errorf("begin complete upload: %w", err)
+		return Record{}, fmt.Errorf("begin complete upload: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var record audiobookRecord
+	var record Record
 	var recordChaptersJSON []byte
 	err = tx.QueryRow(ctx, `
 		INSERT INTO audiobooks (id, title, author, narrator, filename, mime_type, size_bytes, duration_seconds, storage_path, cover_path, chapters, uploaded_by_user_id)
@@ -681,7 +690,7 @@ func (s *postgresAudiobookStore) CompleteUpload(ctx context.Context, id, userID 
 		if coverPath != "" {
 			_ = os.Remove(coverPath)
 		}
-		return audiobookRecord{}, fmt.Errorf("record completed audiobook: %w", err)
+		return Record{}, fmt.Errorf("record completed audiobook: %w", err)
 	}
 
 	if _, err := tx.Exec(ctx, `DELETE FROM audiobook_uploads WHERE id = $1`, id); err != nil {
@@ -689,7 +698,7 @@ func (s *postgresAudiobookStore) CompleteUpload(ctx context.Context, id, userID 
 		if coverPath != "" {
 			_ = os.Remove(coverPath)
 		}
-		return audiobookRecord{}, fmt.Errorf("clear audiobook upload: %w", err)
+		return Record{}, fmt.Errorf("clear audiobook upload: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -697,24 +706,24 @@ func (s *postgresAudiobookStore) CompleteUpload(ctx context.Context, id, userID 
 		if coverPath != "" {
 			_ = os.Remove(coverPath)
 		}
-		return audiobookRecord{}, fmt.Errorf("commit completed audiobook: %w", err)
+		return Record{}, fmt.Errorf("commit completed audiobook: %w", err)
 	}
 	return record, nil
 }
 
-// audiobookM4BMimeType is set directly for files the server remuxed itself,
+// M4BMimeType is set directly for files the server remuxed itself,
 // rather than sniffed: http.DetectContentType reports any MP4 as video/mp4.
-const audiobookM4BMimeType = "audio/mp4"
+const M4BMimeType = "audio/mp4"
 
-// remuxedAudiobookFilename is the display/download filename for a remuxed
+// RemuxedFilename is the display/download filename for a remuxed
 // book: the uploaded name with its extension swapped for .m4b.
-func remuxedAudiobookFilename(filename string) string {
+func RemuxedFilename(filename string) string {
 	return strings.TrimSuffix(filename, filepath.Ext(filename)) + ".m4b"
 }
 
 // audiobookTitleExists reports whether the library already has an audiobook
 // with the given title, compared case-insensitively.
-func (s *postgresAudiobookStore) audiobookTitleExists(ctx context.Context, title string) (bool, error) {
+func (s *PostgresStore) audiobookTitleExists(ctx context.Context, title string) (bool, error) {
 	var exists bool
 	if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM audiobooks WHERE lower(title) = lower($1))`, title).Scan(&exists); err != nil {
 		return false, fmt.Errorf("check duplicate audiobook title: %w", err)
@@ -722,11 +731,11 @@ func (s *postgresAudiobookStore) audiobookTitleExists(ctx context.Context, title
 	return exists, nil
 }
 
-// sniffAudiobookMimeType reads the stored file's own leading bytes to
+// SniffMimeType reads the stored file's own leading bytes to
 // determine its Content-Type, rather than trusting whatever the uploading
 // client claimed. Falls back to a generic binary type if the file can't be
 // read, which is safe to serve but never renders as anything interactive.
-func sniffAudiobookMimeType(path string) string {
+func SniffMimeType(path string) string {
 	const fallback = "application/octet-stream"
 	file, err := os.Open(path)
 	if err != nil {
@@ -742,19 +751,19 @@ func sniffAudiobookMimeType(path string) string {
 	return http.DetectContentType(prefix[:n])
 }
 
-func (s *postgresAudiobookStore) AbortUpload(ctx context.Context, id, userID string) (audiobookUpload, error) {
+func (s *PostgresStore) AbortUpload(ctx context.Context, id, userID string) (Upload, error) {
 	upload, err := s.GetUpload(ctx, id, userID)
 	if err != nil {
-		return audiobookUpload{}, err
+		return Upload{}, err
 	}
 	if err := s.DiscardUpload(ctx, id); err != nil {
-		return audiobookUpload{}, err
+		return Upload{}, err
 	}
 	_ = os.Remove(upload.TempPath)
 	return upload, nil
 }
 
-func (s *postgresAudiobookStore) DiscardUpload(ctx context.Context, id string) error {
+func (s *PostgresStore) DiscardUpload(ctx context.Context, id string) error {
 	if _, err := s.pool.Exec(ctx, `DELETE FROM audiobook_uploads WHERE id = $1`, id); err != nil {
 		return fmt.Errorf("discard audiobook upload: %w", err)
 	}
@@ -765,15 +774,15 @@ func (s *postgresAudiobookStore) DiscardUpload(ctx context.Context, id string) e
 // before the given time, i.e. a tab closed or a device went away mid-upload
 // and left a temp file behind. The caller removes the temp file and the row
 // via DiscardUpload once it has acted on each one.
-func (s *postgresAudiobookStore) StaleUploads(ctx context.Context, olderThan time.Time) ([]audiobookUpload, error) {
+func (s *PostgresStore) StaleUploads(ctx context.Context, olderThan time.Time) ([]Upload, error) {
 	return s.listUploads(ctx, "stale", `WHERE updated_at < $1`, olderThan)
 }
 
-func (s *postgresAudiobookStore) ListInProgressUploads(ctx context.Context) ([]audiobookUpload, error) {
+func (s *PostgresStore) ListInProgressUploads(ctx context.Context) ([]Upload, error) {
 	return s.listUploads(ctx, "in-progress", `ORDER BY updated_at DESC, id`)
 }
 
-func (s *postgresAudiobookStore) listUploads(ctx context.Context, label, clause string, args ...any) ([]audiobookUpload, error) {
+func (s *PostgresStore) listUploads(ctx context.Context, label, clause string, args ...any) ([]Upload, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, user_id, title, author, filename, mime_type, total_bytes, received_bytes, temp_path, created_at, updated_at
 		FROM audiobook_uploads
@@ -783,9 +792,9 @@ func (s *postgresAudiobookStore) listUploads(ctx context.Context, label, clause 
 	}
 	defer rows.Close()
 
-	out := []audiobookUpload{}
+	out := []Upload{}
 	for rows.Next() {
-		var upload audiobookUpload
+		var upload Upload
 		if err := rows.Scan(
 			&upload.ID, &upload.UserID, &upload.Title, &upload.Author, &upload.Filename, &upload.MimeType,
 			&upload.TotalBytes, &upload.ReceivedBytes, &upload.TempPath, &upload.CreatedAt, &upload.UpdatedAt,
@@ -800,13 +809,13 @@ func (s *postgresAudiobookStore) listUploads(ctx context.Context, label, clause 
 	return out, nil
 }
 
-// audiobookFinishedFraction is the fraction of an audiobook's duration at or
+// FinishedFraction is the fraction of an audiobook's duration at or
 // past which it is considered "finished" rather than merely "started" - the
 // same 99% threshold the frontend uses to decide between a "Resume" and a
 // "Play" label on the card.
-const audiobookFinishedFraction = 0.99
+const FinishedFraction = 0.99
 
-func (s *postgresAudiobookStore) ListAudiobooks(ctx context.Context, userID string, filter audiobookListFilter) ([]audiobookWithProgress, error) {
+func (s *PostgresStore) ListAudiobooks(ctx context.Context, userID string, filter ListFilter) ([]WithProgress, error) {
 	query := strings.Builder{}
 	query.WriteString(`
 		SELECT
@@ -827,10 +836,10 @@ func (s *postgresAudiobookStore) ListAudiobooks(ctx context.Context, userID stri
 		query.WriteString(" AND f.audiobook_id IS NOT NULL")
 	}
 	if filter.Started {
-		_, _ = fmt.Fprintf(&query, " AND p.position_seconds > 0 AND (a.duration_seconds <= 0 OR p.position_seconds < a.duration_seconds * %v)", audiobookFinishedFraction)
+		_, _ = fmt.Fprintf(&query, " AND p.position_seconds > 0 AND (a.duration_seconds <= 0 OR p.position_seconds < a.duration_seconds * %v)", FinishedFraction)
 	}
 	if filter.Finished {
-		_, _ = fmt.Fprintf(&query, " AND a.duration_seconds > 0 AND p.position_seconds >= a.duration_seconds * %v", audiobookFinishedFraction)
+		_, _ = fmt.Fprintf(&query, " AND a.duration_seconds > 0 AND p.position_seconds >= a.duration_seconds * %v", FinishedFraction)
 	}
 	if filter.SeriesID != "" {
 		args = append(args, filter.SeriesID)
@@ -870,9 +879,9 @@ func (s *postgresAudiobookStore) ListAudiobooks(ctx context.Context, userID stri
 	}
 	defer rows.Close()
 
-	out := []audiobookWithProgress{}
+	out := []WithProgress{}
 	for rows.Next() {
-		var item audiobookWithProgress
+		var item WithProgress
 		var chaptersJSON []byte
 		var progressAt *time.Time
 		var seriesID *string
@@ -903,8 +912,8 @@ func (s *postgresAudiobookStore) ListAudiobooks(ctx context.Context, userID stri
 	return out, nil
 }
 
-func (s *postgresAudiobookStore) GetAudiobook(ctx context.Context, id string) (audiobookRecord, error) {
-	var record audiobookRecord
+func (s *PostgresStore) GetAudiobook(ctx context.Context, id string) (Record, error) {
+	var record Record
 	var chaptersJSON []byte
 	var seriesID *string
 	err := s.pool.QueryRow(ctx, `
@@ -922,13 +931,13 @@ func (s *postgresAudiobookStore) GetAudiobook(ctx context.Context, id string) (a
 		&record.Tags,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return audiobookRecord{}, ErrAudiobookNotFound
+		return Record{}, ErrNotFound
 	}
 	if err != nil {
-		return audiobookRecord{}, fmt.Errorf("get audiobook: %w", err)
+		return Record{}, fmt.Errorf("get audiobook: %w", err)
 	}
 	if err := json.Unmarshal(chaptersJSON, &record.Chapters); err != nil {
-		return audiobookRecord{}, fmt.Errorf("decode audiobook chapters: %w", err)
+		return Record{}, fmt.Errorf("decode audiobook chapters: %w", err)
 	}
 	if seriesID != nil {
 		record.SeriesID = *seriesID
@@ -936,18 +945,18 @@ func (s *postgresAudiobookStore) GetAudiobook(ctx context.Context, id string) (a
 	return record, nil
 }
 
-func (s *postgresAudiobookStore) DeleteAudiobook(ctx context.Context, id string) (audiobookRecord, error) {
+func (s *PostgresStore) DeleteAudiobook(ctx context.Context, id string) (Record, error) {
 	record, err := s.GetAudiobook(ctx, id)
 	if err != nil {
-		return audiobookRecord{}, err
+		return Record{}, err
 	}
 	if _, err := s.pool.Exec(ctx, `DELETE FROM audiobooks WHERE id = $1`, id); err != nil {
-		return audiobookRecord{}, fmt.Errorf("delete audiobook: %w", err)
+		return Record{}, fmt.Errorf("delete audiobook: %w", err)
 	}
 	return record, nil
 }
 
-func (s *postgresAudiobookStore) GetProgress(ctx context.Context, audiobookID, userID string) (float64, bool, error) {
+func (s *PostgresStore) GetProgress(ctx context.Context, audiobookID, userID string) (float64, bool, error) {
 	var position float64
 	err := s.pool.QueryRow(ctx, `
 		SELECT position_seconds FROM audiobook_progress
@@ -962,7 +971,7 @@ func (s *postgresAudiobookStore) GetProgress(ctx context.Context, audiobookID, u
 	return position, true, nil
 }
 
-func (s *postgresAudiobookStore) SaveProgress(ctx context.Context, audiobookID, userID string, positionSeconds float64) error {
+func (s *PostgresStore) SaveProgress(ctx context.Context, audiobookID, userID string, positionSeconds float64) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO audiobook_progress (audiobook_id, user_id, position_seconds, updated_at, finished_at)
 		VALUES ($1, $2, $3, NOW(), CASE WHEN EXISTS (
@@ -972,22 +981,22 @@ func (s *postgresAudiobookStore) SaveProgress(ctx context.Context, audiobookID, 
 		SET position_seconds = EXCLUDED.position_seconds,
 			updated_at = NOW(),
 			finished_at = COALESCE(audiobook_progress.finished_at, EXCLUDED.finished_at)
-	`, audiobookID, userID, positionSeconds, audiobookFinishedFraction)
+	`, audiobookID, userID, positionSeconds, FinishedFraction)
 	if err != nil {
 		return fmt.Errorf("save audiobook progress: %w", err)
 	}
 	return nil
 }
 
-// audiobookListeningStatsMaxGap caps how much elapsed time a single
+// ListeningStatsMaxGap caps how much elapsed time a single
 // heartbeat-to-heartbeat gap can add to audiobook_listening_stats. Normal
 // gaps are one heartbeat interval (a couple of seconds); a much larger gap
 // means the device's timers were suspended (backgrounded tab, sleeping
 // phone) rather than that it was actually playing the whole time, so it's
 // clamped instead of being credited as listening time.
-const audiobookListeningStatsMaxGap = 30 * time.Second
+const ListeningStatsMaxGap = 30 * time.Second
 
-func (s *postgresAudiobookStore) HeartbeatPlaybackSession(ctx context.Context, audiobookID, userID, deviceID string, positionSeconds float64, isPlaying, resumed bool) (bool, error) {
+func (s *PostgresStore) HeartbeatPlaybackSession(ctx context.Context, audiobookID, userID, deviceID string, positionSeconds float64, isPlaying, resumed bool) (bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return false, fmt.Errorf("heartbeat audiobook playback session (begin): %w", err)
@@ -1051,12 +1060,12 @@ func (s *postgresAudiobookStore) HeartbeatPlaybackSession(ctx context.Context, a
 	// but still needs to credit the time since the last one).
 	if hadRow && oldIsPlaying {
 		elapsed := now.Sub(oldUpdatedAt)
-		if elapsed > audiobookListeningStatsMaxGap {
-			elapsed = audiobookListeningStatsMaxGap
+		if elapsed > ListeningStatsMaxGap {
+			elapsed = ListeningStatsMaxGap
 		}
 		if elapsed > 0 {
 			// Bucketed by the Go process's own UTC calendar day, not Postgres's
-			// CURRENT_DATE - the streak/chart math in audiobookListeningStreak
+			// CURRENT_DATE - the streak/chart math in ListeningStreak
 			// and the frontend both reason in UTC days, and CURRENT_DATE follows
 			// whatever timezone the Postgres server happens to be configured
 			// with, which would otherwise disagree near midnight.
@@ -1078,8 +1087,8 @@ func (s *postgresAudiobookStore) HeartbeatPlaybackSession(ctx context.Context, a
 	return honored, nil
 }
 
-func (s *postgresAudiobookStore) OtherActivePlaybackSession(ctx context.Context, audiobookID, userID, deviceID string, activeSince time.Time) (audiobookPlaybackSession, bool, error) {
-	var session audiobookPlaybackSession
+func (s *PostgresStore) OtherActivePlaybackSession(ctx context.Context, audiobookID, userID, deviceID string, activeSince time.Time) (PlaybackSession, bool, error) {
+	var session PlaybackSession
 	err := s.pool.QueryRow(ctx, `
 		SELECT position_seconds, updated_at
 		FROM audiobook_playback_sessions
@@ -1088,15 +1097,15 @@ func (s *postgresAudiobookStore) OtherActivePlaybackSession(ctx context.Context,
 		LIMIT 1
 	`, audiobookID, userID, deviceID, activeSince).Scan(&session.PositionSeconds, &session.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return audiobookPlaybackSession{}, false, nil
+		return PlaybackSession{}, false, nil
 	}
 	if err != nil {
-		return audiobookPlaybackSession{}, false, fmt.Errorf("get other active audiobook playback session: %w", err)
+		return PlaybackSession{}, false, fmt.Errorf("get other active audiobook playback session: %w", err)
 	}
 	return session, true, nil
 }
 
-func (s *postgresAudiobookStore) RequestOtherPlaybackSessionsStop(ctx context.Context, audiobookID, userID, deviceID string) error {
+func (s *PostgresStore) RequestOtherPlaybackSessionsStop(ctx context.Context, audiobookID, userID, deviceID string) error {
 	_, err := s.pool.Exec(ctx, `
 		UPDATE audiobook_playback_sessions
 		SET stop_requested = TRUE, is_playing = FALSE
@@ -1108,7 +1117,7 @@ func (s *postgresAudiobookStore) RequestOtherPlaybackSessionsStop(ctx context.Co
 	return nil
 }
 
-func (s *postgresAudiobookStore) OtherPlaybackStopPending(ctx context.Context, audiobookID, userID, deviceID string, activeSince time.Time) (bool, error) {
+func (s *PostgresStore) OtherPlaybackStopPending(ctx context.Context, audiobookID, userID, deviceID string, activeSince time.Time) (bool, error) {
 	var pending bool
 	err := s.pool.QueryRow(ctx, `
 		SELECT EXISTS (
@@ -1122,10 +1131,10 @@ func (s *postgresAudiobookStore) OtherPlaybackStopPending(ctx context.Context, a
 	return pending, nil
 }
 
-func (s *postgresAudiobookStore) GetListeningOverview(ctx context.Context, userID string, restrictToTags []string) (audiobookListeningOverview, error) {
-	overview := audiobookListeningOverview{
-		DailyTotals:   []audiobookListeningDay{},
-		FinishedBooks: []audiobookFinishedBook{},
+func (s *PostgresStore) GetListeningOverview(ctx context.Context, userID string, restrictToTags []string) (ListeningOverview, error) {
+	overview := ListeningOverview{
+		DailyTotals:   []ListeningDay{},
+		FinishedBooks: []FinishedBook{},
 	}
 
 	// One pass over every day this user has ever listened on gives both the
@@ -1158,11 +1167,11 @@ func (s *postgresAudiobookStore) GetListeningOverview(ctx context.Context, userI
 	if allDaysErr != nil {
 		return overview, fmt.Errorf("iterate audiobook listening days: %w", allDaysErr)
 	}
-	overview.StreakDays = audiobookListeningStreak(listenedOn, time.Now())
+	overview.StreakDays = ListeningStreak(listenedOn, time.Now())
 
 	// The cutoff is computed here in Go (UTC), not via Postgres's
 	// CURRENT_DATE, to stay on the same UTC-day boundaries listen_date is
-	// now written with and audiobookListeningStreak reasons in - CURRENT_DATE
+	// now written with and ListeningStreak reasons in - CURRENT_DATE
 	// follows the Postgres server's configured timezone, which won't always
 	// agree with UTC near midnight.
 	chartCutoff := time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, -29)
@@ -1178,7 +1187,7 @@ func (s *postgresAudiobookStore) GetListeningOverview(ctx context.Context, userI
 	}
 	defer dailyRows.Close()
 	for dailyRows.Next() {
-		var day audiobookListeningDay
+		var day ListeningDay
 		if err := dailyRows.Scan(&day.Date, &day.SecondsListened); err != nil {
 			return overview, fmt.Errorf("scan audiobook daily listening total: %w", err)
 		}
@@ -1189,7 +1198,7 @@ func (s *postgresAudiobookStore) GetListeningOverview(ctx context.Context, userI
 	}
 
 	// restrictToTags mirrors the same tag-restriction ListAudiobooks applies
-	// (audiobookListFilter.RestrictToTags) - a tag-restricted account must
+	// (ListFilter.RestrictToTags) - a tag-restricted account must
 	// not see a finished book here that it couldn't otherwise see or open.
 	finishedQuery := strings.Builder{}
 	finishedQuery.WriteString(`
@@ -1211,7 +1220,7 @@ func (s *postgresAudiobookStore) GetListeningOverview(ctx context.Context, userI
 	}
 	defer finishedRows.Close()
 	for finishedRows.Next() {
-		var book audiobookFinishedBook
+		var book FinishedBook
 		if err := finishedRows.Scan(&book.ID, &book.Title, &book.Author, &book.CoverPath, &book.FinishedAt); err != nil {
 			return overview, fmt.Errorf("scan audiobook finished book: %w", err)
 		}
@@ -1224,12 +1233,12 @@ func (s *postgresAudiobookStore) GetListeningOverview(ctx context.Context, userI
 	return overview, nil
 }
 
-// audiobookListeningStreak counts consecutive calendar days, ending today,
+// ListeningStreak counts consecutive calendar days, ending today,
 // on which listenedOn (keyed by "YYYY-MM-DD") has an entry. If today has no
 // entry yet (the listener just hasn't opened the app today), it starts
 // counting from yesterday instead, so a streak isn't broken by the time of
 // day the stats are checked.
-func audiobookListeningStreak(listenedOn map[string]bool, now time.Time) int {
+func ListeningStreak(listenedOn map[string]bool, now time.Time) int {
 	cursor := now.UTC().Truncate(24 * time.Hour)
 	if !listenedOn[cursor.Format("2006-01-02")] {
 		cursor = cursor.AddDate(0, 0, -1)
@@ -1242,7 +1251,7 @@ func audiobookListeningStreak(listenedOn map[string]bool, now time.Time) int {
 	return streak
 }
 
-func (s *postgresAudiobookStore) GetBookListeningHistory(ctx context.Context, audiobookID, userID string) ([]audiobookListeningDay, error) {
+func (s *PostgresStore) GetBookListeningHistory(ctx context.Context, audiobookID, userID string) ([]ListeningDay, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT listen_date::text, seconds_listened
 		FROM audiobook_listening_stats
@@ -1254,9 +1263,9 @@ func (s *postgresAudiobookStore) GetBookListeningHistory(ctx context.Context, au
 		return nil, fmt.Errorf("audiobook listening history: %w", err)
 	}
 	defer rows.Close()
-	history := []audiobookListeningDay{}
+	history := []ListeningDay{}
 	for rows.Next() {
-		var day audiobookListeningDay
+		var day ListeningDay
 		if err := rows.Scan(&day.Date, &day.SecondsListened); err != nil {
 			return nil, fmt.Errorf("scan audiobook listening history: %w", err)
 		}
@@ -1268,7 +1277,7 @@ func (s *postgresAudiobookStore) GetBookListeningHistory(ctx context.Context, au
 	return history, nil
 }
 
-func (s *postgresAudiobookStore) BackfillMetadata(ctx context.Context) (int, error) {
+func (s *PostgresStore) BackfillMetadata(ctx context.Context) (int, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, storage_path, filename, title, author, narrator
 		FROM audiobooks
@@ -1305,7 +1314,7 @@ func (s *postgresAudiobookStore) BackfillMetadata(ctx context.Context) (int, err
 	return updated, nil
 }
 
-func (s *postgresAudiobookStore) ListStoredMP3s(ctx context.Context) ([]audiobookStoredMP3, error) {
+func (s *PostgresStore) ListStoredMP3s(ctx context.Context) ([]StoredMP3, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, title, filename, storage_path, mime_type, size_bytes
 		FROM audiobooks
@@ -1316,9 +1325,9 @@ func (s *postgresAudiobookStore) ListStoredMP3s(ctx context.Context) ([]audioboo
 		return nil, fmt.Errorf("list mp3 audiobooks: %w", err)
 	}
 	defer rows.Close()
-	var books []audiobookStoredMP3
+	var books []StoredMP3
 	for rows.Next() {
-		var b audiobookStoredMP3
+		var b StoredMP3
 		if err := rows.Scan(&b.ID, &b.Title, &b.Filename, &b.StoragePath, &b.MimeType, &b.SizeBytes); err != nil {
 			return nil, fmt.Errorf("scan mp3 audiobook: %w", err)
 		}
@@ -1330,19 +1339,19 @@ func (s *postgresAudiobookStore) ListStoredMP3s(ctx context.Context) ([]audioboo
 	return books, nil
 }
 
-func (s *postgresAudiobookStore) RecordRemuxedM4B(ctx context.Context, book audiobookStoredMP3, m4bPath string, sizeBytes int64) error {
+func (s *PostgresStore) RecordRemuxedM4B(ctx context.Context, book StoredMP3, m4bPath string, sizeBytes int64) error {
 	// Guarded on the old storage_path so a book deleted or replaced while its
 	// remux ran isn't pointed at the new file.
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE audiobooks
 		SET storage_path = $2, mime_type = $3, size_bytes = $4, filename = $5
 		WHERE id = $1 AND storage_path = $6
-	`, book.ID, m4bPath, audiobookM4BMimeType, sizeBytes, remuxedAudiobookFilename(book.Filename), book.StoragePath)
+	`, book.ID, m4bPath, M4BMimeType, sizeBytes, RemuxedFilename(book.Filename), book.StoragePath)
 	if err != nil {
 		return fmt.Errorf("record remuxed audiobook: %w", err)
 	}
 	if tag.RowsAffected() != 1 {
-		return ErrAudiobookNotFound
+		return ErrNotFound
 	}
 	return nil
 }
@@ -1356,14 +1365,14 @@ func (s *postgresAudiobookStore) RecordRemuxedM4B(ctx context.Context, book audi
 // ever auto-filled those from a filename, so blank genuinely means unknown. A
 // title that differs from the filename is left alone, since at that point it
 // cannot be distinguished from one someone typed by hand.
-func (s *postgresAudiobookStore) backfillOne(ctx context.Context, id, storagePath, filename, currentTitle, currentAuthor, currentNarrator string) bool {
+func (s *PostgresStore) backfillOne(ctx context.Context, id, storagePath, filename, currentTitle, currentAuthor, currentNarrator string) bool {
 	probed, probeErr := accessor.ProbeAudioMetadata(storagePath)
 
 	var chaptersJSON []byte
 	if probeErr == nil && len(probed.Chapters) > 0 {
-		chapters := make([]audiobookChapter, 0, len(probed.Chapters))
+		chapters := make([]Chapter, 0, len(probed.Chapters))
 		for _, c := range probed.Chapters {
-			chapters = append(chapters, audiobookChapter{Title: c.Title, StartSeconds: c.StartSeconds, EndSeconds: c.EndSeconds})
+			chapters = append(chapters, Chapter{Title: c.Title, StartSeconds: c.StartSeconds, EndSeconds: c.EndSeconds})
 		}
 		if encoded, err := json.Marshal(chapters); err == nil {
 			chaptersJSON = encoded
@@ -1416,8 +1425,8 @@ func (s *postgresAudiobookStore) backfillOne(ctx context.Context, id, storagePat
 // in the order scanAudiobookBookmark reads it.
 const audiobookBookmarkColumns = `id, audiobook_id, user_id, position_seconds, label, created_at, last_used_at`
 
-func scanAudiobookBookmark(row pgx.Row) (audiobookBookmark, error) {
-	var bookmark audiobookBookmark
+func scanAudiobookBookmark(row pgx.Row) (Bookmark, error) {
+	var bookmark Bookmark
 	err := row.Scan(&bookmark.ID, &bookmark.AudiobookID, &bookmark.UserID, &bookmark.PositionSeconds, &bookmark.Label, &bookmark.CreatedAt, &bookmark.LastUsedAt)
 	return bookmark, err
 }
@@ -1425,26 +1434,26 @@ func scanAudiobookBookmark(row pgx.Row) (audiobookBookmark, error) {
 // insertAudiobookBookmark runs on the pool or inside a transaction.
 func insertAudiobookBookmark(ctx context.Context, q interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
-}, audiobookID, userID string, positionSeconds float64, label string) (audiobookBookmark, error) {
+}, audiobookID, userID string, positionSeconds float64, label string) (Bookmark, error) {
 	bookmark, err := scanAudiobookBookmark(q.QueryRow(ctx, `
 		INSERT INTO audiobook_bookmarks (id, audiobook_id, user_id, position_seconds, label)
 		VALUES ($1, $2, $3, $4, $5)
 		RETURNING `+audiobookBookmarkColumns,
 		uuid.Must(uuid.NewV6()).String(), audiobookID, userID, positionSeconds, label))
 	if err != nil {
-		return audiobookBookmark{}, fmt.Errorf("create audiobook bookmark: %w", err)
+		return Bookmark{}, fmt.Errorf("create audiobook bookmark: %w", err)
 	}
 	return bookmark, nil
 }
 
-func (s *postgresAudiobookStore) CreateBookmark(ctx context.Context, audiobookID, userID string, positionSeconds float64, label string) (audiobookBookmark, error) {
+func (s *PostgresStore) CreateBookmark(ctx context.Context, audiobookID, userID string, positionSeconds float64, label string) (Bookmark, error) {
 	return insertAudiobookBookmark(ctx, s.pool, audiobookID, userID, positionSeconds, label)
 }
 
-func (s *postgresAudiobookStore) CreateBookmarkReplacingNearby(ctx context.Context, audiobookID, userID string, positionSeconds float64, label string, windowSeconds float64) (audiobookBookmark, []string, error) {
+func (s *PostgresStore) CreateBookmarkReplacingNearby(ctx context.Context, audiobookID, userID string, positionSeconds float64, label string, windowSeconds float64) (Bookmark, []string, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return audiobookBookmark{}, nil, fmt.Errorf("begin bookmark replace: %w", err)
+		return Bookmark{}, nil, fmt.Errorf("begin bookmark replace: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
@@ -1452,7 +1461,7 @@ func (s *postgresAudiobookStore) CreateBookmarkReplacingNearby(ctx context.Conte
 	// sleep-timer starts each delete before the other's insert commits, and
 	// both new bookmarks survive.
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('audiobook-bookmark-replace:' || $1::text || ':' || $2::text, 0))`, audiobookID, userID); err != nil {
-		return audiobookBookmark{}, nil, fmt.Errorf("lock bookmark replace: %w", err)
+		return Bookmark{}, nil, fmt.Errorf("lock bookmark replace: %w", err)
 	}
 
 	rows, err := tx.Query(ctx, `
@@ -1462,24 +1471,24 @@ func (s *postgresAudiobookStore) CreateBookmarkReplacingNearby(ctx context.Conte
 		RETURNING id
 	`, audiobookID, userID, label, positionSeconds, windowSeconds)
 	if err != nil {
-		return audiobookBookmark{}, nil, fmt.Errorf("delete nearby audiobook bookmarks: %w", err)
+		return Bookmark{}, nil, fmt.Errorf("delete nearby audiobook bookmarks: %w", err)
 	}
 	replaced, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
-		return audiobookBookmark{}, nil, fmt.Errorf("delete nearby audiobook bookmarks: %w", err)
+		return Bookmark{}, nil, fmt.Errorf("delete nearby audiobook bookmarks: %w", err)
 	}
 
 	bookmark, err := insertAudiobookBookmark(ctx, tx, audiobookID, userID, positionSeconds, label)
 	if err != nil {
-		return audiobookBookmark{}, nil, err
+		return Bookmark{}, nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return audiobookBookmark{}, nil, fmt.Errorf("commit bookmark replace: %w", err)
+		return Bookmark{}, nil, fmt.Errorf("commit bookmark replace: %w", err)
 	}
 	return bookmark, replaced, nil
 }
 
-func (s *postgresAudiobookStore) ListBookmarks(ctx context.Context, audiobookID, userID string) ([]audiobookBookmark, error) {
+func (s *PostgresStore) ListBookmarks(ctx context.Context, audiobookID, userID string) ([]Bookmark, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+audiobookBookmarkColumns+`
 		FROM audiobook_bookmarks
@@ -1491,7 +1500,7 @@ func (s *postgresAudiobookStore) ListBookmarks(ctx context.Context, audiobookID,
 	}
 	defer rows.Close()
 
-	out := []audiobookBookmark{}
+	out := []Bookmark{}
 	for rows.Next() {
 		bookmark, err := scanAudiobookBookmark(rows)
 		if err != nil {
@@ -1505,18 +1514,18 @@ func (s *postgresAudiobookStore) ListBookmarks(ctx context.Context, audiobookID,
 	return out, nil
 }
 
-func (s *postgresAudiobookStore) DeleteBookmark(ctx context.Context, audiobookID, id, userID string) error {
+func (s *PostgresStore) DeleteBookmark(ctx context.Context, audiobookID, id, userID string) error {
 	tag, err := s.pool.Exec(ctx, `DELETE FROM audiobook_bookmarks WHERE id = $1 AND user_id = $2 AND audiobook_id = $3`, id, userID, audiobookID)
 	if err != nil {
 		return fmt.Errorf("delete audiobook bookmark: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return ErrAudiobookBookmarkNotFound
+		return ErrBookmarkNotFound
 	}
 	return nil
 }
 
-func (s *postgresAudiobookStore) TouchBookmark(ctx context.Context, audiobookID, id, userID string, usedSince time.Time) (audiobookBookmark, error) {
+func (s *PostgresStore) TouchBookmark(ctx context.Context, audiobookID, id, userID string, usedSince time.Time) (Bookmark, error) {
 	// A zero usedSince means expiry is off; otherwise an already-expired
 	// bookmark the sweeper hasn't reached yet is treated as gone, matching
 	// the list endpoint, rather than revived by a jump from a stale list.
@@ -1531,15 +1540,15 @@ func (s *postgresAudiobookStore) TouchBookmark(ctx context.Context, audiobookID,
 		RETURNING `+audiobookBookmarkColumns,
 		id, userID, audiobookID, cutoff))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return audiobookBookmark{}, ErrAudiobookBookmarkNotFound
+		return Bookmark{}, ErrBookmarkNotFound
 	}
 	if err != nil {
-		return audiobookBookmark{}, fmt.Errorf("touch audiobook bookmark: %w", err)
+		return Bookmark{}, fmt.Errorf("touch audiobook bookmark: %w", err)
 	}
 	return bookmark, nil
 }
 
-func (s *postgresAudiobookStore) DeleteExpiredBookmarks(ctx context.Context, cutoff time.Time) (int64, error) {
+func (s *PostgresStore) DeleteExpiredBookmarks(ctx context.Context, cutoff time.Time) (int64, error) {
 	tag, err := s.pool.Exec(ctx, `DELETE FROM audiobook_bookmarks WHERE last_used_at < $1`, cutoff)
 	if err != nil {
 		return 0, fmt.Errorf("delete expired audiobook bookmarks: %w", err)
@@ -1547,7 +1556,7 @@ func (s *postgresAudiobookStore) DeleteExpiredBookmarks(ctx context.Context, cut
 	return tag.RowsAffected(), nil
 }
 
-func (s *postgresAudiobookStore) AddFavorite(ctx context.Context, audiobookID, userID string) error {
+func (s *PostgresStore) AddFavorite(ctx context.Context, audiobookID, userID string) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO audiobook_favorites (audiobook_id, user_id)
 		VALUES ($1, $2)
@@ -1559,7 +1568,7 @@ func (s *postgresAudiobookStore) AddFavorite(ctx context.Context, audiobookID, u
 	return nil
 }
 
-func (s *postgresAudiobookStore) RemoveFavorite(ctx context.Context, audiobookID, userID string) error {
+func (s *PostgresStore) RemoveFavorite(ctx context.Context, audiobookID, userID string) error {
 	_, err := s.pool.Exec(ctx, `DELETE FROM audiobook_favorites WHERE audiobook_id = $1 AND user_id = $2`, audiobookID, userID)
 	if err != nil {
 		return fmt.Errorf("remove audiobook favorite: %w", err)
@@ -1567,8 +1576,8 @@ func (s *postgresAudiobookStore) RemoveFavorite(ctx context.Context, audiobookID
 	return nil
 }
 
-func (s *postgresAudiobookStore) CreateSeries(ctx context.Context, name, createdByUserID string) (audiobookSeries, error) {
-	var series audiobookSeries
+func (s *PostgresStore) CreateSeries(ctx context.Context, name, createdByUserID string) (Series, error) {
+	var series Series
 	err := s.pool.QueryRow(ctx, `
 		INSERT INTO audiobook_series (id, name, created_by_user_id)
 		VALUES ($1, $2, $3)
@@ -1579,20 +1588,20 @@ func (s *postgresAudiobookStore) CreateSeries(ctx context.Context, name, created
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			return audiobookSeries{}, ErrAudiobookSeriesNameTaken
+			return Series{}, ErrSeriesNameTaken
 		}
-		return audiobookSeries{}, fmt.Errorf("create audiobook series: %w", err)
+		return Series{}, fmt.Errorf("create audiobook series: %w", err)
 	}
 	return series, nil
 }
 
 // ListSeries lists every series along with a visible-only book count and
 // cover preview. restrictToTags, when non-empty, is the same tag allow-list
-// as audiobookListFilter.RestrictToTags: books outside it are excluded from
+// as ListFilter.RestrictToTags: books outside it are excluded from
 // both the count and the preview, and a series left with zero visible books
 // is dropped entirely, so a tag-restricted account never sees a series
 // gallery entry hinting at books it isn't allowed to open.
-func (s *postgresAudiobookStore) ListSeries(ctx context.Context, restrictToTags []string) ([]audiobookSeries, error) {
+func (s *PostgresStore) ListSeries(ctx context.Context, restrictToTags []string) ([]Series, error) {
 	var tagsArg []string
 	if len(restrictToTags) > 0 {
 		tagsArg = restrictToTags
@@ -1632,9 +1641,9 @@ func (s *postgresAudiobookStore) ListSeries(ctx context.Context, restrictToTags 
 	}
 	defer rows.Close()
 
-	out := []audiobookSeries{}
+	out := []Series{}
 	for rows.Next() {
-		var series audiobookSeries
+		var series Series
 		var topBooksJSON []byte
 		if err := rows.Scan(&series.ID, &series.Name, &series.CreatedByUserID, &series.CreatedAt, &series.BookCount, &topBooksJSON); err != nil {
 			return nil, fmt.Errorf("scan audiobook series: %w", err)
@@ -1650,47 +1659,47 @@ func (s *postgresAudiobookStore) ListSeries(ctx context.Context, restrictToTags 
 	return out, nil
 }
 
-func (s *postgresAudiobookStore) RenameSeries(ctx context.Context, id, name string) (audiobookSeries, error) {
-	var series audiobookSeries
+func (s *PostgresStore) RenameSeries(ctx context.Context, id, name string) (Series, error) {
+	var series Series
 	err := s.pool.QueryRow(ctx, `
 		UPDATE audiobook_series SET name = $2 WHERE id = $1
 		RETURNING id, name, created_by_user_id, created_at
 	`, id, name).Scan(&series.ID, &series.Name, &series.CreatedByUserID, &series.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return audiobookSeries{}, ErrAudiobookSeriesNotFound
+		return Series{}, ErrSeriesNotFound
 	}
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			return audiobookSeries{}, ErrAudiobookSeriesNameTaken
+			return Series{}, ErrSeriesNameTaken
 		}
-		return audiobookSeries{}, fmt.Errorf("rename audiobook series: %w", err)
+		return Series{}, fmt.Errorf("rename audiobook series: %w", err)
 	}
 	return series, nil
 }
 
-func (s *postgresAudiobookStore) DeleteSeries(ctx context.Context, id string) error {
+func (s *PostgresStore) DeleteSeries(ctx context.Context, id string) error {
 	tag, err := s.pool.Exec(ctx, `DELETE FROM audiobook_series WHERE id = $1`, id)
 	if err != nil {
 		return fmt.Errorf("delete audiobook series: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return ErrAudiobookSeriesNotFound
+		return ErrSeriesNotFound
 	}
 	return nil
 }
 
 // SetAudiobookSeries assigns (or clears, when seriesID is nil) an audiobook's
 // series membership and its position within it.
-func (s *postgresAudiobookStore) SetAudiobookSeries(ctx context.Context, audiobookID string, seriesID *string, sequence *float64) (audiobookRecord, error) {
+func (s *PostgresStore) SetAudiobookSeries(ctx context.Context, audiobookID string, seriesID *string, sequence *float64) (Record, error) {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE audiobooks SET series_id = $2, series_sequence = $3 WHERE id = $1
 	`, audiobookID, seriesID, sequence)
 	if err != nil {
-		return audiobookRecord{}, fmt.Errorf("set audiobook series: %w", err)
+		return Record{}, fmt.Errorf("set audiobook series: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return audiobookRecord{}, ErrAudiobookNotFound
+		return Record{}, ErrNotFound
 	}
 	return s.GetAudiobook(ctx, audiobookID)
 }
@@ -1699,7 +1708,7 @@ func (s *postgresAudiobookStore) SetAudiobookSeries(ctx context.Context, audiobo
 // the three pointers are non-nil; pgx binds a nil *string as SQL NULL, and
 // COALESCE(NULL, column) leaves that column untouched, so this is a true
 // partial update - a caller can fix just the author without resending title.
-func (s *postgresAudiobookStore) UpdateAudiobookMetadata(ctx context.Context, id string, title, author, narrator *string) (audiobookRecord, error) {
+func (s *PostgresStore) UpdateAudiobookMetadata(ctx context.Context, id string, title, author, narrator *string) (Record, error) {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE audiobooks SET
 			title = COALESCE($2, title),
@@ -1708,18 +1717,18 @@ func (s *postgresAudiobookStore) UpdateAudiobookMetadata(ctx context.Context, id
 		WHERE id = $1
 	`, id, title, author, narrator)
 	if err != nil {
-		return audiobookRecord{}, fmt.Errorf("update audiobook metadata: %w", err)
+		return Record{}, fmt.Errorf("update audiobook metadata: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return audiobookRecord{}, ErrAudiobookNotFound
+		return Record{}, ErrNotFound
 	}
 	return s.GetAudiobook(ctx, id)
 }
 
-// coverExtensionForBytes sniffs the real image format from a cover's bytes
+// CoverExtensionForBytes sniffs the real image format from a cover's bytes
 // rather than trusting a client-supplied filename, mirroring how
-// sniffAudiobookMimeType treats the audio file itself.
-func coverExtensionForBytes(data []byte) string {
+// SniffMimeType treats the audio file itself.
+func CoverExtensionForBytes(data []byte) string {
 	prefix := data
 	if len(prefix) > 512 {
 		prefix = prefix[:512]
@@ -1739,20 +1748,20 @@ func coverExtensionForBytes(data []byte) string {
 // SetAudiobookCover replaces an audiobook's cover image on disk and updates
 // cover_path, then removes whatever cover file - embedded at upload time or
 // set by an earlier call to this method - it had before.
-func (s *postgresAudiobookStore) SetAudiobookCover(ctx context.Context, id string, imageBytes []byte) (audiobookRecord, error) {
+func (s *PostgresStore) SetAudiobookCover(ctx context.Context, id string, imageBytes []byte) (Record, error) {
 	existing, err := s.GetAudiobook(ctx, id)
 	if err != nil {
-		return audiobookRecord{}, err
+		return Record{}, err
 	}
 
-	coverPath := filepath.Join(s.coversDir, id+coverExtensionForBytes(imageBytes))
+	coverPath := filepath.Join(s.coversDir, id+CoverExtensionForBytes(imageBytes))
 	if err := os.WriteFile(coverPath, imageBytes, 0o644); err != nil {
-		return audiobookRecord{}, fmt.Errorf("write audiobook cover: %w", err)
+		return Record{}, fmt.Errorf("write audiobook cover: %w", err)
 	}
 
 	if _, err := s.pool.Exec(ctx, `UPDATE audiobooks SET cover_path = $2 WHERE id = $1`, id, coverPath); err != nil {
 		_ = os.Remove(coverPath)
-		return audiobookRecord{}, fmt.Errorf("update audiobook cover path: %w", err)
+		return Record{}, fmt.Errorf("update audiobook cover path: %w", err)
 	}
 
 	if existing.CoverPath != "" && existing.CoverPath != coverPath {
@@ -1765,13 +1774,13 @@ func (s *postgresAudiobookStore) SetAudiobookCover(ctx context.Context, id strin
 
 // RemoveAudiobookCover clears an audiobook's cover, falling back to the
 // default placeholder art in the UI.
-func (s *postgresAudiobookStore) RemoveAudiobookCover(ctx context.Context, id string) (audiobookRecord, error) {
+func (s *PostgresStore) RemoveAudiobookCover(ctx context.Context, id string) (Record, error) {
 	existing, err := s.GetAudiobook(ctx, id)
 	if err != nil {
-		return audiobookRecord{}, err
+		return Record{}, err
 	}
 	if _, err := s.pool.Exec(ctx, `UPDATE audiobooks SET cover_path = '' WHERE id = $1`, id); err != nil {
-		return audiobookRecord{}, fmt.Errorf("clear audiobook cover path: %w", err)
+		return Record{}, fmt.Errorf("clear audiobook cover path: %w", err)
 	}
 	if existing.CoverPath != "" {
 		if err := os.Remove(existing.CoverPath); err != nil && !os.IsNotExist(err) {
@@ -1781,7 +1790,7 @@ func (s *postgresAudiobookStore) RemoveAudiobookCover(ctx context.Context, id st
 	return s.GetAudiobook(ctx, id)
 }
 
-func (s *postgresAudiobookStore) ListAudiobookTags(ctx context.Context, audiobookID string) ([]string, error) {
+func (s *PostgresStore) ListAudiobookTags(ctx context.Context, audiobookID string) ([]string, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT t.name FROM audiobook_tags at JOIN tags t ON t.id = at.tag_id WHERE at.audiobook_id = $1 ORDER BY t.name
 	`, audiobookID)
@@ -1801,11 +1810,11 @@ func (s *postgresAudiobookStore) ListAudiobookTags(ctx context.Context, audioboo
 	return tags, rows.Err()
 }
 
-// normalizeAudiobookTags lowercases, trims, de-duplicates and sorts tag
+// NormalizeTags lowercases, trims, de-duplicates and sorts tag
 // names - the same normalization meme tags use (see normalizeTags in
 // internal/accessor/meme_store.go), reimplemented here since it is an
 // unexported helper in a different package.
-func normalizeAudiobookTags(tags []string) []string {
+func NormalizeTags(tags []string) []string {
 	seen := map[string]struct{}{}
 	out := make([]string, 0, len(tags))
 	for _, tag := range tags {
@@ -1826,8 +1835,8 @@ func normalizeAudiobookTags(tags []string) []string {
 // ReplaceAudiobookTags overwrites an audiobook's whole tag set, reusing the
 // same shared `tags` table memes tag into, and drops any tag row left with no
 // remaining links (to either a meme or an audiobook).
-func (s *postgresAudiobookStore) ReplaceAudiobookTags(ctx context.Context, audiobookID string, tags []string) ([]string, error) {
-	names := normalizeAudiobookTags(tags)
+func (s *PostgresStore) ReplaceAudiobookTags(ctx context.Context, audiobookID string, tags []string) ([]string, error) {
+	names := NormalizeTags(tags)
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -1835,7 +1844,7 @@ func (s *postgresAudiobookStore) ReplaceAudiobookTags(ctx context.Context, audio
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	previousTagIDs, err := scanAudiobookInt64List(ctx, tx, `SELECT tag_id FROM audiobook_tags WHERE audiobook_id = $1`, audiobookID)
+	previousTagIDs, err := ScanInt64List(ctx, tx, `SELECT tag_id FROM audiobook_tags WHERE audiobook_id = $1`, audiobookID)
 	if err != nil {
 		return nil, fmt.Errorf("list previous audiobook tag ids: %w", err)
 	}
@@ -1879,7 +1888,7 @@ func (s *postgresAudiobookStore) ReplaceAudiobookTags(ctx context.Context, audio
 	return names, nil
 }
 
-func scanAudiobookInt64List(ctx context.Context, tx pgx.Tx, sql string, args ...any) ([]int64, error) {
+func ScanInt64List(ctx context.Context, tx pgx.Tx, sql string, args ...any) ([]int64, error) {
 	rows, err := tx.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, err
@@ -1897,8 +1906,8 @@ func scanAudiobookInt64List(ctx context.Context, tx pgx.Tx, sql string, args ...
 	return out, rows.Err()
 }
 
-// audiobookStoragePath is one audiobook's on-disk file locations.
-type audiobookStoragePath struct {
+// StoragePath is one audiobook's on-disk file locations.
+type StoragePath struct {
 	ID          string
 	Title       string
 	StoragePath string
@@ -1907,9 +1916,9 @@ type audiobookStoragePath struct {
 	UploadedBy  string
 }
 
-// adminUserAudiobookTotals is one user's audiobook activity for the admin
+// UserTotals is one user's audiobook activity for the admin
 // User Activity page.
-type adminUserAudiobookTotals struct {
+type UserTotals struct {
 	Uploaded       int
 	Seconds30d     float64
 	SecondsAllTime float64
@@ -1918,8 +1927,8 @@ type adminUserAudiobookTotals struct {
 
 // AdminUserAudiobookTotals returns per-user uploads, listening seconds (all
 // time and since `since`, by listen_date) and finished-book counts.
-func (s *postgresAudiobookStore) AdminUserAudiobookTotals(ctx context.Context, since time.Time) (map[string]adminUserAudiobookTotals, error) {
-	totals := map[string]adminUserAudiobookTotals{}
+func (s *PostgresStore) AdminUserAudiobookTotals(ctx context.Context, since time.Time) (map[string]UserTotals, error) {
+	totals := map[string]UserTotals{}
 
 	uploads, err := s.pool.Query(ctx, `SELECT uploaded_by_user_id, COUNT(*) FROM audiobooks WHERE uploaded_by_user_id <> '' GROUP BY uploaded_by_user_id`)
 	if err != nil {
