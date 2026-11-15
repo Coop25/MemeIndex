@@ -1,19 +1,20 @@
 // Run with: node --test scripts/admin-dashboard.test.cjs
 const assert = require("node:assert/strict");
-const { readFileSync } = require("node:fs");
-const { resolve } = require("node:path");
 const { test } = require("node:test");
 const vm = require("node:vm");
+const { readAppSource, extractAll } = require("./app-source.cjs");
 
-const source = readFileSync(resolve(__dirname, "../static/app.js"), "utf8");
+const source = readAppSource();
 const context = vm.createContext({});
 // Exercise the actual browser helpers without bootstrapping the authenticated app.
-const escapeStart = source.indexOf("function escapeHTML(");
-vm.runInContext(source.slice(escapeStart, source.indexOf("\nfunction ", escapeStart + 1)), context);
-const sizeStart = source.indexOf("function formatSize(");
-vm.runInContext(source.slice(sizeStart, source.indexOf("\n}", sizeStart) + 2), context);
-const chartStart = source.indexOf("function dashboardTrend(");
-vm.runInContext(source.slice(chartStart, source.indexOf("function renderAdminDashboard(", chartStart)), context);
+vm.runInContext(extractAll(source, [
+  "escapeHTML", "formatSize",
+  "dashboardTrend", "adminChartTooltipAttributes", "buildAdminChartPoints", "bindAdminChartTooltips",
+  "buildAdminMetricSparkline", "buildAdminUploadChart", "buildAdminTopTags", "buildAdminDashboardMetrics",
+  "computeAdminTabBadgeCounts", "adminBadgeCountsChanged", "syncAdminWorkQueue", "ADMIN_WORK_QUEUE_CHIPS",
+  "buildAdminWorkQueues", "formatListeningDuration", "buildAdminListening", "ADMIN_AUDIOBOOK_HEALTH_ROWS",
+  "buildAdminAudiobookHealth",
+]), context);
 
 test("application JavaScript parses", () => {
   assert.doesNotThrow(() => new vm.Script(source));

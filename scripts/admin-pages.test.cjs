@@ -4,17 +4,14 @@ const { readFileSync } = require("node:fs");
 const { resolve } = require("node:path");
 const { test } = require("node:test");
 const vm = require("node:vm");
+const { readAppSource, extractAll } = require("./app-source.cjs");
 
-const appSource = readFileSync(resolve(__dirname, "../static/app.js"), "utf8");
+const appSource = readAppSource();
 const pagesSource = readFileSync(resolve(__dirname, "../static/admin-pages.js"), "utf8");
 const context = vm.createContext({ URLSearchParams });
-// Slice the shared helpers out of app.js, as admin-dashboard.test.cjs does.
-const escapeStart = appSource.indexOf("function escapeHTML(");
-vm.runInContext(appSource.slice(escapeStart, appSource.indexOf("\nfunction ", escapeStart + 1)), context);
-const sizeStart = appSource.indexOf("function formatSize(");
-vm.runInContext(appSource.slice(sizeStart, appSource.indexOf("\n}", sizeStart) + 2), context);
-const relStart = appSource.indexOf("function formatRelativeTime(");
-vm.runInContext(appSource.slice(relStart, appSource.indexOf("\n}", relStart) + 2), context);
+// The shared helpers admin-pages.js uses, as admin-dashboard.test.cjs does.
+const sharedHelpersSource = extractAll(appSource, ["escapeHTML", "formatSize", "formatRelativeTime"]);
+vm.runInContext(sharedHelpersSource, context);
 vm.runInContext("function formatDateTime(d) { return new Date(d).toISOString(); }", context);
 vm.runInContext(pagesSource, context);
 
@@ -298,9 +295,7 @@ test("storage load failure shows the error and a later success clears it", async
 test("storage toolbar buttons are re-enabled after a busy render", () => {
   // Fresh context: the test above stubs renderAdminStorage in the shared one.
   const ctx = vm.createContext({ URLSearchParams });
-  vm.runInContext(appSource.slice(escapeStart, appSource.indexOf("\nfunction ", escapeStart + 1)), ctx);
-  vm.runInContext(appSource.slice(sizeStart, appSource.indexOf("\n}", sizeStart) + 2), ctx);
-  vm.runInContext(appSource.slice(relStart, appSource.indexOf("\n}", relStart) + 2), ctx);
+  vm.runInContext(sharedHelpersSource, ctx);
   vm.runInContext(pagesSource, ctx);
   vm.runInContext(`
     var refresh = { id: "admin-storage-refresh", disabled: false };

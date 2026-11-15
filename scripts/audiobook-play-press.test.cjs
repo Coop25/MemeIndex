@@ -6,21 +6,20 @@
 // button shows busy from the press, the first play starts inside the press,
 // and a refusal says so.
 const assert = require("node:assert/strict");
-const { readFileSync } = require("node:fs");
-const { resolve } = require("node:path");
 const { test } = require("node:test");
 const vm = require("node:vm");
+const { readAppSource, extractAll } = require("./app-source.cjs");
 
-const source = readFileSync(resolve(__dirname, "../static/app.js"), "utf8");
-function slice(startMarker, endMarker) {
-  const start = source.indexOf(startMarker);
-  const end = source.indexOf(endMarker, start);
-  assert.notEqual(start, -1, startMarker);
-  assert.notEqual(end, -1, endMarker);
-  return source.slice(start, end);
-}
-const bufferingSource = slice('const AUDIOBOOK_BUFFERING_STATUS = "Buffering...";', "// renderAudiobookMiniPlayerInfo fills");
-const resumeSource = slice("// Below this, a seek onto the saved position", "// setAudiobookPlayerPosition is the shared path");
+const source = readAppSource();
+const bufferingSource = extractAll(source, [
+  "AUDIOBOOK_BUFFERING_STATUS", "AUDIOBOOK_TAP_TO_PLAY_STATUS", "audiobookBuffering", "audiobookPlayPending",
+  "audiobookPlaybackUnlocked", "setAudiobookPlayPending", "startAudiobookPlayback", "cancelAudiobookPlayRequest",
+  "updateAudiobookBufferingUI",
+]);
+const resumeSource = extractAll(source, [
+  "AUDIOBOOK_RESUME_POSITION_TOLERANCE_SECONDS", "AUDIOBOOK_RESUME_POSITION_TIMEOUT_MS",
+  "AUDIOBOOK_OPEN_CHECK_TIMEOUT_MS", "audiobookResumeRequestToken", "resumeAudiobookPlaybackFromSavedPosition",
+]);
 
 const HAVE_NOTHING = 0;
 const HAVE_FUTURE_DATA = 3;

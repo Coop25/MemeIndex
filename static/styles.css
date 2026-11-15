@@ -3941,7 +3941,7 @@ body.admin-mode .admin-tab.is-active .admin-tab-badge { background: var(--green-
 .audiobook-player-volume-wrap { position: relative; }
 /* A vertical popover anchored under its toggle button rather than a row the
    bottombar always had to make room for - it only exists while open, and
-   closes itself (see the auto-hide timer in app.js) instead of permanently
+   closes itself (see the auto-hide timer in js/audiobook-player.js) instead of permanently
    costing a slot in the already-tight transport controls. */
 .audiobook-player-volume-popover {
   position: absolute; top: calc(100% + 10px); left: 50%; z-index: 20;
@@ -4043,7 +4043,7 @@ body.admin-mode .admin-tab.is-active .admin-tab-badge { background: var(--green-
 }
 
 /* The seek bar draws its own track so it can show three bands: played, then
-   downloaded-but-not-played (--buffered, set from audio.buffered in app.js),
+   downloaded-but-not-played (--buffered, set from audio.buffered in js/audiobook-player.js),
    then not loaded yet. */
 #audiobook-player-progress {
   --played: 0%; --buffered: 0%;
@@ -4161,7 +4161,7 @@ body.admin-mode .admin-tab.is-active .admin-tab-badge { background: var(--green-
 /* Minimized audiobook player: a slim bar docked to the bottom of the screen
    that slides up into view (and back down on close) rather than just
    appearing/disappearing. It's not a second copy of the controls -
-   minimizeAudiobookPlayer() in app.js physically moves the real
+   minimizeAudiobookPlayer() in js/audiobook-player.js physically moves the real
    .audiobook-player-progress-wrap and .audiobook-player-controls nodes in
    here (and back again on expand/close), so there is exactly one seek slider
    and one set of transport buttons, never two drifting out of sync. Tapping
@@ -4647,7 +4647,7 @@ button.admin-health-row:hover, button.admin-health-row:focus-visible { backgroun
 .admin-series-muted { color: var(--muted); }
 .admin-series-tag-table { min-width: 520px; }
 
-/* Meme previews sized to the picture. app.js sets --preview-ratio (width /
+/* Meme previews sized to the picture. js/library.js and js/home.js set --preview-ratio (width /
    height) on each card once the image's real shape is known; until then a
    card is square. Everything below keeps items in their original order. */
 
@@ -4684,7 +4684,7 @@ body:not(.library-list-view) .meme-grid .preview-frame,
 .dashboard-recent .dashboard-empty,
 .dashboard-feature-items .dashboard-empty { flex: 1 1 100%; }
 
-/* Recently added: a single row. app.js shows as many of the newest items as
+/* Recently added: a single row. js/home.js shows as many of the newest items as
    span the row at about this height and sets the exact height that makes them
    fill it edge to edge. */
 .dashboard-recent,
@@ -4815,7 +4815,7 @@ body.home-mode .dashboard-recent .preview-frame {
   pointer-events: none;
 }
 /* The player column holds the stage and its Previous / Next bar. The stage
-   takes the picture's own shape (app.js sets --spot-ratio, width / height,
+   takes the picture's own shape (js/home.js sets --spot-ratio, width / height,
    once it is known): as tall as the panel allows, or for a wide picture as
    wide as its share of the panel allows. */
 .home-spotlight-player {
@@ -4850,15 +4850,102 @@ body.home-mode .dashboard-recent .preview-frame {
   object-fit: contain;
 }
 .home-spotlight-stage .file-icon { position: absolute; inset: 0; width: 100%; height: 100%; }
-.home-spotlight-audio {
+/* The audio element itself is never shown; the control bar drives it. */
+.home-spotlight-audio { display: none; }
+.home-spotlight-stage.is-playable { cursor: pointer; }
+
+/* The spotlight's own control bar, along the bottom of the player. */
+.spot-controls {
   position: absolute;
-  right: 10px;
-  bottom: 10px;
-  left: 10px;
-  width: calc(100% - 20px);
-  height: 44px;
-  border-radius: 999px;
+  right: 8px;
+  bottom: 8px;
+  left: 8px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid rgba(255, 255, 255, .08);
+  border-radius: 12px;
+  background: rgba(8, 8, 11, .78);
+  color: #f3eee8;
+  cursor: default;
+  backdrop-filter: blur(10px);
+  transition: opacity .2s ease;
 }
+/* While the spotlight plays (video or audio), the bar steps back until the pointer comes near. */
+@media (hover: hover) {
+  .home-spotlight-stage.is-playing .spot-controls { opacity: 0; }
+  .home-spotlight-stage.is-playing:hover .spot-controls,
+  .home-spotlight-stage .spot-controls:focus-within { opacity: 1; }
+}
+.spot-control-button {
+  display: grid;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.spot-control-button:hover,
+.spot-control-button:focus-visible { background: rgba(255, 255, 255, .1); color: var(--green-bright); }
+.spot-control-button svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.spot-play svg path { fill: currentColor; stroke: none; }
+.spot-controls .spot-icon-pause,
+.spot-controls.is-playing .spot-icon-play { display: none; }
+.spot-controls.is-playing .spot-icon-pause { display: inline; }
+.spot-mute .spot-icon-speaker { fill: currentColor; }
+.spot-controls .spot-icon-off,
+.spot-controls.is-muted .spot-icon-waves { display: none; }
+.spot-controls.is-muted .spot-icon-off { display: inline; }
+.spot-time { flex: 0 0 auto; color: #c9c3bc; font-size: 11px; font-variant-numeric: tabular-nums; }
+.spot-progress,
+.spot-volume-slider {
+  --media-fill: 0%;
+  height: 4px;
+  margin: 0;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--green-bright) var(--media-fill), rgba(255, 255, 255, .22) var(--media-fill));
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+}
+.spot-progress { flex: 1 1 auto; min-width: 40px; }
+/* Seek bars keep a touch drag to themselves. Otherwise a phone may take the
+   gesture over for scrolling mid-drag (pointercancel), which ends the seek. */
+.spot-progress,
+.modal-progress-slider,
+.random-reel-progress-slider { touch-action: none; }
+.spot-progress::-webkit-slider-thumb,
+.spot-volume-slider::-webkit-slider-thumb { width: 13px; height: 13px; border: 0; border-radius: 50%; background: #fff; -webkit-appearance: none; }
+.spot-progress::-moz-range-thumb,
+.spot-volume-slider::-moz-range-thumb { width: 13px; height: 13px; border: 0; border-radius: 50%; background: #fff; }
+.spot-volume { position: relative; display: flex; flex: 0 0 auto; align-items: center; gap: 4px; }
+.spot-volume-pop { display: flex; align-items: center; gap: 8px; }
+.spot-volume-slider { width: 84px; }
+.spot-volume-value { min-width: 34px; color: #c9c3bc; font-size: 11px; font-variant-numeric: tabular-nums; }
+/* A narrow bar (js/home.js sets is-compact) opens the slider above the speaker. */
+.spot-controls.is-compact .spot-volume-pop {
+  position: absolute;
+  right: -4px;
+  bottom: calc(100% + 10px);
+  display: none;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, .1);
+  border-radius: 12px;
+  background: rgba(8, 8, 11, .92);
+  backdrop-filter: blur(10px);
+}
+.spot-controls.is-compact .spot-volume.is-expanded .spot-volume-pop { display: flex; }
+.spot-controls.is-compact .spot-volume-slider { width: 150px; }
+.spot-controls.is-compact .spot-time-duration { display: none; }
 .home-spotlight-nav {
   display: flex;
   align-items: center;
@@ -5035,7 +5122,7 @@ body.home-mode .dashboard-recent .preview-frame {
   text-align: center;
 }
 
-/* Popular tags as a cloud: app.js sets --tag-weight (0 to 1) from how often
+/* Popular tags as a cloud: js/home.js sets --tag-weight (0 to 1) from how often
    each tag is used. */
 .home-tag-cloud { display: flex; flex-wrap: wrap; align-items: center; gap: 9px 10px; padding-bottom: 30px; }
 .home-tag {
@@ -5076,6 +5163,12 @@ body.home-mode .dashboard-recent .preview-frame {
   .home-spotlight-stage { border-radius: 10px; }
   .home-spotlight-nav { width: 100%; }
   .home-spotlight-step { flex: 1 1 0; min-width: 0; min-height: 46px; }
+  .spot-controls { gap: 4px; padding: 4px 6px; }
+  .spot-control-button { width: 40px; height: 40px; }
+  .spot-time { font-size: 10px; }
+  .spot-volume-slider { height: 6px; }
+  .spot-progress::-webkit-slider-thumb,
+  .spot-volume-slider::-webkit-slider-thumb { width: 18px; height: 18px; }
   .home-spotlight-toggles { width: 100%; }
   .home-spotlight-toggle { flex: 1 1 0; justify-content: center; min-height: 42px; }
   .home-spotlight-info { flex: 0 0 auto; gap: 10px; padding: 12px 14px 16px; }

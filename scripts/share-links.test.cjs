@@ -1,14 +1,11 @@
 // Run with: node --test scripts/share-links.test.cjs
 const assert = require("node:assert/strict");
-const { readFileSync } = require("node:fs");
-const { resolve } = require("node:path");
 const { test } = require("node:test");
 const vm = require("node:vm");
+const { readAppSource, extractFunction } = require("./app-source.cjs");
 
-const source = readFileSync(resolve(__dirname, "../static/app.js"), "utf8");
-const functionStart = source.indexOf("async function copyShareText(");
-const functionEnd = source.indexOf("\nfunction showShareCopiedFeedback(", functionStart);
-const copyShareTextSource = source.slice(functionStart, functionEnd);
+const source = readAppSource();
+const copyShareTextSource = extractFunction(source, "copyShareText");
 
 function clipboardContext(writeText) {
   const events = [];

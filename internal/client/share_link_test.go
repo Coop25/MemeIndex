@@ -5,9 +5,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
+
+	"memeindex/internal/accessor"
 )
 
 var shareFileLinkPath = regexp.MustCompile(`^/s/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}\.png$`)
@@ -110,6 +116,190 @@ func TestShareLinkServesFileToEveryUserAgent(t *testing.T) {
 	server.handleShareLink(recorder, httptest.NewRequest(http.MethodPost, "https://memes.example.com/s/"+share.Slug+".png", nil))
 	if recorder.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("POST status = %d", recorder.Code)
+	}
+}
+
+// A browser shows a shared video, audio file or picture in a player page of
+// its own that loads the file again, which fails inside a sandboxed page, so
+// those types drop the sandbox but still allow no script. Anything a browser
+// could render as a document keeps the sandbox.
+func TestShareLinkLetsBrowsersPlaySharedMedia(t *testing.T) {
+	server, store, png := newShareTestServer(t)
+	create := func(name, contentType, body string) accessor.Meme {
+		t.Helper()
+		meme, err := store.Create(accessor.CreateInput{File: strings.NewReader(body), Filename: name, ContentType: contentType})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return meme
+	}
+	for _, tc := range []struct {
+		meme     accessor.Meme
+		playable bool
+	}{
+		{png, true},
+		{create("clip.mp4", "video/mp4", "video bytes"), true},
+		{create("clip.mov", "video/quicktime", "quicktime bytes"), true},
+		{create("song.mp3", "audio/mpeg", "audio bytes"), true},
+		{create("pic.webp", "image/webp", "webp bytes"), true},
+		{create("drawing.svg", "image/svg+xml", "<svg xmlns='http://www.w3.org/2000/svg'/>"), false},
+		{create("page.mp4", "text/html", "<script>alert(1)</script>"), false},
+		{create("blob.bin", "application/octet-stream", "opaque bytes"), false},
+		// The stored type comes from the uploader. Browsers read the last
+		// type in a list, so one that starts with video/ but ends with
+		// something else must not lose the sandbox.
+		{create("listed.mp4", "video/mp4, application/pdf", "pdf bytes"), false},
+		{create("bad-param.mp4", "video/mp4; codecs", "bad-param video bytes"), false},
+		{create("codecs.mp4", `video/mp4; codecs="avc1.42E01E"`, "codecs video bytes"), true},
+	} {
+		now := time.Now().UTC()
+		share, err := store.GetOrCreateMemeShare(tc.meme.ID, "admin-1", now, now.Add(memeShareLifetime))
+		if err != nil {
+			t.Fatal(err)
+		}
+		recorder := getShareLink(server, "https://memes.example.com/s/"+share.Slug+filepath.Ext(tc.meme.OriginalName))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d", tc.meme.OriginalName, recorder.Code)
+		}
+		csp := recorder.Header().Get("Content-Security-Policy")
+		if tc.playable {
+			if csp != sharedMediaContentSecurityPolicy {
+				t.Fatalf("%s: Content-Security-Policy = %q, want %q", tc.meme.OriginalName, csp, sharedMediaContentSecurityPolicy)
+			}
+			if got := recorder.Header().Get("Content-Disposition"); !strings.HasPrefix(got, "inline") {
+				t.Fatalf("%s: Content-Disposition = %q, want inline", tc.meme.OriginalName, got)
+			}
+			// The browser gets exactly the one type that was checked.
+			if got := recorder.Header().Get("Content-Type"); strings.ContainsAny(got, ",;") || got == "" {
+				t.Fatalf("%s: Content-Type = %q, want a single bare media type", tc.meme.OriginalName, got)
+			}
+		} else if !strings.HasPrefix(csp, "sandbox") {
+			t.Fatalf("%s: Content-Security-Policy = %q, want the upload sandbox", tc.meme.OriginalName, csp)
+		}
+		if got := recorder.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Fatalf("%s: X-Content-Type-Options = %q", tc.meme.OriginalName, got)
+		}
+	}
+	for _, directive := range []string{"default-src 'none'", "media-src 'self'", "img-src 'self'", "form-action 'none'", "frame-ancestors 'none'", "base-uri 'none'"} {
+		if !strings.Contains(sharedMediaContentSecurityPolicy, directive) {
+			t.Fatalf("shared media policy %q is missing %q", sharedMediaContentSecurityPolicy, directive)
+		}
+	}
+	if strings.Contains(sharedMediaContentSecurityPolicy, "script-src") {
+		t.Fatalf("shared media policy %q must not allow any script", sharedMediaContentSecurityPolicy)
+	}
+}
+
+// Cloudflare may keep the file at its edge for a day, so a revoked or deleted
+// meme can go on loading from Cloudflare for up to that long. Only the exact
+// link the app hands out is cacheable; browsers and every other cache are
+// still told not to store it.
+func TestShareLinkLetsCloudflareCacheTheOfficialLinkForADay(t *testing.T) {
+	server, store, meme := newShareTestServer(t)
+	now := time.Now().UTC()
+	share, err := store.GetOrCreateMemeShare(meme.ID, "admin-1", now, now.Add(memeShareLifetime))
+	if err != nil {
+		t.Fatal(err)
+	}
+	official := "https://memes.example.com/s/" + share.Slug + ".png"
+
+	recorder := getShareLink(server, official)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("official link status = %d", recorder.Code)
+	}
+	if got := recorder.Header().Get("Cloudflare-CDN-Cache-Control"); got != "public, max-age=86400" {
+		t.Fatalf("Cloudflare-CDN-Cache-Control = %q, want a day at the edge", got)
+	}
+	if got := recorder.Header().Get("Cache-Control"); got != "no-store, max-age=0" {
+		t.Fatalf("Cache-Control = %q, browsers must not keep the file", got)
+	}
+	// Cloudflare ignores the other cache headers when Surrogate-Control is
+	// present, and the generic CDN header is passed on to other caches.
+	for _, name := range []string{"Surrogate-Control", "CDN-Cache-Control"} {
+		if got := recorder.Header().Get(name); got != "" {
+			t.Fatalf("%s = %q on a cacheable response", name, got)
+		}
+	}
+
+	assertNotEdgeCached := func(label string, recorder *httptest.ResponseRecorder) {
+		t.Helper()
+		if got := recorder.Header().Get("Cloudflare-CDN-Cache-Control"); got != "no-store" {
+			t.Fatalf("%s: Cloudflare-CDN-Cache-Control = %q, want no-store", label, got)
+		}
+	}
+	// Other spellings of the same link would each be a separate cache entry.
+	for _, target := range []string{
+		"https://memes.example.com/s/" + share.Slug,
+		"https://memes.example.com/s/" + share.Slug + ".gif",
+		"https://memes.example.com/s/" + share.Slug + ".PNG",
+		official + "?v=2",
+	} {
+		recorder := getShareLink(server, target)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d", target, recorder.Code)
+		}
+		assertNotEdgeCached(target, recorder)
+	}
+	assertNotEdgeCached("unknown code", getShareLink(server, "https://memes.example.com/s/00000000-0000-4000-8000-000000000000.png"))
+
+	legacy := httptest.NewRecorder()
+	server.handleMemeLink(legacy, httptest.NewRequest(http.MethodGet, "https://memes.example.com/m/"+meme.ID+"?share="+url.QueryEscape(server.signMemeShare(share)), nil))
+	if legacy.Code != http.StatusOK {
+		t.Fatalf("legacy link status = %d", legacy.Code)
+	}
+	assertNotEdgeCached("legacy signed link", legacy)
+
+	if err := store.RevokeMemeShare(meme.ID); err != nil {
+		t.Fatal(err)
+	}
+	revoked := getShareLink(server, official)
+	if revoked.Code != http.StatusFound {
+		t.Fatalf("revoked link status = %d", revoked.Code)
+	}
+	assertNotEdgeCached("revoked link redirect", revoked)
+}
+
+// A share close to its expiry must not outlive it at the edge.
+func TestShareLinkEdgeCacheNeverOutlivesTheShare(t *testing.T) {
+	server, store, meme := newShareTestServer(t)
+	now := time.Now().UTC()
+	share, err := store.GetOrCreateMemeShare(meme.ID, "admin-1", now, now.Add(2*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := getShareLink(server, "https://memes.example.com/s/"+share.Slug+".png")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d", recorder.Code)
+	}
+	header := recorder.Header().Get("Cloudflare-CDN-Cache-Control")
+	maxAge, found := strings.CutPrefix(header, "public, max-age=")
+	if !found {
+		t.Fatalf("Cloudflare-CDN-Cache-Control = %q", header)
+	}
+	seconds, err := strconv.Atoi(maxAge)
+	if err != nil || seconds <= 0 || seconds > 2*60*60 || seconds < 2*60*60-60 {
+		t.Fatalf("max-age = %q, want about two hours and never past the share's expiry", maxAge)
+	}
+}
+
+// An error from the file server, such as the file being gone from disk, must
+// not be cached at the edge for a day.
+func TestShareLinkErrorIsNotEdgeCached(t *testing.T) {
+	server, store, meme := newShareTestServer(t)
+	now := time.Now().UTC()
+	share, err := store.GetOrCreateMemeShare(meme.ID, "admin-1", now, now.Add(memeShareLifetime))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(server.managers.UploadDir(), meme.StoredName)); err != nil {
+		t.Fatal(err)
+	}
+	recorder := getShareLink(server, "https://memes.example.com/s/"+share.Slug+".png")
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 for a missing file", recorder.Code)
+	}
+	if got := recorder.Header().Get("Cloudflare-CDN-Cache-Control"); got != "no-store" {
+		t.Fatalf("Cloudflare-CDN-Cache-Control = %q on an error", got)
 	}
 }
 
