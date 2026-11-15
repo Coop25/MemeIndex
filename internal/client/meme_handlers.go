@@ -708,7 +708,7 @@ func memeReadFailed(w http.ResponseWriter, r *http.Request, what, message string
 	if r.Context().Err() != nil && errors.Is(err, context.Canceled) {
 		return
 	}
-	log.Printf("%s: %v", what, err)
+	requestLogger(r).Error(what+" failed", "error", err)
 	http.Error(w, message, http.StatusInternalServerError)
 }
 

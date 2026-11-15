@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -43,8 +44,23 @@ func LoggingMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		start := time.Now()
+		r, requestID := withRequestID(w, r)
 		recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(recorder, r)
+		if jsonLogging.Load() {
+			attrs := []any{
+				"request_id", requestID,
+				"method", r.Method,
+				"path", loggedRequestPath(r.URL.Path),
+				"status", recorder.status,
+				"duration_ms", time.Since(start).Milliseconds(),
+			}
+			if strings.HasPrefix(r.URL.Path, "/s/") {
+				attrs = append(attrs, "colo", cloudflareColo(r.Header.Get("Cf-Ray")), "user_agent", truncateForLog(r.Header.Get("User-Agent"), 120))
+			}
+			slog.Info("request", attrs...)
+			return
+		}
 		// Sanitize request-derived fields so a client cannot inject newlines and
 		// forge additional log lines.
 		line := fmt.Sprintf("%s %s %d (%s)", sanitizeLogField(r.Method), sanitizeLogField(loggedRequestPath(r.URL.Path)), recorder.status, time.Since(start).Round(time.Millisecond))

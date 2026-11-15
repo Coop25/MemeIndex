@@ -292,6 +292,7 @@ func (s *Server) withAPIAuth(next http.Handler, minimum permissionLevel) http.Ha
 		}
 
 		if !hasPermission(session.Permissions, minimum) {
+			s.securityEvent(r, "permission_denied", "user_id", session.UserID, "required", string(minimum))
 			writeJSON(w, http.StatusForbidden, map[string]any{
 				"error": "insufficient permissions",
 			})
@@ -332,6 +333,7 @@ func (s *Server) requirePermission(w http.ResponseWriter, r *http.Request, minim
 
 	session, ok := sessionFromContext(r.Context())
 	if !ok || !hasPermission(session.Permissions, minimum) {
+		s.securityEvent(r, "permission_denied", "required", string(minimum))
 		writeJSON(w, http.StatusForbidden, map[string]any{
 			"error": "insufficient permissions",
 		})
