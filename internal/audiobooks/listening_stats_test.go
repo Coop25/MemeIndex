@@ -90,8 +90,8 @@ func newTestAudiobookStore(t *testing.T) *PostgresStore {
 func insertTestAudiobook(t *testing.T, store *PostgresStore, durationSeconds float64) (audiobookID, userID string) {
 	t.Helper()
 	ctx := context.Background()
-	audiobookID = uuid.Must(uuid.NewV6()).String()
-	userID = "u-" + uuid.Must(uuid.NewV6()).String()
+	audiobookID = uuid.NewString()
+	userID = "u-" + uuid.NewString()
 	_, err := store.pool.Exec(ctx, `
 		INSERT INTO audiobooks (id, title, filename, size_bytes, duration_seconds, storage_path, uploaded_by_user_id)
 		VALUES ($1, 'Test Book', 'test.mp3', 1, $2, '/tmp/test.mp3', $3)
@@ -113,7 +113,7 @@ func TestHeartbeatAccumulatesListeningStats(t *testing.T) {
 	store := newTestAudiobookStore(t)
 	ctx := context.Background()
 	audiobookID, userID := insertTestAudiobook(t, store, 3600)
-	deviceID := "dev-" + uuid.Must(uuid.NewV6()).String()
+	deviceID := "dev-" + uuid.NewString()
 
 	if _, err := store.HeartbeatPlaybackSession(ctx, audiobookID, userID, deviceID, 0, true, true); err != nil {
 		t.Fatalf("heartbeat 1: %v", err)
@@ -164,7 +164,7 @@ func TestHeartbeatDoesNotAccumulateWhilePaused(t *testing.T) {
 	store := newTestAudiobookStore(t)
 	ctx := context.Background()
 	audiobookID, userID := insertTestAudiobook(t, store, 3600)
-	deviceID := "dev-" + uuid.Must(uuid.NewV6()).String()
+	deviceID := "dev-" + uuid.NewString()
 
 	if _, err := store.HeartbeatPlaybackSession(ctx, audiobookID, userID, deviceID, 0, false, false); err != nil {
 		t.Fatalf("heartbeat 1: %v", err)
