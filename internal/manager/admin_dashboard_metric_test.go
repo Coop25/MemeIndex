@@ -27,7 +27,7 @@ func (s *dashboardMetricStore) Random([]string) (accessor.Meme, error) {
 func (s *dashboardMetricStore) Create(accessor.CreateInput) (accessor.Meme, error) {
 	return accessor.Meme{}, os.ErrNotExist
 }
-func (s *dashboardMetricStore) Update(string, string, accessor.MemeUpdate) (accessor.Meme, error) {
+func (s *dashboardMetricStore) EditMeme(string, string, accessor.MemeEdit) (accessor.Meme, error) {
 	return accessor.Meme{}, os.ErrNotExist
 }
 func (s *dashboardMetricStore) SetFavorite(string, string, bool) (accessor.Meme, error) {

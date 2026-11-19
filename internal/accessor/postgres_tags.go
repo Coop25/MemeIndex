@@ -419,7 +419,8 @@ func (s *PostgresStore) SetAutoSuggestDisabled(id string, disabled bool) error {
 // fixed number of round trips - one batched tag upsert and one batched link
 // insert - instead of two statements per tag, and it scopes the orphan-tag
 // cleanup to just the tags this meme used to carry rather than re-sweeping the
-// entire tags table on every upload and every edit.
+// entire tags table on every upload. Edits go through addMemeTags and
+// removeMemeTags instead, which touch only the tags that change.
 func (s *PostgresStore) replaceTags(ctx context.Context, tx pgx.Tx, memeID string, tags []string) error {
 	previousTagIDs, err := scanInt64List(ctx, tx, `SELECT tag_id FROM meme_tags WHERE meme_id = $1`, memeID)
 	if err != nil {
@@ -449,6 +450,47 @@ func (s *PostgresStore) replaceTags(ctx context.Context, tx pgx.Tx, memeID strin
 	}
 
 	return s.deleteOrphanTags(ctx, tx, previousTagIDs)
+}
+
+// addMemeTags links just the named tags to one meme, creating any tag that
+// does not exist yet, and leaves the meme's other tags alone.
+func (s *PostgresStore) addMemeTags(ctx context.Context, tx pgx.Tx, memeID string, tags []string) error {
+	names := normalizeTags(tags)
+	if len(names) == 0 {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO tags (name)
+		SELECT unnest($1::text[])
+		ON CONFLICT (name) DO NOTHING
+	`, names); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, `
+		INSERT INTO meme_tags (meme_id, tag_id)
+		SELECT $1, t.id FROM tags t WHERE t.name = ANY($2::text[])
+		ON CONFLICT DO NOTHING
+	`, memeID, names)
+	return err
+}
+
+// removeMemeTags unlinks just the named tags from one meme, then deletes any
+// of them that no meme uses any more.
+func (s *PostgresStore) removeMemeTags(ctx context.Context, tx pgx.Tx, memeID string, tags []string) error {
+	names := normalizeTags(tags)
+	if len(names) == 0 {
+		return nil
+	}
+	removedIDs, err := scanInt64List(ctx, tx, `
+		DELETE FROM meme_tags mt
+		USING tags t
+		WHERE mt.meme_id = $1 AND mt.tag_id = t.id AND t.name = ANY($2::text[])
+		RETURNING mt.tag_id
+	`, memeID, names)
+	if err != nil {
+		return err
+	}
+	return s.deleteOrphanTags(ctx, tx, removedIDs)
 }
 
 // deleteOrphanTags removes any of the given tag ids that no longer have a single

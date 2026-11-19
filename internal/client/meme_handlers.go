@@ -544,37 +544,50 @@ type memePatchPayload struct {
 	Favorite    *bool     `json:"favorite"`
 }
 
-// resolveMemePatch turns a partial PATCH body into the full update the store
-// applies, starting from the meme's current state.
-func resolveMemePatch(existing accessor.Meme, payload memePatchPayload) accessor.MemeUpdate {
-	update := accessor.MemeUpdate{
-		Tags:     append([]string(nil), existing.Tags...),
-		Notes:    existing.Notes,
-		Favorite: existing.Favorite,
+// memeEditFromPatch turns a PATCH body into the edit the store applies. A tag
+// delta wins over a full "tags" set when a client sends both. Fields the body
+// leaves out stay nil, so the store leaves them alone.
+func memeEditFromPatch(payload memePatchPayload) accessor.MemeEdit {
+	edit := accessor.MemeEdit{
+		Notes:    payload.Notes,
+		Favorite: payload.Favorite,
 	}
 	switch {
 	case payload.TagsAdded != nil || payload.TagsRemoved != nil:
-		removed := map[string]struct{}{}
-		for _, tag := range normalizePermissionTags(payload.TagsRemoved) {
-			removed[tag] = struct{}{}
-		}
-		next := make([]string, 0, len(existing.Tags)+len(payload.TagsAdded))
-		for _, tag := range normalizePermissionTags(existing.Tags) {
-			if _, drop := removed[tag]; !drop {
-				next = append(next, tag)
-			}
-		}
-		update.Tags = normalizePermissionTags(append(next, payload.TagsAdded...))
+		edit.TagsAdded = payload.TagsAdded
+		edit.TagsRemoved = payload.TagsRemoved
 	case payload.Tags != nil:
-		update.Tags = *payload.Tags
+		tags := append([]string{}, (*payload.Tags)...)
+		edit.ReplaceTags = &tags
 	}
-	if payload.Notes != nil {
-		update.Notes = *payload.Notes
+	return edit
+}
+
+// memeEditForbiddenError is returned by authorizeMemeEdit and carries the
+// message the 403 response shows.
+type memeEditForbiddenError struct{ message string }
+
+func (e *memeEditForbiddenError) Error() string { return e.message }
+
+// authorizeMemeEdit checks what an edit really changes against the caller's
+// permissions. The store calls it with the meme's row locked, so the tags it
+// sees as added or removed are exactly the ones the write will add or remove:
+// an add-only user cannot remove a tag someone else added a moment ago by
+// sending a stale full tag set, and a delta that only adds never removes.
+func authorizeMemeEdit(permissions authPermissions) func(accessor.MemeChange) error {
+	return func(change accessor.MemeChange) error {
+		switch {
+		case len(change.TagsAdded) > 0 && !permissions.CanAddTags && !permissions.CanManageUsers:
+			return &memeEditForbiddenError{"missing add-tag permission"}
+		case len(change.TagsRemoved) > 0 && !permissions.CanRemoveTags && !permissions.CanManageUsers:
+			return &memeEditForbiddenError{"missing remove-tag permission"}
+		case change.Notes != nil && !permissions.CanAddTags && !permissions.CanRemoveTags && !permissions.CanManageUsers:
+			return &memeEditForbiddenError{"missing metadata permission"}
+		case change.Favorite != nil && !permissions.CanView:
+			return &memeEditForbiddenError{"missing favorite permission"}
+		}
+		return nil
 	}
-	if payload.Favorite != nil {
-		update.Favorite = *payload.Favorite
-	}
-	return update
 }
 
 func (s *Server) updateMeme(w http.ResponseWriter, r *http.Request, id string) {
@@ -598,42 +611,20 @@ func (s *Server) updateMeme(w http.ResponseWriter, r *http.Request, id string) {
 		return
 	}
 
-	existing, err := s.managers.GetMeme(currentUserID(r), id)
+	edit := memeEditFromPatch(patch)
+	edit.Actor = currentAuditActor(r)
+	edit.Authorize = authorizeMemeEdit(session.Permissions)
+
+	meme, err := s.managers.EditMeme(currentUserID(r), id, edit)
+	var forbidden *memeEditForbiddenError
+	if errors.As(err, &forbidden) {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": forbidden.message})
+		return
+	}
 	if errors.Is(err, os.ErrNotExist) {
 		http.NotFound(w, r)
 		return
 	}
-	if err != nil {
-		log.Printf("load meme for update failed: %v", err)
-		http.Error(w, "failed to load meme", http.StatusInternalServerError)
-		return
-	}
-
-	payload := resolveMemePatch(existing, patch)
-	currentTags := normalizePermissionTags(existing.Tags)
-	nextTags := normalizePermissionTags(payload.Tags)
-	addedTags, removedTags := diffTags(currentTags, nextTags)
-	payload.Actor = currentAuditActor(r)
-
-	if len(addedTags) > 0 && !session.Permissions.CanAddTags && !session.Permissions.CanManageUsers {
-		writeJSON(w, http.StatusForbidden, map[string]any{"error": "missing add-tag permission"})
-		return
-	}
-	if len(removedTags) > 0 && !session.Permissions.CanRemoveTags && !session.Permissions.CanManageUsers {
-		writeJSON(w, http.StatusForbidden, map[string]any{"error": "missing remove-tag permission"})
-		return
-	}
-	if strings.TrimSpace(payload.Notes) != strings.TrimSpace(existing.Notes) &&
-		!session.Permissions.CanAddTags && !session.Permissions.CanRemoveTags && !session.Permissions.CanManageUsers {
-		writeJSON(w, http.StatusForbidden, map[string]any{"error": "missing metadata permission"})
-		return
-	}
-	if payload.Favorite != existing.Favorite && !session.Permissions.CanView {
-		writeJSON(w, http.StatusForbidden, map[string]any{"error": "missing favorite permission"})
-		return
-	}
-
-	meme, err := s.managers.UpdateMeme(currentUserID(r), id, payload)
 	if err != nil {
 		log.Printf("update meme failed: %v", err)
 		http.Error(w, "failed to update meme", http.StatusInternalServerError)

@@ -443,20 +443,10 @@ func (m *MemeManager) MergeTags(sourceTag string, targetTag string, actor access
 		if !containsTag(meme.Tags, sourceTag) {
 			continue
 		}
-		nextTags := make([]string, 0, len(meme.Tags))
-		for _, tag := range meme.Tags {
-			normalized := strings.ToLower(strings.TrimSpace(tag))
-			if normalized == sourceTag {
-				nextTags = append(nextTags, targetTag)
-				continue
-			}
-			nextTags = append(nextTags, normalized)
-		}
-		if _, err := m.store.Update("", meme.ID, accessor.MemeUpdate{
-			Tags:     nextTags,
-			Notes:    meme.Notes,
-			Favorite: meme.Favorite,
-			Actor:    actor,
+		if _, err := m.store.EditMeme("", meme.ID, accessor.MemeEdit{
+			TagsAdded:   []string{targetTag},
+			TagsRemoved: []string{sourceTag},
+			Actor:       actor,
 		}); err != nil {
 			return TagMergeResult{}, err
 		}

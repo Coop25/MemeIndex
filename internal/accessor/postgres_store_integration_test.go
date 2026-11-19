@@ -93,14 +93,13 @@ func TestPostgresStoreIntegration(t *testing.T) {
 		t.Fatalf("notes search matched %d rows, want just the video", len(onlyVideo.Memes))
 	}
 
-	// Tag update is reflected in GetByID and in the untagged facet. Notes are
-	// passed through unchanged (Update overwrites the notes column).
-	if _, err := store.Update(actor.UserID, vid.ID, MemeUpdate{
-		Tags:  []string{token + "-beta"},
-		Notes: "a " + token + " video",
-		Actor: actor,
+	// Tag edit is reflected in GetByID and in the untagged facet. The edit
+	// leaves notes out, so they must be kept.
+	if _, err := store.EditMeme(actor.UserID, vid.ID, MemeEdit{
+		TagsAdded: []string{token + "-beta"},
+		Actor:     actor,
 	}); err != nil {
-		t.Fatalf("Update tags: %v", err)
+		t.Fatalf("EditMeme tags: %v", err)
 	}
 	got, err := store.GetByID(actor.UserID, vid.ID)
 	if err != nil {
@@ -108,6 +107,9 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	}
 	if len(got.Tags) != 1 || got.Tags[0] != token+"-beta" {
 		t.Fatalf("updated tags = %v", got.Tags)
+	}
+	if got.Notes != "a "+token+" video" {
+		t.Fatalf("notes after a tags-only edit = %q", got.Notes)
 	}
 	if page, err := store.QueryMemes(context.Background(), MemeQuery{Search: token, Limit: 50}); err != nil {
 		t.Fatalf("QueryMemes after tag update: %v", err)

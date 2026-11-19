@@ -11,7 +11,9 @@ type Store interface {
 	GetByID(userID, id string) (Meme, error)
 	Random(excludedIDs []string) (Meme, error)
 	Create(input CreateInput) (Meme, error)
-	Update(userID, id string, update MemeUpdate) (Meme, error)
+	// EditMeme applies a partial edit to one meme atomically against its
+	// current state; see MemeEdit.
+	EditMeme(userID, id string, edit MemeEdit) (Meme, error)
 	SetFavorite(userID, id string, favorite bool) (Meme, error)
 	Delete(input DeleteInput) (DeleteResult, error)
 	UploadDir() string

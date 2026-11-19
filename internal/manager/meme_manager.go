@@ -180,10 +180,12 @@ func (m *MemeManager) CreateMemeAsWithSource(actor accessor.AuditActor, file io.
 	return meme, err
 }
 
-func (m *MemeManager) UpdateMeme(userID, id string, update accessor.MemeUpdate) (accessor.Meme, error) {
-	update.Tags = normalizeTags(update.Tags)
-	update.Notes = strings.TrimSpace(update.Notes)
-	meme, err := m.store.Update(strings.TrimSpace(userID), strings.TrimSpace(id), update)
+// EditMeme applies a partial edit to one meme. The store works out what the
+// edit changes against the meme's current state with its row locked, and runs
+// edit.Authorize on that change before writing, so a permission check made
+// there cannot be invalidated by a concurrent edit.
+func (m *MemeManager) EditMeme(userID, id string, edit accessor.MemeEdit) (accessor.Meme, error) {
+	meme, err := m.store.EditMeme(strings.TrimSpace(userID), strings.TrimSpace(id), edit)
 	if err == nil {
 		m.markTagsChanged()
 	}

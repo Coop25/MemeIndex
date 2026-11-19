@@ -30,7 +30,7 @@ func (s *tagReviewTestStore) Random([]string) (accessor.Meme, error) {
 func (s *tagReviewTestStore) Create(accessor.CreateInput) (accessor.Meme, error) {
 	return accessor.Meme{}, nil
 }
-func (s *tagReviewTestStore) Update(string, string, accessor.MemeUpdate) (accessor.Meme, error) {
+func (s *tagReviewTestStore) EditMeme(string, string, accessor.MemeEdit) (accessor.Meme, error) {
 	return accessor.Meme{}, nil
 }
 func (s *tagReviewTestStore) SetFavorite(string, string, bool) (accessor.Meme, error) {
