@@ -253,7 +253,7 @@ func TestMergeTagIntoNewTagDoesNotDeadlockWithEditAddingIt(t *testing.T) {
 	var mergeErr error
 	go func() {
 		defer close(done)
-		counts, mergeErr = f.store.MergeTag(src, dst, mergeActor)
+		counts, mergeErr = f.store.MergeTag(context.Background(), src, dst, mergeActor)
 	}()
 	waitBlockedOrDone(t, f, pid, done)
 
@@ -288,7 +288,7 @@ func TestMergeTagOfUnusedSourceLeavesNoNewTarget(t *testing.T) {
 	f.cleanupTags(src, dst)
 	f.tagID(src)
 
-	if _, err := f.store.MergeTag(src, dst, mergeActor); err != nil {
+	if _, err := f.store.MergeTag(context.Background(), src, dst, mergeActor); err != nil {
 		t.Fatalf("MergeTag: %v", err)
 	}
 	if f.tagExists(src) {
