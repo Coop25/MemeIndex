@@ -43,7 +43,7 @@ func (s *adminReadCacheStore) Random([]string) (accessor.Meme, error) {
 func (s *adminReadCacheStore) Create(accessor.CreateInput) (accessor.Meme, error) {
 	return accessor.Meme{}, nil
 }
-func (s *adminReadCacheStore) Update(string, string, accessor.MemeUpdate) (accessor.Meme, error) {
+func (s *adminReadCacheStore) EditMeme(string, string, accessor.MemeEdit) (accessor.Meme, error) {
 	return accessor.Meme{}, nil
 }
 func (s *adminReadCacheStore) SetFavorite(string, string, bool) (accessor.Meme, error) {

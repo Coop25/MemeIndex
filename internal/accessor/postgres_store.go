@@ -429,50 +429,91 @@ func (s *PostgresStore) duplicateError(ctx context.Context, existing Meme) error
 	return &DuplicateMemeError{Existing: existing}
 }
 
-func (s *PostgresStore) Update(userID, id string, update MemeUpdate) (Meme, error) {
+// EditMeme applies a partial edit to one meme in a single transaction. It
+// locks the meme's row first, so concurrent edits to the same meme run one
+// after another and each one's change is worked out against the tags the
+// previous one left: two people adding different tags at once both keep
+// theirs. Only the tags in the change are linked or unlinked, and notes and
+// the viewer's favorite are written only when the edit sets them.
+func (s *PostgresStore) EditMeme(userID, id string, edit MemeEdit) (Meme, error) {
 	ctx := context.Background()
+	userID = normalizeFavoriteUserID(userID)
+	id = strings.TrimSpace(id)
+
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Meme{}, err
 	}
 	defer tx.Rollback(ctx)
 
-	id = strings.TrimSpace(id)
-	update.Tags = normalizeTags(update.Tags)
-	update.Notes = strings.TrimSpace(update.Notes)
+	var lockedID string
+	err = tx.QueryRow(ctx, `
+		SELECT id FROM memes
+		WHERE id = $1 AND COALESCE(hidden_from_app, FALSE) = FALSE
+		FOR UPDATE
+	`, id).Scan(&lockedID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Meme{}, os.ErrNotExist
+	}
+	if err != nil {
+		return Meme{}, err
+	}
 
+	// Read after taking the lock: under READ COMMITTED each statement sees
+	// everything committed before it started, including an edit this one has
+	// just waited on.
 	existing, err := s.getByID(ctx, tx, userID, id)
 	if err != nil {
 		return Meme{}, err
 	}
-
-	commandTag, err := tx.Exec(ctx, `
-		UPDATE memes
-		SET notes = $2, updated_at = $3
-		WHERE id = $1
-	`, id, update.Notes, time.Now().UTC())
+	change, err := planMemeEdit(existing, edit)
 	if err != nil {
 		return Meme{}, err
 	}
-	if commandTag.RowsAffected() == 0 {
-		return Meme{}, os.ErrNotExist
-	}
-
-	if err := s.replaceTags(ctx, tx, id, update.Tags); err != nil {
-		return Meme{}, err
-	}
-	if err := s.setFavoriteInExecutor(ctx, tx, userID, id, update.Favorite); err != nil {
-		return Meme{}, err
-	}
-
-	addedTags, removedTags := diffAuditTags(existing.Tags, update.Tags)
-	for _, tag := range addedTags {
-		if err := s.insertAuditLog(ctx, tx, id, "tag_added", update.Actor, fmt.Sprintf("Added tag %q", tag)); err != nil {
+	if edit.Authorize != nil {
+		if err := edit.Authorize(change); err != nil {
 			return Meme{}, err
 		}
 	}
-	for _, tag := range removedTags {
-		if err := s.insertAuditLog(ctx, tx, id, "tag_removed", update.Actor, fmt.Sprintf("Removed tag %q", tag)); err != nil {
+	if change.Empty() {
+		return existing, nil
+	}
+
+	if change.Notes != nil || len(change.TagsAdded) > 0 || len(change.TagsRemoved) > 0 {
+		// A nil change.Notes binds as NULL and keeps the current notes.
+		if _, err := tx.Exec(ctx, `
+			UPDATE memes
+			SET notes = COALESCE($2::text, notes), updated_at = $3
+			WHERE id = $1
+		`, id, change.Notes, time.Now().UTC()); err != nil {
+			return Meme{}, err
+		}
+	}
+	if err := s.addMemeTags(ctx, tx, id, change.TagsAdded); err != nil {
+		return Meme{}, err
+	}
+	if err := s.removeMemeTags(ctx, tx, id, change.TagsRemoved); err != nil {
+		return Meme{}, err
+	}
+	for _, tag := range change.TagsAdded {
+		if err := s.insertAuditLog(ctx, tx, id, "tag_added", edit.Actor, fmt.Sprintf("Added tag %q", tag)); err != nil {
+			return Meme{}, err
+		}
+	}
+	for _, tag := range change.TagsRemoved {
+		if err := s.insertAuditLog(ctx, tx, id, "tag_removed", edit.Actor, fmt.Sprintf("Removed tag %q", tag)); err != nil {
+			return Meme{}, err
+		}
+	}
+	if change.Favorite != nil {
+		if err := s.setFavoriteInExecutor(ctx, tx, userID, id, *change.Favorite); err != nil {
+			return Meme{}, err
+		}
+		action, description := "favorited", "Added meme to favorites"
+		if !*change.Favorite {
+			action, description = "unfavorited", "Removed meme from favorites"
+		}
+		if err := s.insertAuditLog(ctx, tx, id, action, edit.Actor, description); err != nil {
 			return Meme{}, err
 		}
 	}
@@ -480,7 +521,6 @@ func (s *PostgresStore) Update(userID, id string, update MemeUpdate) (Meme, erro
 	if err := tx.Commit(ctx); err != nil {
 		return Meme{}, err
 	}
-
 	return s.GetByID(userID, id)
 }
 

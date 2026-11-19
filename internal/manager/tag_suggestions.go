@@ -630,31 +630,22 @@ func (m *MemeManager) DismissAllMemeTagSuggestions(userID string, id string) (ac
 	return m.store.GetByID(strings.TrimSpace(userID), meme.ID)
 }
 
+// ApplyMemeTagSuggestion adds one suggested tag to a meme and drops it from
+// the meme's suggestions. The tag is added as a delta, so tags, notes and
+// favorites changed by anyone else in the meantime are left as they are.
 func (m *MemeManager) ApplyMemeTagSuggestion(userID string, id string, tag string, actor accessor.AuditActor) (accessor.Meme, error) {
-	meme, err := m.store.GetByID(strings.TrimSpace(userID), strings.TrimSpace(id))
+	normalizedTag := strings.ToLower(strings.TrimSpace(tag))
+	if normalizedTag == "" {
+		return m.store.GetByID(strings.TrimSpace(userID), strings.TrimSpace(id))
+	}
+
+	meme, err := m.EditMeme(userID, id, accessor.MemeEdit{
+		TagsAdded: []string{normalizedTag},
+		Actor:     actor,
+	})
 	if err != nil {
 		return accessor.Meme{}, err
 	}
-
-	normalizedTag := strings.ToLower(strings.TrimSpace(tag))
-	if normalizedTag == "" {
-		return meme, nil
-	}
-
-	nextTags := append([]string(nil), meme.Tags...)
-	if !containsTag(nextTags, normalizedTag) {
-		nextTags = append(nextTags, normalizedTag)
-	}
-
-	if _, err := m.store.Update(strings.TrimSpace(userID), meme.ID, accessor.MemeUpdate{
-		Tags:     nextTags,
-		Notes:    meme.Notes,
-		Favorite: meme.Favorite,
-		Actor:    actor,
-	}); err != nil {
-		return accessor.Meme{}, err
-	}
-	m.markTagsChanged()
 
 	suggestionStore, ok := m.store.(accessor.SuggestedTagStore)
 	if ok {

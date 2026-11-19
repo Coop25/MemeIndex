@@ -121,13 +121,6 @@ type persistedMeme struct {
 	ShareSlugs          map[int64]string `json:"shareSlugs,omitempty"`
 }
 
-type MemeUpdate struct {
-	Tags     []string   `json:"tags"`
-	Notes    string     `json:"notes"`
-	Favorite bool       `json:"favorite"`
-	Actor    AuditActor `json:"-"`
-}
-
 type CreateInput struct {
 	File        io.Reader
 	Header      textproto.MIMEHeader
@@ -546,21 +539,45 @@ func (s *MemeStore) SetAutoSuggestDisabled(id string, disabled bool) error {
 	return os.ErrNotExist
 }
 
-func (s *MemeStore) Update(userID, id string, update MemeUpdate) (Meme, error) {
+// EditMeme applies a partial edit under the store mutex, which serializes it
+// with every other write just as the row lock does in PostgresStore.
+func (s *MemeStore) EditMeme(userID, id string, edit MemeEdit) (Meme, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	id = strings.TrimSpace(id)
 	for i := range s.memes {
 		if s.memes[i].ID != id {
 			continue
 		}
 
-		s.removeFromIndexesLocked(s.memes[i])
-		s.memes[i].Tags = normalizeTags(update.Tags)
-		s.memes[i].Notes = strings.TrimSpace(update.Notes)
-		s.memes[i].UpdatedAt = time.Now().UTC()
-		s.addToIndexesLocked(s.memes[i])
-		s.setFavoriteLocked(userID, s.memes[i].ID, update.Favorite)
+		current := s.memes[i]
+		current.Favorite = s.isFavoriteLocked(s.favoriteSetLocked(userID), current.ID)
+		change, err := planMemeEdit(current, edit)
+		if err != nil {
+			return Meme{}, err
+		}
+		if edit.Authorize != nil {
+			if err := edit.Authorize(change); err != nil {
+				return Meme{}, err
+			}
+		}
+		if change.Empty() {
+			return current, nil
+		}
+
+		if change.Notes != nil || len(change.TagsAdded) > 0 || len(change.TagsRemoved) > 0 {
+			s.removeFromIndexesLocked(s.memes[i])
+			s.memes[i].Tags = change.applyToTags(s.memes[i].Tags)
+			if change.Notes != nil {
+				s.memes[i].Notes = *change.Notes
+			}
+			s.memes[i].UpdatedAt = time.Now().UTC()
+			s.addToIndexesLocked(s.memes[i])
+		}
+		if change.Favorite != nil {
+			s.setFavoriteLocked(userID, s.memes[i].ID, *change.Favorite)
+		}
 
 		if err := s.saveMemesLocked(); err != nil {
 			return Meme{}, err

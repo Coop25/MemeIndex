@@ -52,7 +52,7 @@ func (s *reelTestStore) Create(input accessor.CreateInput) (accessor.Meme, error
 	return accessor.Meme{}, os.ErrNotExist
 }
 
-func (s *reelTestStore) Update(userID, id string, update accessor.MemeUpdate) (accessor.Meme, error) {
+func (s *reelTestStore) EditMeme(userID, id string, edit accessor.MemeEdit) (accessor.Meme, error) {
 	return accessor.Meme{}, os.ErrNotExist
 }
 
