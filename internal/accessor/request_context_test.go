@@ -161,16 +161,12 @@ func TestStoreMethodsUseTheCallerContext(t *testing.T) {
 		"CountFavoritesByUser":     func() error { _, err := store.CountFavoritesByUser(ctx); return err },
 		"TotalFavoriteAssignments": func() error { _, err := store.TotalFavoriteAssignments(ctx); return err },
 		"FavoriteActivitySince":    func() error { _, err := store.FavoriteActivitySince(ctx, now.Add(-time.Hour)); return err },
-		"GetOrCreateMemeShare": func() error {
-			_, err := store.GetOrCreateMemeShare(ctx, meme.ID, "u-ctx", now, now.Add(time.Hour))
-			return err
-		},
-		"GetMemeShareState":    func() error { _, err := store.GetMemeShareState(ctx, meme.ID); return err },
-		"ResolveMemeShareSlug": func() error { _, _, err := store.ResolveMemeShareSlug(ctx, "nope"); return err },
-		"ListActiveMemeShares": func() error { _, err := store.ListActiveMemeShares(ctx, now); return err },
-		"RevokeMemeShare":      func() error { return store.RevokeMemeShare(ctx, meme.ID) },
-		"RevokeAllMemeShares":  func() error { _, err := store.RevokeAllMemeShares(ctx, now); return err },
-		"LoadReelSessions":     func() error { _, err := store.LoadReelSessions(ctx); return err },
+		"GetMemeShareState":        func() error { _, err := store.GetMemeShareState(ctx, meme.ID); return err },
+		"ResolveMemeShareSlug":     func() error { _, _, err := store.ResolveMemeShareSlug(ctx, "nope"); return err },
+		"ListActiveMemeShares":     func() error { _, err := store.ListActiveMemeShares(ctx, now); return err },
+		"RevokeMemeShare":          func() error { return store.RevokeMemeShare(ctx, meme.ID) },
+		"RevokeAllMemeShares":      func() error { _, err := store.RevokeAllMemeShares(ctx, now); return err },
+		"LoadReelSessions":         func() error { _, err := store.LoadReelSessions(ctx); return err },
 		"SaveReelSession": func() error {
 			return store.SaveReelSession(ctx, token, ReelSessionRecord{LastActivity: now})
 		},
@@ -284,4 +280,98 @@ func TestStoreFileWritesFinishDespiteCancelledContext(t *testing.T) {
 		t.Fatalf("Delete with a cancelled context = %+v, %v; want deleted", result, err)
 	}
 	assertGone("direct delete", deleted)
+}
+
+// TestShareCreationFinishesWhenCancelledBetweenItsWrites parks the second of
+// GetOrCreateMemeShare's two writes (the link insert) behind a conflicting
+// insert the test holds open, then cancels the request. The first write (the
+// meme's new share generation and expiry) has committed by then, so giving up
+// would leave the meme listed as actively shared with no link. The share must
+// be finished instead.
+func TestShareCreationFinishesWhenCancelledBetweenItsWrites(t *testing.T) {
+	store := newRegressionStore(t)
+	meme := createContextTestMeme(t, store, context.Background(), "ctxshare"+randToken(t))
+
+	var generation int64
+	if err := store.pool.QueryRow(context.Background(), `SELECT share_generation FROM memes WHERE id = $1`, meme.ID).Scan(&generation); err != nil {
+		t.Fatalf("read share generation: %v", err)
+	}
+	// Never shared, so the share about to be made takes the next generation.
+	// An uncommitted link for that generation makes its insert wait.
+	blocker, err := store.pool.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("begin blocker: %v", err)
+	}
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			_ = blocker.Rollback(context.Background())
+		}
+	}
+	defer release()
+	if _, err := blocker.Exec(context.Background(), `
+		INSERT INTO meme_share_links (slug, meme_id, generation) VALUES ($1, $2, $3)
+	`, "blocker-"+randToken(t), meme.ID, generation+1); err != nil {
+		t.Fatalf("hold link insert: %v", err)
+	}
+	var blockerPID int
+	if err := blocker.QueryRow(context.Background(), `SELECT pg_backend_pid()`).Scan(&blockerPID); err != nil {
+		t.Fatalf("pg_backend_pid: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	now := time.Now()
+	type outcome struct {
+		share MemeShareState
+		err   error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		share, err := store.GetOrCreateMemeShare(ctx, meme.ID, "u-ctx", now, now.Add(time.Hour))
+		done <- outcome{share, err}
+	}()
+
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		var blocked bool
+		if err := store.pool.QueryRow(context.Background(), `
+			SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)))
+		`, blockerPID).Scan(&blocked); err != nil {
+			t.Fatalf("pg_blocking_pids: %v", err)
+		}
+		if blocked {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("GetOrCreateMemeShare never waited on the held link insert")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancel()
+	// Give a cancellable insert time to give up before the way clears.
+	time.Sleep(200 * time.Millisecond)
+	release()
+
+	var got outcome
+	select {
+	case got = <-done:
+	case <-time.After(15 * time.Second):
+		t.Fatal("GetOrCreateMemeShare did not return after the held insert was rolled back")
+	}
+	if got.err != nil {
+		t.Fatalf("GetOrCreateMemeShare cancelled between its writes: %v", got.err)
+	}
+	if got.share.Slug == "" || got.share.Generation != generation+1 {
+		t.Fatalf("share = %+v, want a link for generation %d", got.share, generation+1)
+	}
+	state, err := store.GetMemeShareState(context.Background(), meme.ID)
+	if err != nil {
+		t.Fatalf("GetMemeShareState: %v", err)
+	}
+	if state.Slug != got.share.Slug {
+		t.Fatalf("stored share link = %q, want %q: the meme is shared with no link for its generation", state.Slug, got.share.Slug)
+	}
 }

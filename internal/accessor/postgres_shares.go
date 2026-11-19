@@ -12,6 +12,11 @@ import (
 )
 
 func (s *PostgresStore) GetOrCreateMemeShare(ctx context.Context, memeID, userID string, now, expiresAt time.Time) (MemeShareState, error) {
+	// Sharing is two separate writes: the meme's share generation and expiry,
+	// then the link for that generation. A request cancelled between them
+	// would leave the meme listed as actively shared with no link, so once
+	// started it runs to the end.
+	ctx = context.WithoutCancel(ctx)
 	var share MemeShareState
 	err := s.pool.QueryRow(ctx, `
 		UPDATE memes
