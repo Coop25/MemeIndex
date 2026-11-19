@@ -222,7 +222,7 @@ MemeIndex exposes two unauthenticated probes for orchestration and load balancer
 
 Neither path is written to the request log. The bundled `Dockerfile` and `docker-compose.yml` wire `/healthz` into their container health checks.
 
-On `SIGINT` or `SIGTERM` the server stops accepting new connections, flips `/readyz` to `503`, drains in-flight requests for up to 30 seconds, then stops its background jobs (link imports and retries, tag suggestions, the startup thumbnail backfill, audiobook conversions and cleanup sweeps), giving work in progress a short grace period to finish before cancelling it, and closes every database pool before exiting. A server-to-server migration import still running at that point is cancelled straight away and leaves the server unchanged; start it again after the restart.
+On `SIGINT` or `SIGTERM` the server stops accepting new connections, flips `/readyz` to `503`, drains in-flight requests for up to 30 seconds, then stops its background jobs (link imports and retries, tag suggestions, the startup thumbnail backfill, audiobook conversions and cleanup sweeps), giving work in progress a short grace period to finish before cancelling it, and closes every database pool before exiting. A server-to-server migration import still running at that point is cancelled straight away and leaves the server unchanged; start it again after the restart. The whole stop can take about a minute, so give the container that long before it is killed: the bundled `docker-compose.yml` sets `stop_grace_period: 75s` (Docker's default is 10 seconds); with `docker run`, pass `--stop-timeout 75`.
 
 ### Metrics and profiling
 
