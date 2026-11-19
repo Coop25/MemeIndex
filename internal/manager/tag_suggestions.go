@@ -627,24 +627,36 @@ func (m *MemeManager) recordTagSuggestionSuccess() {
 	m.suggestionLastSuccess = time.Now().UTC()
 }
 
+// DismissMemeTagSuggestion drops one tag from a meme's suggestions. The
+// removal runs against the stored list (RemoveSuggestedTag), not the meme read
+// here, so a refresh that lands in between keeps its new suggestions.
 func (m *MemeManager) DismissMemeTagSuggestion(userID string, id string, tag string) (accessor.Meme, error) {
 	suggestionStore, ok := m.store.(accessor.SuggestedTagStore)
 	if !ok {
 		return accessor.Meme{}, tagsuggest.ErrDisabled
 	}
 
+	// Read first only to check the meme exists and this user can see it.
 	meme, err := m.store.GetByID(strings.TrimSpace(userID), strings.TrimSpace(id))
 	if err != nil {
 		return accessor.Meme{}, err
 	}
 
-	if err := suggestionStore.ReplaceSuggestedTags(meme.ID, removeTagValue(meme.SuggestedTags, tag)); err != nil {
+	if err := suggestionStore.RemoveSuggestedTag(meme.ID, tag); err != nil {
 		return accessor.Meme{}, err
 	}
 
 	return m.store.GetByID(strings.TrimSpace(userID), meme.ID)
 }
 
+// DismissAllMemeTagSuggestions clears a meme's suggestions unconditionally.
+// Unlike dismissing one tag this writes nothing derived from the meme it read,
+// so it cannot write back a stale list: if a refresh lands at the same moment,
+// the result is what running the two one after the other would give (the
+// refresh's list if it stores last, an empty list if the clear does). Clearing
+// only when the list still matches what the client was shown would need the
+// client to send that list, and buys little - suggestions are advisory and a
+// refresh is one click away.
 func (m *MemeManager) DismissAllMemeTagSuggestions(userID string, id string) (accessor.Meme, error) {
 	suggestionStore, ok := m.store.(accessor.SuggestedTagStore)
 	if !ok {
@@ -664,7 +676,10 @@ func (m *MemeManager) DismissAllMemeTagSuggestions(userID string, id string) (ac
 
 // ApplyMemeTagSuggestion adds one suggested tag to a meme and drops it from
 // the meme's suggestions. The tag is added as a delta, so tags, notes and
-// favorites changed by anyone else in the meantime are left as they are.
+// favorites changed by anyone else in the meantime are left as they are, and
+// the suggestion is removed from the stored list in one write
+// (RemoveSuggestedTag), so a suggestion refresh that lands in between is not
+// overwritten with the list this read before it.
 func (m *MemeManager) ApplyMemeTagSuggestion(userID string, id string, tag string, actor accessor.AuditActor) (accessor.Meme, error) {
 	normalizedTag := strings.ToLower(strings.TrimSpace(tag))
 	if normalizedTag == "" {
@@ -681,7 +696,7 @@ func (m *MemeManager) ApplyMemeTagSuggestion(userID string, id string, tag strin
 
 	suggestionStore, ok := m.store.(accessor.SuggestedTagStore)
 	if ok {
-		if err := suggestionStore.ReplaceSuggestedTags(meme.ID, removeTagValue(meme.SuggestedTags, normalizedTag)); err != nil {
+		if err := suggestionStore.RemoveSuggestedTag(meme.ID, normalizedTag); err != nil {
 			return accessor.Meme{}, err
 		}
 	}

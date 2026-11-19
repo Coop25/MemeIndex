@@ -425,6 +425,26 @@ func (s *PostgresStore) ReplaceSuggestedTags(id string, tags []string) error {
 	return nil
 }
 
+// RemoveSuggestedTag drops one tag from a meme's stored suggestions with
+// array_remove, so it works on whatever list is stored when it runs rather
+// than on a copy the caller read earlier. updated_at only moves when the tag
+// was actually there.
+func (s *PostgresStore) RemoveSuggestedTag(id, tag string) error {
+	commandTag, err := s.pool.Exec(context.Background(), `
+		UPDATE memes
+		SET suggested_tags = array_remove(suggested_tags, $2::text),
+			updated_at = CASE WHEN $2::text = ANY(suggested_tags) THEN NOW() ELSE updated_at END
+		WHERE id = $1
+	`, strings.TrimSpace(id), normalizeTag(tag))
+	if err != nil {
+		return err
+	}
+	if commandTag.RowsAffected() == 0 {
+		return os.ErrNotExist
+	}
+	return nil
+}
+
 // SetSearchText stores the derived search blob for a meme. It deliberately does
 // not touch updated_at: this is background-derived data, and the same
 // tag-suggestion pass already bumped the row via ReplaceSuggestedTags.

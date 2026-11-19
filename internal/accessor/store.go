@@ -215,6 +215,11 @@ type TagAdminStore interface {
 type SuggestedTagStore interface {
 	ListSuggestedTags(id string) ([]string, error)
 	ReplaceSuggestedTags(id string, tags []string) error
+	// RemoveSuggestedTag drops one tag from a meme's suggestions in a single
+	// write against the stored list, so a refresh that replaced the list
+	// after the caller last read the meme is kept rather than overwritten
+	// with an older list minus that tag.
+	RemoveSuggestedTag(id, tag string) error
 	SetAutoSuggestDisabled(id string, disabled bool) error
 	SetSearchText(id, text string) error
 }

@@ -458,20 +458,3 @@ func containsTag(tags []string, needle string) bool {
 	}
 	return false
 }
-
-func removeTagValue(tags []string, remove string) []string {
-	normalizedRemove := strings.ToLower(strings.TrimSpace(remove))
-	if normalizedRemove == "" {
-		return normalizeTags(tags)
-	}
-
-	filtered := make([]string, 0, len(tags))
-	for _, tag := range tags {
-		normalizedTag := strings.ToLower(strings.TrimSpace(tag))
-		if normalizedTag == "" || normalizedTag == normalizedRemove {
-			continue
-		}
-		filtered = append(filtered, normalizedTag)
-	}
-	return normalizeTags(filtered)
-}
