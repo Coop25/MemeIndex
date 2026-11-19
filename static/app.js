@@ -807,6 +807,15 @@ class AudiobookUploadForbidden extends Error {}
 
 class AudiobookUploadDuplicate extends Error {}
 
+// The server refused a finished upload for a reason the uploader has to see,
+// such as the file not being audio. The message is the server's; the upload
+// has been discarded, so the queue moves on to the next file.
+class AudiobookUploadRejected extends Error {}
+
+// The server still had bytes missing after the client re-sent them once. The
+// upload stays open on the server, so clicking Upload again resumes it.
+class AudiobookUploadIncomplete extends Error {}
+
 // --- Player --------------------------------------------------------------
 
 let audiobookAudioEl = null;

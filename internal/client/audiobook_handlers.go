@@ -1313,9 +1313,12 @@ func (s *Server) completeAudiobookUpload(w http.ResponseWriter, r *http.Request,
 	}
 	switch {
 	case errors.Is(err, audiobooks.ErrDuplicateTitle), errors.Is(err, audiobooks.ErrNotAudio), errors.Is(err, audiobooks.ErrUploadIncomplete):
-		// The uploader's to fix, and worded for them. The client treats 409
-		// as "this upload is finished with" and drops its resume marker.
-		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
+		// The uploader's to fix, and worded for them. code tells the client
+		// which it is, because each needs something different: a duplicate or
+		// a file that is not audio has been discarded, so the client drops its
+		// resume marker and moves on, while an incomplete upload is still open
+		// and the client re-sends the ranges it is missing.
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": audiobookUploadConflictCode(err)})
 		return
 	case err != nil:
 		// Anything else (a failed rename, a database error) can carry file
@@ -1327,6 +1330,21 @@ func (s *Server) completeAudiobookUpload(w http.ResponseWriter, r *http.Request,
 	s.remuxUploadedAudiobookMP3(record)
 
 	writeJSON(w, http.StatusCreated, audiobookJSON(record))
+}
+
+// audiobookUploadConflictCode is the machine-readable code for each 409 that
+// completeAudiobookUpload returns: "duplicate", "not_audio" or "incomplete".
+func audiobookUploadConflictCode(err error) string {
+	switch {
+	case errors.Is(err, audiobooks.ErrDuplicateTitle):
+		return "duplicate"
+	case errors.Is(err, audiobooks.ErrNotAudio):
+		return "not_audio"
+	case errors.Is(err, audiobooks.ErrUploadIncomplete):
+		return "incomplete"
+	default:
+		return ""
+	}
 }
 
 func (s *Server) abortAudiobookUpload(w http.ResponseWriter, r *http.Request, id string) {
