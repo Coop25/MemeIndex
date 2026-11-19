@@ -190,7 +190,7 @@ func (s *Server) handleShareLink(w http.ResponseWriter, r *http.Request) {
 		// spelling of it (another extension, a query string) would be a
 		// separate cache entry for the same file.
 		edgeCacheFor := time.Duration(0)
-		if name == slug+filepath.Ext(sharedAssetFileName(meme, false)) && r.URL.RawQuery == "" && !r.URL.ForceQuery {
+		if name == slug+shareLinkExtension(meme) && r.URL.RawQuery == "" && !r.URL.ForceQuery {
 			edgeCacheFor = min(shareLinkEdgeCacheTTL, share.ExpiresAt.Sub(now))
 		}
 		s.serveSharedMemeAsset(w, r, meme, false, edgeCacheFor)
@@ -297,7 +297,17 @@ func (s *Server) memeShareURL(r *http.Request, share accessor.MemeShareState, me
 		// it is next renewed, which issues it a code.
 		return s.publicOrigin(r) + "/m/" + url.PathEscape(share.MemeID) + "?share=" + url.QueryEscape(s.signMemeShare(share))
 	}
-	return s.publicOrigin(r) + "/s/" + url.PathEscape(share.Slug) + filepath.Ext(sharedAssetFileName(meme, false))
+	return s.publicOrigin(r) + "/s/" + url.PathEscape(share.Slug) + shareLinkExtension(meme)
+}
+
+// shareLinkExtension is the extension a /s/ link carries, so chat apps can
+// tell the media type from the URL. It is picked the way a stored upload's is,
+// so it is always plain lower-case letters and digits, or nothing: an original
+// name like "clip.mp4 (1)" would otherwise put a space in the link, where chat
+// apps cut it short. Links already handed out with such an extension still
+// serve, since only the code is looked up; they are just not edge-cached.
+func shareLinkExtension(meme accessor.Meme) string {
+	return accessor.StoredFileExtension(meme.OriginalName, meme.ContentType)
 }
 
 // publicOrigin returns the origin shared links should use. Memes can be
@@ -454,6 +464,10 @@ func (w edgeCacheOnlySuccess) ReadFrom(src io.Reader) (int64, error) {
 	return io.Copy(w.ResponseWriter, src)
 }
 
+// sharedAssetFileName is the file name on a legacy /m/<id>/media/<name> or
+// /m/<id>/preview/<name> link. It keeps the original name's extension the way
+// those links were issued, so they still validate; /s/ links use
+// shareLinkExtension instead.
 func sharedAssetFileName(meme accessor.Meme, preview bool) string {
 	extension := filepath.Ext(meme.OriginalName)
 	if preview && strings.HasPrefix(meme.PreviewPath, "/thumbnails/") {
