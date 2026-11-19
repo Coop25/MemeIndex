@@ -149,20 +149,33 @@ func (s *PostgresStore) MergeTag(sourceTag, targetTag string, actor AuditActor) 
 		return TagMergeCounts{}, nil
 	}
 
-	tx, err := s.pool.Begin(ctx)
+	// The whole merge runs on one connection: one that queues for the merge
+	// lock below holds its connection while it waits, so a merge that needed
+	// a second one once it had the lock could be starved of it by merges
+	// queued behind it.
+	conn, err := s.pool.Acquire(ctx)
 	if err != nil {
 		return TagMergeCounts{}, err
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer conn.Release()
 
 	// Merges run one at a time, so two of them can never wait on each
-	// other's tag locks (a merge of a into b next to one of b into a).
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('tag-merge', 0))`); err != nil {
+	// other's tag locks (a merge of a into b next to one of b into a). The
+	// lock is the session's, not the transaction's, so it also covers the
+	// cleanup of a target this created after the transaction has ended.
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock(hashtextextended('tag-merge', 0))`); err != nil {
 		return TagMergeCounts{}, err
 	}
+	defer func() {
+		if _, err := conn.Exec(ctx, `SELECT pg_advisory_unlock(hashtextextended('tag-merge', 0))`); err != nil {
+			// Never hand a connection still holding the lock back to the
+			// pool; closing it releases the lock.
+			_ = conn.Conn().Close(ctx)
+		}
+	}()
 
 	var sourceExists bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM tags WHERE name = $1)`, sourceTag).Scan(&sourceExists); err != nil {
+	if err := conn.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM tags WHERE name = $1)`, sourceTag).Scan(&sourceExists); err != nil {
 		return TagMergeCounts{}, err
 	}
 	if !sourceExists {
@@ -170,24 +183,33 @@ func (s *PostgresStore) MergeTag(sourceTag, targetTag string, actor AuditActor) 
 	}
 
 	// Create a missing target in a statement of its own, committed before
-	// this transaction takes any row lock. Created inside it, the new row
-	// would stay uncommitted until the merge ends, and an edit that adds the
-	// same name to a meme carrying the source - holding that meme's row,
+	// the merge transaction takes any row lock. Created inside it, the new
+	// row would stay uncommitted until the merge ends, and an edit that adds
+	// the same name to a meme carrying the source - holding that meme's row,
 	// which the merge locks below - would wait on the insert while the merge
 	// waits on the meme: a deadlock. If the merge then fails or moves
-	// nothing, the target it created is cleaned up again.
+	// nothing, the target it created is cleaned up again, still under the
+	// merge lock, so the next merge cannot find it existing and then lose it.
 	var createdTargetID int64
-	err = s.pool.QueryRow(ctx, `INSERT INTO tags (name) VALUES ($1) ON CONFLICT (name) DO NOTHING RETURNING id`, targetTag).Scan(&createdTargetID)
+	err = conn.QueryRow(ctx, `INSERT INTO tags (name) VALUES ($1) ON CONFLICT (name) DO NOTHING RETURNING id`, targetTag).Scan(&createdTargetID)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) { // no row: it already existed
+		return TagMergeCounts{}, err
+	}
+
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		if createdTargetID != 0 {
+			_ = pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error { return DeleteOrphanTags(ctx, tx, []int64{createdTargetID}) })
+		}
 		return TagMergeCounts{}, err
 	}
 	committed := false
 	defer func() {
+		_ = tx.Rollback(ctx)
 		if !committed && createdTargetID != 0 {
-			// Roll back first, so the cleanup is not skipped over this
+			// After the rollback, so the cleanup is not skipped over this
 			// transaction's own lock on the target.
-			_ = tx.Rollback(ctx)
-			_ = s.deleteOrphanTagsInTx(ctx, []int64{createdTargetID})
+			_ = pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error { return DeleteOrphanTags(ctx, tx, []int64{createdTargetID}) })
 		}
 	}()
 
