@@ -448,7 +448,7 @@ The Process Link modal and the PWA share target let any upload-capable user hand
 
 - Supplied and resolved URLs are matched against the supported public media domains by DNS-label boundary, not substring, so lookalike hosts (`youtube.com.attacker.example`, `youtube.com@attacker.example`, non-standard ports) are rejected before any network I/O.
 - Every URL is re-validated after each redirect, and DNS results are pinned so the address that passed validation is the address dialed.
-- Connections to private, loopback, link-local, carrier-grade-NAT, and other reserved IP ranges are refused at connect time — including for the media-fetch dependency's internal `http.DefaultClient`, because MemeIndex replaces the process `http.DefaultTransport` with the pinned public-only transport at startup when no proxy is configured.
+- Connections to private, loopback, link-local, carrier-grade-NAT, and other reserved IP ranges are refused at connect time — including for the media-fetch dependency's internal `http.DefaultClient`, because MemeIndex replaces the process `http.DefaultTransport` with the pinned public-only transport at startup when no proxy is configured. MemeIndex's own clients that have to reach a private service or Discord (Ollama tag suggestions, Discord login and share warm-up, server-to-server migration) carry their own transports, so neither the pin nor the downloader proxy applies to them.
 - The cloud instance-metadata address (`169.254.169.254`) falls inside those blocked ranges.
 
 **Recommended deployment boundary (operator-provided):**
@@ -457,7 +457,7 @@ App-side checks cannot fully constrain the `yt-dlp` subprocess or guarantee isol
 
 1. Run a forward proxy whose config allows only the public media hosts, for example: `youtube.com`, `youtu.be`, `googlevideo.com`, `ytimg.com`, `facebook.com`, `fbcdn.net`, `fbsbx.com`, `instagram.com`, `cdninstagram.com`, `tiktok.com`, `tiktokcdn.com`, `tiktokv.com`, `twitter.com`, `x.com`, `twimg.com`, `reddit.com`, `redd.it`, `v.redd.it`, `redditmedia.com`. `docker-compose.yml` ships a commented `egress-proxy` service stub for this.
 2. Set `MEMEINDEX_MEDIAFETCH_PROXY=http://egress-proxy:3128`. MemeIndex passes it to `yt-dlp` as `--proxy` and, via `HTTP_PROXY`/`HTTPS_PROXY`, routes the Go media-fetch client through it too. When a proxy is set, the app trusts it as the egress boundary and does not additionally pin to public IPs.
-3. Keep `NO_PROXY` (default `postgres,ollama,localhost,127.0.0.1,::1`) covering internal service names so app-to-Postgres and app-to-Ollama traffic bypasses the proxy.
+3. Keep `NO_PROXY` (default `postgres,ollama,localhost,127.0.0.1,::1`) covering internal service names. The app's Ollama and Discord clients always connect directly and ignore `HTTP_PROXY`/`HTTPS_PROXY`, so they do not depend on it; it is a safety net for anything else that reads those variables.
 4. With a container network policy or firewall, deny the app (and the proxy) egress to the Postgres subnet, the Ollama subnet, the container gateway, and `169.254.169.254`. Postgres is already not published by the Compose file.
 
 Without a proxy the built-in public-IP pin is the fallback: it blocks SSRF into private ranges but does not restrict which public host is reached.
