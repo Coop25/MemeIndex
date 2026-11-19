@@ -322,8 +322,8 @@ func (s *PostgresStore) Random(excludedIDs []string) (Meme, error) {
 
 func (s *PostgresStore) Create(input CreateInput) (Meme, error) {
 	id := uuid.Must(uuid.NewV6()).String()
-	ext := filepath.Ext(input.Filename)
-	storedName := id + ext
+	contentType := detectContentType(input.Header, input.ContentType, input.Filename)
+	storedName := id + storedFileExtension(input.Filename, contentType)
 	targetPath := filepath.Join(s.uploadDir, storedName)
 
 	dst, err := os.Create(targetPath)
@@ -349,7 +349,7 @@ func (s *PostgresStore) Create(input CreateInput) (Meme, error) {
 		OriginalName:        input.Filename,
 		StoredName:          storedName,
 		FilePath:            "/uploads/" + storedName,
-		ContentType:         detectContentType(input.Header, input.ContentType, input.Filename),
+		ContentType:         contentType,
 		ContentHash:         contentHashString(hasher),
 		SizeBytes:           size,
 		Tags:                normalizeTags(input.Tags),
