@@ -18,6 +18,11 @@ services:
     image: ${MEMEINDEX_IMAGE:-ghcr.io/your-github-user-or-org/memeindex:latest}
     pull_policy: always
     restart: unless-stopped
+    # A graceful stop drains requests for up to 30s, then gives background jobs
+    # (link imports, tag suggestions, audiobook conversions, a running restore)
+    # up to 30s more before closing the database pools. Docker's default 10s
+    # would SIGKILL the app partway through that.
+    stop_grace_period: 75s
     # The image starts as root only to fix ownership of ./data, then drops to a
     # non-root user (uid 10001) on its own - no host `chown` needed. To pin the
     # process to a specific uid:gid instead, uncomment and set this (that also
