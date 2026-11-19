@@ -52,10 +52,11 @@ func TestNewPoolStatementTimeoutIntegration(t *testing.T) {
 }
 
 // A query whose context is cancelled must stop on the server before the call
-// returns, not only on the client. pgx's default just closes the socket, and
-// Postgres notices that only some time later: until then the transaction is
-// still alive and still holds every lock it took, so a caller that rolls back
-// and moves on (a cleanup, the next request) finds those rows still locked.
+// returns, not only on the client. pgx's default closes the socket and sends
+// the cancel request afterwards, in the background. Until that cancel lands,
+// the transaction is still alive and still holds every lock it took, so a
+// caller that rolls back and moves on (a cleanup, the next request) finds
+// those rows still locked.
 // It is skipped unless MEMEINDEX_TEST_DATABASE_URL points at a Postgres.
 func TestNewPoolCancelledQueryReleasesItsLocksBeforeReturning(t *testing.T) {
 	dsn := strings.TrimSpace(os.Getenv("MEMEINDEX_TEST_DATABASE_URL"))
