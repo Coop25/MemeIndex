@@ -279,7 +279,7 @@ func TestProtectedAssetsHideDirectoryListingsAndPendingDeletes(t *testing.T) {
 		t.Helper()
 		auth := newRevocationAuthService(&fakeSessionStore{version: 1, perms: perms})
 		server := &Server{managers: manager.NewMemeManager(hidingMemeStore{MemeStore: store, hidden: []string{"hidden-id"}}), auth: auth}
-		_, token, err := auth.createSession(discordUser{ID: "u1", Username: "user"})
+		_, token, err := auth.createSession(context.Background(), discordUser{ID: "u1", Username: "user"})
 		if err != nil {
 			t.Fatal(err)
 		}

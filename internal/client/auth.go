@@ -391,14 +391,14 @@ func (a *authService) consumeValidState(r *http.Request) bool {
 	return ok && now.Before(expiresAt)
 }
 
-func (a *authService) createSession(user discordUser) (authSession, string, error) {
+func (a *authService) createSession(ctx context.Context, user discordUser) (authSession, string, error) {
 	if a.users != nil {
-		if err := a.users.UpsertDiscordProfile(context.Background(), user); err != nil {
+		if err := a.users.UpsertDiscordProfile(ctx, user); err != nil {
 			return authSession{}, "", err
 		}
 	}
 
-	permissions := a.permissionsForUser(user.ID)
+	permissions := a.permissionsForUser(ctx, user.ID)
 	displayName := strings.TrimSpace(user.GlobalName)
 	if displayName == "" {
 		displayName = user.Username
@@ -411,7 +411,7 @@ func (a *authService) createSession(user discordUser) (authSession, string, erro
 		DisplayName:    displayName,
 		AvatarURL:      discordAvatarURL(user),
 		Permissions:    permissions,
-		SessionVersion: a.currentSessionVersion(user.ID),
+		SessionVersion: a.currentSessionVersion(ctx, user.ID),
 		ExpiresAt:      expiresAt,
 	}
 
@@ -674,11 +674,11 @@ func (a *authService) maybeTouchProfile(claims authClaims) {
 // freshly minted token. It falls back to 1 (the schema default) when the store
 // is absent or has no row yet so the token is always well-formed; a token that
 // still fails to match on the next request is rejected by sessionFromRequest.
-func (a *authService) currentSessionVersion(userID string) int64 {
+func (a *authService) currentSessionVersion(ctx context.Context, userID string) int64 {
 	if a.users == nil {
 		return 1
 	}
-	version, err := a.users.SessionVersion(context.Background(), userID)
+	version, err := a.users.SessionVersion(ctx, userID)
 	if err != nil || version <= 0 {
 		return 1
 	}
@@ -753,7 +753,7 @@ func discordAvatarURL(user discordUser) string {
 	return fmt.Sprintf("https://cdn.discordapp.com/avatars/%s/%s.png", user.ID, user.Avatar)
 }
 
-func (a *authService) permissionsForUser(userID string) authPermissions {
+func (a *authService) permissionsForUser(ctx context.Context, userID string) authPermissions {
 	normalizedUserID := strings.TrimSpace(userID)
 	if normalizedUserID == "" {
 		return authPermissions{}
@@ -761,7 +761,7 @@ func (a *authService) permissionsForUser(userID string) authPermissions {
 
 	base := authPermissions{}
 	if a.users != nil {
-		if record, ok, err := a.users.GetUser(context.Background(), normalizedUserID); err == nil && ok {
+		if record, ok, err := a.users.GetUser(ctx, normalizedUserID); err == nil && ok {
 			base = record.Permissions
 		}
 	}

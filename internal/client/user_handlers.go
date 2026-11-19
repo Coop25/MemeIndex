@@ -69,7 +69,7 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if s.auth.enabled() {
-			record.Permissions = s.auth.permissionsForUser(normalized)
+			record.Permissions = s.auth.permissionsForUser(r.Context(), normalized)
 		}
 		byID[normalized] = record
 	}
@@ -87,7 +87,7 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 		out = append(out, managedUserPayload(managedUserRecord{
 			UserID:      userID,
 			DisplayName: "Super Admin",
-			Permissions: s.auth.permissionsForUser(userID),
+			Permissions: s.auth.permissionsForUser(r.Context(), userID),
 		}, true))
 	}
 
@@ -126,7 +126,7 @@ func (s *Server) createManagedUser(w http.ResponseWriter, r *http.Request) {
 	// policy to apply) at all - s.auth is nil there, per s.auth.enabled().
 	if s.auth.enabled() {
 		s.auth.invalidateUser(record.UserID)
-		record.Permissions = s.auth.permissionsForUser(record.UserID)
+		record.Permissions = s.auth.permissionsForUser(r.Context(), record.UserID)
 	}
 	writeJSON(w, http.StatusCreated, managedUserPayload(record, false))
 }
@@ -192,7 +192,7 @@ func (s *Server) updateManagedUser(w http.ResponseWriter, r *http.Request, userI
 	// auth service at all - s.auth is nil there, per s.auth.enabled().
 	if s.auth.enabled() {
 		s.auth.invalidateUser(record.UserID)
-		record.Permissions = s.auth.permissionsForUser(record.UserID)
+		record.Permissions = s.auth.permissionsForUser(r.Context(), record.UserID)
 	}
 	writeJSON(w, http.StatusOK, managedUserPayload(record, false))
 }

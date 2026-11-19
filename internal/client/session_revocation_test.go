@@ -82,7 +82,7 @@ func TestCreateSessionEmbedsStoredSessionVersion(t *testing.T) {
 	store := &fakeSessionStore{version: 7, perms: authPermissions{CanView: true}}
 	a := newRevocationAuthService(store)
 
-	_, token, err := a.createSession(discordUser{ID: "u1", Username: "user"})
+	_, token, err := a.createSession(context.Background(), discordUser{ID: "u1", Username: "user"})
 	if err != nil {
 		t.Fatalf("createSession: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestSessionFromRequestAcceptsMatchingVersion(t *testing.T) {
 	store := &fakeSessionStore{version: 3, perms: authPermissions{CanView: true}}
 	a := newRevocationAuthService(store)
 
-	_, token, err := a.createSession(discordUser{ID: "u1", Username: "user"})
+	_, token, err := a.createSession(context.Background(), discordUser{ID: "u1", Username: "user"})
 	if err != nil {
 		t.Fatalf("createSession: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestSessionFromRequestCachesValidationAndInvalidatesOnRevoke(t *testing.T) 
 	store := &fakeSessionStore{version: 5, perms: authPermissions{CanView: true}}
 	a := newRevocationAuthService(store)
 
-	_, token, err := a.createSession(discordUser{ID: "u1", Username: "user"})
+	_, token, err := a.createSession(context.Background(), discordUser{ID: "u1", Username: "user"})
 	if err != nil {
 		t.Fatalf("createSession: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestSessionFromRequestThrottlesProfileWrites(t *testing.T) {
 	store := &fakeSessionStore{version: 2, perms: authPermissions{CanView: true}}
 	a := newRevocationAuthService(store)
 
-	_, token, err := a.createSession(discordUser{ID: "u1", Username: "user"})
+	_, token, err := a.createSession(context.Background(), discordUser{ID: "u1", Username: "user"})
 	if err != nil {
 		t.Fatalf("createSession: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestSessionFromRequestRejectsRevokedToken(t *testing.T) {
 	store := &fakeSessionStore{version: 1, perms: authPermissions{CanView: true}}
 	a := newRevocationAuthService(store)
 
-	_, token, err := a.createSession(discordUser{ID: "u1", Username: "user"})
+	_, token, err := a.createSession(context.Background(), discordUser{ID: "u1", Username: "user"})
 	if err != nil {
 		t.Fatalf("createSession: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestSessionFromRequestRejectsDeletedUser(t *testing.T) {
 	store := &fakeSessionStore{version: 4, perms: authPermissions{CanView: true}}
 	a := newRevocationAuthService(store)
 
-	_, token, err := a.createSession(discordUser{ID: "u1", Username: "user"})
+	_, token, err := a.createSession(context.Background(), discordUser{ID: "u1", Username: "user"})
 	if err != nil {
 		t.Fatalf("createSession: %v", err)
 	}
@@ -244,7 +244,7 @@ func TestHandleLogoutRevokesSessionVersion(t *testing.T) {
 	a := newRevocationAuthService(store)
 	server := &Server{auth: a}
 
-	_, token, err := a.createSession(discordUser{ID: "u1", Username: "user"})
+	_, token, err := a.createSession(context.Background(), discordUser{ID: "u1", Username: "user"})
 	if err != nil {
 		t.Fatalf("createSession: %v", err)
 	}
