@@ -84,3 +84,35 @@ func TestMemeStoreRemoveSuggestedTag(t *testing.T) {
 		t.Fatalf("missing meme: err = %v, want os.ErrNotExist", err)
 	}
 }
+
+// A new meme whose ID clashes with an existing one fails and leaves the
+// existing meme's file alone, matching PostgresStore.
+func TestMemeStoreCreateWithClashingIDLeavesExistingFile(t *testing.T) {
+	store, err := NewMemeStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	original, err := store.Create(accessor.CreateInput{
+		File:     strings.NewReader("original bytes"),
+		Header:   textproto.MIMEHeader{"Content-Type": []string{"image/png"}},
+		Filename: "original.png",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := newMemeID
+	newMemeID = func() string { return original.ID }
+	t.Cleanup(func() { newMemeID = previous })
+
+	if _, err := store.Create(accessor.CreateInput{
+		File:     strings.NewReader("clashing bytes"),
+		Header:   textproto.MIMEHeader{"Content-Type": []string{"image/png"}},
+		Filename: "clash.png",
+	}); err == nil {
+		t.Fatal("Create with an ID that is already in use succeeded")
+	}
+	data, err := os.ReadFile(filepath.Join(store.UploadDir(), original.StoredName))
+	if err != nil || string(data) != "original bytes" {
+		t.Fatalf("existing meme's file = %q, %v; want it untouched", data, err)
+	}
+}

@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -440,7 +439,7 @@ func NewPostgresStore(ctx context.Context, databaseURL, dataDir string) (Store, 
 }
 
 func (s *PostgresStore) CreateUpload(ctx context.Context, seed UploadSeed) (Upload, error) {
-	id := uuid.Must(uuid.NewV6()).String()
+	id := accessor.NewID()
 	tempPath := filepath.Join(s.tmpDir, id+".part")
 
 	file, err := os.OpenFile(tempPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
@@ -578,9 +577,19 @@ func (s *PostgresStore) CompleteUpload(ctx context.Context, id, userID string, f
 		return Record{}, fmt.Errorf("%w: received %d of %d bytes", ErrUploadIncomplete, upload.ReceivedBytes, upload.TotalBytes)
 	}
 
-	ext := strings.ToLower(filepath.Ext(upload.Filename))
-	finalID := uuid.Must(uuid.NewV6()).String()
+	// The extension is cleaned the way a meme's stored name is, since the
+	// filename comes from the client. A rename silently replaces a file that
+	// is already there, so check first: a new ID cannot name an existing
+	// book's file, but if it ever did (see accessor.NewID) the upload fails
+	// instead of overwriting that book.
+	ext := accessor.StoredFileExtension(upload.Filename, "")
+	finalID := accessor.NewID()
 	finalPath := filepath.Join(s.dir, finalID+ext)
+	if _, err := os.Lstat(finalPath); err == nil {
+		return Record{}, fmt.Errorf("move completed audiobook: %s already exists", filepath.Base(finalPath))
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return Record{}, fmt.Errorf("move completed audiobook: %w", err)
+	}
 	if err := os.Rename(upload.TempPath, finalPath); err != nil {
 		return Record{}, fmt.Errorf("move completed audiobook: %w", err)
 	}
@@ -1443,7 +1452,7 @@ func insertAudiobookBookmark(ctx context.Context, q interface {
 		INSERT INTO audiobook_bookmarks (id, audiobook_id, user_id, position_seconds, label)
 		VALUES ($1, $2, $3, $4, $5)
 		RETURNING `+audiobookBookmarkColumns,
-		uuid.Must(uuid.NewV6()).String(), audiobookID, userID, positionSeconds, label))
+		accessor.NewID(), audiobookID, userID, positionSeconds, label))
 	if err != nil {
 		return Bookmark{}, fmt.Errorf("create audiobook bookmark: %w", err)
 	}
@@ -1586,7 +1595,7 @@ func (s *PostgresStore) CreateSeries(ctx context.Context, name, createdByUserID 
 		INSERT INTO audiobook_series (id, name, created_by_user_id)
 		VALUES ($1, $2, $3)
 		RETURNING id, name, created_by_user_id, created_at
-	`, uuid.Must(uuid.NewV6()).String(), name, createdByUserID).Scan(
+	`, accessor.NewID(), name, createdByUserID).Scan(
 		&series.ID, &series.Name, &series.CreatedByUserID, &series.CreatedAt,
 	)
 	if err != nil {

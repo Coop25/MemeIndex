@@ -408,14 +408,21 @@ func (s *MemeStore) Random(excludedIDs []string) (accessor.Meme, error) {
 	return candidates[index.Int64()], nil
 }
 
+// newMemeID is accessor.NewID for new memes. A test swaps it to force a clash
+// with a meme that already exists.
+var newMemeID = accessor.NewID
+
 func (s *MemeStore) Create(input accessor.CreateInput) (accessor.Meme, error) {
-	id := uuid.Must(uuid.NewV6()).String()
+	id := newMemeID()
 
 	contentType := detectContentType(input.Header, input.ContentType, input.Filename)
 	storedName := id + accessor.StoredFileExtension(input.Filename, contentType)
 	targetPath := filepath.Join(s.uploadDir, storedName)
 
-	dst, err := os.Create(targetPath)
+	// O_EXCL: never write over a file that is already there. A new ID cannot
+	// name an existing file, but if it ever did (see NewID), this upload fails
+	// instead of replacing that meme's file and then deleting it on cleanup.
+	dst, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o666)
 	if err != nil {
 		return accessor.Meme{}, fmt.Errorf("create upload file: %w", err)
 	}
