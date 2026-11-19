@@ -259,6 +259,92 @@ func TestShareLinkLetsCloudflareCacheTheOfficialLinkForADay(t *testing.T) {
 	assertNotEdgeCached("revoked link redirect", revoked)
 }
 
+// A share link's extension comes from the original filename, which can hold
+// anything. The link must still be clean, so chat apps do not cut it at a
+// space, and the edge cache must accept exactly that link. A link handed out
+// before this, with the odd spelling, must still serve, and legacy /m/ media
+// links keep validating against the name they were issued with.
+func TestShareLinkExtensionIsCleanForHostileOriginalNames(t *testing.T) {
+	server, store, _ := newShareTestServer(t)
+	cleanShareLink := regexp.MustCompile(`^https://memes\.example\.com/s/[0-9a-f-]{36}(\.[a-z0-9]{1,10})?$`)
+	for _, tc := range []struct {
+		name, contentType, wantExt, oldSpelling string
+	}{
+		{"clip.mp4 (1)", "video/mp4", ".mp4", ".mp4 (1)"},
+		{"pic.png?x=1", "image/png", ".png", ".png?x=1"},
+		{"photo.JPG#frag", "image/jpeg", ".jpg", ".jpg#frag"},
+		{"song.mp3%20", "audio/mpeg", ".mp3", ".mp3%20"},
+		{"notes.weird ext", "application/octet-stream", "", ".weird ext"},
+	} {
+		meme, err := store.Create(accessor.CreateInput{File: strings.NewReader("bytes of " + tc.name), Filename: tc.name, ContentType: tc.contentType})
+		if err != nil {
+			t.Fatal(err)
+		}
+		link := createShareLink(t, server, meme)
+		parsed, err := url.Parse(link)
+		if err != nil {
+			t.Fatalf("%q: link %q does not parse: %v", tc.name, link, err)
+		}
+		slug := strings.TrimSuffix(strings.TrimPrefix(parsed.Path, "/s/"), tc.wantExt)
+		if parsed.RawQuery != "" || parsed.Fragment != "" || parsed.EscapedPath() != "/s/"+slug+tc.wantExt || len(slug) != shareSlugLength {
+			t.Fatalf("%q: share link = %q, want /s/<code>%s", tc.name, link, tc.wantExt)
+		}
+		if !cleanShareLink.MatchString(link) {
+			t.Fatalf("%q: share link %q carries characters a chat app may cut it at", tc.name, link)
+		}
+
+		recorder := getShareLink(server, link)
+		if recorder.Code != http.StatusOK || recorder.Body.String() != "bytes of "+tc.name {
+			t.Fatalf("%q: link status = %d, body = %q", tc.name, recorder.Code, recorder.Body.String())
+		}
+		if got := recorder.Header().Get("Cloudflare-CDN-Cache-Control"); got != "public, max-age=86400" {
+			t.Fatalf("%q: Cloudflare-CDN-Cache-Control = %q, the link handed out must be edge-cacheable", tc.name, got)
+		}
+
+		// The spelling a link carried before still finds the share, but is
+		// not the link handed out now, so it is not cached at the edge.
+		old := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, "https://memes.example.com/s/"+slug, nil)
+		request.URL.Path += tc.oldSpelling
+		request.URL.RawPath = ""
+		request.URL.RawQuery = ""
+		server.handleShareLink(old, request)
+		if old.Code != http.StatusOK || old.Body.String() != "bytes of "+tc.name {
+			t.Fatalf("%q: old link status = %d", tc.name, old.Code)
+		}
+		if got := old.Header().Get("Cloudflare-CDN-Cache-Control"); got != "no-store" {
+			t.Fatalf("%q: old link Cloudflare-CDN-Cache-Control = %q, want no-store", tc.name, got)
+		}
+	}
+}
+
+// The legacy /m/<id>/media/<name> links were issued with the original name's
+// extension as-is, odd characters included, and must keep validating.
+func TestLegacyMediaLinkKeepsTheOriginalExtension(t *testing.T) {
+	server, store, _ := newShareTestServer(t)
+	meme, err := store.Create(accessor.CreateInput{File: strings.NewReader("clip bytes"), Filename: "clip.MP4 (1)", ContentType: "video/mp4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	share, err := store.GetOrCreateMemeShare(meme.ID, "admin-1", now, now.Add(30*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := url.QueryEscape(server.signMemeShare(share))
+	get := func(name string) int {
+		recorder := httptest.NewRecorder()
+		server.handleMemeLink(recorder, httptest.NewRequest(http.MethodGet, "https://memes.example.com/m/"+meme.ID+"/media/"+url.PathEscape(name)+"?share="+token, nil))
+		return recorder.Code
+	}
+	if code := get("shared.mp4 (1)"); code != http.StatusOK {
+		t.Fatalf("legacy media link status = %d, want 200", code)
+	}
+	if code := get("shared.mp4"); code != http.StatusNotFound {
+		t.Fatalf("legacy media link with another name status = %d, want 404", code)
+	}
+}
+
 // A share close to its expiry must not outlive it at the edge.
 func TestShareLinkEdgeCacheNeverOutlivesTheShare(t *testing.T) {
 	server, store, meme := newShareTestServer(t)
