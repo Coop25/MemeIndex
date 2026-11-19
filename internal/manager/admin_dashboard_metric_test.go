@@ -58,7 +58,7 @@ func TestAdminDashboardMetricSeriesEndsAtCurrentTotals(t *testing.T) {
 		},
 	}
 
-	dashboard := NewMemeManager(store).AdminDashboard()
+	dashboard := NewMemeManager(store).AdminDashboard(context.Background())
 	if len(dashboard.MetricSeries) != 30 {
 		t.Fatalf("metric series length = %d, want 30", len(dashboard.MetricSeries))
 	}

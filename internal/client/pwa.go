@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"errors"
 	"log"
 	"mime/multipart"
@@ -101,7 +102,7 @@ func (s *Server) handleShareTarget(w http.ResponseWriter, r *http.Request) {
 				log.Printf("share-target: open shared file failed: %v", err)
 				continue
 			}
-			meme, err := s.managers.CreateMemeAs(actor, src, fileHeader.Header, fileHeader.Filename, nil, notes)
+			meme, err := s.managers.CreateMemeAs(context.TODO(), actor, src, fileHeader.Header, fileHeader.Filename, nil, notes)
 			_ = src.Close()
 			if err != nil {
 				var duplicateErr *accessor.DuplicateMemeError
@@ -113,7 +114,7 @@ func (s *Server) handleShareTarget(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			created++
-			s.managers.QueueMemeTagSuggestions(meme.ID)
+			s.managers.QueueMemeTagSuggestions(context.TODO(), meme.ID)
 		}
 		switch {
 		case created > 0:
@@ -150,7 +151,7 @@ func (s *Server) handleShareTarget(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		s.managers.QueueMemeTagSuggestions(meme.ID)
+		s.managers.QueueMemeTagSuggestions(context.TODO(), meme.ID)
 		http.Redirect(w, r, "/?shared=ok&n=1", http.StatusSeeOther)
 		return
 	}

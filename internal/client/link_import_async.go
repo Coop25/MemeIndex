@@ -107,7 +107,7 @@ func (s *Server) importLinkWithinBudget(r *http.Request, actor accessor.AuditAct
 func (s *Server) finishBackgroundLinkImport(done <-chan linkImportOutcome, actor accessor.AuditActor, sourceURL string, tags []string, notes string) {
 	out := <-done
 	if out.err == nil {
-		s.managers.QueueMemeTagSuggestions(out.meme.ID)
+		s.managers.QueueMemeTagSuggestions(context.TODO(), out.meme.ID)
 		log.Printf("background link import of %q finished", sanitizeLogField(sourceURL))
 		return
 	}

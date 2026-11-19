@@ -144,7 +144,7 @@ func TestPreviewBackfillRestartsAfterRestore(t *testing.T) {
 	if _, rendered := store.progress(); !slices.Equal(rendered, []string{"a"}) {
 		t.Fatalf("rendered during the restore = %v, want only the one in flight", rendered)
 	}
-	if err := m.ReloadAfterRestore(); err != nil {
+	if err := m.ReloadAfterRestore(context.Background()); err != nil {
 		t.Fatalf("ReloadAfterRestore: %v", err)
 	}
 	resume()

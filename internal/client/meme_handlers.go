@@ -120,7 +120,7 @@ func (s *Server) handleMemeByID(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		meme, err := s.managers.GetMeme(currentUserID(r), id)
+		meme, err := s.managers.GetMeme(context.TODO(), currentUserID(r), id)
 		if errors.Is(err, os.ErrNotExist) {
 			http.NotFound(w, r)
 			return
@@ -143,7 +143,7 @@ func (s *Server) handleMemeByID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getStoredMemeTagSuggestions(w http.ResponseWriter, r *http.Request, id string) {
-	result, err := s.managers.GetStoredMemeTagSuggestions(id)
+	result, err := s.managers.GetStoredMemeTagSuggestions(context.TODO(), id)
 	if err == nil {
 		writeJSON(w, http.StatusOK, result)
 		return
@@ -210,7 +210,7 @@ func (s *Server) updateStoredMemeTagSuggestions(w http.ResponseWriter, r *http.R
 
 	switch strings.ToLower(strings.TrimSpace(payload.Action)) {
 	case "dismiss":
-		meme, err := s.managers.DismissMemeTagSuggestion(currentUserID(r), id, payload.Tag)
+		meme, err := s.managers.DismissMemeTagSuggestion(context.TODO(), currentUserID(r), id, payload.Tag)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				http.NotFound(w, r)
@@ -222,7 +222,7 @@ func (s *Server) updateStoredMemeTagSuggestions(w http.ResponseWriter, r *http.R
 		}
 		writeJSON(w, http.StatusOK, s.protectMemeForResponse(r, meme))
 	case "dismiss_all":
-		meme, err := s.managers.DismissAllMemeTagSuggestions(currentUserID(r), id)
+		meme, err := s.managers.DismissAllMemeTagSuggestions(context.TODO(), currentUserID(r), id)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				http.NotFound(w, r)
@@ -241,7 +241,7 @@ func (s *Server) updateStoredMemeTagSuggestions(w http.ResponseWriter, r *http.R
 				return
 			}
 		}
-		meme, err := s.managers.ApplyMemeTagSuggestion(currentUserID(r), id, payload.Tag, currentAuditActor(r))
+		meme, err := s.managers.ApplyMemeTagSuggestion(context.TODO(), currentUserID(r), id, payload.Tag, currentAuditActor(r))
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				http.NotFound(w, r)
@@ -336,7 +336,7 @@ func (s *Server) handleSaveLink(w http.ResponseWriter, r *http.Request) {
 	body := "[InternetShortcut]\r\nURL=" + parsed.String() + "\r\n"
 	header := textproto.MIMEHeader{}
 	header.Set("Content-Type", "application/internet-shortcut")
-	meme, err := s.managers.CreateMemeAsWithSource(currentAuditActor(r), strings.NewReader(body), header, filename, payload.Tags, payload.Notes, parsed.String())
+	meme, err := s.managers.CreateMemeAsWithSource(context.TODO(), currentAuditActor(r), strings.NewReader(body), header, filename, payload.Tags, payload.Notes, parsed.String())
 	if err != nil {
 		var duplicateErr *accessor.DuplicateMemeError
 		if errors.As(err, &duplicateErr) {
@@ -352,7 +352,7 @@ func (s *Server) handleSaveLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if payload.Favorite {
-		if updated, favoriteErr := s.managers.SetFavorite(currentUserID(r), meme.ID, true); favoriteErr == nil {
+		if updated, favoriteErr := s.managers.SetFavorite(context.TODO(), currentUserID(r), meme.ID, true); favoriteErr == nil {
 			meme = updated
 		}
 	}
@@ -465,7 +465,7 @@ func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
 			"duplicates": []map[string]any{},
 			"skipped":    0,
 		})
-		s.managers.QueueMemeTagSuggestions(meme.ID)
+		s.managers.QueueMemeTagSuggestions(context.TODO(), meme.ID)
 		return
 	}
 
@@ -484,7 +484,7 @@ func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		meme, err := s.managers.CreateMemeAs(
+		meme, err := s.managers.CreateMemeAs(context.TODO(),
 			currentAuditActor(r),
 			src,
 			fileHeader.Header,
@@ -509,7 +509,7 @@ func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
 		}
 
 		created = append(created, meme)
-		s.managers.QueueMemeTagSuggestions(meme.ID)
+		s.managers.QueueMemeTagSuggestions(context.TODO(), meme.ID)
 	}
 
 	if len(created) == 0 && len(duplicates) == 0 {
@@ -615,7 +615,7 @@ func (s *Server) updateMeme(w http.ResponseWriter, r *http.Request, id string) {
 	edit.Actor = currentAuditActor(r)
 	edit.Authorize = authorizeMemeEdit(session.Permissions)
 
-	meme, err := s.managers.EditMeme(currentUserID(r), id, edit)
+	meme, err := s.managers.EditMeme(context.TODO(), currentUserID(r), id, edit)
 	var forbidden *memeEditForbiddenError
 	if errors.As(err, &forbidden) {
 		writeJSON(w, http.StatusForbidden, map[string]any{"error": forbidden.message})
@@ -643,7 +643,7 @@ func (s *Server) updateFavorite(w http.ResponseWriter, r *http.Request, id strin
 		return
 	}
 
-	meme, err := s.managers.SetFavoriteAs(currentUserID(r), id, payload.Favorite, currentAuditActor(r))
+	meme, err := s.managers.SetFavoriteAs(context.TODO(), currentUserID(r), id, payload.Favorite, currentAuditActor(r))
 	if errors.Is(err, os.ErrNotExist) {
 		http.NotFound(w, r)
 		return
@@ -658,7 +658,7 @@ func (s *Server) updateFavorite(w http.ResponseWriter, r *http.Request, id strin
 }
 
 func (s *Server) deleteMeme(w http.ResponseWriter, r *http.Request, id string) {
-	result, err := s.managers.DeleteMeme(id, currentAuditActor(r))
+	result, err := s.managers.DeleteMeme(context.TODO(), id, currentAuditActor(r))
 	if errors.Is(err, os.ErrNotExist) {
 		http.NotFound(w, r)
 		return
@@ -687,7 +687,7 @@ func (s *Server) handleTags(w http.ResponseWriter, r *http.Request) {
 
 	query := r.URL.Query().Get("q")
 	writeJSON(w, http.StatusOK, map[string]any{
-		"tags": s.managers.SuggestTags(query, 8),
+		"tags": s.managers.SuggestTags(context.TODO(), query, 8),
 	})
 }
 
@@ -729,7 +729,7 @@ func (s *Server) handleRandomMeme(w http.ResponseWriter, r *http.Request) {
 		sessionID = ""
 	}
 	direction := r.URL.Query().Get("direction")
-	result, err := s.managers.StepRandomReel(sessionID, direction)
+	result, err := s.managers.StepRandomReel(context.TODO(), sessionID, direction)
 	if errors.Is(err, os.ErrNotExist) {
 		http.Error(w, "no memes available", http.StatusNotFound)
 		return
@@ -762,7 +762,7 @@ func (s *Server) handleReelSession(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if err := s.managers.DeleteRandomReelSession(sessionID); err != nil {
+	if err := s.managers.DeleteRandomReelSession(context.TODO(), sessionID); err != nil {
 		log.Printf("delete reel session failed: %v", err)
 		http.Error(w, "failed to delete reel session", http.StatusInternalServerError)
 		return

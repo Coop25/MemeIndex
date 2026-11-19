@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -58,7 +59,7 @@ func (s *Server) createMemeShare(w http.ResponseWriter, r *http.Request, memeID 
 		return
 	}
 	now := time.Now().UTC()
-	share, err := s.managers.GetOrCreateMemeShare(memeID, currentUserID(r), now)
+	share, err := s.managers.GetOrCreateMemeShare(context.TODO(), memeID, currentUserID(r), now)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			http.NotFound(w, r)
@@ -67,7 +68,7 @@ func (s *Server) createMemeShare(w http.ResponseWriter, r *http.Request, memeID 
 		http.Error(w, "failed to create share link", http.StatusInternalServerError)
 		return
 	}
-	_, meme, err := s.managers.GetMemeShare(memeID)
+	_, meme, err := s.managers.GetMemeShare(context.TODO(), memeID)
 	if err != nil {
 		http.Error(w, "failed to load shared meme", http.StatusInternalServerError)
 		return
@@ -112,7 +113,7 @@ func (s *Server) handleMemeLink(w http.ResponseWriter, r *http.Request) {
 
 	token := strings.TrimSpace(r.URL.Query().Get("share"))
 	if token != "" {
-		share, meme, err := s.managers.GetMemeShare(memeID)
+		share, meme, err := s.managers.GetMemeShare(context.TODO(), memeID)
 		if err == nil && s.validMemeShareToken(token, share, time.Now().UTC()) {
 			if len(parts) == 3 && parts[2] != sharedAssetFileName(meme, assetKind == "preview") {
 				http.NotFound(w, r)
@@ -175,7 +176,7 @@ func (s *Server) handleShareLink(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	share, meme, current, err := s.managers.ResolveMemeShareLink(slug)
+	share, meme, current, err := s.managers.ResolveMemeShareLink(context.TODO(), slug)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			http.Error(w, "failed to load shared meme", http.StatusInternalServerError)
@@ -211,7 +212,7 @@ const shareLinkEdgeCacheTTL = 24 * time.Hour
 func (s *Server) handleAdminShares(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/api/admin/shares" {
 		if r.Method == http.MethodDelete {
-			revoked, err := s.managers.RevokeAllMemeShares(time.Now().UTC())
+			revoked, err := s.managers.RevokeAllMemeShares(context.TODO(), time.Now().UTC())
 			if err != nil {
 				http.Error(w, "failed to revoke shares", http.StatusInternalServerError)
 				return
@@ -226,7 +227,7 @@ func (s *Server) handleAdminShares(w http.ResponseWriter, r *http.Request) {
 		query := r.URL.Query()
 		requestedOffset, _ := strconv.Atoi(query.Get("offset"))
 		requestedLimit, _ := strconv.Atoi(query.Get("limit"))
-		shares, total, offset, limit, err := s.managers.ListActiveMemeSharesPage(time.Now().UTC(), requestedOffset, requestedLimit)
+		shares, total, offset, limit, err := s.managers.ListActiveMemeSharesPage(context.TODO(), time.Now().UTC(), requestedOffset, requestedLimit)
 		if err != nil {
 			http.Error(w, "failed to list shared memes", http.StatusInternalServerError)
 			return
@@ -279,7 +280,7 @@ func (s *Server) handleAdminShares(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if err := s.managers.RevokeMemeShare(memeID); err != nil {
+	if err := s.managers.RevokeMemeShare(context.TODO(), memeID); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			http.NotFound(w, r)
 			return

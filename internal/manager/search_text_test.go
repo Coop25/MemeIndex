@@ -35,7 +35,7 @@ func TestResetTagSuggestionsClearsSearchTextForSuggestedMemes(t *testing.T) {
 	}}}
 	m := NewMemeManager(store)
 
-	if _, err := m.ResetTagSuggestionsAndRequeueUntagged(accessor.AuditActor{UserID: "admin"}); err != nil {
+	if _, err := m.ResetTagSuggestionsAndRequeueUntagged(context.Background(), accessor.AuditActor{UserID: "admin"}); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
 

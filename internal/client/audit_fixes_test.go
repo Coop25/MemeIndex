@@ -119,11 +119,11 @@ func TestUntrustedAssetHeadersNeutralizeScriptTypes(t *testing.T) {
 func newPatchTestServer(t *testing.T) (*Server, accessor.Meme) {
 	t.Helper()
 	server, _ := newShareTargetTestServer(t)
-	meme, err := server.managers.CreateMemeAs(accessor.AuditActor{}, strings.NewReader("hello"), textproto.MIMEHeader{}, "a.txt", []string{"cat", "dog"}, "original notes")
+	meme, err := server.managers.CreateMemeAs(context.Background(), accessor.AuditActor{}, strings.NewReader("hello"), textproto.MIMEHeader{}, "a.txt", []string{"cat", "dog"}, "original notes")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := server.managers.SetFavorite("", meme.ID, true); err != nil {
+	if _, err := server.managers.SetFavorite(context.Background(), "", meme.ID, true); err != nil {
 		t.Fatal(err)
 	}
 	return server, meme
@@ -144,7 +144,7 @@ func TestAnonymousModeCanEditMemes(t *testing.T) {
 	if code, body := patchMeme(t, server, meme.ID, `{"tags":["cat","dog","bird"],"notes":"hi"}`); code != http.StatusOK {
 		t.Fatalf("anonymous PATCH status = %d: %s", code, body)
 	}
-	got, err := server.managers.GetMeme("", meme.ID)
+	got, err := server.managers.GetMeme(context.Background(), "", meme.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +159,7 @@ func TestMemePatchKeepsOmittedFields(t *testing.T) {
 	if code, body := patchMeme(t, server, meme.ID, `{"notes":"only the notes changed"}`); code != http.StatusOK {
 		t.Fatalf("PATCH status = %d: %s", code, body)
 	}
-	got, err := server.managers.GetMeme("", meme.ID)
+	got, err := server.managers.GetMeme(context.Background(), "", meme.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +186,7 @@ func TestMemePatchTagDeltaMergesWithCurrentTags(t *testing.T) {
 	if code, body := patchMeme(t, server, meme.ID, `{"tags_added":["bird"],"tags_removed":["dog"]}`); code != http.StatusOK {
 		t.Fatalf("second PATCH status = %d: %s", code, body)
 	}
-	got, err := server.managers.GetMeme("", meme.ID)
+	got, err := server.managers.GetMeme(context.Background(), "", meme.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

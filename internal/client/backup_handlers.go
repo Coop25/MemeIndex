@@ -179,7 +179,7 @@ func (s *Server) runBackupRestore(w http.ResponseWriter, r *http.Request, restor
 // is left alone: it holds catalog answers keyed by title and author, not
 // restored data.
 func (s *Server) reloadAfterRestore(what string) {
-	if err := s.managers.ReloadAfterRestore(); err != nil {
+	if err := s.managers.ReloadAfterRestore(context.TODO()); err != nil {
 		log.Printf("reload in-memory state after %s failed: %v", what, err)
 	}
 	s.auth.invalidateAll()

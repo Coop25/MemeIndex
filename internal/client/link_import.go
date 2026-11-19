@@ -101,7 +101,7 @@ func (s *Server) createMemeFromSourceURL(ctx context.Context, actor accessor.Aud
 		header.Set("Content-Type", contentType)
 	}
 
-	return s.managers.CreateMemeAsWithSource(
+	return s.managers.CreateMemeAsWithSource(context.TODO(),
 		actor,
 		src,
 		header,
@@ -143,7 +143,7 @@ func (s *Server) processRetriedLinkJob(ctx context.Context, job LinkRetryJob) er
 		}
 		return err
 	}
-	s.managers.QueueMemeTagSuggestions(meme.ID)
+	s.managers.QueueMemeTagSuggestions(context.TODO(), meme.ID)
 	return nil
 }
 

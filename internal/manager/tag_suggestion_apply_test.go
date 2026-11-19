@@ -26,8 +26,8 @@ type notesRaceStore struct {
 	fired bool
 }
 
-func (s *notesRaceStore) GetByID(_ context.Context, userID, id string) (accessor.Meme, error) {
-	meme, err := s.suggestionTestStore.GetByID(context.Background(), userID, id)
+func (s *notesRaceStore) GetByID(ctx context.Context, userID, id string) (accessor.Meme, error) {
+	meme, err := s.suggestionTestStore.GetByID(ctx, userID, id)
 	if err == nil && !s.fired {
 		s.fired = true
 		notes := "edited by someone else"
@@ -86,7 +86,7 @@ func testApplySuggestionKeepsNotes(t *testing.T, store suggestionTestStore) {
 	}
 
 	m := NewMemeManager(&notesRaceStore{suggestionTestStore: store})
-	if _, err := m.ApplyMemeTagSuggestion("u-apply", meme.ID, token+"-dog", accessor.AuditActor{UserID: "u-apply"}); err != nil {
+	if _, err := m.ApplyMemeTagSuggestion(context.Background(), "u-apply", meme.ID, token+"-dog", accessor.AuditActor{UserID: "u-apply"}); err != nil {
 		t.Fatalf("ApplyMemeTagSuggestion: %v", err)
 	}
 

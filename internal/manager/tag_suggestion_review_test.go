@@ -71,7 +71,7 @@ func TestTagSuggestionQueueStatusPaginatesPendingReview(t *testing.T) {
 	}
 
 	manager := NewMemeManager(store)
-	status := manager.TagSuggestionQueueStatus(50, 50)
+	status := manager.TagSuggestionQueueStatus(context.Background(), 50, 50)
 	if status.PendingSuggestionMemes != 125 {
 		t.Fatalf("pending total = %d, want 125", status.PendingSuggestionMemes)
 	}
@@ -85,7 +85,7 @@ func TestTagSuggestionQueueStatusPaginatesPendingReview(t *testing.T) {
 		t.Fatalf("pagination = has_more %v next %d, want true and 100", status.PendingReviewHasMore, status.PendingReviewNextOffset)
 	}
 
-	lastPage := manager.TagSuggestionQueueStatus(100, 50)
+	lastPage := manager.TagSuggestionQueueStatus(context.Background(), 100, 50)
 	if len(lastPage.PendingReviewMemes) != 25 || lastPage.PendingReviewHasMore {
 		t.Fatalf("last page = %d items, has_more %v; want 25 and false", len(lastPage.PendingReviewMemes), lastPage.PendingReviewHasMore)
 	}
@@ -98,7 +98,7 @@ func TestDismissAllMemeTagSuggestionsClearsReviewItem(t *testing.T) {
 	}}}
 	manager := NewMemeManager(store)
 
-	meme, err := manager.DismissAllMemeTagSuggestions("", "reviewed")
+	meme, err := manager.DismissAllMemeTagSuggestions(context.Background(), "", "reviewed")
 	if err != nil {
 		t.Fatalf("dismiss all: %v", err)
 	}

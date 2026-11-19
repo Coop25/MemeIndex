@@ -29,8 +29,8 @@ type extraRefsMemeStore struct {
 	extra []accessor.StoredFile
 }
 
-func (s *extraRefsMemeStore) AllStoredFiles(_ context.Context) ([]accessor.StoredFile, error) {
-	files, err := s.MemeStore.AllStoredFiles(context.Background())
+func (s *extraRefsMemeStore) AllStoredFiles(ctx context.Context) ([]accessor.StoredFile, error) {
+	files, err := s.MemeStore.AllStoredFiles(ctx)
 	if err != nil {
 		return nil, err
 	}

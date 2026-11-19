@@ -35,8 +35,8 @@ func (s *refreshRaceStore) land(id string) error {
 	return s.ReplaceSuggestedTags(context.Background(), id, s.refresh)
 }
 
-func (s *refreshRaceStore) EditMeme(_ context.Context, userID, id string, edit accessor.MemeEdit) (accessor.Meme, error) {
-	meme, err := s.suggestionTestStore.EditMeme(context.Background(), userID, id, edit)
+func (s *refreshRaceStore) EditMeme(ctx context.Context, userID, id string, edit accessor.MemeEdit) (accessor.Meme, error) {
+	meme, err := s.suggestionTestStore.EditMeme(ctx, userID, id, edit)
 	if err == nil && s.afterEdit {
 		if err := s.land(id); err != nil {
 			return accessor.Meme{}, err
@@ -45,8 +45,8 @@ func (s *refreshRaceStore) EditMeme(_ context.Context, userID, id string, edit a
 	return meme, err
 }
 
-func (s *refreshRaceStore) GetByID(_ context.Context, userID, id string) (accessor.Meme, error) {
-	meme, err := s.suggestionTestStore.GetByID(context.Background(), userID, id)
+func (s *refreshRaceStore) GetByID(ctx context.Context, userID, id string) (accessor.Meme, error) {
+	meme, err := s.suggestionTestStore.GetByID(ctx, userID, id)
 	if err == nil && !s.afterEdit {
 		if err := s.land(id); err != nil {
 			return accessor.Meme{}, err
@@ -116,9 +116,9 @@ func testSuggestionRefreshSurvives(t *testing.T, store suggestionTestStore, appl
 	refreshed := []string{token + "-bird", token + "-dog"}
 	m := NewMemeManager(&refreshRaceStore{suggestionTestStore: store, afterEdit: apply, refresh: refreshed})
 	if apply {
-		_, err = m.ApplyMemeTagSuggestion("u-apply", meme.ID, token+"-dog", accessor.AuditActor{UserID: "u-apply"})
+		_, err = m.ApplyMemeTagSuggestion(context.Background(), "u-apply", meme.ID, token+"-dog", accessor.AuditActor{UserID: "u-apply"})
 	} else {
-		_, err = m.DismissMemeTagSuggestion("u-dismiss", meme.ID, token+"-dog")
+		_, err = m.DismissMemeTagSuggestion(context.Background(), "u-dismiss", meme.ID, token+"-dog")
 	}
 	if err != nil {
 		t.Fatalf("apply=%v: %v", apply, err)

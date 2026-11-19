@@ -8,12 +8,12 @@ import (
 	"time"
 )
 
-func (m *MemeManager) GetOrCreateMemeShare(memeID, userID string, now time.Time) (accessor.MemeShareState, error) {
+func (m *MemeManager) GetOrCreateMemeShare(ctx context.Context, memeID, userID string, now time.Time) (accessor.MemeShareState, error) {
 	store, ok := m.store.(accessor.MemeShareStore)
 	if !ok {
 		return accessor.MemeShareState{}, errors.New("meme sharing is unavailable")
 	}
-	return store.GetOrCreateMemeShare(context.TODO(), strings.TrimSpace(memeID), strings.TrimSpace(userID), now.UTC(), now.UTC().Add(MemeShareLifetime))
+	return store.GetOrCreateMemeShare(ctx, strings.TrimSpace(memeID), strings.TrimSpace(userID), now.UTC(), now.UTC().Add(MemeShareLifetime))
 }
 
 // MemeShareLifetime is how long a share link serves its file. Sharing a meme
@@ -23,32 +23,32 @@ const MemeShareLifetime = 365 * 24 * time.Hour
 // ResolveMemeShareLink looks up a share link code. current reports whether the
 // code belongs to the meme's current share generation; an older code still
 // resolves so its link can redirect to the meme, but must not serve the file.
-func (m *MemeManager) ResolveMemeShareLink(slug string) (share accessor.MemeShareState, meme accessor.Meme, current bool, err error) {
+func (m *MemeManager) ResolveMemeShareLink(ctx context.Context, slug string) (share accessor.MemeShareState, meme accessor.Meme, current bool, err error) {
 	store, ok := m.store.(accessor.MemeShareStore)
 	if !ok {
 		return accessor.MemeShareState{}, accessor.Meme{}, false, errors.New("meme sharing is unavailable")
 	}
-	memeID, generation, err := store.ResolveMemeShareSlug(context.TODO(), strings.TrimSpace(slug))
+	memeID, generation, err := store.ResolveMemeShareSlug(ctx, strings.TrimSpace(slug))
 	if err != nil {
 		return accessor.MemeShareState{}, accessor.Meme{}, false, err
 	}
-	share, meme, err = m.GetMemeShare(memeID)
+	share, meme, err = m.GetMemeShare(ctx, memeID)
 	if err != nil {
 		return accessor.MemeShareState{}, accessor.Meme{}, false, err
 	}
 	return share, meme, generation == share.Generation, nil
 }
 
-func (m *MemeManager) GetMemeShare(memeID string) (accessor.MemeShareState, accessor.Meme, error) {
+func (m *MemeManager) GetMemeShare(ctx context.Context, memeID string) (accessor.MemeShareState, accessor.Meme, error) {
 	store, ok := m.store.(accessor.MemeShareStore)
 	if !ok {
 		return accessor.MemeShareState{}, accessor.Meme{}, errors.New("meme sharing is unavailable")
 	}
-	share, err := store.GetMemeShareState(context.TODO(), strings.TrimSpace(memeID))
+	share, err := store.GetMemeShareState(ctx, strings.TrimSpace(memeID))
 	if err != nil {
 		return accessor.MemeShareState{}, accessor.Meme{}, err
 	}
-	meme, err := m.store.GetByID(context.TODO(), "", share.MemeID)
+	meme, err := m.store.GetByID(ctx, "", share.MemeID)
 	return share, meme, err
 }
 
@@ -57,12 +57,12 @@ type ActiveMemeShare struct {
 	Share accessor.MemeShareState `json:"share"`
 }
 
-func (m *MemeManager) ListActiveMemeShares(now time.Time) ([]ActiveMemeShare, error) {
+func (m *MemeManager) ListActiveMemeShares(ctx context.Context, now time.Time) ([]ActiveMemeShare, error) {
 	store, ok := m.store.(accessor.MemeShareStore)
 	if !ok {
 		return nil, errors.New("meme sharing is unavailable")
 	}
-	states, err := store.ListActiveMemeShares(context.TODO(), now.UTC())
+	states, err := store.ListActiveMemeShares(ctx, now.UTC())
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +71,7 @@ func (m *MemeManager) ListActiveMemeShares(now time.Time) ([]ActiveMemeShare, er
 	for _, state := range states {
 		ids = append(ids, state.MemeID)
 	}
-	memes := m.memesByIDs(ids)
+	memes := m.memesByIDs(ctx, ids)
 
 	result := make([]ActiveMemeShare, 0, len(states))
 	for _, state := range states {
@@ -94,7 +94,7 @@ const (
 // with the total number of active shares. Only the page's memes are loaded.
 // An offset past the end is pulled back to the last page, so revoking the only
 // row on the final page does not leave the caller on an empty one.
-func (m *MemeManager) ListActiveMemeSharesPage(now time.Time, offset, limit int) (shares []ActiveMemeShare, total int, pageOffset int, pageLimit int, err error) {
+func (m *MemeManager) ListActiveMemeSharesPage(ctx context.Context, now time.Time, offset, limit int) (shares []ActiveMemeShare, total int, pageOffset int, pageLimit int, err error) {
 	store, ok := m.store.(accessor.MemeShareStore)
 	if !ok {
 		return nil, 0, 0, 0, errors.New("meme sharing is unavailable")
@@ -105,7 +105,7 @@ func (m *MemeManager) ListActiveMemeSharesPage(now time.Time, offset, limit int)
 	if limit > activeSharesPageMaxLimit {
 		limit = activeSharesPageMaxLimit
 	}
-	states, err := store.ListActiveMemeShares(context.TODO(), now.UTC())
+	states, err := store.ListActiveMemeShares(ctx, now.UTC())
 	if err != nil {
 		return nil, 0, 0, 0, err
 	}
@@ -125,7 +125,7 @@ func (m *MemeManager) ListActiveMemeSharesPage(now time.Time, offset, limit int)
 	for _, state := range page {
 		ids = append(ids, state.MemeID)
 	}
-	memes := m.memesByIDs(ids)
+	memes := m.memesByIDs(ctx, ids)
 	shares = make([]ActiveMemeShare, 0, len(page))
 	for _, state := range page {
 		if meme, ok := memes[state.MemeID]; ok {
@@ -135,18 +135,18 @@ func (m *MemeManager) ListActiveMemeSharesPage(now time.Time, offset, limit int)
 	return shares, total, offset, limit, nil
 }
 
-func (m *MemeManager) RevokeMemeShare(memeID string) error {
+func (m *MemeManager) RevokeMemeShare(ctx context.Context, memeID string) error {
 	store, ok := m.store.(accessor.MemeShareStore)
 	if !ok {
 		return errors.New("meme sharing is unavailable")
 	}
-	return store.RevokeMemeShare(context.TODO(), strings.TrimSpace(memeID))
+	return store.RevokeMemeShare(ctx, strings.TrimSpace(memeID))
 }
 
-func (m *MemeManager) RevokeAllMemeShares(now time.Time) (int, error) {
+func (m *MemeManager) RevokeAllMemeShares(ctx context.Context, now time.Time) (int, error) {
 	store, ok := m.store.(accessor.MemeShareStore)
 	if !ok {
 		return 0, errors.New("meme sharing is unavailable")
 	}
-	return store.RevokeAllMemeShares(context.TODO(), now.UTC())
+	return store.RevokeAllMemeShares(ctx, now.UTC())
 }

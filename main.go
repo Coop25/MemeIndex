@@ -70,7 +70,7 @@ func main() {
 	memeManager.StartPreviewAssetBackfill()
 	memeManager.StartTagHygieneWorker()
 	memeManager.StartTagSuggestionWorkerAfterSweep()
-	if queued := memeManager.SeedTagSuggestionQueue(); queued > 0 {
+	if queued := memeManager.SeedTagSuggestionQueue(ctx); queued > 0 {
 		log.Printf("tag suggestion worker: queued %d existing untagged meme(s) with no pending suggestions", queued)
 	}
 
@@ -213,7 +213,7 @@ func runNightlyReelSessionCleanup(ctx context.Context, memeManager *manager.Meme
 		case <-timer.C:
 		}
 
-		if err := memeManager.CleanupStaleReelSessions(); err != nil {
+		if err := memeManager.CleanupStaleReelSessions(ctx); err != nil {
 			log.Printf("nightly reel session cleanup failed: %v", err)
 			continue
 		}
