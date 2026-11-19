@@ -1114,6 +1114,21 @@ func extractPortableArchive(source io.Reader, destination string) error {
 	return extractPortableArchiveWithLimits(source, destination, defaultMaxExtractBytes, defaultMaxExtractEntries)
 }
 
+// readErrorRecorder remembers the error its reader failed with, so a caller of
+// io.Copy can tell a failed read from a failed write.
+type readErrorRecorder struct {
+	r   io.Reader
+	err error
+}
+
+func (r *readErrorRecorder) Read(p []byte) (int, error) {
+	n, err := r.r.Read(p)
+	if err != nil && err != io.EOF {
+		r.err = err
+	}
+	return n, err
+}
+
 func extractPortableArchiveWithLimits(source io.Reader, destination string, maxBytes int64, maxEntries int) error {
 	// Clean first so the containment check below compares like with like: a
 	// data directory configured with forward slashes on Windows would never
@@ -1163,9 +1178,14 @@ func extractPortableArchiveWithLimits(source io.Reader, destination string, maxB
 			if err != nil {
 				return fmt.Errorf("extract %s: %w", clean, err)
 			}
-			_, copyErr := io.Copy(file, tr)
+			contents := &readErrorRecorder{r: tr}
+			_, copyErr := io.Copy(file, contents)
 			closeErr := file.Close()
-			if errors.Is(copyErr, io.ErrUnexpectedEOF) {
+			if copyErr != nil && contents.err != nil {
+				// Reading the archive failed (cut short, corrupt, or the
+				// connection it streams over broke), as opposed to writing
+				// the file here: the admin's to sort out, like a failure
+				// reading an entry's header above.
 				return userErrorWrap("the backup archive is truncated or damaged", copyErr)
 			}
 			if copyErr != nil {
