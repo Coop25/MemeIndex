@@ -153,17 +153,40 @@ func (s *Server) runBackupRestore(w http.ResponseWriter, r *http.Request, restor
 	}
 	defer resume()
 	if err := restore(r.Context()); err != nil {
+		// A problem with the backup itself (missing files, wrong format,
+		// another server's data directory) is the admin's to fix and is
+		// spelled out. Anything else - database errors, this server's file
+		// paths - stays in the log.
 		log.Printf("backup import failed: %v", err)
-		http.Error(w, "backup import failed: "+err.Error(), http.StatusBadRequest)
+		httpErrorClientSafe(w, err, "the server could not complete the restore; its log has the details", "backup import failed: ")
 		return
 	}
-	if err := s.managers.ReloadAfterRestore(); err != nil {
-		log.Printf("reload in-memory state after backup import failed: %v", err)
-	}
+	s.reloadAfterRestore("backup import")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":      true,
 		"message": "Backup imported successfully.",
 	})
+}
+
+// reloadAfterRestore brings everything the server keeps in memory about the
+// database and media directories in line with what a restore or migration
+// import just installed: the meme manager's state, every cached session
+// (app_users was replaced wholesale, so a cached session could belong to a
+// user the restored data no longer has, or carry stale permissions), the
+// admin dashboard's audiobook aggregates, and the storage report and orphan
+// scan. The orphan scan is the allow-list for orphan deletes, so it must not
+// outlive the files it was taken against. The audiobook series lookup cache
+// is left alone: it holds catalog answers keyed by title and author, not
+// restored data.
+func (s *Server) reloadAfterRestore(what string) {
+	if err := s.managers.ReloadAfterRestore(); err != nil {
+		log.Printf("reload in-memory state after %s failed: %v", what, err)
+	}
+	s.auth.invalidateAll()
+	s.audiobookAdminStats.invalidate()
+	s.audiobookActivity.invalidate()
+	s.storage.invalidateReport()
+	s.storage.setScan(nil)
 }
 
 // handleBackupImportParts serves the staging area for restoring a split
@@ -179,7 +202,8 @@ func (s *Server) handleBackupImportParts(w http.ResponseWriter, r *http.Request)
 	case http.MethodGet:
 		status, err := s.backup.incomingStatus()
 		if err != nil {
-			http.Error(w, "staged backup is unreadable: "+err.Error(), http.StatusInternalServerError)
+			log.Printf("read staged backup failed: %v", err)
+			http.Error(w, "staged backup is unreadable; discard it and upload the backup again", http.StatusInternalServerError)
 			return
 		}
 		writeJSON(w, http.StatusOK, status)
@@ -191,13 +215,14 @@ func (s *Server) handleBackupImportParts(w http.ResponseWriter, r *http.Request)
 		status, err := s.backup.receiveImportPart(r.URL.Query().Get("file"), r.Body)
 		if err != nil {
 			log.Printf("backup part upload rejected: %v", err)
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			httpErrorClientSafe(w, err, "failed to store the backup part", "")
 			return
 		}
 		writeJSON(w, http.StatusOK, status)
 	case http.MethodDelete:
 		if err := s.backup.discardIncoming(); err != nil {
-			http.Error(w, "failed to discard staged backup: "+err.Error(), http.StatusInternalServerError)
+			log.Printf("discard staged backup failed: %v", err)
+			http.Error(w, "failed to discard staged backup", http.StatusInternalServerError)
 			return
 		}
 		writeJSON(w, http.StatusOK, backupIncomingStatus{})
@@ -222,7 +247,8 @@ func (s *Server) handleBackupImportManifest(w http.ResponseWriter, r *http.Reque
 	}
 	status, err := s.backup.stageImportManifest(payload)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		log.Printf("backup manifest rejected: %v", err)
+		httpErrorClientSafe(w, err, "failed to stage the backup manifest", "")
 		return
 	}
 	writeJSON(w, http.StatusOK, status)
@@ -238,4 +264,18 @@ func (s *Server) handleBackupImportPartsRestore(w http.ResponseWriter, r *http.R
 		return
 	}
 	s.runBackupRestore(w, r, s.backup.importStagedParts)
+}
+
+// httpErrorClientSafe answers a failed backup operation. A userFacingError -
+// a problem with what the admin sent, worded for them - comes back as 400
+// with its message; anything else (database errors, this server's file
+// paths) as 500 with fallback, the detail left to the caller's log line.
+// prefix goes in front of either.
+func httpErrorClientSafe(w http.ResponseWriter, err error, fallback, prefix string) {
+	var friendly *userFacingError
+	if errors.As(err, &friendly) {
+		http.Error(w, prefix+friendly.message, http.StatusBadRequest)
+		return
+	}
+	http.Error(w, prefix+fallback, http.StatusInternalServerError)
 }

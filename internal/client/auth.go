@@ -601,6 +601,21 @@ func (a *authService) invalidateUser(userID string) {
 	delete(a.lastProfileWrite, userID)
 }
 
+// invalidateAll drops every cached session and profile write throttle. A
+// backup restore or migration import replaces app_users wholesale, so a
+// session cached from before it could belong to an account the restored data
+// no longer has, or carry permissions or a session version that changed;
+// without this it would keep validating for up to sessionCacheTTL.
+func (a *authService) invalidateAll() {
+	if a == nil {
+		return
+	}
+	a.sessionMu.Lock()
+	defer a.sessionMu.Unlock()
+	clear(a.sessionCache)
+	clear(a.lastProfileWrite)
+}
+
 // maybeTouchProfile refreshes the user's "last active" profile row at most once
 // per profileTouchInterval, off the request path. The write is best-effort: it
 // is not an auth gate (the session-version check is), so a failure only clears

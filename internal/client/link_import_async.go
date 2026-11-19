@@ -21,11 +21,29 @@ var linkImportResponseBudget = 75 * time.Second
 // userFacingError marks an error whose message is written for end users and
 // is safe to send back in a response. Anything else (yt-dlp stderr, DNS and
 // dial errors, file paths) is logged and replaced with a generic message.
-type userFacingError struct{ message string }
+type userFacingError struct {
+	message string
+	// cause, when set, is the underlying error behind message. It shows in
+	// Error() - and so in the server log - but never in clientSafeError.
+	cause error
+}
 
-func (e *userFacingError) Error() string { return e.message }
+func (e *userFacingError) Error() string {
+	if e.cause != nil {
+		return e.message + ": " + e.cause.Error()
+	}
+	return e.message
+}
+
+func (e *userFacingError) Unwrap() error { return e.cause }
 
 func userError(message string) error { return &userFacingError{message: message} }
+
+// userErrorWrap is userError for a failure with an underlying cause worth
+// logging (a parser error, a database error) that must not reach the client.
+func userErrorWrap(message string, cause error) error {
+	return &userFacingError{message: message, cause: cause}
+}
 
 // clientSafeError returns err's message when it is a userFacingError, else
 // fallback.

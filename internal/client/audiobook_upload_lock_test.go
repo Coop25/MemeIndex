@@ -2,7 +2,7 @@ package client
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -65,7 +65,7 @@ func uploadRequest(t *testing.T, s *Server, method, path string, body string, he
 // complete, are aborted or are reclaimed - must not leave lock entries
 // behind; before, every id ever seen in a URL stayed in the map for good.
 func TestAudiobookUploadLocksDoNotAccumulate(t *testing.T) {
-	store := &uploadLockStore{completeErr: errors.New("upload is not complete yet")}
+	store := &uploadLockStore{completeErr: fmt.Errorf("%w: received 3 of 10 bytes", audiobooks.ErrUploadIncomplete)}
 	s := &Server{audiobooks: store}
 	before := audiobookUploadLockCount()
 
