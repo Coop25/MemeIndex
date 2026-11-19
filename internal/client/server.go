@@ -11,6 +11,7 @@ import (
 
 	"memeindex/internal/audiobooks"
 	"memeindex/internal/manager"
+	"memeindex/internal/workgate"
 
 	mediafetch "github.com/Coop25/mediafetch-go"
 )
@@ -26,9 +27,15 @@ type Server struct {
 	mediaClient         *mediafetch.Client
 	linkRetries         *linkRetryQueue
 	// background tracks goroutines that outlive a request (detached link
-	// imports, the link retry queue) so StopBackgroundWork can wait for them
+	// imports, the link retry queue, audiobook remuxes, the metadata backfill
+	// and the audiobook sweepers) so StopBackgroundWork can wait for them
 	// before main closes the store.
-	background  backgroundTasks
+	background backgroundTasks
+	// jobs is the restore pause point for that same background work (see
+	// pauseBackgroundWork): each link import or retry, remux and sweep is one
+	// unit of work that a restore waits out before it starts and holds back
+	// until it has finished.
+	jobs        workgate.Gate
 	backup      *portableBackup
 	shareSecret []byte
 	// shareWarm fetches new share links once so Cloudflare caches them
@@ -38,7 +45,8 @@ type Server struct {
 	// restoring is set for the full duration of a portable-backup import, which
 	// truncates the database and swaps the uploads/thumbnails directories under
 	// the running server. While it is set, maintenanceGuard rejects mutating
-	// requests with 503 so nothing reads or writes half-restored state.
+	// requests with 503 so nothing reads or writes half-restored state; the
+	// restore pauses background jobs through jobs for the same window.
 	restoring atomic.Bool
 	// migrationTokens and migration are the two halves of server-to-server
 	// migration (migration.go): tokens this server hands out as a source, and
@@ -121,12 +129,13 @@ func NewServer(config Config, memeManager *manager.MemeManager) *Server {
 	if err := server.linkRetries.persistTo(filepath.Join(config.DataDir, "link_retries.json")); err != nil {
 		log.Printf("link retry queue: could not load saved queue, starting empty and not saving: %v", err)
 	}
+	server.linkRetries.gate = &server.jobs
 	server.background.Go(func(ctx context.Context) {
 		server.linkRetries.run(ctx, server.background.Quit())
 	})
 	server.startAudiobookUploadCleanupSweeper()
 	server.startAudiobookBookmarkExpirySweeper()
-	go server.backfillAudiobookMetadata()
+	server.background.Go(server.backfillAudiobookMetadata)
 
 	// Seed the metrics that are known at startup: the running build, and (for a
 	// Postgres deployment) whether the trigram search indexes came up.

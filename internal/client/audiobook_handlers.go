@@ -1315,7 +1315,7 @@ func (s *Server) completeAudiobookUpload(w http.ResponseWriter, r *http.Request,
 		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
 		return
 	}
-	go s.remuxUploadedAudiobookMP3(record)
+	s.remuxUploadedAudiobookMP3(record)
 
 	writeJSON(w, http.StatusCreated, audiobookJSON(record))
 }
@@ -1338,29 +1338,43 @@ func (s *Server) abortAudiobookUpload(w http.ResponseWriter, r *http.Request, id
 
 // startAudiobookUploadCleanupSweeper reclaims temp files for uploads that went
 // quiet (a closed tab, a device that never came back) instead of leaving
-// multi-gigabyte partial files on disk forever.
+// multi-gigabyte partial files on disk forever. It runs as tracked background
+// work, so it stops with the server, and each sweep waits out a restore.
 func (s *Server) startAudiobookUploadCleanupSweeper() {
 	if s.audiobooks == nil {
 		return
 	}
-	go func() {
+	s.background.Go(func(ctx context.Context) {
 		ticker := time.NewTicker(time.Hour)
 		defer ticker.Stop()
-		for range ticker.C {
-			stale, err := s.audiobooks.StaleUploads(context.Background(), time.Now().Add(-audiobookUploadStaleAfter))
-			if err != nil {
-				log.Printf("list stale audiobook uploads failed: %v", err)
-				continue
+		for {
+			select {
+			case <-s.background.Quit():
+				return
+			case <-ticker.C:
 			}
-			for _, upload := range stale {
-				if err := s.discardAudiobookUpload(context.Background(), upload); err != nil {
-					log.Printf("discard stale audiobook upload failed: %v", err)
-					continue
-				}
-				log.Printf("audiobooks: reclaimed stale upload %s (%d/%d bytes)", upload.ID, upload.ReceivedBytes, upload.TotalBytes)
-			}
+			s.sweepStaleAudiobookUploads(ctx)
 		}
-	}()
+	})
+}
+
+func (s *Server) sweepStaleAudiobookUploads(ctx context.Context) {
+	if !s.enterBackgroundJob() {
+		return
+	}
+	defer s.leaveBackgroundJob()
+	stale, err := s.audiobooks.StaleUploads(ctx, time.Now().Add(-audiobookUploadStaleAfter))
+	if err != nil {
+		log.Printf("list stale audiobook uploads failed: %v", err)
+		return
+	}
+	for _, upload := range stale {
+		if err := s.discardAudiobookUpload(ctx, upload); err != nil {
+			log.Printf("discard stale audiobook upload failed: %v", err)
+			continue
+		}
+		log.Printf("audiobooks: reclaimed stale upload %s (%d/%d bytes)", upload.ID, upload.ReceivedBytes, upload.TotalBytes)
+	}
 }
 
 // startAudiobookBookmarkExpirySweeper deletes bookmarks nobody has used
@@ -1368,20 +1382,31 @@ func (s *Server) startAudiobookUploadCleanupSweeper() {
 // It runs once at startup, so a server that was down at midnight doesn't
 // skip a day, then at the top of every day (server local time). Against a
 // window measured in months a day of slack is invisible, and the list
-// endpoint hides anything already past its expiry in the meantime.
+// endpoint hides anything already past its expiry in the meantime. Like the
+// upload sweeper it is tracked background work: it stops with the server and
+// waits out a restore before each sweep.
 func (s *Server) startAudiobookBookmarkExpirySweeper() {
 	if s.audiobooks == nil || s.config.AudiobookBookmarkExpiry <= 0 {
 		return
 	}
-	go func() {
+	s.background.Go(func(ctx context.Context) {
 		for {
-			s.sweepExpiredAudiobookBookmarks(context.Background(), time.Now())
+			if s.enterBackgroundJob() {
+				s.sweepExpiredAudiobookBookmarks(ctx, time.Now())
+				s.leaveBackgroundJob()
+			}
 			now := time.Now()
 			// A fresh timer each day rather than a 24h ticker, so the run
 			// stays on midnight across DST changes instead of drifting an hour.
-			time.Sleep(nextAudiobookBookmarkSweep(now).Sub(now))
+			timer := time.NewTimer(nextAudiobookBookmarkSweep(now).Sub(now))
+			select {
+			case <-s.background.Quit():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
 		}
-	}()
+	})
 }
 
 // nextAudiobookBookmarkSweep is the next midnight after now, in now's zone.
@@ -1417,12 +1442,18 @@ func (s *Server) discardAudiobookUpload(ctx context.Context, upload audiobooks.U
 // backfillAudiobookMetadata catches up any audiobook stored before cover
 // art/chapter/duration extraction existed. It re-probes the file already on
 // disk - nothing needs to be re-uploaded - and runs once at startup, the same
-// way EnsurePreviewAssets backfills meme video thumbnails.
-func (s *Server) backfillAudiobookMetadata() {
+// way EnsurePreviewAssets backfills meme video thumbnails. It runs as tracked
+// background work: the metadata pass is one restore-pausable unit, and each
+// remux after it another.
+func (s *Server) backfillAudiobookMetadata(ctx context.Context) {
 	if s.audiobooks == nil {
 		return
 	}
-	updated, err := s.audiobooks.BackfillMetadata(context.Background())
+	if !s.enterBackgroundJob() {
+		return
+	}
+	updated, err := s.audiobooks.BackfillMetadata(ctx)
+	s.leaveBackgroundJob()
 	if err != nil {
 		log.Printf("audiobooks: metadata backfill failed: %v", err)
 	} else if updated > 0 {
@@ -1431,7 +1462,7 @@ func (s *Server) backfillAudiobookMetadata() {
 
 	// After the metadata pass, which reads tags and cover art from the MP3s
 	// this replaces. Once every MP3 is converted this finds nothing to do.
-	s.remuxStoredAudiobookMP3s(context.Background())
+	s.remuxStoredAudiobookMP3s(ctx)
 }
 
 func (s *Server) withAudiobookMediaAuth(next http.Handler) http.Handler {

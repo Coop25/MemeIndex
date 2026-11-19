@@ -66,6 +66,9 @@ func newAuthUserStore(ctx context.Context, databaseURL string) (authUserStore, e
 	return store, nil
 }
 
+// Close releases the store's database connections.
+func (s *postgresAuthUserStore) Close() { s.pool.Close() }
+
 func (s *postgresAuthUserStore) ensureSchema(ctx context.Context) error {
 	if err := dbschema.Apply(ctx, s.pool, "003_app_users_core.sql", "004_app_users_compat.sql", "005_app_user_readd_required.sql", "013_app_user_session_version.sql", "014_app_user_audiobook_permissions.sql", "020_app_user_audiobook_delete_permission.sql", "023_app_user_audiobook_series_permission.sql", "027_app_user_audiobook_tag_restrictions.sql"); err != nil {
 		return fmt.Errorf("ensure app_users schema: %w", err)

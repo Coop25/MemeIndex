@@ -408,7 +408,13 @@ func (s *Server) startMigrationImport(base *url.URL, token string, info migratio
 	go func() {
 		defer s.restoring.Store(false)
 		defer cancel()
-		err := s.runMigrationImport(ctx, base, token)
+		// As in runBackupRestore: hold the background jobs still for the whole
+		// import, and let them go only once the restored state is reloaded.
+		resume, err := s.pauseBackgroundWork(ctx)
+		if err == nil {
+			defer resume()
+			err = s.runMigrationImport(ctx, base, token)
+		}
 		completedAt := time.Now().UTC()
 		s.migration.update(func(st *migrationImportStatus) {
 			st.CompletedAt = &completedAt

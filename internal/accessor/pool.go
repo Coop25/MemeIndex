@@ -18,9 +18,12 @@ import (
 const DefaultStatementTimeout = 30 * time.Second
 
 // NewPool opens a pgx connection pool with explicit, tunable sizing. The process
-// keeps two pools against the same database (the meme store and the auth user
-// store), so the ceiling matters: the default pgx MaxConns of max(4, NumCPU) can
-// be a surprising bottleneck once auth, browse, and asset requests all contend.
+// keeps three long-lived pools against the same database (the meme store, the
+// auth user store and the audiobook store), plus short-lived ones that backup
+// export, restore and migration open for the length of a job. Each pool's
+// ceiling counts against Postgres's max_connections, and within a pool the
+// default pgx MaxConns of max(4, NumCPU) can be a surprising bottleneck once
+// auth, browse, and asset requests all contend.
 //
 // Every knob is overridable from the connection URL (pool_max_conns,
 // pool_min_conns, pool_max_conn_lifetime, pool_max_conn_idle_time,

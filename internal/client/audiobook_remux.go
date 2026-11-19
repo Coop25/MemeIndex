@@ -38,6 +38,10 @@ func (s *Server) remuxStoredAudiobookMP3s(ctx context.Context) {
 
 	converted := 0
 	for _, book := range books {
+		if s.stopping() {
+			// Shutting down: the rest are picked up again on the next start.
+			break
+		}
 		if s.remuxAudiobookMP3(ctx, book) {
 			converted++
 		}
@@ -52,7 +56,9 @@ func (s *Server) remuxStoredAudiobookMP3s(ctx context.Context) {
 // background. It runs after the upload request has already returned rather
 // than inside it: a long book takes a minute or more, longer than a proxy in
 // front (Cloudflare's tunnel allows 100 s) will hold a response open, and the
-// book is playable as an MP3 in the meantime.
+// book is playable as an MP3 in the meantime. It runs as tracked background
+// work, so shutdown waits for it (cancelling it, .m4b and all, if it outlasts
+// the grace period) before closing the store.
 func (s *Server) remuxUploadedAudiobookMP3(record audiobooks.Record) {
 	if !isAudiobookMP3(record.StoragePath, record.MimeType) {
 		return
@@ -62,7 +68,10 @@ func (s *Server) remuxUploadedAudiobookMP3(record audiobooks.Record) {
 		StoragePath: record.StoragePath, MimeType: record.MimeType, SizeBytes: record.SizeBytes,
 	}
 	s.audiobookRemuxProgress.add(book)
-	s.remuxAudiobookMP3(context.Background(), book)
+	if !s.background.Go(func(ctx context.Context) { s.remuxAudiobookMP3(ctx, book) }) {
+		// Shutting down; the startup backfill converts it on the next start.
+		s.audiobookRemuxProgress.itemSkipped(book.ID, "server shut down before it was converted")
+	}
 }
 
 // remuxAudiobookMP3 converts one MP3 audiobook and reports whether it did.
@@ -71,9 +80,19 @@ func (s *Server) remuxUploadedAudiobookMP3(record audiobooks.Record) {
 // writing the same .m4b (the backfill's list can include an upload that
 // finished while it was starting up). The row is re-read under the lock for
 // the same reason - whichever got there first has already converted it.
+//
+// Each remux is one unit of restore-pausable background work. The gate is
+// entered after the remux lock, so while a restore holds the gate shut it
+// waits for at most the one conversion already running, never for another
+// queued behind it on the lock.
 func (s *Server) remuxAudiobookMP3(ctx context.Context, book audiobooks.StoredMP3) bool {
 	s.audiobookRemuxMu.Lock()
 	defer s.audiobookRemuxMu.Unlock()
+	if !s.enterBackgroundJob() {
+		s.audiobookRemuxProgress.itemSkipped(book.ID, "server shut down before it was converted")
+		return false
+	}
+	defer s.leaveBackgroundJob()
 
 	if failedAt, reason, ok := recentAudiobookRemuxFailure(book.StoragePath); ok {
 		s.audiobookRemuxProgress.itemSkipped(book.ID, fmt.Sprintf("failed %s, retried after %s: %s",
@@ -94,6 +113,12 @@ func (s *Server) remuxAudiobookMP3(ctx context.Context, book audiobooks.StoredMP
 	size, err := s.swapAudiobookToRemuxedM4B(ctx, book)
 	s.audiobookRemuxProgress.itemFinished(book.ID, size, err)
 	if err != nil {
+		if ctx.Err() != nil {
+			// Cancelled by shutdown, not a fault in the file: don't hold the
+			// book back from the next start's backfill for a week.
+			log.Printf("audiobooks: remux of %s (%s) to m4b interrupted by shutdown; it will be retried", book.ID, book.Title)
+			return false
+		}
 		log.Printf("audiobooks: remux of %s (%s) to m4b failed (keeping the mp3): %v", book.ID, book.Title, err)
 		recordAudiobookRemuxFailure(book.StoragePath, err)
 		return false
@@ -102,7 +127,7 @@ func (s *Server) remuxAudiobookMP3(ctx context.Context, book audiobooks.StoredMP
 }
 
 func (s *Server) swapAudiobookToRemuxedM4B(ctx context.Context, book audiobooks.StoredMP3) (int64, error) {
-	m4bPath, size, err := remuxStoredMP3(book.StoragePath, book.MimeType)
+	m4bPath, size, err := remuxStoredMP3(ctx, book.StoragePath, book.MimeType)
 	if err != nil {
 		return 0, err
 	}
@@ -128,15 +153,16 @@ func (s *Server) swapAudiobookToRemuxedM4B(ctx context.Context, book audiobooks.
 // remuxStoredMP3 writes a lossless .m4b copy of a stored MP3 next to it (see
 // accessor.RemuxMP3ToM4B for why), returning the new path and size. The MP3
 // is left in place for the caller to delete once nothing references it. On
-// any error no .m4b is left behind; errAudiobookNotMP3 means the file isn't
-// an MP3 at all (sniffing only recognizes one with an ID3 tag, hence the
-// extension check too).
-func remuxStoredMP3(mp3Path, mimeType string) (string, int64, error) {
+// any error - including ctx being cancelled mid-remux, which kills ffmpeg -
+// no .m4b is left behind; errAudiobookNotMP3 means the file isn't an MP3 at
+// all (sniffing only recognizes one with an ID3 tag, hence the extension
+// check too).
+func remuxStoredMP3(ctx context.Context, mp3Path, mimeType string) (string, int64, error) {
 	if !isAudiobookMP3(mp3Path, mimeType) {
 		return "", 0, errAudiobookNotMP3
 	}
 	m4bPath := remuxedM4BPath(mp3Path)
-	if err := accessor.RemuxMP3ToM4B(mp3Path, m4bPath); err != nil {
+	if err := accessor.RemuxMP3ToM4B(ctx, mp3Path, m4bPath); err != nil {
 		return "", 0, err
 	}
 	info, err := os.Stat(m4bPath)

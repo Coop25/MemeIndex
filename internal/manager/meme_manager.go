@@ -12,6 +12,7 @@ import (
 
 	"memeindex/internal/accessor"
 	"memeindex/internal/tagsuggest"
+	"memeindex/internal/workgate"
 )
 
 type MemeManager struct {
@@ -45,6 +46,11 @@ type MemeManager struct {
 	workerCancel   context.CancelFunc
 	workerWG       sync.WaitGroup
 	stopWorkersOne sync.Once
+	// workGate holds the background workers still while a backup restore or
+	// migration replaces the database and media underneath them (see
+	// PauseBackgroundWork). Each meme the suggestion worker tags, each
+	// tag-hygiene recompute and each reel-session cleanup is one unit of work.
+	workGate workgate.Gate
 
 	// adminReadMu guards short-lived memoization of the two admin read models
 	// that each require a full store scan. This is a burst coalescer, not a
@@ -148,6 +154,27 @@ func (m *MemeManager) waitOrStop(d time.Duration) bool {
 	case <-timer.C:
 		return true
 	}
+}
+
+// PauseBackgroundWork holds the tag-suggestion and tag-hygiene workers and
+// the reel-session cleanup still, for a restore that is about to replace the
+// database. It waits for the unit of work each has in flight to finish (or
+// for ctx to end, which lifts the pause and returns ctx's error), and returns
+// the function that lets them run again. Queued work is kept, not dropped;
+// ReloadAfterRestore re-seeds the suggestion queue before resuming.
+func (m *MemeManager) PauseBackgroundWork(ctx context.Context) (resume func(), err error) {
+	return m.workGate.Pause(ctx)
+}
+
+// enterBackgroundWork waits out any restore pause before a unit of
+// background work. It reports false if the workers are stopping instead; on
+// true the caller must call leaveBackgroundWork when the unit is done.
+func (m *MemeManager) enterBackgroundWork() bool {
+	return m.workGate.Enter(m.workerCtx.Done())
+}
+
+func (m *MemeManager) leaveBackgroundWork() {
+	m.workGate.Leave()
 }
 
 func (m *MemeManager) CreateMeme(file io.Reader, header textproto.MIMEHeader, filename string, tags []string, notes string) (accessor.Meme, error) {
@@ -304,7 +331,14 @@ func (m *MemeManager) DeleteRandomReelSession(sessionID string) error {
 	return m.reelSessions.Delete(sessionID)
 }
 
+// CleanupStaleReelSessions runs the nightly reel-session cleanup. It waits
+// for a restore in progress to finish first, and does nothing if the workers
+// are stopping in the meantime.
 func (m *MemeManager) CleanupStaleReelSessions() error {
+	if !m.enterBackgroundWork() {
+		return nil
+	}
+	defer m.leaveBackgroundWork()
 	return m.reelSessions.CleanupStale()
 }
 
