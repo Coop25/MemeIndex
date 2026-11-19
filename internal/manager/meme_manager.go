@@ -221,7 +221,11 @@ func (m *MemeManager) CreateMemeAsWithSource(ctx context.Context, actor accessor
 // there cannot be invalidated by a concurrent edit.
 func (m *MemeManager) EditMeme(ctx context.Context, userID, id string, edit accessor.MemeEdit) (accessor.Meme, error) {
 	meme, err := m.store.EditMeme(ctx, strings.TrimSpace(userID), strings.TrimSpace(id), edit)
-	if err == nil {
+	// An edit that fails because the request ended may still have committed:
+	// the store re-reads the meme after its commit, and a commit cancelled in
+	// flight may have been applied. Treat it as a change rather than leave the
+	// tag hygiene snapshot stale.
+	if err == nil || ctx.Err() != nil {
 		m.markTagsChanged()
 	}
 	return meme, err

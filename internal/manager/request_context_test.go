@@ -514,3 +514,108 @@ func TestApplyingASuggestionFinishesWhenTheRequestEndsAfterTheTagIsAdded(t *test
 		t.Fatalf("suggestions = %v: dog was applied but is still suggested", got.SuggestedTags)
 	}
 }
+
+// commitsThenLeaves is a contextStore whose edit is written and whose client
+// then goes away before the store re-reads the meme, so the edit is applied
+// but reported as context.Canceled.
+type commitsThenLeaves struct {
+	*contextStore
+	leave context.CancelFunc
+}
+
+func (s *commitsThenLeaves) EditMeme(ctx context.Context, userID, id string, edit accessor.MemeEdit) (accessor.Meme, error) {
+	if _, err := s.contextStore.EditMeme(ctx, userID, id, edit); err != nil {
+		return accessor.Meme{}, err
+	}
+	s.leave()
+	return accessor.Meme{}, ctx.Err()
+}
+
+func hygieneTagNames(report TagHygieneReport) []string {
+	names := make([]string, 0, len(report.Tags))
+	for _, tag := range report.Tags {
+		names = append(names, tag.Tag)
+	}
+	return names
+}
+
+// TestEditCancelledAfterItsCommitStillRefreshesTagHygiene checks that an edit
+// reported as cancelled, but applied before the request ended, still marks
+// the memoized tag hygiene report stale.
+func TestEditCancelledAfterItsCommitStillRefreshesTagHygiene(t *testing.T) {
+	ctx, cancel := context.WithCancel(requestScoped(context.Background()))
+	defer cancel()
+	store := &commitsThenLeaves{contextStore: newContextStore(t), leave: cancel}
+	m := NewMemeManager(store)
+	meme := createContextMeme(t, m, "edited", "cat")
+	if got := hygieneTagNames(m.TagHygieneReport(requestScoped(context.Background()))); !slices.Equal(got, []string{"cat"}) {
+		t.Fatalf("tag hygiene before the edit = %v, want [cat]", got)
+	}
+
+	if _, err := m.EditMeme(ctx, "", meme.ID, accessor.MemeEdit{TagsAdded: []string{"kitten"}}); err == nil {
+		t.Fatal("EditMeme reported success; the test store should report the cancellation")
+	}
+	if got := hygieneTagNames(m.TagHygieneReport(requestScoped(context.Background()))); !slices.Contains(got, "kitten") {
+		t.Fatalf("tag hygiene after an applied edit = %v, want kitten in it (the report was left stale)", got)
+	}
+}
+
+// mergeCommitsThenLeaves is a tag-maintenance store whose merge is applied
+// and whose client then goes away before the merge is reported back.
+type mergeCommitsThenLeaves struct {
+	*tagOpsFakeStore
+	leave  context.CancelFunc
+	merged map[string]int
+}
+
+func (s *mergeCommitsThenLeaves) MergeTag(ctx context.Context, sourceTag, targetTag string, actor accessor.AuditActor) (accessor.TagMergeCounts, error) {
+	if _, err := s.tagOpsFakeStore.MergeTag(ctx, sourceTag, targetTag, actor); err != nil {
+		return accessor.TagMergeCounts{}, err
+	}
+	s.setUsage(s.merged)
+	s.leave()
+	return accessor.TagMergeCounts{}, ctx.Err()
+}
+
+// TestMergeCancelledAfterItsCommitStillRefreshesTagHygiene covers both merge
+// paths: the bulk store merge reported as cancelled after it was applied, and
+// the per-meme fallback cancelled after some memes were rewritten. Either way
+// the memoized tag hygiene report must be dropped.
+func TestMergeCancelledAfterItsCommitStillRefreshesTagHygiene(t *testing.T) {
+	actor := accessor.AuditActor{UserID: "u-admin"}
+
+	t.Run("bulk", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		store := &mergeCommitsThenLeaves{tagOpsFakeStore: newTagOpsFakeStore(), leave: cancel, merged: map[string]int{"cat": 2}}
+		store.setUsage(map[string]int{"cat": 1, "cats": 1})
+		m := NewMemeManager(store)
+		if got := hygieneTagNames(m.TagHygieneReport(context.Background())); len(got) != 2 {
+			t.Fatalf("tag hygiene before the merge = %v, want cat and cats", got)
+		}
+		if _, err := m.MergeTags(ctx, "cats", "cat", actor); err == nil {
+			t.Fatal("MergeTags reported success; the test store should report the cancellation")
+		}
+		if got := hygieneTagNames(m.TagHygieneReport(context.Background())); !slices.Equal(got, []string{"cat"}) {
+			t.Fatalf("tag hygiene after an applied merge = %v, want [cat] (the report was left stale)", got)
+		}
+	})
+
+	t.Run("per meme", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(requestScoped(context.Background()))
+		defer cancel()
+		store := &leavesAfterEdit{contextStore: newContextStore(t), leave: cancel}
+		m := NewMemeManager(store)
+		createContextMeme(t, m, "one", "cats")
+		createContextMeme(t, m, "two", "cats")
+		if got := hygieneTagNames(m.TagHygieneReport(requestScoped(context.Background()))); !slices.Equal(got, []string{"cats"}) {
+			t.Fatalf("tag hygiene before the merge = %v, want [cats]", got)
+		}
+		if _, err := m.MergeTags(ctx, "cats", "cat", actor); err == nil {
+			t.Fatal("MergeTags reported success; the second meme's edit should have been refused")
+		}
+		if got := hygieneTagNames(m.TagHygieneReport(requestScoped(context.Background()))); !slices.Contains(got, "cat") {
+			t.Fatalf("tag hygiene after a partly applied merge = %v, want cat in it (the report was left stale)", got)
+		}
+	})
+}
