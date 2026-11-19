@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"memeindex/internal/accessor"
+	"memeindex/internal/accessor/accessortest"
 	"memeindex/internal/manager"
 )
 
@@ -35,7 +36,7 @@ func (failingQueryStore) TagCounts(context.Context, int) ([]accessor.TagCount, e
 // with a 500 instead of an empty (or full-scan) 200 that would look like the
 // library had changed.
 func TestMemeReadEndpointsReturn500WhenQueryFails(t *testing.T) {
-	base, err := accessor.NewMemeStore(t.TempDir())
+	base, err := accessortest.NewMemeStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}
@@ -83,7 +84,7 @@ func (cancelledQueryStore) TagCounts(ctx context.Context, _ int) ([]accessor.Tag
 // A viewer who navigates away cancels the query; that is not a server error,
 // so nothing is written back (in particular, no 500).
 func TestMemeReadEndpointsStaySilentWhenRequestIsCancelled(t *testing.T) {
-	base, err := accessor.NewMemeStore(t.TempDir())
+	base, err := accessortest.NewMemeStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}

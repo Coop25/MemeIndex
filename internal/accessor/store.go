@@ -91,8 +91,8 @@ type MemeDashboardData struct {
 // The capability interfaces below group the store methods beyond Store by
 // what they serve. PostgresStore, the only production store, implements every
 // one of them (see the assertions at the end of this file). The manager still
-// type-asserts each capability so the in-process MemeStore and the narrow test
-// fakes can stand in for the parts a test exercises.
+// type-asserts each capability so test stores (accessortest.MemeStore and the
+// narrow fakes in tests) can stand in for the parts a test exercises.
 
 // QueryableMemeStore resolves browse, dashboard, and popular-tag reads in the
 // database. They are the reads a viewer triggers most and that cost the most,

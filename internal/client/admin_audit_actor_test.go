@@ -8,13 +8,14 @@ import (
 	"time"
 
 	"memeindex/internal/accessor"
+	"memeindex/internal/accessor/accessortest"
 	"memeindex/internal/manager"
 )
 
 // auditFeedStore serves a fixed audit feed and honors the actor filter, so the
 // test proves the handler passes ?actor= through and returns filtered paging.
 type auditFeedStore struct {
-	*accessor.MemeStore
+	*accessortest.MemeStore
 	accessor.AuditStore
 	events    []accessor.GlobalMemeAuditEntry
 	gotActors []string

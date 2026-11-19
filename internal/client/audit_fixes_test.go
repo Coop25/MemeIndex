@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"memeindex/internal/accessor"
+	"memeindex/internal/accessor/accessortest"
 	"memeindex/internal/audiobooks"
 	"memeindex/internal/manager"
 )
@@ -261,7 +262,7 @@ func TestSessionCookieSecureBehindHTTPSProxy(t *testing.T) {
 }
 
 type hidingMemeStore struct {
-	*accessor.MemeStore
+	*accessortest.MemeStore
 	hidden []string
 }
 
@@ -269,7 +270,7 @@ func (s hidingMemeStore) HiddenMemeIDs() ([]string, error) { return s.hidden, ni
 
 func TestProtectedAssetsHideDirectoryListingsAndPendingDeletes(t *testing.T) {
 	dir := t.TempDir()
-	store, err := accessor.NewMemeStore(dir)
+	store, err := accessortest.NewMemeStore(dir)
 	if err != nil {
 		t.Fatal(err)
 	}

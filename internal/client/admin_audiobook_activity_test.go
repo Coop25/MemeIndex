@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"memeindex/internal/accessor"
+	"memeindex/internal/accessor/accessortest"
 	"memeindex/internal/audiobooks"
 	"memeindex/internal/manager"
 )
@@ -134,9 +135,9 @@ func TestFailedRemuxAudiobookIDs(t *testing.T) {
 }
 
 // pendingDeleteStore reports a fixed number of pending deletes while the
-// file-backed MemeStore stays the real store underneath.
+// in-memory accessortest.MemeStore stays the real store underneath.
 type pendingDeleteStore struct {
-	*accessor.MemeStore
+	*accessortest.MemeStore
 	accessor.AuditStore
 	pending int
 }

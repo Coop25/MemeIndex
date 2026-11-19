@@ -44,8 +44,8 @@ func TestStoredFileExtension(t *testing.T) {
 		{"x.%00", "not a type", ""},
 		{"", "", ""},
 	} {
-		if got := storedFileExtension(tc.filename, tc.contentType); got != tc.want {
-			t.Errorf("storedFileExtension(%q, %q) = %q, want %q", tc.filename, tc.contentType, got, tc.want)
+		if got := StoredFileExtension(tc.filename, tc.contentType); got != tc.want {
+			t.Errorf("StoredFileExtension(%q, %q) = %q, want %q", tc.filename, tc.contentType, got, tc.want)
 		}
 	}
 }
@@ -82,27 +82,6 @@ var hostileUploadNames = []struct {
 	{"video.mp4 (1)", "video/mp4", ".mp4"},
 	{`dir\name.gif\evil`, "image/gif", ".gif"},
 	{"mystery.bin?x", "application/octet-stream", ""},
-}
-
-func TestMemeStoreCreateSanitizesStoredExtension(t *testing.T) {
-	store, err := NewMemeStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i, tc := range hostileUploadNames {
-		meme, err := store.Create(CreateInput{
-			File:     strings.NewReader("hostile name bytes " + tc.name + string(rune('a'+i))),
-			Header:   textproto.MIMEHeader{"Content-Type": []string{tc.contentType}},
-			Filename: tc.name,
-		})
-		if err != nil {
-			t.Fatalf("Create(%q): %v", tc.name, err)
-		}
-		assertStoredNameResolves(t, meme, store.UploadDir(), tc.name, tc.wantExt)
-		if meme.ContentType != tc.contentType {
-			t.Errorf("%q: ContentType = %q, want %q", tc.name, meme.ContentType, tc.contentType)
-		}
-	}
 }
 
 func TestPostgresStoreCreateSanitizesStoredExtension(t *testing.T) {

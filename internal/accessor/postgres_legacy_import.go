@@ -206,6 +206,32 @@ func (s *PostgresStore) importLegacyReelSessionsIfNeeded(ctx context.Context) er
 	return tx.Commit(ctx)
 }
 
+// persistedMeme is one entry of the JSON store's index.json. The JSON store
+// itself is gone; this is the format an upgrading instance's index.json still
+// has. (Despite omitempty, zero times were written out as
+// "0001-01-01T00:00:00Z".)
+type persistedMeme struct {
+	ID                  string           `json:"id"`
+	OriginalName        string           `json:"originalName"`
+	StoredName          string           `json:"storedName"`
+	FilePath            string           `json:"filePath"`
+	ContentType         string           `json:"contentType"`
+	ContentHash         string           `json:"contentHash,omitempty"`
+	SizeBytes           int64            `json:"sizeBytes"`
+	Tags                []string         `json:"tags"`
+	SuggestedTags       []string         `json:"suggestedTags,omitempty"`
+	AutoSuggestDisabled bool             `json:"autoSuggestDisabled,omitempty"`
+	Notes               string           `json:"notes"`
+	SourceURL           string           `json:"sourceUrl,omitempty"`
+	CreatedAt           time.Time        `json:"createdAt"`
+	UpdatedAt           time.Time        `json:"updatedAt"`
+	ShareGeneration     int64            `json:"shareGeneration,omitempty"`
+	ShareExpiresAt      time.Time        `json:"shareExpiresAt,omitempty"`
+	SharedAt            time.Time        `json:"sharedAt,omitempty"`
+	SharedByUserID      string           `json:"sharedByUserId,omitempty"`
+	ShareSlugs          map[int64]string `json:"shareSlugs,omitempty"`
+}
+
 func (s *PostgresStore) readLegacyMemes() ([]Meme, error) {
 	payload, err := os.ReadFile(filepath.Join(s.dataDir, "index.json"))
 	if errors.Is(err, os.ErrNotExist) {

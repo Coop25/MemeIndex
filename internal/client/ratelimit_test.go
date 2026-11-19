@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"memeindex/internal/accessor"
+	"memeindex/internal/accessor/accessortest"
 	"memeindex/internal/manager"
 )
 
@@ -215,7 +215,7 @@ func TestRateLimitByIPMiddlewareBlocksAfterBurst(t *testing.T) {
 }
 
 func TestRoutesThrottleRepeatedLogins(t *testing.T) {
-	store, err := accessor.NewMemeStore(t.TempDir())
+	store, err := accessortest.NewMemeStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}

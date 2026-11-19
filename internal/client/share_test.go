@@ -9,12 +9,13 @@ import (
 	"time"
 
 	"memeindex/internal/accessor"
+	"memeindex/internal/accessor/accessortest"
 	"memeindex/internal/manager"
 )
 
-func newShareTestServer(t *testing.T) (*Server, *accessor.MemeStore, accessor.Meme) {
+func newShareTestServer(t *testing.T) (*Server, *accessortest.MemeStore, accessor.Meme) {
 	t.Helper()
-	store, err := accessor.NewMemeStore(t.TempDir())
+	store, err := accessortest.NewMemeStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

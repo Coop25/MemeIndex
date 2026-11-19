@@ -46,13 +46,13 @@ var preferredMediaExtensions = map[string]string{
 	"audio/webm":       ".weba",
 }
 
-// storedFileExtension picks the extension for a new upload's stored name. The
+// StoredFileExtension picks the extension for a new upload's stored name. The
 // filename's own extension is kept, lower-cased, when it is plain letters and
 // digits. Otherwise it is dropped, and an extension for the detected media
 // type takes its place when there is one, so the file server still serves it
 // with the right type. The meme's OriginalName keeps the name as given; only
 // the name on disk and in the URL changes.
-func storedFileExtension(filename, contentType string) string {
+func StoredFileExtension(filename, contentType string) string {
 	if ext := strings.ToLower(filepath.Ext(filename)); storedExtensionPattern.MatchString(ext) {
 		return ext
 	}
