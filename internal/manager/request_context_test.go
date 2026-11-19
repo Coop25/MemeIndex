@@ -619,3 +619,25 @@ func TestMergeCancelledAfterItsCommitStillRefreshesTagHygiene(t *testing.T) {
 		}
 	})
 }
+
+// Every caller queues a meme for tag suggestions right after saving it, and a
+// save runs to the end whatever happens to its caller. A link retry whose
+// six-minute deadline passed while its meme was being stored must still get
+// that meme queued, as it was before contexts reached the store.
+func TestQueueingASavedMemeOutlivesItsCaller(t *testing.T) {
+	store := newContextStore(t)
+	m := NewMemeManagerWithTagSuggester(store, stubTagSuggester(), nil, TagSuggestionRuntimeConfig{}, 0)
+	meme := createContextMeme(t, m, "saved-then-expired")
+
+	m.QueueMemeTagSuggestions(cancelledRequest(), meme.ID)
+
+	m.suggestionQueueMu.Lock()
+	_, queued := m.queuedSuggestionIDs[meme.ID]
+	m.suggestionQueueMu.Unlock()
+	if !queued {
+		t.Fatal("a saved meme was not queued for tag suggestions because its caller's context had ended")
+	}
+	if missed := store.missedCalls(); len(missed) > 0 {
+		t.Fatalf("store calls without the caller's context values: %v", missed)
+	}
+}

@@ -137,7 +137,11 @@ func (m *MemeManager) QueueMemeTagSuggestions(ctx context.Context, id string) {
 		return
 	}
 
-	meme, err := m.store.GetByID(ctx, "", memeID)
+	// Callers queue a meme they have just saved, and the save finishes
+	// whatever happens to its caller. A caller that ended in between (a link
+	// retry past its deadline) must not leave that meme unqueued until the
+	// next restart re-seeds the queue.
+	meme, err := m.store.GetByID(context.WithoutCancel(ctx), "", memeID)
 	if err != nil {
 		return
 	}
