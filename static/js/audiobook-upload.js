@@ -23,7 +23,8 @@ function openAudiobookUploadModal() {
 // same as before) rather than forcing one trip through this modal per file.
 // ---------------------------------------------------------------------------
 
-// { file, status: "queued"|"uploading"|"done"|"error"|"cancelled", message }
+// { file, status: "queued"|"uploading"|"done"|"error"|"cancelled", message,
+//   resumable } - resumable marks an "error" the next Upload click retries.
 let audiobookUploadQueue = [];
 // Checked at the top of every queue iteration, not just mid-file (where
 // state.audiobooks.upload.cancelled is): Cancel can land in the brief gap
@@ -269,6 +270,16 @@ async function submitAudiobookUpload(event) {
   // click is what "resume the rest of the queue" means, including right
   // after a cancel.
   audiobookUploadQueueCancelled = false;
+  // The file that stopped the queue last time - an upload the server still
+  // has open, kept by its resume marker - is what "click Upload again"
+  // retries, so queue it again. Files the server refused stay done with.
+  for (const entry of audiobookUploadQueue) {
+    if (entry.status === "error" && entry.resumable) {
+      entry.status = "queued";
+      entry.message = "";
+      entry.resumable = false;
+    }
+  }
 
   setAudiobookUploadFormBusy(true);
   audiobookUploadCancel?.classList.remove("hidden");
@@ -321,6 +332,7 @@ async function submitAudiobookUpload(event) {
       }
 
       entry.status = error instanceof AudiobookUploadCancelled ? "cancelled" : "error";
+      entry.resumable = !(error instanceof AudiobookUploadCancelled || error instanceof AudiobookUploadForbidden);
       if (error instanceof AudiobookUploadCancelled) {
         entry.message = "Cancelled";
         if (audiobookUploadStatus) audiobookUploadStatus.textContent = "Upload cancelled.";
