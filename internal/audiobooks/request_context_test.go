@@ -28,7 +28,7 @@ func TestFileWritesFinishDespiteCancelledContext(t *testing.T) {
 
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
-	userID := "u-ctx-" + uuid.Must(uuid.NewV6()).String()
+	userID := "u-ctx-" + uuid.NewString()
 	// An ID3 header is enough for the content sniff to call it audio.
 	audio := []byte("ID3\x04\x00\x00\x00\x00\x00\x00" + strings.Repeat("\x00", 512))
 
@@ -54,7 +54,7 @@ func TestFileWritesFinishDespiteCancelledContext(t *testing.T) {
 	}
 
 	t.Run("complete upload", func(t *testing.T) {
-		upload := newUpload(t, "ctx complete "+uuid.Must(uuid.NewV6()).String())
+		upload := newUpload(t, "ctx complete "+uuid.NewString())
 		record, err := store.CompleteUpload(cancelled, upload.ID, userID, 1)
 		if err != nil {
 			t.Fatalf("CompleteUpload with a cancelled context: %v", err)
@@ -93,7 +93,7 @@ func TestFileWritesFinishDespiteCancelledContext(t *testing.T) {
 	})
 
 	t.Run("abort upload", func(t *testing.T) {
-		upload := newUpload(t, "ctx abort "+uuid.Must(uuid.NewV6()).String())
+		upload := newUpload(t, "ctx abort "+uuid.NewString())
 		if _, err := store.AbortUpload(cancelled, upload.ID, userID); err != nil {
 			t.Fatalf("AbortUpload with a cancelled context: %v", err)
 		}
