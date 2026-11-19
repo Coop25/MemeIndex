@@ -32,11 +32,11 @@ func (s *refreshRaceStore) land(id string) error {
 		return nil
 	}
 	s.fired = true
-	return s.ReplaceSuggestedTags(id, s.refresh)
+	return s.ReplaceSuggestedTags(context.Background(), id, s.refresh)
 }
 
-func (s *refreshRaceStore) EditMeme(userID, id string, edit accessor.MemeEdit) (accessor.Meme, error) {
-	meme, err := s.suggestionTestStore.EditMeme(userID, id, edit)
+func (s *refreshRaceStore) EditMeme(_ context.Context, userID, id string, edit accessor.MemeEdit) (accessor.Meme, error) {
+	meme, err := s.suggestionTestStore.EditMeme(context.Background(), userID, id, edit)
 	if err == nil && s.afterEdit {
 		if err := s.land(id); err != nil {
 			return accessor.Meme{}, err
@@ -45,8 +45,8 @@ func (s *refreshRaceStore) EditMeme(userID, id string, edit accessor.MemeEdit) (
 	return meme, err
 }
 
-func (s *refreshRaceStore) GetByID(userID, id string) (accessor.Meme, error) {
-	meme, err := s.suggestionTestStore.GetByID(userID, id)
+func (s *refreshRaceStore) GetByID(_ context.Context, userID, id string) (accessor.Meme, error) {
+	meme, err := s.suggestionTestStore.GetByID(context.Background(), userID, id)
 	if err == nil && !s.afterEdit {
 		if err := s.land(id); err != nil {
 			return accessor.Meme{}, err
@@ -94,7 +94,7 @@ func testSuggestionRefreshSurvives(t *testing.T, store suggestionTestStore, appl
 		t.Fatal(err)
 	}
 	token := "refresh" + hex.EncodeToString(b)
-	meme, err := store.Create(accessor.CreateInput{
+	meme, err := store.Create(context.Background(), accessor.CreateInput{
 		File:        strings.NewReader("refresh race bytes " + token),
 		Header:      textproto.MIMEHeader{"Content-Type": []string{"image/png"}},
 		Filename:    token + ".png",
@@ -105,9 +105,9 @@ func testSuggestionRefreshSurvives(t *testing.T, store suggestionTestStore, appl
 		t.Fatalf("Create: %v", err)
 	}
 	t.Cleanup(func() {
-		_, _ = store.Delete(accessor.DeleteInput{ID: meme.ID, Actor: accessor.AuditActor{IsSuperAdmin: true}})
+		_, _ = store.Delete(context.Background(), accessor.DeleteInput{ID: meme.ID, Actor: accessor.AuditActor{IsSuperAdmin: true}})
 	})
-	if err := store.ReplaceSuggestedTags(meme.ID, []string{token + "-dog", token + "-fish"}); err != nil {
+	if err := store.ReplaceSuggestedTags(context.Background(), meme.ID, []string{token + "-dog", token + "-fish"}); err != nil {
 		t.Fatalf("ReplaceSuggestedTags: %v", err)
 	}
 
@@ -124,7 +124,7 @@ func testSuggestionRefreshSurvives(t *testing.T, store suggestionTestStore, appl
 		t.Fatalf("apply=%v: %v", apply, err)
 	}
 
-	got, err := store.GetByID("", meme.ID)
+	got, err := store.GetByID(context.Background(), "", meme.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -11,9 +11,9 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func (s *PostgresStore) GetOrCreateMemeShare(memeID, userID string, now, expiresAt time.Time) (MemeShareState, error) {
+func (s *PostgresStore) GetOrCreateMemeShare(ctx context.Context, memeID, userID string, now, expiresAt time.Time) (MemeShareState, error) {
 	var share MemeShareState
-	err := s.pool.QueryRow(context.Background(), `
+	err := s.pool.QueryRow(ctx, `
 		UPDATE memes
 		SET share_generation = CASE WHEN share_expires_at > $2 THEN share_generation ELSE share_generation + 1 END,
 			share_expires_at = $3,
@@ -31,7 +31,7 @@ func (s *PostgresStore) GetOrCreateMemeShare(memeID, userID string, now, expires
 	// One link per generation: a renewed share (or two racing requests) gets
 	// the link already issued rather than a second one. The no-op update makes
 	// RETURNING yield the existing row on conflict.
-	err = s.pool.QueryRow(context.Background(), `
+	err = s.pool.QueryRow(ctx, `
 		INSERT INTO meme_share_links (slug, meme_id, generation)
 		VALUES ($1, $2, $3)
 		ON CONFLICT (meme_id, generation) DO UPDATE SET generation = EXCLUDED.generation
@@ -43,9 +43,9 @@ func (s *PostgresStore) GetOrCreateMemeShare(memeID, userID string, now, expires
 	return share, nil
 }
 
-func (s *PostgresStore) GetMemeShareState(memeID string) (MemeShareState, error) {
+func (s *PostgresStore) GetMemeShareState(ctx context.Context, memeID string) (MemeShareState, error) {
 	var share MemeShareState
-	err := s.pool.QueryRow(context.Background(), `
+	err := s.pool.QueryRow(ctx, `
 		SELECT m.id, m.share_generation, m.shared_by_user_id, COALESCE(m.shared_at, 'epoch'::timestamptz), COALESCE(m.share_expires_at, 'epoch'::timestamptz), COALESCE(l.slug, '')
 		FROM memes m
 		LEFT JOIN meme_share_links l ON l.meme_id = m.id AND l.generation = m.share_generation
@@ -57,10 +57,10 @@ func (s *PostgresStore) GetMemeShareState(memeID string) (MemeShareState, error)
 	return share, err
 }
 
-func (s *PostgresStore) ResolveMemeShareSlug(slug string) (string, int64, error) {
+func (s *PostgresStore) ResolveMemeShareSlug(ctx context.Context, slug string) (string, int64, error) {
 	var memeID string
 	var generation int64
-	err := s.pool.QueryRow(context.Background(), `
+	err := s.pool.QueryRow(ctx, `
 		SELECT meme_id, generation FROM meme_share_links WHERE slug = $1
 	`, strings.TrimSpace(slug)).Scan(&memeID, &generation)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -69,8 +69,8 @@ func (s *PostgresStore) ResolveMemeShareSlug(slug string) (string, int64, error)
 	return memeID, generation, err
 }
 
-func (s *PostgresStore) ListActiveMemeShares(now time.Time) ([]MemeShareState, error) {
-	rows, err := s.pool.Query(context.Background(), `
+func (s *PostgresStore) ListActiveMemeShares(ctx context.Context, now time.Time) ([]MemeShareState, error) {
+	rows, err := s.pool.Query(ctx, `
 		SELECT m.id, m.share_generation, m.shared_by_user_id, m.shared_at, m.share_expires_at, COALESCE(l.slug, '')
 		FROM memes m
 		LEFT JOIN meme_share_links l ON l.meme_id = m.id AND l.generation = m.share_generation
@@ -92,8 +92,8 @@ func (s *PostgresStore) ListActiveMemeShares(now time.Time) ([]MemeShareState, e
 	return shares, rows.Err()
 }
 
-func (s *PostgresStore) RevokeMemeShare(memeID string) error {
-	tag, err := s.pool.Exec(context.Background(), `
+func (s *PostgresStore) RevokeMemeShare(ctx context.Context, memeID string) error {
+	tag, err := s.pool.Exec(ctx, `
 		UPDATE memes
 		SET share_generation = share_generation + 1, share_expires_at = NULL
 		WHERE id = $1
@@ -104,8 +104,8 @@ func (s *PostgresStore) RevokeMemeShare(memeID string) error {
 	return err
 }
 
-func (s *PostgresStore) RevokeAllMemeShares(now time.Time) (int, error) {
-	tag, err := s.pool.Exec(context.Background(), `
+func (s *PostgresStore) RevokeAllMemeShares(ctx context.Context, now time.Time) (int, error) {
+	tag, err := s.pool.Exec(ctx, `
 		UPDATE memes
 		SET share_generation = share_generation + 1, share_expires_at = NULL
 		WHERE share_expires_at > $1 AND COALESCE(hidden_from_app, FALSE) = FALSE

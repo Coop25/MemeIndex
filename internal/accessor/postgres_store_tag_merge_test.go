@@ -65,7 +65,7 @@ func (f *tagMergeFixture) audiobook(tags ...string) string {
 func (f *tagMergeFixture) meme(tags ...string) string {
 	f.t.Helper()
 	actor := AuditActor{UserID: "u-tm", Username: "tm", IsSuperAdmin: true}
-	m, err := f.store.Create(CreateInput{
+	m, err := f.store.Create(context.Background(), CreateInput{
 		File:        strings.NewReader("fake png bytes"),
 		Header:      textproto.MIMEHeader{"Content-Type": []string{"image/png"}},
 		Filename:    f.token + "-pic.png",
@@ -76,7 +76,7 @@ func (f *tagMergeFixture) meme(tags ...string) string {
 	if err != nil {
 		f.t.Fatalf("Create meme: %v", err)
 	}
-	f.t.Cleanup(func() { f.store.Delete(DeleteInput{ID: m.ID, Actor: actor}) })
+	f.t.Cleanup(func() { f.store.Delete(context.Background(), DeleteInput{ID: m.ID, Actor: actor}) })
 	return m.ID
 }
 
@@ -147,7 +147,7 @@ func TestMergeTagMovesAudiobookTags(t *testing.T) {
 	f.meme(src)
 	b := f.audiobook(src)
 
-	counts, err := f.store.MergeTag(src, dst, mergeActor)
+	counts, err := f.store.MergeTag(context.Background(), src, dst, mergeActor)
 	if err != nil {
 		t.Fatalf("MergeTag: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestMergeTagAudiobookOnlySource(t *testing.T) {
 	f.cleanupTags(src, dst)
 	b := f.audiobook(src)
 
-	counts, err := f.store.MergeTag(src, dst, mergeActor)
+	counts, err := f.store.MergeTag(context.Background(), src, dst, mergeActor)
 	if err != nil {
 		t.Fatalf("MergeTag: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestMergeTagTargetAlreadyOnAudiobook(t *testing.T) {
 	f.cleanupTags(src, dst)
 	b := f.audiobook(src, dst)
 
-	counts, err := f.store.MergeTag(src, dst, mergeActor)
+	counts, err := f.store.MergeTag(context.Background(), src, dst, mergeActor)
 	if err != nil {
 		t.Fatalf("MergeTag: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestMergeTagKeepsUserRestricted(t *testing.T) {
 	user := "u-" + f.token
 	f.restrict(user, src)
 
-	counts, err := f.store.MergeTag(src, dst, mergeActor)
+	counts, err := f.store.MergeTag(context.Background(), src, dst, mergeActor)
 	if err != nil {
 		t.Fatalf("MergeTag: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestMergeTagRestrictionTargetAlreadyPresent(t *testing.T) {
 	user := "u-" + f.token
 	f.restrict(user, src, dst)
 
-	if _, err := f.store.MergeTag(src, dst, mergeActor); err != nil {
+	if _, err := f.store.MergeTag(context.Background(), src, dst, mergeActor); err != nil {
 		t.Fatalf("MergeTag: %v", err)
 	}
 	if got := f.restrictions(user); !slices.Equal(got, []string{dst}) {

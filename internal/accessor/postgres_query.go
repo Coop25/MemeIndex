@@ -11,8 +11,7 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-func (s *PostgresStore) List(userID, query string, favoritesOnly bool, tag string) []Meme {
-	ctx := context.Background()
+func (s *PostgresStore) List(ctx context.Context, userID, query string, favoritesOnly bool, tag string) []Meme {
 	userID = normalizeFavoriteUserID(userID)
 	query = strings.ToLower(strings.TrimSpace(query))
 	tag = normalizeTag(tag)
@@ -153,8 +152,7 @@ const adminDashboardMemeColumns = `
 // AdminDashboardMemes returns every visible meme, newest first, in the shape the
 // admin overview aggregates - List() without the search/tag filters and without
 // the per-row favourites lookup.
-func (s *PostgresStore) AdminDashboardMemes() ([]Meme, error) {
-	ctx := context.Background()
+func (s *PostgresStore) AdminDashboardMemes(ctx context.Context) ([]Meme, error) {
 	rows, err := s.pool.Query(ctx, "SELECT"+adminDashboardMemeColumns+`
 		FROM memes m
 		WHERE COALESCE(m.hidden_from_app, FALSE) = FALSE

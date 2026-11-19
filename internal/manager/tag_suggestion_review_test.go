@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"testing"
@@ -12,11 +13,11 @@ type tagReviewTestStore struct {
 	memes []accessor.Meme
 }
 
-func (s *tagReviewTestStore) List(string, string, bool, string) []accessor.Meme {
+func (s *tagReviewTestStore) List(context.Context, string, string, bool, string) []accessor.Meme {
 	return append([]accessor.Meme(nil), s.memes...)
 }
-func (s *tagReviewTestStore) SuggestTags(string, int) []string { return nil }
-func (s *tagReviewTestStore) GetByID(_ string, id string) (accessor.Meme, error) {
+func (s *tagReviewTestStore) SuggestTags(context.Context, string, int) []string { return nil }
+func (s *tagReviewTestStore) GetByID(_ context.Context, _ string, id string) (accessor.Meme, error) {
 	for _, meme := range s.memes {
 		if meme.ID == id {
 			return meme, nil
@@ -24,27 +25,27 @@ func (s *tagReviewTestStore) GetByID(_ string, id string) (accessor.Meme, error)
 	}
 	return accessor.Meme{}, os.ErrNotExist
 }
-func (s *tagReviewTestStore) Random([]string) (accessor.Meme, error) {
+func (s *tagReviewTestStore) Random(context.Context, []string) (accessor.Meme, error) {
 	return accessor.Meme{}, os.ErrNotExist
 }
-func (s *tagReviewTestStore) Create(accessor.CreateInput) (accessor.Meme, error) {
+func (s *tagReviewTestStore) Create(context.Context, accessor.CreateInput) (accessor.Meme, error) {
 	return accessor.Meme{}, nil
 }
-func (s *tagReviewTestStore) EditMeme(string, string, accessor.MemeEdit) (accessor.Meme, error) {
+func (s *tagReviewTestStore) EditMeme(context.Context, string, string, accessor.MemeEdit) (accessor.Meme, error) {
 	return accessor.Meme{}, nil
 }
-func (s *tagReviewTestStore) SetFavorite(string, string, bool) (accessor.Meme, error) {
+func (s *tagReviewTestStore) SetFavorite(context.Context, string, string, bool) (accessor.Meme, error) {
 	return accessor.Meme{}, nil
 }
-func (s *tagReviewTestStore) Delete(accessor.DeleteInput) (accessor.DeleteResult, error) {
+func (s *tagReviewTestStore) Delete(context.Context, accessor.DeleteInput) (accessor.DeleteResult, error) {
 	return accessor.DeleteResult{}, nil
 }
 func (s *tagReviewTestStore) UploadDir() string { return os.TempDir() }
-func (s *tagReviewTestStore) ListSuggestedTags(id string) ([]string, error) {
-	meme, err := s.GetByID("", id)
+func (s *tagReviewTestStore) ListSuggestedTags(ctx context.Context, id string) ([]string, error) {
+	meme, err := s.GetByID(ctx, "", id)
 	return append([]string(nil), meme.SuggestedTags...), err
 }
-func (s *tagReviewTestStore) ReplaceSuggestedTags(id string, tags []string) error {
+func (s *tagReviewTestStore) ReplaceSuggestedTags(_ context.Context, id string, tags []string) error {
 	for index := range s.memes {
 		if s.memes[index].ID == id {
 			s.memes[index].SuggestedTags = append([]string(nil), tags...)
@@ -53,7 +54,7 @@ func (s *tagReviewTestStore) ReplaceSuggestedTags(id string, tags []string) erro
 	}
 	return os.ErrNotExist
 }
-func (s *tagReviewTestStore) SetAutoSuggestDisabled(string, bool) error { return nil }
+func (s *tagReviewTestStore) SetAutoSuggestDisabled(context.Context, string, bool) error { return nil }
 
 // Keep compile-time coverage explicit when the Store interface grows.
 var _ accessor.Store = (*tagReviewTestStore)(nil)

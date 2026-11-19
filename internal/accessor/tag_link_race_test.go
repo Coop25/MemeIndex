@@ -23,7 +23,7 @@ func (f *tagMergeFixture) raceMeme(tags ...string) string {
 	f.t.Helper()
 	actor := AuditActor{UserID: "u-race", Username: "race", IsSuperAdmin: true}
 	token := randToken(f.t)
-	m, err := f.store.Create(CreateInput{
+	m, err := f.store.Create(context.Background(), CreateInput{
 		File:        strings.NewReader("tag race bytes " + token),
 		Header:      textproto.MIMEHeader{"Content-Type": []string{"image/png"}},
 		Filename:    f.token + "-" + token + ".png",
@@ -34,7 +34,7 @@ func (f *tagMergeFixture) raceMeme(tags ...string) string {
 	if err != nil {
 		f.t.Fatalf("Create meme: %v", err)
 	}
-	f.t.Cleanup(func() { f.store.Delete(DeleteInput{ID: m.ID, Actor: actor}) })
+	f.t.Cleanup(func() { f.store.Delete(context.Background(), DeleteInput{ID: m.ID, Actor: actor}) })
 	return m.ID
 }
 
@@ -108,7 +108,7 @@ func TestOrphanTagCleanupKeepsConcurrentMemeLink(t *testing.T) {
 	var editErr error
 	go func() {
 		defer close(done)
-		_, editErr = f.store.EditMeme("", oldMeme, MemeEdit{TagsRemoved: []string{tag}, Actor: mergeActor})
+		_, editErr = f.store.EditMeme(context.Background(), "", oldMeme, MemeEdit{TagsRemoved: []string{tag}, Actor: mergeActor})
 	}()
 	waitBlockedOrDone(t, f, pid, done)
 
@@ -154,7 +154,7 @@ func TestTagLinkRecreatesTagDeletedWhileWaiting(t *testing.T) {
 	var editErr error
 	go func() {
 		defer close(done)
-		_, editErr = f.store.EditMeme("", meme, MemeEdit{TagsAdded: []string{tag}, Actor: mergeActor})
+		_, editErr = f.store.EditMeme(context.Background(), "", meme, MemeEdit{TagsAdded: []string{tag}, Actor: mergeActor})
 	}()
 	waitBlockedOrDone(t, f, pid, done)
 
@@ -199,7 +199,7 @@ func TestMergeTagMovesConcurrentlyAddedLink(t *testing.T) {
 	var mergeErr error
 	go func() {
 		defer close(done)
-		counts, mergeErr = f.store.MergeTag(src, dst, mergeActor)
+		counts, mergeErr = f.store.MergeTag(context.Background(), src, dst, mergeActor)
 	}()
 	waitBlockedOrDone(t, f, pid, done)
 

@@ -26,7 +26,7 @@ type previewBackfillStore struct {
 	entered  chan string
 }
 
-func (s *previewBackfillStore) EnsurePreviewAssets(step func(work func()) bool) error {
+func (s *previewBackfillStore) EnsurePreviewAssets(_ context.Context, step func(work func()) bool) error {
 	s.mu.Lock()
 	s.passes++
 	s.mu.Unlock()

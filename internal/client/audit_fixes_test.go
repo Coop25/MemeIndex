@@ -266,7 +266,7 @@ type hidingMemeStore struct {
 	hidden []string
 }
 
-func (s hidingMemeStore) HiddenMemeIDs() ([]string, error) { return s.hidden, nil }
+func (s hidingMemeStore) HiddenMemeIDs(_ context.Context) ([]string, error) { return s.hidden, nil }
 
 func TestProtectedAssetsHideDirectoryListingsAndPendingDeletes(t *testing.T) {
 	dir := t.TempDir()

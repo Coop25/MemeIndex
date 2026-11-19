@@ -29,8 +29,8 @@ type extraRefsMemeStore struct {
 	extra []accessor.StoredFile
 }
 
-func (s *extraRefsMemeStore) AllStoredFiles() ([]accessor.StoredFile, error) {
-	files, err := s.MemeStore.AllStoredFiles()
+func (s *extraRefsMemeStore) AllStoredFiles(_ context.Context) ([]accessor.StoredFile, error) {
+	files, err := s.MemeStore.AllStoredFiles(context.Background())
 	if err != nil {
 		return nil, err
 	}
@@ -346,7 +346,7 @@ func (failingStoragePathsStore) ListStoragePaths(context.Context) ([]audiobooks.
 
 func TestStorageEndpointWithoutPostgres(t *testing.T) {
 	ts := newStorageTestServer(t)
-	meme, err := ts.store.Create(accessor.CreateInput{
+	meme, err := ts.store.Create(context.Background(), accessor.CreateInput{
 		File:        strings.NewReader("png bytes!"),
 		Header:      textproto.MIMEHeader{"Content-Type": []string{"image/png"}},
 		Filename:    "big.png",

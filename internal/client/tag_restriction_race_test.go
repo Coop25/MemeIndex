@@ -50,7 +50,7 @@ func TestOrphanTagCleanupKeepsConcurrentRestriction(t *testing.T) {
 	}
 
 	actor := accessor.AuditActor{UserID: "admin", Username: "admin", IsSuperAdmin: true}
-	meme, err := memes.Create(accessor.CreateInput{
+	meme, err := memes.Create(context.Background(), accessor.CreateInput{
 		File:        strings.NewReader("restriction race bytes " + token),
 		Header:      textproto.MIMEHeader{"Content-Type": []string{"image/png"}},
 		Filename:    token + ".png",
@@ -61,7 +61,7 @@ func TestOrphanTagCleanupKeepsConcurrentRestriction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	t.Cleanup(func() { _, _ = memes.Delete(accessor.DeleteInput{ID: meme.ID, Actor: actor}) })
+	t.Cleanup(func() { _, _ = memes.Delete(context.Background(), accessor.DeleteInput{ID: meme.ID, Actor: actor}) })
 
 	// The restriction, written but not yet committed.
 	tx, err := users.pool.Begin(ctx)
@@ -82,7 +82,7 @@ func TestOrphanTagCleanupKeepsConcurrentRestriction(t *testing.T) {
 	var editErr error
 	go func() {
 		defer close(done)
-		_, editErr = memes.EditMeme("", meme.ID, accessor.MemeEdit{TagsRemoved: []string{tag}, Actor: actor})
+		_, editErr = memes.EditMeme(context.Background(), "", meme.ID, accessor.MemeEdit{TagsRemoved: []string{tag}, Actor: actor})
 	}()
 
 	// Commit the restriction only once the edit has finished or is parked

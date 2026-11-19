@@ -1,6 +1,7 @@
 package accessor
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/textproto"
@@ -67,7 +68,7 @@ func addOnly(change MemeChange) error {
 
 func createEditTestMeme(t *testing.T, store *PostgresStore, token string, tags []string, notes string) Meme {
 	t.Helper()
-	meme, err := store.Create(CreateInput{
+	meme, err := store.Create(context.Background(), CreateInput{
 		File:        strings.NewReader("edit test bytes " + token),
 		Header:      textproto.MIMEHeader{"Content-Type": []string{"image/png"}},
 		Filename:    token + ".png",
@@ -80,14 +81,14 @@ func createEditTestMeme(t *testing.T, store *PostgresStore, token string, tags [
 		t.Fatalf("Create: %v", err)
 	}
 	t.Cleanup(func() {
-		_, _ = store.Delete(DeleteInput{ID: meme.ID, Actor: AuditActor{UserID: "u-edit", IsSuperAdmin: true}})
+		_, _ = store.Delete(context.Background(), DeleteInput{ID: meme.ID, Actor: AuditActor{UserID: "u-edit", IsSuperAdmin: true}})
 	})
 	return meme
 }
 
 func auditActions(t *testing.T, store *PostgresStore, memeID string) map[string][]string {
 	t.Helper()
-	entries, err := store.ListMemeAudit(memeID, 200)
+	entries, err := store.ListMemeAudit(context.Background(), memeID, 200)
 	if err != nil {
 		t.Fatalf("ListMemeAudit: %v", err)
 	}
@@ -119,7 +120,7 @@ func TestEditMemeConcurrentTagAdditionsAllSurvive(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			_, err := store.EditMeme(fmt.Sprintf("u-%d", i), meme.ID, MemeEdit{
+			_, err := store.EditMeme(context.Background(), fmt.Sprintf("u-%d", i), meme.ID, MemeEdit{
 				TagsAdded: []string{tag},
 				Actor:     AuditActor{UserID: fmt.Sprintf("u-%d", i)},
 				Authorize: addOnly,
@@ -136,7 +137,7 @@ func TestEditMemeConcurrentTagAdditionsAllSurvive(t *testing.T) {
 		}
 	}
 
-	got, err := store.GetByID("", meme.ID)
+	got, err := store.GetByID(context.Background(), "", meme.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +174,7 @@ func TestEditMemeAddOnlyNeverRemovesConcurrentlyAddedTag(t *testing.T) {
 	release := make(chan struct{})
 	bDone := make(chan error, 1)
 	go func() {
-		_, err := store.EditMeme("u-b", meme.ID, MemeEdit{
+		_, err := store.EditMeme(context.Background(), "u-b", meme.ID, MemeEdit{
 			TagsAdded: []string{c},
 			Actor:     AuditActor{UserID: "u-b"},
 			Authorize: func(MemeChange) error {
@@ -190,7 +191,7 @@ func TestEditMemeAddOnlyNeverRemovesConcurrentlyAddedTag(t *testing.T) {
 	var seen MemeChange
 	aDone := make(chan error, 1)
 	go func() {
-		_, err := store.EditMeme("u-a", meme.ID, MemeEdit{
+		_, err := store.EditMeme(context.Background(), "u-a", meme.ID, MemeEdit{
 			TagsAdded: []string{b},
 			Actor:     AuditActor{UserID: "u-a"},
 			Authorize: func(change MemeChange) error {
@@ -217,7 +218,7 @@ func TestEditMemeAddOnlyNeverRemovesConcurrentlyAddedTag(t *testing.T) {
 		t.Fatalf("A's change = +%v -%v, want +[%s] and no removals", seen.TagsAdded, seen.TagsRemoved, b)
 	}
 
-	got, err := store.GetByID("", meme.ID)
+	got, err := store.GetByID(context.Background(), "", meme.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,14 +229,14 @@ func TestEditMemeAddOnlyNeverRemovesConcurrentlyAddedTag(t *testing.T) {
 	// A legacy client sending A's stale full set {a, b} would now remove c.
 	// That removal is seen under the lock and refused for an add-only user.
 	stale := []string{a, b}
-	if _, err := store.EditMeme("u-a", meme.ID, MemeEdit{
+	if _, err := store.EditMeme(context.Background(), "u-a", meme.ID, MemeEdit{
 		ReplaceTags: &stale,
 		Actor:       AuditActor{UserID: "u-a"},
 		Authorize:   addOnly,
 	}); !errors.Is(err, errNoRemove) {
 		t.Fatalf("stale full replacement by an add-only user: err = %v, want %v", err, errNoRemove)
 	}
-	got, err = store.GetByID("", meme.ID)
+	got, err = store.GetByID(context.Background(), "", meme.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +265,7 @@ func TestEditMemeReplaceTagsAuditsActualChange(t *testing.T) {
 	meme := createEditTestMeme(t, store, token, []string{a, b}, "notes stay")
 
 	replacement := []string{b, c}
-	got, err := store.EditMeme("u-r", meme.ID, MemeEdit{ReplaceTags: &replacement, Actor: AuditActor{UserID: "u-r"}})
+	got, err := store.EditMeme(context.Background(), "u-r", meme.ID, MemeEdit{ReplaceTags: &replacement, Actor: AuditActor{UserID: "u-r"}})
 	if err != nil {
 		t.Fatalf("EditMeme: %v", err)
 	}
@@ -285,11 +286,11 @@ func TestEditMemeLeavesUnsetFieldsAlone(t *testing.T) {
 	store := newRegressionStore(t)
 	token := "edit" + randToken(t)
 	meme := createEditTestMeme(t, store, token, []string{token + "-a"}, "original")
-	if _, err := store.SetFavorite("u-f", meme.ID, true); err != nil {
+	if _, err := store.SetFavorite(context.Background(), "u-f", meme.ID, true); err != nil {
 		t.Fatal(err)
 	}
 
-	got, err := store.EditMeme("u-f", meme.ID, MemeEdit{TagsAdded: []string{token + "-b"}})
+	got, err := store.EditMeme(context.Background(), "u-f", meme.ID, MemeEdit{TagsAdded: []string{token + "-b"}})
 	if err != nil {
 		t.Fatalf("EditMeme tags: %v", err)
 	}
@@ -298,7 +299,7 @@ func TestEditMemeLeavesUnsetFieldsAlone(t *testing.T) {
 	}
 
 	notes := "  edited  "
-	got, err = store.EditMeme("u-f", meme.ID, MemeEdit{Notes: &notes})
+	got, err = store.EditMeme(context.Background(), "u-f", meme.ID, MemeEdit{Notes: &notes})
 	if err != nil {
 		t.Fatalf("EditMeme notes: %v", err)
 	}
@@ -307,7 +308,7 @@ func TestEditMemeLeavesUnsetFieldsAlone(t *testing.T) {
 	}
 
 	unfavorite := false
-	got, err = store.EditMeme("u-f", meme.ID, MemeEdit{Favorite: &unfavorite, Actor: AuditActor{UserID: "u-f"}})
+	got, err = store.EditMeme(context.Background(), "u-f", meme.ID, MemeEdit{Favorite: &unfavorite, Actor: AuditActor{UserID: "u-f"}})
 	if err != nil {
 		t.Fatalf("EditMeme favorite: %v", err)
 	}
@@ -318,7 +319,7 @@ func TestEditMemeLeavesUnsetFieldsAlone(t *testing.T) {
 		t.Fatalf("unfavorited audit = %v, want one entry", unfav)
 	}
 
-	if _, err := store.EditMeme("", "no-such-meme-"+token, MemeEdit{TagsAdded: []string{"x"}}); !errors.Is(err, os.ErrNotExist) {
+	if _, err := store.EditMeme(context.Background(), "", "no-such-meme-"+token, MemeEdit{TagsAdded: []string{"x"}}); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("editing a missing meme: err = %v, want os.ErrNotExist", err)
 	}
 }

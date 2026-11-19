@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"context"
 	"errors"
 	"log"
 	"memeindex/internal/accessor"
@@ -171,10 +172,10 @@ func (m *MemeManager) computeAdminDashboard() AdminDashboardStats {
 
 	favoriteDeltas := make([]int, len(stats.MetricSeries))
 	if analytics, ok := m.store.(accessor.FavoriteAnalyticsStore); ok {
-		if totalFavorites, err := analytics.TotalFavoriteAssignments(); err == nil {
+		if totalFavorites, err := analytics.TotalFavoriteAssignments(context.TODO()); err == nil {
 			stats.Counts.Favorites = totalFavorites
 		}
-		if activity, err := analytics.FavoriteActivitySince(today.AddDate(0, 0, -29)); err == nil {
+		if activity, err := analytics.FavoriteActivitySince(context.TODO(), today.AddDate(0, 0, -29)); err == nil {
 			for _, day := range activity {
 				if index, ok := seriesIndex[day.Date.UTC().Format("2006-01-02")]; ok {
 					favoriteDeltas[index] += day.Added - day.Removed
@@ -250,13 +251,13 @@ func (m *MemeManager) computeAdminDashboard() AdminDashboardStats {
 // flag does not change the rendered dashboard.
 func (m *MemeManager) adminDashboardMemes() []accessor.Meme {
 	if ads, ok := m.store.(accessor.AdminMemeStore); ok {
-		if memes, err := ads.AdminDashboardMemes(); err == nil {
+		if memes, err := ads.AdminDashboardMemes(context.TODO()); err == nil {
 			return memes
 		} else {
 			log.Printf("admin dashboard: lean meme scan failed, falling back to List: %v", err)
 		}
 	}
-	return m.store.List("", "", false, "")
+	return m.store.List(context.TODO(), "", "", false, "")
 }
 
 // invalidateAdminReadCache drops the memoized admin dashboard and marks the
@@ -300,7 +301,7 @@ func (m *MemeManager) StoredMemeFiles() ([]accessor.StoredFile, error) {
 	if !ok {
 		return nil, errors.New("meme store cannot list stored files")
 	}
-	return store.AllStoredFiles()
+	return store.AllStoredFiles(context.TODO())
 }
 
 // CountAuditActionsByActor counts audit events with the given action per actor.
@@ -310,7 +311,7 @@ func (m *MemeManager) CountAuditActionsByActor(action string) (map[string]int, e
 	if !ok {
 		return map[string]int{}, nil
 	}
-	return store.CountAuditActionsByActor(action)
+	return store.CountAuditActionsByActor(context.TODO(), action)
 }
 
 // CountFavoritesByUser counts favorites per user, or an empty map when the
@@ -320,5 +321,5 @@ func (m *MemeManager) CountFavoritesByUser() (map[string]int, error) {
 	if !ok {
 		return map[string]int{}, nil
 	}
-	return store.CountFavoritesByUser()
+	return store.CountFavoritesByUser(context.TODO())
 }

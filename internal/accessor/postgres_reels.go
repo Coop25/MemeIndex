@@ -7,8 +7,8 @@ import (
 	"time"
 )
 
-func (s *PostgresStore) LoadReelSessions() (map[string]ReelSessionRecord, error) {
-	rows, err := s.pool.Query(context.Background(), `
+func (s *PostgresStore) LoadReelSessions(ctx context.Context) (map[string]ReelSessionRecord, error) {
+	rows, err := s.pool.Query(ctx, `
 		SELECT id, history, position, last_activity
 		FROM reel_sessions
 	`)
@@ -41,13 +41,13 @@ func (s *PostgresStore) LoadReelSessions() (map[string]ReelSessionRecord, error)
 	return sessions, rows.Err()
 }
 
-func (s *PostgresStore) SaveReelSession(sessionID string, session ReelSessionRecord) error {
+func (s *PostgresStore) SaveReelSession(ctx context.Context, sessionID string, session ReelSessionRecord) error {
 	historyJSON, err := json.Marshal(session.History)
 	if err != nil {
 		return err
 	}
 
-	_, err = s.pool.Exec(context.Background(), `
+	_, err = s.pool.Exec(ctx, `
 		INSERT INTO reel_sessions (id, history, position, last_activity)
 		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (id) DO UPDATE
@@ -58,12 +58,12 @@ func (s *PostgresStore) SaveReelSession(sessionID string, session ReelSessionRec
 	return err
 }
 
-func (s *PostgresStore) DeleteReelSession(sessionID string) error {
-	_, err := s.pool.Exec(context.Background(), `DELETE FROM reel_sessions WHERE id = $1`, strings.TrimSpace(sessionID))
+func (s *PostgresStore) DeleteReelSession(ctx context.Context, sessionID string) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM reel_sessions WHERE id = $1`, strings.TrimSpace(sessionID))
 	return err
 }
 
-func (s *PostgresStore) CleanupStaleReelSessions(before time.Time) error {
-	_, err := s.pool.Exec(context.Background(), `DELETE FROM reel_sessions WHERE last_activity < $1`, before.UTC())
+func (s *PostgresStore) CleanupStaleReelSessions(ctx context.Context, before time.Time) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM reel_sessions WHERE last_activity < $1`, before.UTC())
 	return err
 }

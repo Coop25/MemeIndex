@@ -91,7 +91,7 @@ func TestLegacyJSONStoreUpgradesIntoEmptyPostgres(t *testing.T) {
 	}
 	t.Cleanup(store.Close)
 
-	got, err := store.GetByID("discord-user-1", cat.ID)
+	got, err := store.GetByID(context.Background(), "discord-user-1", cat.ID)
 	if err != nil {
 		t.Fatalf("GetByID cat: %v", err)
 	}
@@ -125,11 +125,11 @@ func TestLegacyJSONStoreUpgradesIntoEmptyPostgres(t *testing.T) {
 	// A share link the JSON-store instance already handed out keeps working:
 	// same slug, same generation (which the share token's HMAC covers), same
 	// expiry.
-	memeID, generation, err := store.ResolveMemeShareSlug(share.Slug)
+	memeID, generation, err := store.ResolveMemeShareSlug(context.Background(), share.Slug)
 	if err != nil || memeID != cat.ID || generation != share.Generation {
 		t.Errorf("ResolveMemeShareSlug = %q/%d err %v, want %q/%d", memeID, generation, err, cat.ID, share.Generation)
 	}
-	state, err := store.GetMemeShareState(cat.ID)
+	state, err := store.GetMemeShareState(context.Background(), cat.ID)
 	if err != nil {
 		t.Fatalf("GetMemeShareState: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestLegacyJSONStoreUpgradesIntoEmptyPostgres(t *testing.T) {
 		t.Errorf("tag:dog search = %+v, want only the dog", page.Memes)
 	}
 
-	sessions, err := store.LoadReelSessions()
+	sessions, err := store.LoadReelSessions(context.Background())
 	if err != nil {
 		t.Fatalf("LoadReelSessions: %v", err)
 	}

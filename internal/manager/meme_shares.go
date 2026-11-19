@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"context"
 	"errors"
 	"memeindex/internal/accessor"
 	"strings"
@@ -12,7 +13,7 @@ func (m *MemeManager) GetOrCreateMemeShare(memeID, userID string, now time.Time)
 	if !ok {
 		return accessor.MemeShareState{}, errors.New("meme sharing is unavailable")
 	}
-	return store.GetOrCreateMemeShare(strings.TrimSpace(memeID), strings.TrimSpace(userID), now.UTC(), now.UTC().Add(MemeShareLifetime))
+	return store.GetOrCreateMemeShare(context.TODO(), strings.TrimSpace(memeID), strings.TrimSpace(userID), now.UTC(), now.UTC().Add(MemeShareLifetime))
 }
 
 // MemeShareLifetime is how long a share link serves its file. Sharing a meme
@@ -27,7 +28,7 @@ func (m *MemeManager) ResolveMemeShareLink(slug string) (share accessor.MemeShar
 	if !ok {
 		return accessor.MemeShareState{}, accessor.Meme{}, false, errors.New("meme sharing is unavailable")
 	}
-	memeID, generation, err := store.ResolveMemeShareSlug(strings.TrimSpace(slug))
+	memeID, generation, err := store.ResolveMemeShareSlug(context.TODO(), strings.TrimSpace(slug))
 	if err != nil {
 		return accessor.MemeShareState{}, accessor.Meme{}, false, err
 	}
@@ -43,11 +44,11 @@ func (m *MemeManager) GetMemeShare(memeID string) (accessor.MemeShareState, acce
 	if !ok {
 		return accessor.MemeShareState{}, accessor.Meme{}, errors.New("meme sharing is unavailable")
 	}
-	share, err := store.GetMemeShareState(strings.TrimSpace(memeID))
+	share, err := store.GetMemeShareState(context.TODO(), strings.TrimSpace(memeID))
 	if err != nil {
 		return accessor.MemeShareState{}, accessor.Meme{}, err
 	}
-	meme, err := m.store.GetByID("", share.MemeID)
+	meme, err := m.store.GetByID(context.TODO(), "", share.MemeID)
 	return share, meme, err
 }
 
@@ -61,7 +62,7 @@ func (m *MemeManager) ListActiveMemeShares(now time.Time) ([]ActiveMemeShare, er
 	if !ok {
 		return nil, errors.New("meme sharing is unavailable")
 	}
-	states, err := store.ListActiveMemeShares(now.UTC())
+	states, err := store.ListActiveMemeShares(context.TODO(), now.UTC())
 	if err != nil {
 		return nil, err
 	}
@@ -104,7 +105,7 @@ func (m *MemeManager) ListActiveMemeSharesPage(now time.Time, offset, limit int)
 	if limit > activeSharesPageMaxLimit {
 		limit = activeSharesPageMaxLimit
 	}
-	states, err := store.ListActiveMemeShares(now.UTC())
+	states, err := store.ListActiveMemeShares(context.TODO(), now.UTC())
 	if err != nil {
 		return nil, 0, 0, 0, err
 	}
@@ -139,7 +140,7 @@ func (m *MemeManager) RevokeMemeShare(memeID string) error {
 	if !ok {
 		return errors.New("meme sharing is unavailable")
 	}
-	return store.RevokeMemeShare(strings.TrimSpace(memeID))
+	return store.RevokeMemeShare(context.TODO(), strings.TrimSpace(memeID))
 }
 
 func (m *MemeManager) RevokeAllMemeShares(now time.Time) (int, error) {
@@ -147,5 +148,5 @@ func (m *MemeManager) RevokeAllMemeShares(now time.Time) (int, error) {
 	if !ok {
 		return 0, errors.New("meme sharing is unavailable")
 	}
-	return store.RevokeAllMemeShares(now.UTC())
+	return store.RevokeAllMemeShares(context.TODO(), now.UTC())
 }

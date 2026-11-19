@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"context"
 	"log"
 	"memeindex/internal/accessor"
 	"strings"
@@ -11,7 +12,7 @@ func (m *MemeManager) ListMemeAudit(id string, limit int) ([]accessor.MemeAuditE
 	if !ok {
 		return nil, nil
 	}
-	return store.ListMemeAudit(strings.TrimSpace(id), limit)
+	return store.ListMemeAudit(context.TODO(), strings.TrimSpace(id), limit)
 }
 
 func (m *MemeManager) ListAuditFeed(offset int, limit int, actorUserID string) (accessor.PagedAuditFeed, error) {
@@ -19,7 +20,7 @@ func (m *MemeManager) ListAuditFeed(offset int, limit int, actorUserID string) (
 	if !ok {
 		return accessor.PagedAuditFeed{}, nil
 	}
-	return store.ListAuditFeed(offset, limit, actorUserID)
+	return store.ListAuditFeed(context.TODO(), offset, limit, actorUserID)
 }
 
 func (m *MemeManager) ListPendingDeletes(offset int, limit int) (accessor.PagedPendingDeletes, error) {
@@ -27,7 +28,7 @@ func (m *MemeManager) ListPendingDeletes(offset int, limit int) (accessor.PagedP
 	if !ok {
 		return accessor.PagedPendingDeletes{}, nil
 	}
-	return store.ListPendingDeletes(offset, limit)
+	return store.ListPendingDeletes(context.TODO(), offset, limit)
 }
 
 func (m *MemeManager) ApprovePendingDelete(id string, actor accessor.AuditActor) error {
@@ -36,7 +37,7 @@ func (m *MemeManager) ApprovePendingDelete(id string, actor accessor.AuditActor)
 		return nil
 	}
 	defer m.invalidateHiddenMemes()
-	return store.ApprovePendingDelete(strings.TrimSpace(id), actor)
+	return store.ApprovePendingDelete(context.TODO(), strings.TrimSpace(id), actor)
 }
 
 func (m *MemeManager) RejectPendingDelete(id string, actor accessor.AuditActor) error {
@@ -45,7 +46,7 @@ func (m *MemeManager) RejectPendingDelete(id string, actor accessor.AuditActor) 
 		return nil
 	}
 	defer m.invalidateHiddenMemes()
-	return store.RejectPendingDelete(strings.TrimSpace(id), actor)
+	return store.RejectPendingDelete(context.TODO(), strings.TrimSpace(id), actor)
 }
 
 // IsMemeHidden reports whether the meme with this id is hidden from the app
@@ -65,7 +66,7 @@ func (m *MemeManager) IsMemeHidden(id string) bool {
 	m.hiddenMemeMu.Lock()
 	defer m.hiddenMemeMu.Unlock()
 	if m.hiddenMemeIDs == nil {
-		ids, err := store.HiddenMemeIDs()
+		ids, err := store.HiddenMemeIDs(context.TODO())
 		if err != nil {
 			log.Printf("load hidden meme ids failed: %v", err)
 			return true

@@ -1,6 +1,7 @@
 package accessor
 
 import (
+	"context"
 	"net/textproto"
 	"net/url"
 	"os"
@@ -89,7 +90,7 @@ func TestPostgresStoreCreateSanitizesStoredExtension(t *testing.T) {
 	token := "ext" + randToken(t)
 	for _, tc := range hostileUploadNames {
 		name := token + "-" + tc.name
-		meme, err := store.Create(CreateInput{
+		meme, err := store.Create(context.Background(), CreateInput{
 			File:     strings.NewReader("hostile name bytes " + name),
 			Header:   textproto.MIMEHeader{"Content-Type": []string{tc.contentType}},
 			Filename: name,
@@ -100,7 +101,7 @@ func TestPostgresStoreCreateSanitizesStoredExtension(t *testing.T) {
 		assertStoredNameResolves(t, meme, store.UploadDir(), name, tc.wantExt)
 
 		// What was saved is what comes back.
-		saved, err := store.GetAnyByID(meme.ID)
+		saved, err := store.GetAnyByID(context.Background(), meme.ID)
 		if err != nil {
 			t.Fatalf("GetAnyByID(%s): %v", meme.ID, err)
 		}

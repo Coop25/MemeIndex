@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -21,7 +22,7 @@ type auditFeedStore struct {
 	gotActors []string
 }
 
-func (a *auditFeedStore) ListAuditFeed(offset, limit int, actorUserID string) (accessor.PagedAuditFeed, error) {
+func (a *auditFeedStore) ListAuditFeed(_ context.Context, offset, limit int, actorUserID string) (accessor.PagedAuditFeed, error) {
 	a.gotActors = append(a.gotActors, actorUserID)
 	out := []accessor.GlobalMemeAuditEntry{}
 	for _, e := range a.events {

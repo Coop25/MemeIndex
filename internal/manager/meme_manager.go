@@ -186,7 +186,7 @@ func (m *MemeManager) leaveBackgroundWork() {
 }
 
 func (m *MemeManager) CreateMeme(file io.Reader, header textproto.MIMEHeader, filename string, tags []string, notes string) (accessor.Meme, error) {
-	return m.store.Create(accessor.CreateInput{
+	return m.store.Create(context.TODO(), accessor.CreateInput{
 		File:     file,
 		Header:   header,
 		Filename: filename,
@@ -200,7 +200,7 @@ func (m *MemeManager) CreateMemeAs(actor accessor.AuditActor, file io.Reader, he
 }
 
 func (m *MemeManager) CreateMemeAsWithSource(actor accessor.AuditActor, file io.Reader, header textproto.MIMEHeader, filename string, tags []string, notes string, sourceURL string) (accessor.Meme, error) {
-	meme, err := m.store.Create(accessor.CreateInput{
+	meme, err := m.store.Create(context.TODO(), accessor.CreateInput{
 		File:      file,
 		Header:    header,
 		Filename:  filename,
@@ -220,7 +220,7 @@ func (m *MemeManager) CreateMemeAsWithSource(actor accessor.AuditActor, file io.
 // edit.Authorize on that change before writing, so a permission check made
 // there cannot be invalidated by a concurrent edit.
 func (m *MemeManager) EditMeme(userID, id string, edit accessor.MemeEdit) (accessor.Meme, error) {
-	meme, err := m.store.EditMeme(strings.TrimSpace(userID), strings.TrimSpace(id), edit)
+	meme, err := m.store.EditMeme(context.TODO(), strings.TrimSpace(userID), strings.TrimSpace(id), edit)
 	if err == nil {
 		m.markTagsChanged()
 	}
@@ -228,18 +228,18 @@ func (m *MemeManager) EditMeme(userID, id string, edit accessor.MemeEdit) (acces
 }
 
 func (m *MemeManager) SetFavorite(userID, id string, favorite bool) (accessor.Meme, error) {
-	return m.store.SetFavorite(strings.TrimSpace(userID), strings.TrimSpace(id), favorite)
+	return m.store.SetFavorite(context.TODO(), strings.TrimSpace(userID), strings.TrimSpace(id), favorite)
 }
 
 func (m *MemeManager) SetFavoriteAs(userID, id string, favorite bool, actor accessor.AuditActor) (accessor.Meme, error) {
 	if store, ok := m.store.(accessor.AuditStore); ok {
-		return store.SetFavoriteWithActor(strings.TrimSpace(userID), strings.TrimSpace(id), favorite, actor)
+		return store.SetFavoriteWithActor(context.TODO(), strings.TrimSpace(userID), strings.TrimSpace(id), favorite, actor)
 	}
 	return m.SetFavorite(userID, id, favorite)
 }
 
 func (m *MemeManager) GetMeme(userID, id string) (accessor.Meme, error) {
-	return m.store.GetByID(strings.TrimSpace(userID), strings.TrimSpace(id))
+	return m.store.GetByID(context.TODO(), strings.TrimSpace(userID), strings.TrimSpace(id))
 }
 
 // memesByIDs resolves visible memes by id in one batch where the store supports
@@ -247,7 +247,7 @@ func (m *MemeManager) GetMeme(userID, id string) (accessor.Meme, error) {
 // simply absent from the map.
 func (m *MemeManager) memesByIDs(ids []string) map[string]accessor.Meme {
 	if bulk, ok := m.store.(accessor.AdminMemeStore); ok {
-		memes, err := bulk.MemesByIDs(ids)
+		memes, err := bulk.MemesByIDs(context.TODO(), ids)
 		if err == nil {
 			return memes
 		}
@@ -255,7 +255,7 @@ func (m *MemeManager) memesByIDs(ids []string) map[string]accessor.Meme {
 	}
 	out := make(map[string]accessor.Meme, len(ids))
 	for _, id := range ids {
-		if meme, err := m.store.GetByID("", strings.TrimSpace(id)); err == nil {
+		if meme, err := m.store.GetByID(context.TODO(), "", strings.TrimSpace(id)); err == nil {
 			out[meme.ID] = meme
 		}
 	}
@@ -275,13 +275,13 @@ func (m *MemeManager) memeNamesByIDs(ids []string) map[string]string {
 func (m *MemeManager) GetAdminMeme(id string) (accessor.Meme, error) {
 	store, ok := m.store.(accessor.AdminMemeStore)
 	if ok {
-		return store.GetAnyByID(strings.TrimSpace(id))
+		return store.GetAnyByID(context.TODO(), strings.TrimSpace(id))
 	}
-	return m.store.GetByID("", strings.TrimSpace(id))
+	return m.store.GetByID(context.TODO(), "", strings.TrimSpace(id))
 }
 
 func (m *MemeManager) DeleteMeme(id string, actor accessor.AuditActor) (accessor.DeleteResult, error) {
-	result, err := m.store.Delete(accessor.DeleteInput{
+	result, err := m.store.Delete(context.TODO(), accessor.DeleteInput{
 		ID:    strings.TrimSpace(id),
 		Actor: actor,
 	})
@@ -293,7 +293,7 @@ func (m *MemeManager) DeleteMeme(id string, actor accessor.AuditActor) (accessor
 }
 
 func (m *MemeManager) SuggestTags(prefix string, limit int) []string {
-	return m.store.SuggestTags(strings.TrimSpace(prefix), limit)
+	return m.store.SuggestTags(context.TODO(), strings.TrimSpace(prefix), limit)
 }
 
 // ReloadAfterRestore refreshes the small pieces of state cached in memory after
@@ -329,7 +329,7 @@ func (m *MemeManager) RandomMeme(excludedIDs []string) (accessor.Meme, error) {
 		}
 		normalized = append(normalized, trimmed)
 	}
-	return m.store.Random(normalized)
+	return m.store.Random(context.TODO(), normalized)
 }
 
 func (m *MemeManager) StepRandomReel(sessionID string, direction string) (ReelStepResult, error) {
@@ -397,7 +397,7 @@ func (m *MemeManager) runPreviewAssetBackfill(previewStore accessor.PreviewAsset
 		m.leaveBackgroundWork()
 
 		var restored, stopping bool
-		err := previewStore.EnsurePreviewAssets(func(work func()) bool {
+		err := previewStore.EnsurePreviewAssets(context.TODO(), func(work func()) bool {
 			// Enter only gives up on shutdown while a restore is holding work
 			// back, so check for shutdown between memes as well.
 			if m.workerCtx.Err() != nil || !m.enterBackgroundWork() {

@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -19,7 +20,7 @@ type adminDashboardMemeFakeStore struct {
 	leanErr   error
 }
 
-func (s *adminDashboardMemeFakeStore) AdminDashboardMemes() ([]accessor.Meme, error) {
+func (s *adminDashboardMemeFakeStore) AdminDashboardMemes(_ context.Context) ([]accessor.Meme, error) {
 	s.leanCalls++
 	if s.leanErr != nil {
 		return nil, s.leanErr

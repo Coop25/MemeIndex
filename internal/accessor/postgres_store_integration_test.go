@@ -46,7 +46,7 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	// for approval), letting the test exercise the real cascade and clean up.
 	actor := AuditActor{UserID: "u-int", Username: "integration", IsSuperAdmin: true}
 
-	img, err := store.Create(CreateInput{
+	img, err := store.Create(context.Background(), CreateInput{
 		File:        strings.NewReader("fake png bytes"),
 		Header:      textproto.MIMEHeader{"Content-Type": []string{"image/png"}},
 		Filename:    token + "-pic.png",
@@ -58,7 +58,7 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create image: %v", err)
 	}
-	vid, err := store.Create(CreateInput{
+	vid, err := store.Create(context.Background(), CreateInput{
 		File:        strings.NewReader("fake mp4 bytes"),
 		Header:      textproto.MIMEHeader{"Content-Type": []string{"video/mp4"}},
 		Filename:    token + "-clip.mp4",
@@ -95,13 +95,13 @@ func TestPostgresStoreIntegration(t *testing.T) {
 
 	// Tag edit is reflected in GetByID and in the untagged facet. The edit
 	// leaves notes out, so they must be kept.
-	if _, err := store.EditMeme(actor.UserID, vid.ID, MemeEdit{
+	if _, err := store.EditMeme(context.Background(), actor.UserID, vid.ID, MemeEdit{
 		TagsAdded: []string{token + "-beta"},
 		Actor:     actor,
 	}); err != nil {
 		t.Fatalf("EditMeme tags: %v", err)
 	}
-	got, err := store.GetByID(actor.UserID, vid.ID)
+	got, err := store.GetByID(context.Background(), actor.UserID, vid.ID)
 	if err != nil {
 		t.Fatalf("GetByID: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	}
 
 	// Favorite toggle + favorites-only filter.
-	if _, err := store.SetFavorite(actor.UserID, img.ID, true); err != nil {
+	if _, err := store.SetFavorite(context.Background(), actor.UserID, img.ID, true); err != nil {
 		t.Fatalf("SetFavorite: %v", err)
 	}
 	favs, err := store.QueryMemes(context.Background(), MemeQuery{UserID: actor.UserID, Search: token, FavoritesOnly: true, Limit: 50})
@@ -130,7 +130,7 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	}
 
 	// Delete removes it from subsequent queries.
-	if _, err := store.Delete(DeleteInput{ID: img.ID, Actor: actor}); err != nil {
+	if _, err := store.Delete(context.Background(), DeleteInput{ID: img.ID, Actor: actor}); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 	after, err := store.QueryMemes(context.Background(), MemeQuery{Search: token, Limit: 50})
@@ -142,7 +142,7 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	}
 
 	// Leave the database as we found it.
-	if _, err := store.Delete(DeleteInput{ID: vid.ID, Actor: actor}); err != nil {
+	if _, err := store.Delete(context.Background(), DeleteInput{ID: vid.ID, Actor: actor}); err != nil {
 		t.Fatalf("cleanup Delete: %v", err)
 	}
 }

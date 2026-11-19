@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"context"
 	"errors"
 	"log"
 	"memeindex/internal/accessor"
@@ -382,7 +383,7 @@ func (m *MemeManager) computeTagHygieneReport() TagHygieneReport {
 // resolved in SQL where the store supports it and by a full scan otherwise.
 func (m *MemeManager) tagUsageCounts() map[string]int {
 	if tu, ok := m.store.(accessor.TagAdminStore); ok {
-		if counts, err := tu.TagUsageCounts(); err == nil {
+		if counts, err := tu.TagUsageCounts(context.TODO()); err == nil {
 			return counts
 		} else {
 			log.Printf("tag usage counts: SQL failed, falling back to scan: %v", err)
@@ -390,7 +391,7 @@ func (m *MemeManager) tagUsageCounts() map[string]int {
 	}
 
 	counts := map[string]int{}
-	for _, meme := range m.store.List("", "", false, "") {
+	for _, meme := range m.store.List(context.TODO(), "", "", false, "") {
 		for _, tag := range meme.Tags {
 			counts[tag] += 1
 		}
@@ -426,7 +427,7 @@ func (m *MemeManager) MergeTags(sourceTag string, targetTag string, actor access
 	// Fast path: one transaction that repoints tag links in bulk, instead of
 	// rewriting every affected meme (each of which re-swept the tags table).
 	if tm, ok := m.store.(accessor.TagAdminStore); ok {
-		counts, err := tm.MergeTag(sourceTag, targetTag, actor)
+		counts, err := tm.MergeTag(context.TODO(), sourceTag, targetTag, actor)
 		if err != nil {
 			return TagMergeResult{}, err
 		}
@@ -442,7 +443,7 @@ func (m *MemeManager) MergeTags(sourceTag string, targetTag string, actor access
 		}, nil
 	}
 
-	memes := m.store.List("", "", false, "")
+	memes := m.store.List(context.TODO(), "", "", false, "")
 	result := TagMergeResult{
 		SourceTag: sourceTag,
 		TargetTag: targetTag,
@@ -451,7 +452,7 @@ func (m *MemeManager) MergeTags(sourceTag string, targetTag string, actor access
 		if !containsTag(meme.Tags, sourceTag) {
 			continue
 		}
-		if _, err := m.store.EditMeme("", meme.ID, accessor.MemeEdit{
+		if _, err := m.store.EditMeme(context.TODO(), "", meme.ID, accessor.MemeEdit{
 			TagsAdded:   []string{targetTag},
 			TagsRemoved: []string{sourceTag},
 			Actor:       actor,
