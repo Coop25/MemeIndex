@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -129,5 +130,43 @@ func TestAudiobookUploadCompleteWaitsForInFlightChunk(t *testing.T) {
 	}
 	if got := audiobookUploadLockCount(); got != 0 {
 		t.Fatalf("lock entries after complete = %d, want 0", got)
+	}
+}
+
+// Every 409 from complete used to look the same to the browser, which took
+// each one for a duplicate: a file that was not audio was reported as
+// "already exists", and an incomplete upload that could be resumed was
+// abandoned. Each now carries a code the client can act on, next to the
+// message it shows.
+func TestCompleteAudiobookUploadConflictCodes(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		code string
+	}{
+		{audiobooks.ErrDuplicateTitle, "duplicate"},
+		{audiobooks.ErrNotAudio, "not_audio"},
+		{fmt.Errorf("%w: received 4 of 10 bytes", audiobooks.ErrUploadIncomplete), "incomplete"},
+	} {
+		t.Run(tc.code, func(t *testing.T) {
+			s := &Server{audiobooks: &uploadLockStore{completeErr: tc.err}}
+			w := httptest.NewRecorder()
+			s.handleAudiobookUploadByID(w, httptest.NewRequest(http.MethodPost, "https://example.com/api/audiobooks/uploads/known/complete", strings.NewReader("")))
+			if w.Code != http.StatusConflict {
+				t.Fatalf("status = %d, want 409", w.Code)
+			}
+			var body struct {
+				Code  string `json:"code"`
+				Error string `json:"error"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode %q: %v", w.Body.String(), err)
+			}
+			if body.Code != tc.code {
+				t.Fatalf("code = %q, want %q", body.Code, tc.code)
+			}
+			if body.Error != tc.err.Error() {
+				t.Fatalf("error = %q, want %q", body.Error, tc.err.Error())
+			}
+		})
 	}
 }
