@@ -221,7 +221,13 @@ type SuggestedTagStore interface {
 
 type PreviewAssetStore interface {
 	ThumbnailDir() string
-	EnsurePreviewAssets() error
+	// EnsurePreviewAssets generates the thumbnails missing from ThumbnailDir.
+	// Each meme is one unit of work, run by passing it to step, which may hold
+	// it back (while a restore runs) or refuse it (on shutdown, or after a
+	// restore replaced the memes this pass listed) by returning false without
+	// running it; the pass then stops there and returns nil. A nil step runs
+	// every unit straight away.
+	EnsurePreviewAssets(step func(work func()) bool) error
 }
 
 type ReelSessionRecord struct {

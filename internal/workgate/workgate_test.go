@@ -107,6 +107,36 @@ func TestNestedPauses(t *testing.T) {
 	}
 }
 
+func TestTryEnterSkipsInsteadOfWaiting(t *testing.T) {
+	var g Gate
+	if !g.TryEnter() {
+		t.Fatal("TryEnter on an open gate failed")
+	}
+
+	// A unit entered with TryEnter is waited for like any other.
+	paused := make(chan func(), 1)
+	go func() {
+		resume, _ := g.Pause(context.Background())
+		paused <- resume
+	}()
+	select {
+	case <-paused:
+		t.Fatal("Pause returned while a TryEnter unit was still running")
+	case <-time.After(50 * time.Millisecond):
+	}
+	g.Leave()
+	resume := <-paused
+
+	if g.TryEnter() {
+		t.Fatal("TryEnter succeeded while paused")
+	}
+	resume()
+	if !g.TryEnter() {
+		t.Fatal("TryEnter failed after resume")
+	}
+	g.Leave()
+}
+
 func TestNilGateIsAlwaysOpen(t *testing.T) {
 	var g *Gate
 	if !g.Enter(nil) {

@@ -27,14 +27,15 @@ type Server struct {
 	mediaClient         *mediafetch.Client
 	linkRetries         *linkRetryQueue
 	// background tracks goroutines that outlive a request (detached link
-	// imports, the link retry queue, audiobook remuxes, the metadata backfill
-	// and the audiobook sweepers) so StopBackgroundWork can wait for them
-	// before main closes the store.
+	// imports, the link retry queue, audiobook remuxes, the metadata backfill,
+	// the audiobook sweepers, the auth profile touch and a migration import)
+	// so StopBackgroundWork can wait for them before main closes the store.
 	background backgroundTasks
 	// jobs is the restore pause point for that same background work (see
-	// pauseBackgroundWork): each link import or retry, remux and sweep is one
-	// unit of work that a restore waits out before it starts and holds back
-	// until it has finished.
+	// pauseBackgroundWork): each link import or retry, remux, sweep and
+	// profile touch is one unit of work that a restore waits out before it
+	// starts and holds back until it has finished (a profile touch is skipped
+	// rather than held back).
 	jobs        workgate.Gate
 	backup      *portableBackup
 	shareSecret []byte
@@ -130,6 +131,9 @@ func NewServer(config Config, memeManager *manager.MemeManager) *Server {
 		log.Printf("link retry queue: could not load saved queue, starting empty and not saving: %v", err)
 	}
 	server.linkRetries.gate = &server.jobs
+	if server.auth != nil {
+		server.auth.runBestEffort = server.startBestEffortJob
+	}
 	server.background.Go(func(ctx context.Context) {
 		server.linkRetries.run(ctx, server.background.Quit())
 	})

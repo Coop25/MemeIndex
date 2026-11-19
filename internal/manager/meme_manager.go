@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"memeindex/internal/accessor"
@@ -39,9 +40,10 @@ type MemeManager struct {
 	suggestionLastSuccess time.Time
 
 	// Background-worker lifecycle. workerCtx is cancelled by
-	// StopBackgroundWorkers so the tag-hygiene and tag-suggestion loops exit
-	// their waits promptly during a graceful shutdown; workerWG lets the caller
-	// block until they have actually returned.
+	// StopBackgroundWorkers so the tag-hygiene and tag-suggestion loops, the
+	// preview backfill and the tag-scratch sweep exit their waits promptly
+	// during a graceful shutdown; workerWG lets the caller block until they
+	// have actually returned.
 	workerCtx      context.Context
 	workerCancel   context.CancelFunc
 	workerWG       sync.WaitGroup
@@ -49,8 +51,13 @@ type MemeManager struct {
 	// workGate holds the background workers still while a backup restore or
 	// migration replaces the database and media underneath them (see
 	// PauseBackgroundWork). Each meme the suggestion worker tags, each
-	// tag-hygiene recompute and each reel-session cleanup is one unit of work.
+	// tag-hygiene recompute, each reel-session cleanup, each meme the preview
+	// backfill renders and the tag-scratch sweep is one unit of work.
 	workGate workgate.Gate
+	// restoreGeneration counts the restores ReloadAfterRestore has reloaded,
+	// so the preview backfill can tell that the memes it listed were replaced
+	// while it was paused.
+	restoreGeneration atomic.Uint64
 
 	// adminReadMu guards short-lived memoization of the two admin read models
 	// that each require a full store scan. This is a burst coalescer, not a
@@ -118,8 +125,9 @@ func NewMemeManagerWithTagSuggester(store accessor.Store, tagSuggester *tagsugge
 	return manager
 }
 
-// StopBackgroundWorkers signals the tag-hygiene and tag-suggestion workers to
-// stop and waits up to timeout for them to return. It is safe to call once;
+// StopBackgroundWorkers signals the tag-hygiene and tag-suggestion workers,
+// the preview backfill and the tag-scratch sweep to stop and waits up to
+// timeout for them to return. It is safe to call once;
 // further calls are no-ops. A long-running tag-suggestion request in flight is
 // cancelled via the worker context, but if it does not unwind within the
 // timeout this returns anyway so shutdown can proceed.
@@ -291,6 +299,7 @@ func (m *MemeManager) SuggestTags(prefix string, limit int) []string {
 // ReloadAfterRestore refreshes the small pieces of state cached in memory after
 // an administrator replaces the persistent database with a portable backup.
 func (m *MemeManager) ReloadAfterRestore() error {
+	m.restoreGeneration.Add(1)
 	m.invalidateHiddenMemes()
 	if err := m.reelSessions.load(); err != nil {
 		return err
@@ -360,12 +369,62 @@ func (m *MemeManager) ThumbnailDir() string {
 	return previewStore.ThumbnailDir()
 }
 
-func (m *MemeManager) EnsurePreviewAssets() error {
+// StartPreviewAssetBackfill generates missing video thumbnails in the
+// background, as worker-tracked work: StopBackgroundWorkers stops it between
+// memes and waits for the one in progress. Each meme is one unit of
+// background work, so a restore waits for the thumbnail being rendered and
+// holds the rest back. If the restore replaced the library in the meantime,
+// the pass starts again against the restored memes.
+func (m *MemeManager) StartPreviewAssetBackfill() {
 	previewStore, ok := m.store.(accessor.PreviewAssetStore)
 	if !ok {
-		return nil
+		return
 	}
-	return previewStore.EnsurePreviewAssets()
+	m.workerWG.Add(1)
+	go func() {
+		defer m.workerWG.Done()
+		m.runPreviewAssetBackfill(previewStore)
+	}()
+}
+
+func (m *MemeManager) runPreviewAssetBackfill(previewStore accessor.PreviewAssetStore) {
+	for {
+		// Wait out a restore already running before listing the memes.
+		if m.workerCtx.Err() != nil || !m.enterBackgroundWork() {
+			return
+		}
+		generation := m.restoreGeneration.Load()
+		m.leaveBackgroundWork()
+
+		var restored, stopping bool
+		err := previewStore.EnsurePreviewAssets(func(work func()) bool {
+			// Enter only gives up on shutdown while a restore is holding work
+			// back, so check for shutdown between memes as well.
+			if m.workerCtx.Err() != nil || !m.enterBackgroundWork() {
+				stopping = true
+				return false
+			}
+			defer m.leaveBackgroundWork()
+			if m.restoreGeneration.Load() != generation {
+				restored = true
+				return false
+			}
+			work()
+			return true
+		})
+		switch {
+		case err != nil:
+			log.Printf("preview asset backfill failed: %v", err)
+		case restored:
+			log.Printf("preview asset backfill: a restore replaced the library; starting over")
+			continue
+		case stopping:
+			log.Printf("preview asset backfill: stopped for shutdown")
+		default:
+			log.Printf("preview asset backfill completed")
+		}
+		return
+	}
 }
 
 func normalizeTags(tags []string) []string {

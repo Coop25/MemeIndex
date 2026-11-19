@@ -395,6 +395,10 @@ func (s *Server) startMigrationImport(base *url.URL, token string, info migratio
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	startedAt := time.Now().UTC()
+	s.migration.mu.Lock()
+	previous := s.migration.status
+	s.migration.mu.Unlock()
+	previousReceived := s.migration.received.Load()
 	s.migration.received.Store(0)
 	s.migration.update(func(st *migrationImportStatus) {
 		*st = migrationImportStatus{
@@ -410,9 +414,21 @@ func (s *Server) startMigrationImport(base *url.URL, token string, info migratio
 	s.migration.cancel = cancel
 	s.migration.mu.Unlock()
 
-	go func() {
+	// The import is tracked background work, so shutdown waits for it before
+	// closing the stores it restores into. Shutdown also cancels it as soon as
+	// it begins, at any phase: the database load rolls back and the media
+	// directories are swapped back, leaving this server as it was, and the
+	// deferred calls below release the maintenance lock and the pause.
+	started := s.background.Go(func(context.Context) {
 		defer s.restoring.Store(false)
 		defer cancel()
+		go func() {
+			select {
+			case <-s.background.Quit():
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
 		// As in runBackupRestore: hold the background jobs still for the whole
 		// import, and let them go only once the restored state is reloaded.
 		resume, err := s.pauseBackgroundWork(ctx)
@@ -451,7 +467,18 @@ func (s *Server) startMigrationImport(base *url.URL, token string, info migratio
 			return
 		}
 		log.Printf("migration from %s completed", base.Host)
-	}()
+	})
+	if !started {
+		// Shutdown has begun: nothing ran, so put everything back.
+		cancel()
+		s.migration.mu.Lock()
+		s.migration.cancel = nil
+		s.migration.status = previous
+		s.migration.mu.Unlock()
+		s.migration.received.Store(previousReceived)
+		s.restoring.Store(false)
+		return migrationImportStatus{}, errors.New("the server is shutting down")
+	}
 	return s.migration.snapshot(), nil
 }
 
