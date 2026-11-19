@@ -255,7 +255,15 @@ func (m *MemeManager) runTagHygieneWorker() {
 	}
 }
 
+// refreshTagHygieneSnapshot recomputes the report on the worker goroutine. It
+// waits out a restore in progress rather than scanning half-restored tables,
+// and returns without recomputing if the workers stop in the meantime.
 func (m *MemeManager) refreshTagHygieneSnapshot() {
+	if !m.enterBackgroundWork() {
+		return
+	}
+	defer m.leaveBackgroundWork()
+
 	m.adminReadMu.Lock()
 	m.tagHygieneDirty = false
 	m.adminReadMu.Unlock()

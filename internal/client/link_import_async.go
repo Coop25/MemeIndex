@@ -48,11 +48,18 @@ type linkImportOutcome struct {
 // and finishBackgroundLinkImport takes over (tag suggestions on success, the
 // retry queue on a retryable failure). Both goroutines are tracked by
 // s.background so shutdown waits for them (and, past its grace period, cancels
-// the download) before the store is closed.
+// the download) before the store is closed. The import is also one unit of
+// restore-pausable work, so a restore that begins while it is downloading
+// waits for it to be saved instead of having it land mid-restore.
 func (s *Server) importLinkWithinBudget(r *http.Request, actor accessor.AuditActor, sourceURL string, tags []string, notes string) (meme accessor.Meme, err error, pending bool) {
 	done := make(chan linkImportOutcome, 1)
 	requestValues := context.WithoutCancel(r.Context())
 	started := s.background.Go(func(stop context.Context) {
+		if !s.enterBackgroundJob() {
+			done <- linkImportOutcome{err: userError("The server is restarting. Please try again in a moment.")}
+			return
+		}
+		defer s.leaveBackgroundJob()
 		ctx, cancel := context.WithCancel(requestValues)
 		defer cancel()
 		defer context.AfterFunc(stop, cancel)()

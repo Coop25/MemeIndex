@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"memeindex/internal/accessor"
+	"memeindex/internal/workgate"
 )
 
 type LinkRetryJob struct {
@@ -53,6 +54,9 @@ type linkRetryQueue struct {
 	// persistPath, when set, is the file the queue is saved to after every
 	// change (see persistTo). Empty keeps the queue in memory only.
 	persistPath string
+	// gate, when set, is the Server's restore pause point: run takes no job
+	// while a restore holds it, and a restore waits for the job in progress.
+	gate *workgate.Gate
 }
 
 // persistedLinkRetries is the on-disk form of the queue.
@@ -214,6 +218,7 @@ func (q *linkRetryQueue) RequeueRejected(id string) bool {
 
 // run processes ready jobs until quit is closed. A job in progress when quit
 // closes is allowed to finish; ctx cancels it if shutdown runs out of time.
+// While a restore holds the gate no job is picked up.
 func (q *linkRetryQueue) run(ctx context.Context, quit <-chan struct{}) {
 	ticker := time.NewTicker(linkRetryPollInterval)
 	defer ticker.Stop()
@@ -224,17 +229,24 @@ func (q *linkRetryQueue) run(ctx context.Context, quit <-chan struct{}) {
 			return
 		case <-ticker.C:
 		}
-
-		job, ok := q.dequeueReady()
-		if !ok {
-			continue
+		if !q.gate.Enter(quit) {
+			return
 		}
-
-		jobCtx, cancel := context.WithTimeout(ctx, 6*time.Minute)
-		err := q.processFn(jobCtx, job)
-		cancel()
-		q.finish(job, err)
+		q.runReady(ctx)
+		q.gate.Leave()
 	}
+}
+
+// runReady processes the next ready job, if there is one.
+func (q *linkRetryQueue) runReady(ctx context.Context) {
+	job, ok := q.dequeueReady()
+	if !ok {
+		return
+	}
+	jobCtx, cancel := context.WithTimeout(ctx, 6*time.Minute)
+	err := q.processFn(jobCtx, job)
+	cancel()
+	q.finish(job, err)
 }
 
 func (q *linkRetryQueue) dequeueReady() (LinkRetryJob, bool) {

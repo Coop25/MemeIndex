@@ -142,6 +142,16 @@ func (s *Server) runBackupRestore(w http.ResponseWriter, r *http.Request, restor
 		return
 	}
 	defer s.restoring.Store(false)
+	// The guard only covers HTTP requests. Background jobs (tag suggestions,
+	// link retries, remuxes, sweepers) are held still too, after the work each
+	// has in flight finishes, until the restored state has been reloaded.
+	resume, err := s.pauseBackgroundWork(r.Context())
+	if err != nil {
+		log.Printf("backup import abandoned while waiting for background work to finish: %v", err)
+		http.Error(w, "backup import was cancelled before it started", http.StatusServiceUnavailable)
+		return
+	}
+	defer resume()
 	if err := restore(r.Context()); err != nil {
 		log.Printf("backup import failed: %v", err)
 		http.Error(w, "backup import failed: "+err.Error(), http.StatusBadRequest)

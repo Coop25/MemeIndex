@@ -479,39 +479,71 @@ func (m *MemeManager) runTagSuggestionWorker() {
 			m.requeueTagSuggestion(memeID)
 			return
 		}
-		m.setTagSuggestionWorkerState("processing", true, memeID, "")
-		timeout := 7 * time.Minute
-		if m.tagSuggester != nil {
-			timeout = m.tagSuggester.Timeout() + (2 * time.Minute)
-		}
-		ctx, cancel := context.WithTimeout(m.workerCtx, timeout)
-		_, err := m.RefreshMemeTagSuggestions(ctx, "", memeID)
-		cancel()
-		if m.workerCtx.Err() != nil {
-			m.requeueTagSuggestion(memeID)
+		retried, stopping := m.processQueuedTagSuggestion(memeID)
+		if stopping {
 			return
 		}
-		switch {
-		case err == nil:
-			m.finishTagSuggestion(memeID)
-			m.recordTagSuggestionSuccess()
-		case errors.Is(err, errAutoSuggestExhausted):
-			log.Printf("tag suggestion worker: exhausted retries for meme %s; marking auto-suggest disabled", memeID)
-			m.finishTagSuggestion(memeID)
-			m.setTagSuggestionWorkerState("idle", true, "", err.Error())
-		case errors.Is(err, os.ErrNotExist), errors.Is(err, tagsuggest.ErrUnsupported):
-			log.Printf("tag suggestion worker: dropping meme %s from queue: %v", memeID, err)
-			m.finishTagSuggestion(memeID)
-			m.setTagSuggestionWorkerState("idle", true, "", err.Error())
-		default:
-			// A timeout, an Ollama error, or something unexpected. Whether
-			// Ollama is still up is rechecked before the next meme.
-			if m.retryOrDropTagSuggestion(memeID, err) && !m.waitOrStop(3*time.Second) {
-				return
-			}
+		if retried && !m.waitOrStop(3*time.Second) {
+			return
 		}
 		m.unloadTagModelIfIdle()
 	}
+}
+
+// processQueuedTagSuggestion tags one dequeued meme as a single unit of
+// background work: a restore that pauses the workers waits for it to finish,
+// and one that is already running holds it back until the restore is done.
+// It reports whether the meme was requeued after a transient failure, and
+// whether the workers are stopping.
+func (m *MemeManager) processQueuedTagSuggestion(memeID string) (retried, stopping bool) {
+	if m.workGate.Paused() {
+		// A restore is running, and ReloadAfterRestore re-seeds the queue from
+		// the restored database once it is done. Hand this meme back (the
+		// reload drops it if it is gone) and sit out the pause, rather than
+		// tag a meme that may no longer exist as soon as the gate opens.
+		m.requeueTagSuggestion(memeID)
+		if !m.enterBackgroundWork() {
+			return false, true
+		}
+		m.leaveBackgroundWork()
+		return false, false
+	}
+	if !m.enterBackgroundWork() {
+		m.requeueTagSuggestion(memeID)
+		return false, true
+	}
+	defer m.leaveBackgroundWork()
+
+	m.setTagSuggestionWorkerState("processing", true, memeID, "")
+	timeout := 7 * time.Minute
+	if m.tagSuggester != nil {
+		timeout = m.tagSuggester.Timeout() + (2 * time.Minute)
+	}
+	ctx, cancel := context.WithTimeout(m.workerCtx, timeout)
+	_, err := m.RefreshMemeTagSuggestions(ctx, "", memeID)
+	cancel()
+	if m.workerCtx.Err() != nil {
+		m.requeueTagSuggestion(memeID)
+		return false, true
+	}
+	switch {
+	case err == nil:
+		m.finishTagSuggestion(memeID)
+		m.recordTagSuggestionSuccess()
+	case errors.Is(err, errAutoSuggestExhausted):
+		log.Printf("tag suggestion worker: exhausted retries for meme %s; marking auto-suggest disabled", memeID)
+		m.finishTagSuggestion(memeID)
+		m.setTagSuggestionWorkerState("idle", true, "", err.Error())
+	case errors.Is(err, os.ErrNotExist), errors.Is(err, tagsuggest.ErrUnsupported):
+		log.Printf("tag suggestion worker: dropping meme %s from queue: %v", memeID, err)
+		m.finishTagSuggestion(memeID)
+		m.setTagSuggestionWorkerState("idle", true, "", err.Error())
+	default:
+		// A timeout, an Ollama error, or something unexpected. Whether
+		// Ollama is still up is rechecked before the next meme.
+		return m.retryOrDropTagSuggestion(memeID, err), false
+	}
+	return false, false
 }
 
 func (m *MemeManager) enqueueTagSuggestion(id string) bool {
