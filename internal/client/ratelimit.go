@@ -3,6 +3,7 @@ package client
 import (
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -121,19 +122,19 @@ func (rl *rateLimiter) size() int {
 }
 
 // clientIP returns the caller's address for abuse controls. Behind a reverse
-// proxy every RemoteAddr is the proxy, so an operator terminating TLS upstream
-// sets MEMEINDEX_CLIENT_IP_HEADER to the header their proxy populates (for
-// example CF-Connecting-IP). A forwarding header is trusted only when it is
-// explicitly named, so a spoofed X-Forwarded-For cannot mint unlimited buckets
-// on a deployment that is reachable directly.
+// proxy every RemoteAddr is the proxy, so the real client comes from a
+// forwarding header: MEMEINDEX_CLIENT_IP_HEADER when set, else
+// CF-Connecting-IP, which cloudflared sends. Without that, every visitor behind
+// the tunnel shares the tunnel's own address, so one client hammering
+// /auth/login would lock everyone out.
 //
-// With no header configured, CF-Connecting-IP is still honoured when the
-// connection itself comes from a loopback or private address - which is where
-// cloudflared sits in the bundled compose file. Without that, every visitor
-// behind the tunnel shares the tunnel's own address, so one client hammering
-// /auth/login would lock everyone out. A public peer can never use the
-// fallback to pick its own bucket. The local-network listener is always a
-// direct connection, so no forwarding header is trusted there at all.
+// The header is believed only when the connection itself comes from a peer in
+// MEMEINDEX_TRUSTED_PROXIES. Anyone else can put whatever they like in it, and
+// "any private address" is not a safe stand-in for "the proxy": with Docker
+// port publishing a direct client usually appears as the private Docker
+// gateway, so it could pick its own rate-limit bucket. The local-network
+// listener is always a direct connection, so no forwarding header is trusted
+// there at all.
 func (s *Server) clientIP(r *http.Request) string {
 	peer := strings.TrimSpace(r.RemoteAddr)
 	if host, _, err := net.SplitHostPort(peer); err == nil {
@@ -145,19 +146,20 @@ func (s *Server) clientIP(r *http.Request) string {
 
 	header := strings.TrimSpace(s.config.ClientIPHeader)
 	if header == "" {
-		if ip := net.ParseIP(peer); ip == nil || (!ip.IsLoopback() && !ip.IsPrivate()) {
-			return peer
-		}
 		header = "CF-Connecting-IP"
 	}
-	if raw := r.Header.Get(header); raw != "" {
-		candidate := strings.TrimSpace(raw)
-		if comma := strings.IndexByte(candidate, ','); comma >= 0 {
-			candidate = strings.TrimSpace(candidate[:comma])
-		}
-		if net.ParseIP(candidate) != nil {
-			return candidate
-		}
+	// Checked before the peer, so a request without the header (most direct
+	// traffic) never costs a trusted-proxy lookup.
+	values := r.Header.Values(header)
+	if len(values) == 0 {
+		return peer
+	}
+	peerAddr, err := netip.ParseAddr(peer)
+	if err != nil || !s.config.TrustedProxies.contains(peerAddr) {
+		return peer
+	}
+	if client, ok := forwardedClientIP(values, s.config.TrustedProxies); ok {
+		return client
 	}
 	return peer
 }

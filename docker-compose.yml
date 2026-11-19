@@ -60,9 +60,14 @@ services:
       MEMEINDEX_MEDIAFETCH_RETRY_MAX_ATTEMPTS: ${MEMEINDEX_MEDIAFETCH_RETRY_MAX_ATTEMPTS:-3}
       MEMEINDEX_RATE_LIMIT_ENABLED: ${MEMEINDEX_RATE_LIMIT_ENABLED:-true}
       # Header carrying the real client IP for rate limiting. Left blank, the
-      # app still honours CF-Connecting-IP from private-network peers (where
-      # cloudflared sits), so tunnel visitors no longer share one bucket.
+      # app reads CF-Connecting-IP, which cloudflared sends.
       MEMEINDEX_CLIENT_IP_HEADER: ${MEMEINDEX_CLIENT_IP_HEADER:-}
+      # Peers whose client-IP header is believed: CIDR ranges, addresses, or
+      # hostnames. The default trusts loopback and the cloudflared service
+      # below, looked up by name on this compose network, so tunnel visitors
+      # each get their own rate-limit bucket while a direct connection to the
+      # published port (which arrives from the Docker gateway) cannot pick one.
+      MEMEINDEX_TRUSTED_PROXIES: ${MEMEINDEX_TRUSTED_PROXIES:-127.0.0.0/8,::1/128,cloudflared}
       MEMEINDEX_MIGRATION_SOURCE_ENABLED: ${MEMEINDEX_MIGRATION_SOURCE_ENABLED:-false}
       MEMEINDEX_MIGRATION_IMPORT_ENABLED: ${MEMEINDEX_MIGRATION_IMPORT_ENABLED:-false}
       MEMEINDEX_TAGSUGGEST_OLLAMA_URL: ${MEMEINDEX_TAGSUGGEST_OLLAMA_URL:-http://ollama:11434}

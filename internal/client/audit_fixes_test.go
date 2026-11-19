@@ -206,8 +206,12 @@ func TestMemePatchTagDeltaStillEnforcesTagPermissions(t *testing.T) {
 	}
 }
 
-func TestClientIPTrustsCloudflareHeaderOnlyFromPrivatePeers(t *testing.T) {
-	server := &Server{}
+func TestClientIPTrustsCloudflareHeaderOnlyFromTrustedProxies(t *testing.T) {
+	// The default list, with "cloudflared" resolving to its container on the
+	// compose network.
+	server := &Server{config: Config{TrustedProxies: testTrustedProxies(t, defaultTrustedProxies, map[string][]string{
+		"cloudflared": {"172.18.0.5"},
+	})}}
 	request := func(remote string) *http.Request {
 		r := httptest.NewRequest(http.MethodGet, "/", nil)
 		r.RemoteAddr = remote
@@ -217,8 +221,19 @@ func TestClientIPTrustsCloudflareHeaderOnlyFromPrivatePeers(t *testing.T) {
 	if got := server.clientIP(request("172.18.0.5:41234")); got != "198.51.100.7" {
 		t.Errorf("cloudflared on the docker network: clientIP = %q, want the visitor's address", got)
 	}
+	if got := server.clientIP(request("127.0.0.1:41234")); got != "198.51.100.7" {
+		t.Errorf("proxy on loopback: clientIP = %q, want the visitor's address", got)
+	}
 	if got := server.clientIP(request("203.0.113.9:41234")); got != "203.0.113.9" {
 		t.Errorf("public peer spoofing the header: clientIP = %q, want the peer", got)
+	}
+	// A direct connection to the published port arrives from the Docker
+	// gateway, which is private but is not the proxy.
+	if got := server.clientIP(request("172.18.0.1:41234")); got != "172.18.0.1" {
+		t.Errorf("docker gateway spoofing the header: clientIP = %q, want the peer", got)
+	}
+	if got := server.clientIP(request("192.168.1.20:41234")); got != "192.168.1.20" {
+		t.Errorf("LAN peer spoofing the header: clientIP = %q, want the peer", got)
 	}
 	local := request("192.168.1.20:41234")
 	local = local.WithContext(context.WithValue(local.Context(), localTrustedContextKey{}, true))
