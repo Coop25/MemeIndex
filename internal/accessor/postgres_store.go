@@ -323,7 +323,7 @@ func (s *PostgresStore) Random(excludedIDs []string) (Meme, error) {
 func (s *PostgresStore) Create(input CreateInput) (Meme, error) {
 	id := uuid.Must(uuid.NewV6()).String()
 	contentType := detectContentType(input.Header, input.ContentType, input.Filename)
-	storedName := id + storedFileExtension(input.Filename, contentType)
+	storedName := id + StoredFileExtension(input.Filename, contentType)
 	targetPath := filepath.Join(s.uploadDir, storedName)
 
 	dst, err := os.Create(targetPath)
@@ -466,7 +466,7 @@ func (s *PostgresStore) EditMeme(userID, id string, edit MemeEdit) (Meme, error)
 	if err != nil {
 		return Meme{}, err
 	}
-	change, err := planMemeEdit(existing, edit)
+	change, err := PlanMemeEdit(existing, edit)
 	if err != nil {
 		return Meme{}, err
 	}

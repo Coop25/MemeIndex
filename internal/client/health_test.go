@@ -9,21 +9,22 @@ import (
 	"testing"
 
 	"memeindex/internal/accessor"
+	"memeindex/internal/accessor/accessortest"
 	"memeindex/internal/manager"
 )
 
-// pingableStore wraps the file-backed store with a Ping so the /readyz datastore
+// pingableStore wraps the in-memory test store with a Ping so the /readyz datastore
 // branch can be exercised without a live PostgreSQL connection.
 type pingableStore struct {
-	*accessor.MemeStore
+	*accessortest.MemeStore
 	pingErr error
 }
 
 func (p pingableStore) Ping(context.Context) error { return p.pingErr }
 
-func newHealthTestServer(t *testing.T, wrap func(*accessor.MemeStore) accessor.Store) *Server {
+func newHealthTestServer(t *testing.T, wrap func(*accessortest.MemeStore) accessor.Store) *Server {
 	t.Helper()
-	base, err := accessor.NewMemeStore(t.TempDir())
+	base, err := accessortest.NewMemeStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}
@@ -88,7 +89,7 @@ func TestHandleReadyzSkipsDatastoreCheckWithoutPinger(t *testing.T) {
 }
 
 func TestHandleReadyzOKWhenDatastorePingSucceeds(t *testing.T) {
-	s := newHealthTestServer(t, func(base *accessor.MemeStore) accessor.Store {
+	s := newHealthTestServer(t, func(base *accessortest.MemeStore) accessor.Store {
 		return pingableStore{MemeStore: base}
 	})
 	rec := httptest.NewRecorder()
@@ -104,7 +105,7 @@ func TestHandleReadyzOKWhenDatastorePingSucceeds(t *testing.T) {
 }
 
 func TestHandleReadyzUnavailableWhenDatastorePingFails(t *testing.T) {
-	s := newHealthTestServer(t, func(base *accessor.MemeStore) accessor.Store {
+	s := newHealthTestServer(t, func(base *accessortest.MemeStore) accessor.Store {
 		return pingableStore{MemeStore: base, pingErr: errors.New("connection refused")}
 	})
 	rec := httptest.NewRecorder()

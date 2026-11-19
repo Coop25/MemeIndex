@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"memeindex/internal/accessor"
+	"memeindex/internal/accessor/accessortest"
 )
 
 type suggestionTestStore interface {
@@ -39,7 +40,7 @@ func (s *notesRaceStore) GetByID(userID, id string) (accessor.Meme, error) {
 
 func TestApplyMemeTagSuggestionKeepsConcurrentNotesEdit(t *testing.T) {
 	t.Run("memory", func(t *testing.T) {
-		store, err := accessor.NewMemeStore(t.TempDir())
+		store, err := accessortest.NewMemeStore(t.TempDir())
 		if err != nil {
 			t.Fatal(err)
 		}

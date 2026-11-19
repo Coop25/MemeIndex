@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"memeindex/internal/accessor"
+	"memeindex/internal/accessor/accessortest"
 	"memeindex/internal/audiobooks"
 	"memeindex/internal/manager"
 )
@@ -158,7 +159,7 @@ func (s storagePathsStore) ListUploadTempPaths(context.Context) ([]string, error
 
 func TestCollectStorageReferences(t *testing.T) {
 	dataDir := t.TempDir()
-	store, err := accessor.NewMemeStore(dataDir)
+	store, err := accessortest.NewMemeStore(dataDir)
 	if err != nil {
 		t.Fatal(err)
 	}

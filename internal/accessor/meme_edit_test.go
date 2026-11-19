@@ -16,7 +16,7 @@ func TestPlanMemeEditDeltaReportsOnlyRealChanges(t *testing.T) {
 	current := Meme{Tags: []string{"cat", "dog"}, Notes: "  hi ", Favorite: true}
 	notes := "hi"
 	favorite := true
-	change, err := planMemeEdit(current, MemeEdit{
+	change, err := PlanMemeEdit(current, MemeEdit{
 		TagsAdded:   []string{"Cat", " fish ", "bird"},
 		TagsRemoved: []string{"dog", "absent", "bird"},
 		Notes:       &notes,
@@ -36,21 +36,21 @@ func TestPlanMemeEditDeltaReportsOnlyRealChanges(t *testing.T) {
 	if change.Notes != nil || change.Favorite != nil {
 		t.Fatalf("unchanged notes/favorite reported as changed: notes %v favorite %v", change.Notes, change.Favorite)
 	}
-	if got := strings.Join(change.applyToTags(current.Tags), ","); got != "bird,cat,fish" {
-		t.Fatalf("applyToTags = %q, want bird,cat,fish", got)
+	if got := strings.Join(change.ApplyToTags(current.Tags), ","); got != "bird,cat,fish" {
+		t.Fatalf("ApplyToTags = %q, want bird,cat,fish", got)
 	}
 }
 
 func TestPlanMemeEditReplacementDiffsAgainstCurrent(t *testing.T) {
 	replacement := []string{"cat", "bird"}
-	change, err := planMemeEdit(Meme{Tags: []string{"cat", "dog"}}, MemeEdit{ReplaceTags: &replacement})
+	change, err := PlanMemeEdit(Meme{Tags: []string{"cat", "dog"}}, MemeEdit{ReplaceTags: &replacement})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Join(change.TagsAdded, ",") != "bird" || strings.Join(change.TagsRemoved, ",") != "dog" {
 		t.Fatalf("change = +%v -%v, want +[bird] -[dog]", change.TagsAdded, change.TagsRemoved)
 	}
-	if _, err := planMemeEdit(Meme{}, MemeEdit{ReplaceTags: &replacement, TagsAdded: []string{"x"}}); err == nil {
+	if _, err := PlanMemeEdit(Meme{}, MemeEdit{ReplaceTags: &replacement, TagsAdded: []string{"x"}}); err == nil {
 		t.Fatal("an edit with both a replacement and a delta was accepted")
 	}
 }

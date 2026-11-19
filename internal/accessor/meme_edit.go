@@ -48,8 +48,8 @@ func (c MemeChange) Empty() bool {
 	return len(c.TagsAdded) == 0 && len(c.TagsRemoved) == 0 && c.Notes == nil && c.Favorite == nil
 }
 
-// applyToTags returns current with the change's tags removed and added.
-func (c MemeChange) applyToTags(current []string) []string {
+// ApplyToTags returns current with the change's tags removed and added.
+func (c MemeChange) ApplyToTags(current []string) []string {
 	removed := make(map[string]struct{}, len(c.TagsRemoved))
 	for _, tag := range c.TagsRemoved {
 		removed[tag] = struct{}{}
@@ -65,9 +65,9 @@ func (c MemeChange) applyToTags(current []string) []string {
 
 var errMixedTagEdit = errors.New("a meme edit cannot both replace the tag set and apply a tag delta")
 
-// planMemeEdit works out the change edit makes to current. Stores call it with
+// PlanMemeEdit works out the change edit makes to current. Stores call it with
 // the meme's row locked, so the result is what the write will really do.
-func planMemeEdit(current Meme, edit MemeEdit) (MemeChange, error) {
+func PlanMemeEdit(current Meme, edit MemeEdit) (MemeChange, error) {
 	if edit.ReplaceTags != nil && (len(edit.TagsAdded) > 0 || len(edit.TagsRemoved) > 0) {
 		return MemeChange{}, errMixedTagEdit
 	}

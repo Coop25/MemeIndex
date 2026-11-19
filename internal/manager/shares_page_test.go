@@ -9,11 +9,12 @@ import (
 	"time"
 
 	"memeindex/internal/accessor"
+	"memeindex/internal/accessor/accessortest"
 )
 
 func newSharedMemesManager(t *testing.T, count int) (*MemeManager, time.Time) {
 	t.Helper()
-	store, err := accessor.NewMemeStore(t.TempDir())
+	store, err := accessortest.NewMemeStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

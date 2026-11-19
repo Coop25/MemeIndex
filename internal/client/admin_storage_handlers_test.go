@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"memeindex/internal/accessor"
+	"memeindex/internal/accessor/accessortest"
 	"memeindex/internal/audiobooks"
 	"memeindex/internal/manager"
 )
@@ -23,7 +24,7 @@ import (
 // extraRefsMemeStore lets a test add meme rows that reference arbitrary stored
 // names, the way a meme row created between a scan and a delete would.
 type extraRefsMemeStore struct {
-	*accessor.MemeStore
+	*accessortest.MemeStore
 	mu    sync.Mutex
 	extra []accessor.StoredFile
 }
@@ -59,7 +60,7 @@ func newStorageTestServer(t *testing.T) *storageTestServer {
 	t.Helper()
 	parent := t.TempDir()
 	dataDir := filepath.Join(parent, "data")
-	memes, err := accessor.NewMemeStore(dataDir)
+	memes, err := accessortest.NewMemeStore(dataDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -426,7 +427,7 @@ func TestAdminDiscardUploadAndInProgressList(t *testing.T) {
 }
 
 func TestCollectStorageReferencesRejectsMismatchedUploadDir(t *testing.T) {
-	store, err := accessor.NewMemeStore(t.TempDir())
+	store, err := accessortest.NewMemeStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

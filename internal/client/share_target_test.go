@@ -11,13 +11,13 @@ import (
 	"strings"
 	"testing"
 
-	"memeindex/internal/accessor"
+	"memeindex/internal/accessor/accessortest"
 	"memeindex/internal/manager"
 )
 
-func newShareTargetTestServer(t *testing.T) (*Server, *accessor.MemeStore) {
+func newShareTargetTestServer(t *testing.T) (*Server, *accessortest.MemeStore) {
 	t.Helper()
-	store, err := accessor.NewMemeStore(t.TempDir())
+	store, err := accessortest.NewMemeStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

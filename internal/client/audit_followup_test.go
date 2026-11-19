@@ -19,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"memeindex/internal/accessor"
+	"memeindex/internal/accessor/accessortest"
 	"memeindex/internal/manager"
 )
 
@@ -195,7 +196,7 @@ func TestSharedNotesNeverSplitsACharacter(t *testing.T) {
 
 // failingCreateStore fails every Create whose filename is in failNames.
 type failingCreateStore struct {
-	*accessor.MemeStore
+	*accessortest.MemeStore
 	failNames map[string]bool
 }
 
@@ -228,7 +229,7 @@ func multiFileUploadRequest(t *testing.T, files map[string]string, order []strin
 }
 
 func TestCreateMemeReportsSavedFilesWhenALaterFileFails(t *testing.T) {
-	base, err := accessor.NewMemeStore(t.TempDir())
+	base, err := accessortest.NewMemeStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,7 +263,7 @@ func TestCreateMemeReportsSavedFilesWhenALaterFileFails(t *testing.T) {
 }
 
 func TestCreateMemeFailsWhenNoFileCouldBeSaved(t *testing.T) {
-	base, err := accessor.NewMemeStore(t.TempDir())
+	base, err := accessortest.NewMemeStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
