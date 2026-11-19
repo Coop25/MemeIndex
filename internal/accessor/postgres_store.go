@@ -630,7 +630,7 @@ func (s *PostgresStore) Delete(input DeleteInput) (DeleteResult, error) {
 		return DeleteResult{}, os.ErrNotExist
 	}
 
-	if err := s.deleteOrphanTags(ctx, s.pool, orphanCandidates); err != nil {
+	if err := s.deleteOrphanTagsInTx(ctx, orphanCandidates); err != nil {
 		return DeleteResult{}, err
 	}
 

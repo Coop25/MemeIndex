@@ -478,7 +478,7 @@ The included `.gitignore` is set up for that flow already.
 
 - `data/uploads/`: stored files
 - Postgres `memes`: metadata rows
-- Postgres `tags`: normalized tag catalog for suggestions
+- Postgres `tags`: normalized tag catalog for suggestions, shared by meme tags, audiobook tags and account audiobook tag restrictions. A tag row is deleted once none of them uses it any more; that cleanup and every write that links a tag lock the tag row first, so a tag someone links at the same moment is kept rather than deleted along with its new link
 - Postgres `meme_tags`: meme-to-tag links
 - Postgres `user_favorites`: per-user favorites
 - Postgres `reel_sessions`: random reel history and position state
