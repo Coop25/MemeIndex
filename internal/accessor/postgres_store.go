@@ -12,7 +12,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -341,12 +340,15 @@ func (s *PostgresStore) Random(excludedIDs []string) (Meme, error) {
 }
 
 func (s *PostgresStore) Create(input CreateInput) (Meme, error) {
-	id := uuid.Must(uuid.NewV6()).String()
+	id := newMemeID()
 	contentType := detectContentType(input.Header, input.ContentType, input.Filename)
 	storedName := id + StoredFileExtension(input.Filename, contentType)
 	targetPath := filepath.Join(s.uploadDir, storedName)
 
-	dst, err := os.Create(targetPath)
+	// O_EXCL: never write over a file that is already there. A new ID cannot
+	// name an existing file, but if it ever did (see NewID), this upload fails
+	// instead of replacing that meme's file and then deleting it on cleanup.
+	dst, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o666)
 	if err != nil {
 		return Meme{}, fmt.Errorf("create upload file: %w", err)
 	}
