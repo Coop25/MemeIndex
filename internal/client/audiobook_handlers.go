@@ -34,11 +34,73 @@ const audiobookUploadStaleAfter = 24 * time.Hour
 // own byte range of the pre-sized temp file, so they don't interfere with
 // each other - while completing/aborting/reclaiming the upload takes the
 // exclusive side and so waits for any in-flight chunk writes to finish first.
-var audiobookUploadLocks sync.Map // id -> *sync.RWMutex
+//
+// Entries are reference-counted: every caller holds a reference from before
+// it starts waiting on the mutex until after it has released it, and the
+// entry is deleted when the last reference goes. So an id from the URL that
+// names no upload (or one whose complete fails, or that the sweeper reclaims)
+// never leaves an entry behind, and an entry is never deleted while another
+// request is still queued on its mutex - which would let the next request
+// create a second mutex for the same upload.
+var (
+	audiobookUploadLocksMu sync.Mutex
+	audiobookUploadLocks   = map[string]*audiobookUploadLock{}
+)
 
-func lockAudiobookUpload(id string) *sync.RWMutex {
-	lock, _ := audiobookUploadLocks.LoadOrStore(id, &sync.RWMutex{})
-	return lock.(*sync.RWMutex)
+type audiobookUploadLock struct {
+	mu   sync.RWMutex
+	refs int // guarded by audiobookUploadLocksMu
+}
+
+func acquireAudiobookUploadLock(id string) *audiobookUploadLock {
+	audiobookUploadLocksMu.Lock()
+	defer audiobookUploadLocksMu.Unlock()
+	lock := audiobookUploadLocks[id]
+	if lock == nil {
+		lock = &audiobookUploadLock{}
+		audiobookUploadLocks[id] = lock
+	}
+	lock.refs++
+	return lock
+}
+
+func releaseAudiobookUploadLock(id string, lock *audiobookUploadLock) {
+	audiobookUploadLocksMu.Lock()
+	defer audiobookUploadLocksMu.Unlock()
+	lock.refs--
+	if lock.refs == 0 {
+		delete(audiobookUploadLocks, id)
+	}
+}
+
+// lockAudiobookUploadShared takes the shared side of id's lock (a chunk
+// write) and returns the function that releases it.
+func lockAudiobookUploadShared(id string) (unlock func()) {
+	lock := acquireAudiobookUploadLock(id)
+	lock.mu.RLock()
+	return func() {
+		lock.mu.RUnlock()
+		releaseAudiobookUploadLock(id, lock)
+	}
+}
+
+// lockAudiobookUploadExclusive takes the exclusive side of id's lock
+// (complete, abort, discard), first waiting for in-flight chunk writes, and
+// returns the function that releases it.
+func lockAudiobookUploadExclusive(id string) (unlock func()) {
+	lock := acquireAudiobookUploadLock(id)
+	lock.mu.Lock()
+	return func() {
+		lock.mu.Unlock()
+		releaseAudiobookUploadLock(id, lock)
+	}
+}
+
+// audiobookUploadLockCount reports how many upload ids have a lock entry.
+func audiobookUploadLockCount() int {
+	audiobookUploadLocksMu.Lock()
+	defer audiobookUploadLocksMu.Unlock()
+	return len(audiobookUploadLocks)
 }
 
 func audiobookMaxBytes(cfg Config) int64 {
@@ -1150,14 +1212,12 @@ func (s *Server) appendAudiobookUploadChunk(w http.ResponseWriter, r *http.Reque
 	}
 
 	userID := currentAudiobookUserID(r)
-	lock := lockAudiobookUpload(id)
 	// Shared, not exclusive: several chunks for this same upload can be in
 	// flight at once (the client spreads one file over a few concurrent
 	// connections for speed), each writing to its own offset of the
 	// pre-sized temp file. Only completing/aborting the upload needs to wait
 	// for all of them to finish, via the exclusive side of this lock.
-	lock.RLock()
-	defer lock.RUnlock()
+	defer lockAudiobookUploadShared(id)()
 
 	upload, err := s.audiobooks.GetUpload(r.Context(), id, userID)
 	if errors.Is(err, audiobooks.ErrUploadNotFound) {
@@ -1243,9 +1303,7 @@ func (s *Server) completeAudiobookUpload(w http.ResponseWriter, r *http.Request,
 		}
 	}
 
-	lock := lockAudiobookUpload(id)
-	lock.Lock()
-	defer lock.Unlock()
+	defer lockAudiobookUploadExclusive(id)()
 
 	userID := currentAudiobookUserID(r)
 	record, err := s.audiobooks.CompleteUpload(r.Context(), id, userID, payload.DurationSeconds)
@@ -1257,18 +1315,15 @@ func (s *Server) completeAudiobookUpload(w http.ResponseWriter, r *http.Request,
 		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
 		return
 	}
-	audiobookUploadLocks.Delete(id)
 	go s.remuxUploadedAudiobookMP3(record)
 
 	writeJSON(w, http.StatusCreated, audiobookJSON(record))
 }
 
 func (s *Server) abortAudiobookUpload(w http.ResponseWriter, r *http.Request, id string) {
-	lock := lockAudiobookUpload(id)
-	lock.Lock()
-	defer lock.Unlock()
+	defer lockAudiobookUploadExclusive(id)()
 
-	upload, err := s.audiobooks.AbortUpload(r.Context(), id, currentAudiobookUserID(r))
+	_, err := s.audiobooks.AbortUpload(r.Context(), id, currentAudiobookUserID(r))
 	if errors.Is(err, audiobooks.ErrUploadNotFound) {
 		http.NotFound(w, r)
 		return
@@ -1278,7 +1333,6 @@ func (s *Server) abortAudiobookUpload(w http.ResponseWriter, r *http.Request, id
 		http.Error(w, "failed to abort upload", http.StatusInternalServerError)
 		return
 	}
-	audiobookUploadLocks.Delete(upload.ID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1353,19 +1407,11 @@ func (s *Server) sweepExpiredAudiobookBookmarks(ctx context.Context, now time.Ti
 // is still writing to it. Used by the stale-upload sweeper and the admin
 // discard endpoint.
 func (s *Server) discardAudiobookUpload(ctx context.Context, upload audiobooks.Upload) error {
-	lock := lockAudiobookUpload(upload.ID)
-	lock.Lock()
+	defer lockAudiobookUploadExclusive(upload.ID)()
 	if err := os.Remove(upload.TempPath); err != nil && !os.IsNotExist(err) {
-		lock.Unlock()
 		return fmt.Errorf("remove audiobook upload temp file: %w", err)
 	}
-	if err := s.audiobooks.DiscardUpload(ctx, upload.ID); err != nil {
-		lock.Unlock()
-		return err
-	}
-	lock.Unlock()
-	audiobookUploadLocks.Delete(upload.ID)
-	return nil
+	return s.audiobooks.DiscardUpload(ctx, upload.ID)
 }
 
 // backfillAudiobookMetadata catches up any audiobook stored before cover
