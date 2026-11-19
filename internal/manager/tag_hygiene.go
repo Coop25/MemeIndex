@@ -439,6 +439,11 @@ func (m *MemeManager) MergeTags(ctx context.Context, sourceTag string, targetTag
 	if tm, ok := m.store.(accessor.TagAdminStore); ok {
 		counts, err := tm.MergeTag(ctx, sourceTag, targetTag, actor)
 		if err != nil {
+			// A merge whose commit was cancelled in flight may still have
+			// been applied; drop the cached reads rather than keep them stale.
+			if ctx.Err() != nil {
+				m.invalidateAdminReadCache()
+			}
 			return TagMergeResult{}, err
 		}
 		if counts.Memes > 0 {
@@ -467,6 +472,11 @@ func (m *MemeManager) MergeTags(ctx context.Context, sourceTag string, targetTag
 			TagsRemoved: []string{sourceTag},
 			Actor:       actor,
 		}); err != nil {
+			// The memes already rewritten stay rewritten, and this one may
+			// have been too if the request ended after its commit.
+			if result.AffectedMemes > 0 || ctx.Err() != nil {
+				m.invalidateAdminReadCache()
+			}
 			return TagMergeResult{}, err
 		}
 		result.AffectedMemes += 1
