@@ -100,8 +100,11 @@ func TestStoreQueryStopsWhenContextIsCancelled(t *testing.T) {
 	cancel()
 	select {
 	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("EditMeme after cancel: err = %v, want context.Canceled", err)
+		// The pool cancels on the server, so the error is Postgres's
+		// query_canceled rather than context.Canceled; IsQueryCanceled is
+		// what handlers use to recognise either.
+		if !IsQueryCanceled(err) {
+			t.Fatalf("EditMeme after cancel: err = %v, want a cancelled query", err)
 		}
 	case <-time.After(5 * time.Second):
 		release()

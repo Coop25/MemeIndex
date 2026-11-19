@@ -727,7 +727,7 @@ func (s *Server) handleTags(w http.ResponseWriter, r *http.Request) {
 // waiting for the response and it is not a server fault, so handlers neither
 // log it nor answer it with a 500.
 func requestAbandoned(r *http.Request, err error) bool {
-	return r.Context().Err() != nil && errors.Is(err, context.Canceled)
+	return r.Context().Err() != nil && accessor.IsQueryCanceled(err)
 }
 
 // memeReadFailed answers a failed browse/dashboard read. When the request
