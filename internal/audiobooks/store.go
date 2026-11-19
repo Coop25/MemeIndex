@@ -49,6 +49,10 @@ var ErrDuplicateTitle = errors.New("an audiobook with this title already exists"
 // are recognisably not an audio file (markup, plain text, images, ...).
 var ErrNotAudio = errors.New("that file is not an audio file")
 
+// ErrUploadIncomplete is returned by CompleteUpload when not every byte of
+// the file has arrived yet.
+var ErrUploadIncomplete = errors.New("upload incomplete")
+
 type Record struct {
 	ID               string
 	Title            string
@@ -571,7 +575,7 @@ func (s *PostgresStore) CompleteUpload(ctx context.Context, id, userID string, f
 		return Record{}, err
 	}
 	if upload.ReceivedBytes != upload.TotalBytes {
-		return Record{}, fmt.Errorf("upload incomplete: received %d of %d bytes", upload.ReceivedBytes, upload.TotalBytes)
+		return Record{}, fmt.Errorf("%w: received %d of %d bytes", ErrUploadIncomplete, upload.ReceivedBytes, upload.TotalBytes)
 	}
 
 	ext := strings.ToLower(filepath.Ext(upload.Filename))

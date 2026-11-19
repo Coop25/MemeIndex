@@ -711,26 +711,26 @@ func (b *portableBackup) restoreArchive(ctx context.Context, source io.Reader, m
 
 	manifestBytes, err := os.ReadFile(filepath.Join(staging, "manifest.json"))
 	if err != nil {
-		return errors.New("backup is missing manifest.json")
+		return userError("backup is missing manifest.json")
 	}
 	var manifest portableBackupManifest
 	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
-		return fmt.Errorf("invalid backup manifest: %w", err)
+		return userErrorWrap("backup manifest.json is not valid", err)
 	}
 	if manifest.FormatVersion < portableBackupOldestFormatVersion || manifest.FormatVersion > portableBackupFormatVersion {
-		return fmt.Errorf("unsupported backup format version %d", manifest.FormatVersion)
+		return userError(fmt.Sprintf("unsupported backup format version %d - this server reads versions %d to %d; update it to the same or a newer version than the server the backup came from", manifest.FormatVersion, portableBackupOldestFormatVersion, portableBackupFormatVersion))
 	}
 	for _, table := range portableBackupTables {
 		if !table.inFormat(manifest.FormatVersion) {
 			continue
 		}
 		if _, err := os.Stat(filepath.Join(staging, "database", table.name+".csv")); err != nil {
-			return fmt.Errorf("backup is missing database/%s.csv", table.name)
+			return userError(fmt.Sprintf("backup is missing database/%s.csv", table.name))
 		}
 	}
 	for _, dir := range []string{"uploads", "thumbnails", "audiobooks"} {
 		if info, err := os.Stat(filepath.Join(staging, dir)); err != nil || !info.IsDir() {
-			return fmt.Errorf("backup is missing %s directory", dir)
+			return userError(fmt.Sprintf("backup is missing %s directory", dir))
 		}
 	}
 	if err := validateRestoredMemes(staging, manifest.FormatVersion); err != nil {
@@ -830,17 +830,17 @@ func validateRestoredMemes(staging string, formatVersion int) error {
 	reader := csv.NewReader(file)
 	header, err := reader.Read()
 	if err != nil {
-		return fmt.Errorf("read memes CSV header: %w", err)
+		return userErrorWrap("backup's memes CSV is unreadable", err)
 	}
 	// COPY imports by position, not the header labels. Validate the same schema
 	// before checking stored_name so a reordered header cannot bypass the check.
 	expected := strings.Split(portableBackupTables[0].columnsForFormat(formatVersion), ", ")
 	if len(header) != len(expected) {
-		return errors.New("memes CSV schema does not match backup format")
+		return userError("memes CSV schema does not match backup format")
 	}
 	for i := range expected {
 		if header[i] != expected[i] {
-			return errors.New("memes CSV column order does not match backup format")
+			return userError("memes CSV column order does not match backup format")
 		}
 	}
 	storedNameColumn := -1
@@ -851,7 +851,7 @@ func validateRestoredMemes(staging string, formatVersion int) error {
 		}
 	}
 	if storedNameColumn < 0 {
-		return errors.New("memes CSV is missing stored_name column")
+		return userError("memes CSV is missing stored_name column")
 	}
 	for {
 		record, err := reader.Read()
@@ -859,24 +859,24 @@ func validateRestoredMemes(staging string, formatVersion int) error {
 			break
 		}
 		if err != nil {
-			return fmt.Errorf("read memes CSV: %w", err)
+			return userErrorWrap("backup's memes CSV is unreadable", err)
 		}
 		if storedNameColumn >= len(record) || !validStoredName(record[storedNameColumn]) {
-			return errors.New("memes CSV contains an invalid stored file name")
+			return userError("memes CSV contains an invalid stored file name")
 		}
 		storedName := record[storedNameColumn]
 		if record[3] != "/uploads/"+storedName {
-			return errors.New("memes CSV contains a noncanonical media path")
+			return userError("memes CSV contains a noncanonical media path")
 		}
 		if source := strings.TrimSpace(record[8]); source != "" {
 			parsed, err := url.Parse(source)
 			if err != nil || parsed.Hostname() == "" || parsed.User != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-				return errors.New("memes CSV contains an unsafe source URL")
+				return userError("memes CSV contains an unsafe source URL")
 			}
 		}
 		info, err := os.Stat(filepath.Join(staging, "uploads", storedName))
 		if err != nil || !info.Mode().IsRegular() {
-			return fmt.Errorf("backup is missing meme file uploads/%s", storedName)
+			return userError(fmt.Sprintf("backup is missing meme file uploads/%s", storedName))
 		}
 	}
 	return nil
@@ -898,15 +898,15 @@ func validateRestoredAudiobooks(staging, dataDir string) error {
 	reader := csv.NewReader(file)
 	header, err := reader.Read()
 	if err != nil {
-		return fmt.Errorf("read audiobooks CSV header: %w", err)
+		return userErrorWrap("backup's audiobooks CSV is unreadable", err)
 	}
 	expected := strings.Split(backupTableColumns("audiobooks"), ", ")
 	if len(header) != len(expected) {
-		return errors.New("audiobooks CSV schema does not match backup format")
+		return userError("audiobooks CSV schema does not match backup format")
 	}
 	for i := range expected {
 		if header[i] != expected[i] {
-			return errors.New("audiobooks CSV column order does not match backup format")
+			return userError("audiobooks CSV column order does not match backup format")
 		}
 	}
 	storagePathColumn, coverPathColumn := -1, -1
@@ -919,7 +919,7 @@ func validateRestoredAudiobooks(staging, dataDir string) error {
 		}
 	}
 	if storagePathColumn < 0 || coverPathColumn < 0 {
-		return errors.New("audiobooks CSV is missing storage_path or cover_path column")
+		return userError("audiobooks CSV is missing storage_path or cover_path column")
 	}
 	audiobooksDir := filepath.Join(dataDir, "audiobooks")
 	stagedAudiobooksDir := filepath.Join(staging, "audiobooks")
@@ -929,10 +929,10 @@ func validateRestoredAudiobooks(staging, dataDir string) error {
 			break
 		}
 		if err != nil {
-			return fmt.Errorf("read audiobooks CSV: %w", err)
+			return userErrorWrap("backup's audiobooks CSV is unreadable", err)
 		}
 		if storagePathColumn >= len(record) {
-			return errors.New("audiobooks CSV row is missing storage_path")
+			return userError("audiobooks CSV row is missing storage_path")
 		}
 		if err := requireStagedAudiobookFile(audiobooksDir, stagedAudiobooksDir, record[storagePathColumn]); err != nil {
 			return err
@@ -967,11 +967,11 @@ func requireAudiobookFileUnder(dir, path string) error {
 func requireStagedAudiobookFile(audiobooksDir, stagedAudiobooksDir, storagePath string) error {
 	rel, err := filepath.Rel(audiobooksDir, storagePath)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
-		return fmt.Errorf("audiobook file %q does not belong under this server's data directory - the backup may be from a server with a different MEMEINDEX_DATA_DIR", storagePath)
+		return userError(fmt.Sprintf("audiobook file %q does not belong under this server's data directory - the backup may be from a server with a different MEMEINDEX_DATA_DIR", storagePath))
 	}
 	info, err := os.Stat(filepath.Join(stagedAudiobooksDir, rel))
 	if err != nil || !info.Mode().IsRegular() {
-		return fmt.Errorf("backup is missing audiobook file audiobooks/%s", filepath.ToSlash(rel))
+		return userError(fmt.Sprintf("backup is missing audiobook file audiobooks/%s", filepath.ToSlash(rel)))
 	}
 	return nil
 }
@@ -1121,7 +1121,7 @@ func extractPortableArchiveWithLimits(source io.Reader, destination string, maxB
 	destination = filepath.Clean(destination)
 	gz, err := gzip.NewReader(source)
 	if err != nil {
-		return errors.New("file is not a valid MemeIndex backup")
+		return userError("file is not a valid MemeIndex backup")
 	}
 	defer gz.Close()
 	tr := tar.NewReader(gz)
@@ -1133,22 +1133,22 @@ func extractPortableArchiveWithLimits(source io.Reader, destination string, maxB
 			break
 		}
 		if err != nil {
-			return fmt.Errorf("read backup archive: %w", err)
+			return userErrorWrap("the backup archive is truncated or damaged", err)
 		}
 		entries++
 		if entries > maxEntries || header.Size < 0 || header.Size > maxBytes-expanded {
-			return errors.New("backup exceeds extraction limits")
+			return userError("backup exceeds extraction limits")
 		}
 		expanded += header.Size
 		name := strings.TrimPrefix(filepath.ToSlash(header.Name), "./")
 		clean := filepath.ToSlash(filepath.Clean(name))
 		allowed := clean == "manifest.json" || strings.HasPrefix(clean, "database/") || clean == "uploads" || strings.HasPrefix(clean, "uploads/") || clean == "thumbnails" || strings.HasPrefix(clean, "thumbnails/") || clean == "audiobooks" || strings.HasPrefix(clean, "audiobooks/")
 		if name == "" || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || filepath.IsAbs(name) || !allowed {
-			return fmt.Errorf("backup contains invalid path %q", header.Name)
+			return userError(fmt.Sprintf("backup contains invalid path %q", header.Name))
 		}
 		target := filepath.Join(destination, filepath.FromSlash(clean))
 		if target != destination && !strings.HasPrefix(target, destination+string(os.PathSeparator)) {
-			return fmt.Errorf("backup path escapes destination: %q", header.Name)
+			return userError(fmt.Sprintf("backup path escapes destination: %q", header.Name))
 		}
 		switch header.Typeflag {
 		case tar.TypeDir:
@@ -1165,6 +1165,9 @@ func extractPortableArchiveWithLimits(source io.Reader, destination string, maxB
 			}
 			_, copyErr := io.Copy(file, tr)
 			closeErr := file.Close()
+			if errors.Is(copyErr, io.ErrUnexpectedEOF) {
+				return userErrorWrap("the backup archive is truncated or damaged", copyErr)
+			}
 			if copyErr != nil {
 				return copyErr
 			}
@@ -1172,7 +1175,7 @@ func extractPortableArchiveWithLimits(source io.Reader, destination string, maxB
 				return closeErr
 			}
 		default:
-			return fmt.Errorf("backup contains unsupported entry %q", header.Name)
+			return userError(fmt.Sprintf("backup contains unsupported entry %q", header.Name))
 		}
 	}
 	return nil

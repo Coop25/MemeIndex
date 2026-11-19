@@ -17,6 +17,13 @@ type audiobookAdminStatsCache struct {
 	valid    bool
 }
 
+// invalidate drops the memoized aggregate, so the next read recomputes it.
+func (c *audiobookAdminStatsCache) invalidate() {
+	c.mu.Lock()
+	c.valid = false
+	c.mu.Unlock()
+}
+
 // cachedAudiobookAdminStats returns the audiobook admin aggregate, or nil when
 // audiobooks are not configured.
 func (s *Server) cachedAudiobookAdminStats(ctx context.Context) (*audiobooks.AdminStatsReport, error) {

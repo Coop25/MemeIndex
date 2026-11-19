@@ -1311,8 +1311,17 @@ func (s *Server) completeAudiobookUpload(w http.ResponseWriter, r *http.Request,
 		http.NotFound(w, r)
 		return
 	}
-	if err != nil {
+	switch {
+	case errors.Is(err, audiobooks.ErrDuplicateTitle), errors.Is(err, audiobooks.ErrNotAudio), errors.Is(err, audiobooks.ErrUploadIncomplete):
+		// The uploader's to fix, and worded for them. The client treats 409
+		// as "this upload is finished with" and drops its resume marker.
 		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
+		return
+	case err != nil:
+		// Anything else (a failed rename, a database error) can carry file
+		// paths and database text; that stays in the log.
+		log.Printf("complete audiobook upload %s failed: %v", sanitizeLogField(id), err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to save the audiobook"})
 		return
 	}
 	s.remuxUploadedAudiobookMP3(record)

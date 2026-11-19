@@ -190,7 +190,7 @@ func (s *Server) handleMigrationInfo(w http.ResponseWriter, r *http.Request) {
 	info, err := s.backup.migrationInfo(r.Context())
 	if err != nil {
 		log.Printf("migration info failed: %v", err)
-		http.Error(w, "failed to read this server's library: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "failed to read this server's library; its log has the details", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, http.StatusOK, info)
@@ -415,6 +415,11 @@ func (s *Server) startMigrationImport(base *url.URL, token string, info migratio
 			defer resume()
 			err = s.runMigrationImport(ctx, base, token)
 		}
+		if err == nil {
+			// Before the status says completed: the admin page reloads as
+			// soon as it does, and must not be served from stale caches.
+			s.reloadAfterRestore("migration")
+		}
 		completedAt := time.Now().UTC()
 		s.migration.update(func(st *migrationImportStatus) {
 			st.CompletedAt = &completedAt
@@ -427,7 +432,10 @@ func (s *Server) startMigrationImport(base *url.URL, token string, info migratio
 				st.Error = "The migration was cancelled; this server was left unchanged."
 			default:
 				st.State = "failed"
-				st.Error = err.Error()
+				// runMigrationImport already turned anything from this
+				// server's own restore into a userFacingError; what is left
+				// describes the source or the connection to it.
+				st.Error = clientSafeError(err, err.Error())
 			}
 		})
 		s.migration.mu.Lock()
@@ -438,9 +446,6 @@ func (s *Server) startMigrationImport(base *url.URL, token string, info migratio
 			return
 		}
 		log.Printf("migration from %s completed", base.Host)
-		if err := s.managers.ReloadAfterRestore(); err != nil {
-			log.Printf("reload in-memory state after migration failed: %v", err)
-		}
 	}()
 	return s.migration.snapshot(), nil
 }
@@ -512,7 +517,13 @@ func (s *Server) runMigrationImport(ctx context.Context, base *url.URL, token st
 	if reason := strings.TrimSpace(resp.Trailer.Get(migrationErrorTrailer)); reason != "" {
 		return fmt.Errorf("the source failed while sending its library: %s", reason)
 	}
-	return err
+	// A problem with the archive is reported as is; a failure inside this
+	// server's restore (database errors, its own file paths) only in the log.
+	var friendly *userFacingError
+	if errors.As(err, &friendly) {
+		return err
+	}
+	return userErrorWrap("the restore failed on this server; its log has the details", err)
 }
 
 func (s *Server) cancelMigrationImport() bool {

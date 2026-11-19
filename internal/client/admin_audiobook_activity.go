@@ -59,6 +59,13 @@ type audiobookActivityCache struct {
 	valid    bool
 }
 
+// invalidate drops the memoized aggregate, so the next read recomputes it.
+func (c *audiobookActivityCache) invalidate() {
+	c.mu.Lock()
+	c.valid = false
+	c.mu.Unlock()
+}
+
 func cloneAdminAudiobookActivity(a adminAudiobookActivity) adminAudiobookActivity {
 	a.DailySeconds = append([]audiobooks.AdminDaySeconds(nil), a.DailySeconds...)
 	a.TopBooks = append([]audiobooks.AdminTopBook(nil), a.TopBooks...)
