@@ -133,6 +133,13 @@ type authService struct {
 	sessionMu        sync.Mutex
 	sessionCache     map[string]sessionCacheEntry
 	lastProfileWrite map[string]time.Time
+
+	// runBestEffort starts the "last active" profile write off the request
+	// path. NewServer points it at Server.startBestEffortJob, which tracks the
+	// write for shutdown and skips it while a restore holds background work;
+	// it reports false when the write was skipped. An authService built on its
+	// own (as in tests) leaves it nil and writes on a plain goroutine.
+	runBestEffort func(work func(ctx context.Context)) bool
 }
 
 type discordTokenResponse struct {
@@ -637,16 +644,30 @@ func (a *authService) maybeTouchProfile(claims authClaims) {
 	a.lastProfileWrite[userID] = time.Now()
 	a.sessionMu.Unlock()
 
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	retryLater := func() {
+		a.sessionMu.Lock()
+		delete(a.lastProfileWrite, userID)
+		a.sessionMu.Unlock()
+	}
+	touch := func(ctx context.Context) {
+		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 		if err := a.users.UpsertSessionProfile(ctx, claims); err != nil {
 			log.Printf("auth: background profile refresh for %s failed: %v", sanitizeLogField(userID), err)
-			a.sessionMu.Lock()
-			delete(a.lastProfileWrite, userID)
-			a.sessionMu.Unlock()
+			retryLater()
 		}
-	}()
+	}
+	if a.runBestEffort == nil {
+		go touch(context.Background())
+		return
+	}
+	// Skipped, never waited for, while a restore replaces app_users (or once
+	// shutdown has begun): this runs on every authenticated request, reads
+	// included, and must not hold one up. The next request after the restore
+	// tries again.
+	if !a.runBestEffort(touch) {
+		retryLater()
+	}
 }
 
 // currentSessionVersion reads the user's session version for embedding in a

@@ -697,6 +697,35 @@ func (m *MemeManager) SweepTagScratch() int {
 	return accessor.SweepTagScratch(m.ThumbnailDir())
 }
 
+// StartTagSuggestionWorkerAfterSweep runs SweepTagScratch in the background
+// and starts the tag suggestion worker once it is done, so the sweep never
+// deletes the files of a suggestion in flight. The first sweep after an
+// upgrade can have tens of thousands of files to delete, which is why it is
+// off the startup path. The sweep is worker-tracked and one unit of
+// background work: a restore, which swaps the thumbnails directory, waits for
+// it or holds it back. If the workers stop before or during the sweep, the
+// suggestion worker is never started.
+func (m *MemeManager) StartTagSuggestionWorkerAfterSweep() {
+	m.workerWG.Add(1)
+	go func() {
+		defer m.workerWG.Done()
+		if m.workerCtx.Err() != nil || !m.enterBackgroundWork() {
+			return
+		}
+		removed := m.SweepTagScratch()
+		m.leaveBackgroundWork()
+		if removed > 0 {
+			log.Printf("tag suggestion scratch: removed %d leftover working file(s) from the thumbnails folder", removed)
+		}
+		if m.workerCtx.Err() != nil {
+			return
+		}
+		// Still inside this tracked goroutine, so StopBackgroundWorkers is
+		// waiting on it and will wait on the worker too.
+		m.StartTagSuggestionWorker()
+	}()
+}
+
 func (m *MemeManager) suggestionRequestForMeme(ctx context.Context, meme accessor.Meme, options tagSuggestionAttemptOptions) (tagsuggest.Request, error) {
 	switch {
 	case strings.HasPrefix(meme.ContentType, "image/"):

@@ -48,6 +48,23 @@ func (g *Gate) Enter(stop <-chan struct{}) bool {
 	}
 }
 
+// TryEnter is Enter without the wait: if the gate is open it marks one unit
+// of work as running and reports true (the caller must call Leave); if a
+// pause is in effect it reports false at once. It suits best-effort work
+// that should be skipped, not delayed, while a restore runs.
+func (g *Gate) TryEnter() bool {
+	if g == nil {
+		return true
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.paused > 0 {
+		return false
+	}
+	g.active++
+	return true
+}
+
 // Leave marks a unit of work started by Enter as finished.
 func (g *Gate) Leave() {
 	if g == nil {

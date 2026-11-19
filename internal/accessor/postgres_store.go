@@ -110,7 +110,13 @@ func (s *PostgresStore) ThumbnailDir() string {
 	return s.previewDir
 }
 
-func (s *PostgresStore) EnsurePreviewAssets() error {
+func (s *PostgresStore) EnsurePreviewAssets(step func(work func()) bool) error {
+	if step == nil {
+		step = func(work func()) bool {
+			work()
+			return true
+		}
+	}
 	// Only video and image rows get thumbnails, and only their stored name and
 	// content type are needed - not the per-row tag aggregation and favourites
 	// lookup that List() hydrates for the whole archive.
@@ -132,7 +138,21 @@ func (s *PostgresStore) EnsurePreviewAssets() error {
 
 	processedVideos := 0
 	for i := range memes {
-		result, err := ensurePreviewAssetWithResult(s.uploadDir, s.previewDir, &memes[i])
+		var (
+			result previewAssetResult
+			err    error
+		)
+		if !step(func() { result, err = ensurePreviewAssetWithResult(s.uploadDir, s.previewDir, &memes[i]) }) {
+			log.Printf(
+				"preview asset backfill: stopped after %d/%d videos (generated=%d existing=%d failed=%d)",
+				processedVideos,
+				totalVideos,
+				generated,
+				existing,
+				failed,
+			)
+			return nil
+		}
 		processedVideos += 1
 		switch result {
 		case previewAssetGenerated:

@@ -95,8 +95,9 @@ func (b *backgroundTasks) Stop(timeout time.Duration) bool {
 }
 
 // StopBackgroundWork stops the link retry queue, the audiobook sweepers and
-// the remux backfill, and waits for detached link imports and remuxes,
-// cancelling them if they outlast half of timeout. Call it after the HTTP
+// the remux backfill, cancels a migration import in progress, and waits for
+// those, detached link imports, remuxes and profile touches, cancelling them
+// if they outlast half of timeout. Call it after the HTTP
 // servers have shut down (so no new work starts) and before Close.
 func (s *Server) StopBackgroundWork(timeout time.Duration) {
 	if !s.background.Stop(timeout) {
@@ -124,6 +125,27 @@ func (s *Server) enterBackgroundJob() bool {
 
 func (s *Server) leaveBackgroundJob() {
 	s.jobs.Leave()
+}
+
+// startBestEffortJob runs work as one tracked unit of background work, unless
+// a restore is holding background work or shutdown has begun: then it skips
+// work and reports false at once, without waiting. A restore that starts
+// while work runs waits for it like any other unit. It is for best-effort
+// writes that the next request simply retries, such as the auth profile
+// touch, which runs on every authenticated request and must never hold one
+// up.
+func (s *Server) startBestEffortJob(work func(ctx context.Context)) bool {
+	if !s.jobs.TryEnter() {
+		return false
+	}
+	started := s.background.Go(func(ctx context.Context) {
+		defer s.leaveBackgroundJob()
+		work(ctx)
+	})
+	if !started {
+		s.leaveBackgroundJob()
+	}
+	return started
 }
 
 // pauseBackgroundWork holds every background job still for a restore or

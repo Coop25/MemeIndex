@@ -580,7 +580,7 @@ func (s *MemeStore) ThumbnailDir() string {
 }
 
 // EnsurePreviewAssets does nothing: this store never generates thumbnails.
-func (s *MemeStore) EnsurePreviewAssets() error {
+func (s *MemeStore) EnsurePreviewAssets(func(work func()) bool) error {
 	return nil
 }
 
