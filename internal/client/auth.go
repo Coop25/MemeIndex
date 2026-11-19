@@ -255,13 +255,16 @@ func (a *authService) signedValue(value string) string {
 	return value + "." + a.sign(value)
 }
 
+// verifySignedValue checks a signedValue and returns the value it carries. The
+// signature is hex, so it never contains a dot, but the value can (a return
+// path such as /?q=foo.bar): split on the last dot only.
 func (a *authService) verifySignedValue(signed string) (string, bool) {
-	parts := strings.Split(signed, ".")
-	if len(parts) != 2 {
+	dot := strings.LastIndexByte(signed, '.')
+	if dot < 0 {
 		return "", false
 	}
-	value := parts[0]
-	signature := parts[1]
+	value := signed[:dot]
+	signature := signed[dot+1:]
 	if !hmac.Equal([]byte(signature), []byte(a.sign(value))) {
 		return "", false
 	}
