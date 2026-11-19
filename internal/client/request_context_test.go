@@ -95,3 +95,35 @@ func TestCancelledRetryJobIsNotReportedAsRevoked(t *testing.T) {
 		t.Fatalf("cancelled retry: err = %v, want context.Canceled", err)
 	}
 }
+
+// leavesAfterUpsert is a user store whose client goes away right after the
+// login's profile upsert has been written.
+type leavesAfterUpsert struct {
+	*contextCheckingUserStore
+	leave context.CancelFunc
+}
+
+func (s *leavesAfterUpsert) UpsertDiscordProfile(ctx context.Context, user discordUser) error {
+	err := s.contextCheckingUserStore.UpsertDiscordProfile(ctx, user)
+	s.leave()
+	return err
+}
+
+// A login abandoned after its profile upsert must fail as abandoned. Building
+// a session from lookups the cancel cut short would hand the callback an
+// approved user with no permissions, which it then records as a
+// login_awaiting_approval security event.
+func TestLoginAbandonedAfterTheUpsertIsNotAnUnapprovedLogin(t *testing.T) {
+	ctx, cancel := context.WithCancel(requestScoped(context.Background()))
+	defer cancel()
+	store := &leavesAfterUpsert{
+		contextCheckingUserStore: &contextCheckingUserStore{fakeSessionStore: &fakeSessionStore{version: 4, perms: authPermissions{CanView: true}}},
+		leave:                    cancel,
+	}
+	a := newRevocationAuthService(store)
+
+	session, _, err := a.createSession(ctx, discordUser{ID: "u-ctx", Username: "ctx"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("createSession after the client left: session = %+v, err = %v; want context.Canceled", session, err)
+	}
+}

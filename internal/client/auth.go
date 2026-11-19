@@ -414,6 +414,12 @@ func (a *authService) createSession(ctx context.Context, user discordUser) (auth
 		SessionVersion: a.currentSessionVersion(ctx, user.ID),
 		ExpiresAt:      expiresAt,
 	}
+	// Both lookups above fall back to defaults on any error. One the request's
+	// cancel cut short would otherwise read as an unapproved account at
+	// session version 1.
+	if err := ctx.Err(); err != nil {
+		return authSession{}, "", err
+	}
 
 	token, err := a.issueSessionToken(session)
 	if err != nil {
