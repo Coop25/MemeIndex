@@ -126,7 +126,7 @@ func TestMigrationImportReportsSourceFailureFromTrailer(t *testing.T) {
 		gz := gzip.NewWriter(w)
 		_, _ = gz.Write(bytes.Repeat([]byte("x"), 4096))
 		_ = gz.Flush() // truncated: never closed
-		w.Header().Set(migrationErrorTrailer, "meme file \"a.png\" is missing from uploads")
+		w.Header().Set(migrationErrorTrailer, migrationExportFailedMessage)
 	}))
 	defer source.Close()
 
@@ -137,7 +137,7 @@ func TestMigrationImportReportsSourceFailureFromTrailer(t *testing.T) {
 	}}
 	base, _ := url.Parse(source.URL)
 	err := s.runMigrationImport(context.Background(), base, "mig_x")
-	if err == nil || !strings.Contains(err.Error(), `meme file "a.png" is missing`) {
+	if err == nil || !strings.Contains(err.Error(), migrationExportFailedMessage) {
 		t.Fatalf("expected the source's reason, got %v", err)
 	}
 	if received := s.migration.received.Load(); received == 0 {
@@ -146,6 +146,30 @@ func TestMigrationImportReportsSourceFailureFromTrailer(t *testing.T) {
 	leftovers, _ := filepath.Glob(filepath.Join(dataDir, ".memeindex-import-*"))
 	if len(leftovers) != 0 {
 		t.Fatalf("a failed migration must clean up its staging directory, found %v", leftovers)
+	}
+}
+
+// The trailer goes to the destination server's admin. A failure on the source
+// can name its own file paths or database errors, which belong in the
+// source's log, not in that trailer.
+func TestMigrationExportTrailerKeepsTheErrorDetailInTheLog(t *testing.T) {
+	logs := captureLog(t)
+	// A data directory under a regular file cannot be created, and the
+	// error names the path.
+	blocker := filepath.Join(t.TempDir(), "private-source-path")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{backup: &portableBackup{dataDir: filepath.Join(blocker, "data")}}
+
+	rec := httptest.NewRecorder()
+	s.handleMigrationExport(rec, httptest.NewRequest(http.MethodGet, "/api/migration/export", nil))
+	trailer := rec.Result().Trailer.Get(migrationErrorTrailer)
+	if trailer != migrationExportFailedMessage {
+		t.Fatalf("trailer = %q, want %q", trailer, migrationExportFailedMessage)
+	}
+	if !strings.Contains(logs.String(), "private-source-path") {
+		t.Fatalf("the source's log must keep the detail:\n%s", logs.String())
 	}
 }
 

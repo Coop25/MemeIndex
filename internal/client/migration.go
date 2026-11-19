@@ -37,10 +37,13 @@ import (
 
 const (
 	migrationTokenTTL = 24 * time.Hour
-	// migrationErrorTrailer carries the source's error when building the
-	// archive fails after the stream has started and the status code is
-	// already sent.
+	// migrationErrorTrailer says the source failed when building the archive
+	// fails after the stream has started and the status code is already
+	// sent. The detail stays in the source's log.
 	migrationErrorTrailer = "X-Memeindex-Migration-Error"
+	// migrationExportFailedMessage is what that trailer says when the
+	// failure is not one meant for the destination to read.
+	migrationExportFailedMessage = "building the archive failed; the source server's log has the details"
 	// migrationStallTimeout aborts a transfer that has received nothing for
 	// this long - a dead connection would otherwise hang the import forever.
 	migrationStallTimeout = 10 * time.Minute
@@ -206,8 +209,10 @@ func (s *Server) handleMigrationExport(w http.ResponseWriter, r *http.Request) {
 	// database tables are dumped first) and the destination is waiting.
 	_ = http.NewResponseController(w).Flush()
 	if err := s.backup.writeArchive(r.Context(), w); err != nil {
+		// The trailer reaches the destination's admin, who need not see this
+		// server's file paths or database errors; the log here has them.
 		log.Printf("migration export to %s failed: %v", sanitizeLogField(s.clientIP(r)), err)
-		w.Header().Set(migrationErrorTrailer, sanitizeLogField(err.Error()))
+		w.Header().Set(migrationErrorTrailer, sanitizeLogField(clientSafeError(err, migrationExportFailedMessage)))
 		return
 	}
 	// The token is a 24-hour key to a full dump of this server, users
