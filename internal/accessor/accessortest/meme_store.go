@@ -342,6 +342,35 @@ func (s *MemeStore) ReplaceSuggestedTags(id string, tags []string) error {
 	return os.ErrNotExist
 }
 
+// RemoveSuggestedTag drops one tag from a meme's suggestions under the store
+// mutex, working on the list as it is now rather than on a caller's copy.
+func (s *MemeStore) RemoveSuggestedTag(id, tag string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	id = strings.TrimSpace(id)
+	tag = strings.ToLower(strings.TrimSpace(tag))
+	for i := range s.memes {
+		if s.memes[i].ID != id {
+			continue
+		}
+		kept := make([]string, 0, len(s.memes[i].SuggestedTags))
+		for _, suggested := range s.memes[i].SuggestedTags {
+			if suggested != tag {
+				kept = append(kept, suggested)
+			}
+		}
+		if len(kept) != len(s.memes[i].SuggestedTags) {
+			s.memes[i].SuggestedTags = kept
+			s.memes[i].UpdatedAt = time.Now().UTC()
+			s.byID[id] = s.memes[i]
+		}
+		return nil
+	}
+
+	return os.ErrNotExist
+}
+
 func (s *MemeStore) Random(excludedIDs []string) (accessor.Meme, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

@@ -1,6 +1,7 @@
 package accessortest
 
 import (
+	"errors"
 	"net/textproto"
 	"os"
 	"path/filepath"
@@ -48,5 +49,38 @@ func TestMemeStoreCreateSanitizesStoredExtension(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(store.UploadDir(), meme.StoredName)); err != nil {
 			t.Errorf("%q: stored file: %v", tc.name, err)
 		}
+	}
+}
+
+// RemoveSuggestedTag drops just the one tag from whatever list is stored now
+// and reports a missing meme the way PostgresStore does.
+func TestMemeStoreRemoveSuggestedTag(t *testing.T) {
+	store, err := NewMemeStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	meme, err := store.Create(accessor.CreateInput{
+		File:     strings.NewReader("remove suggestion bytes"),
+		Header:   textproto.MIMEHeader{"Content-Type": []string{"image/png"}},
+		Filename: "pic.png",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReplaceSuggestedTags(meme.ID, []string{"bird", "dog", "fish"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RemoveSuggestedTag(meme.ID, " Dog "); err != nil {
+		t.Fatalf("RemoveSuggestedTag: %v", err)
+	}
+	got, err := store.ListSuggestedTags(meme.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got, ",") != "bird,fish" {
+		t.Fatalf("suggested tags = %v, want [bird fish]", got)
+	}
+	if err := store.RemoveSuggestedTag("missing", "dog"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing meme: err = %v, want os.ErrNotExist", err)
 	}
 }

@@ -1,6 +1,8 @@
 package manager
 
 import (
+	"slices"
+
 	"memeindex/internal/accessor"
 )
 
@@ -74,3 +76,19 @@ func (s *dashboardMetricStore) CountFavoritesByUser() (map[string]int, error) {
 }
 
 func (s *tagReviewTestStore) SetSearchText(string, string) error { return nil }
+
+func (s *tagReviewTestStore) RemoveSuggestedTag(id, tag string) error {
+	tags, err := s.ListSuggestedTags(id)
+	if err != nil {
+		return err
+	}
+	return s.ReplaceSuggestedTags(id, slices.DeleteFunc(tags, func(t string) bool { return t == tag }))
+}
+
+func (s *adminReadCacheStore) RemoveSuggestedTag(id, tag string) error {
+	tags, err := s.ListSuggestedTags(id)
+	if err != nil {
+		return err
+	}
+	return s.ReplaceSuggestedTags(id, slices.DeleteFunc(tags, func(t string) bool { return t == tag }))
+}
