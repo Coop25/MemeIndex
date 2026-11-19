@@ -2,12 +2,37 @@ package accessor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgconn/ctxwatch"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// cancelledQueryDeadline is how long a connection whose context was
+// cancelled waits for Postgres to act on the cancel request before pgx gives
+// up on it and closes the connection instead.
+const cancelledQueryDeadline = 5 * time.Second
+
+// pgQueryCanceled is the SQLSTATE Postgres answers a cancel request with.
+const pgQueryCanceled = "57014"
+
+// IsQueryCanceled reports whether err is a query stopped by its context
+// being cancelled. Because NewPool cancels on the server, such a query fails
+// with Postgres's own query_canceled error rather than context.Canceled, so
+// checking for context.Canceled alone misses it. A statement_timeout reports
+// the same SQLSTATE, so callers must also check their own ctx.Err() before
+// treating the error as an abandoned request.
+func IsQueryCanceled(err error) bool {
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == pgQueryCanceled
+}
 
 // DefaultStatementTimeout bounds how long any single statement on a NewPool
 // connection may run before Postgres cancels it. Store calls run on the
@@ -65,6 +90,18 @@ func newPoolConfig(databaseURL string) (*pgxpool.Config, error) {
 	}
 	if !strings.Contains(databaseURL, "pool_health_check_period") {
 		cfg.HealthCheckPeriod = time.Minute
+	}
+
+	// Cancel a query on the server when its context ends. pgx's default only
+	// closes the client's socket, and Postgres notices a dead client only the
+	// next time it talks to it: a query waiting on a lock or still executing
+	// runs on with its locks held, so an abandoned request kept blocking the
+	// writes behind it (and a cleanup that skips locked rows skipped them). A
+	// cancel request stops the query and releases its locks at once, and the
+	// connection goes back to the pool instead of being thrown away. If
+	// Postgres does not answer the cancel, the socket deadline is the fallback.
+	cfg.ConnConfig.BuildContextWatcherHandler = func(conn *pgconn.PgConn) ctxwatch.Handler {
+		return &pgconn.CancelRequestContextWatcherHandler{Conn: conn, DeadlineDelay: cancelledQueryDeadline}
 	}
 
 	// Sent as a startup parameter, so it applies to every connection the pool
