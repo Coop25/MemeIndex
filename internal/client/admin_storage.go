@@ -477,14 +477,18 @@ func (s *Server) buildStorageReport(ctx context.Context) (adminStorageReport, er
 	}
 	if s.audiobooks != nil {
 		if books, err := s.audiobooks.ListStoragePaths(ctx); err != nil {
-			log.Printf("admin storage audiobook sizes failed: %v", err)
+			if ctx.Err() == nil {
+				log.Printf("admin storage audiobook sizes failed: %v", err)
+			}
 		} else {
 			for _, b := range books {
 				report.Largest = append(report.Largest, storageLargeFile{Kind: "audiobook", ID: b.ID, Name: b.Title, Bytes: b.SizeBytes, Owner: owner(b.UploadedBy)})
 			}
 		}
 		if uploads, err := s.audiobooks.ListInProgressUploads(ctx); err != nil {
-			log.Printf("admin storage uploads failed: %v", err)
+			if ctx.Err() == nil {
+				log.Printf("admin storage uploads failed: %v", err)
+			}
 		} else {
 			for _, u := range uploads {
 				report.Uploads = append(report.Uploads, adminUploadInProgress{
@@ -514,7 +518,9 @@ func (s *Server) adminUserNames(ctx context.Context) map[string]string {
 	}
 	users, err := s.users.ListUsers(ctx)
 	if err != nil {
-		log.Printf("admin storage user names failed: %v", err)
+		if ctx.Err() == nil {
+			log.Printf("admin storage user names failed: %v", err)
+		}
 		return names
 	}
 	for _, user := range users {
