@@ -109,7 +109,7 @@ async function fetchAudiobookSeriesManagerBooks() {
 }
 
 // seriesManagerBooksFor relies on audiobookSeriesManagerBooks already being
-// ordered series_id, then series_sequence, then created_at (the same order
+// grouped by series, then ordered series_sequence, then created_at (the order
 // the API returns it in) - filtering preserves that, so this is already each
 // series's book order, no re-sorting needed.
 function seriesManagerBooksFor(seriesId) {
