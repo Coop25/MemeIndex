@@ -3,6 +3,7 @@ package accessor
 import (
 	"context"
 	"net/textproto"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -295,5 +296,84 @@ func TestMergeTagOfUnusedSourceLeavesNoNewTarget(t *testing.T) {
 	}
 	if f.tagExists(dst) {
 		t.Errorf("target tag %s was left behind with nothing linking it", dst)
+	}
+}
+
+// Merges queued on the merge lock must not starve the one holding it of a
+// pool connection. Each waiter holds a connection while it waits, so a
+// merge that needed a second connection once it had the lock (to commit a
+// new target up front) stalled behind them until statement_timeout failed
+// a waiter - with a pool no bigger than the merges queued, every time.
+func TestConcurrentMergesDoNotExhaustThePool(t *testing.T) {
+	f := newTagMergeFixture(t)
+	ctx := context.Background()
+	dsn := strings.TrimSpace(os.Getenv("MEMEINDEX_TEST_DATABASE_URL"))
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
+	}
+	small, err := NewPostgresStore(ctx, dsn+sep+"pool_max_conns=2&pool_min_conns=1&statement_timeout=5000", t.TempDir())
+	if err != nil {
+		t.Fatalf("NewPostgresStore: %v", err)
+	}
+	t.Cleanup(small.Close)
+
+	pairs := [][2]string{{f.tag("qa"), f.tag("qa-new")}, {f.tag("qb"), f.tag("qb-new")}}
+	for _, p := range pairs {
+		f.cleanupTags(p[0], p[1])
+		f.raceMeme(p[0])
+	}
+
+	// Hold the merge lock from outside so both merges queue behind it, each
+	// on a connection of the two-connection pool.
+	holder, err := f.store.pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Release()
+	if _, err := holder.Exec(ctx, `SELECT pg_advisory_lock(hashtextextended('tag-merge', 0))`); err != nil {
+		t.Fatalf("take merge lock: %v", err)
+	}
+	var holderPID int
+	if err := holder.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&holderPID); err != nil {
+		t.Fatal(err)
+	}
+
+	errs := make(chan error, len(pairs))
+	for _, p := range pairs {
+		go func() {
+			_, err := small.MergeTag(p[0], p[1], mergeActor)
+			errs <- err
+		}()
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		var waiting int
+		if err := f.store.pool.QueryRow(ctx, `
+			SELECT COUNT(*) FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))
+		`, holderPID).Scan(&waiting); err != nil {
+			t.Fatalf("pg_blocking_pids: %v", err)
+		}
+		if waiting == len(pairs) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d of %d merges queued on the merge lock", waiting, len(pairs))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := holder.Exec(ctx, `SELECT pg_advisory_unlock(hashtextextended('tag-merge', 0))`); err != nil {
+		t.Fatalf("release merge lock: %v", err)
+	}
+
+	for range pairs {
+		if err := <-errs; err != nil {
+			t.Errorf("MergeTag: %v", err)
+		}
+	}
+	for _, p := range pairs {
+		if f.tagExists(p[0]) || !f.tagExists(p[1]) {
+			t.Errorf("merge %s -> %s did not complete", p[0], p[1])
+		}
 	}
 }
