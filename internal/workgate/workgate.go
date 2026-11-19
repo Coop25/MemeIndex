@@ -26,12 +26,19 @@ type Gate struct {
 
 // Enter blocks while the gate is paused, then marks one unit of work as
 // running and reports true; the caller must call Leave when the unit is
-// done. It reports false, without entering, if stop closes first.
+// done. It reports false, without entering, once stop has closed - whether
+// that happens during a pause or before Enter is called, so no new unit
+// starts after shutdown begins.
 func (g *Gate) Enter(stop <-chan struct{}) bool {
 	if g == nil {
 		return true
 	}
 	for {
+		select {
+		case <-stop:
+			return false
+		default:
+		}
 		g.mu.Lock()
 		if g.paused == 0 {
 			g.active++
