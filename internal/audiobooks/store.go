@@ -569,6 +569,14 @@ func (s *PostgresStore) RecordUploadRange(ctx context.Context, id, userID string
 }
 
 func (s *PostgresStore) CompleteUpload(ctx context.Context, id, userID string, fallbackDurationSeconds float64) (Record, error) {
+	// Completing moves the temp file into the library before the row that
+	// points at it is written, and removes the moved file again on any
+	// failure. Stopped part-way by a cancelled request it would lose the upload
+	// (the temp file is gone, the upload row still points at it), and a commit
+	// cancelled in flight may have been applied before the cleanup deletes the
+	// file it points at. Every byte is already on disk, so finish it even if
+	// the uploader has gone away.
+	ctx = context.WithoutCancel(ctx)
 	upload, err := s.GetUpload(ctx, id, userID)
 	if err != nil {
 		return Record{}, err
@@ -765,6 +773,9 @@ func SniffMimeType(path string) string {
 }
 
 func (s *PostgresStore) AbortUpload(ctx context.Context, id, userID string) (Upload, error) {
+	// The row goes first and the temp file after it; a request cancelled in
+	// between would leave a temp file no sweep knows about, so run to the end.
+	ctx = context.WithoutCancel(ctx)
 	upload, err := s.GetUpload(ctx, id, userID)
 	if err != nil {
 		return Upload{}, err
@@ -1767,6 +1778,11 @@ func CoverExtensionForBytes(data []byte) string {
 // cover_path, then removes whatever cover file - embedded at upload time or
 // set by an earlier call to this method - it had before.
 func (s *PostgresStore) SetAudiobookCover(ctx context.Context, id string, imageBytes []byte) (Record, error) {
+	// The new cover file is written before cover_path points at it and
+	// removed if that update fails. An update cancelled in flight may still
+	// have been applied, and removing the file then would leave the row
+	// pointing at nothing, so this runs to completion once started.
+	ctx = context.WithoutCancel(ctx)
 	existing, err := s.GetAudiobook(ctx, id)
 	if err != nil {
 		return Record{}, err
@@ -1793,6 +1809,9 @@ func (s *PostgresStore) SetAudiobookCover(ctx context.Context, id string, imageB
 // RemoveAudiobookCover clears an audiobook's cover, falling back to the
 // default placeholder art in the UI.
 func (s *PostgresStore) RemoveAudiobookCover(ctx context.Context, id string) (Record, error) {
+	// cover_path is cleared before the file is removed; stopped in between,
+	// the file would stay on disk with nothing pointing at it.
+	ctx = context.WithoutCancel(ctx)
 	existing, err := s.GetAudiobook(ctx, id)
 	if err != nil {
 		return Record{}, err
