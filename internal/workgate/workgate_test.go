@@ -79,6 +79,27 @@ func TestEnterGivesUpWhenStopCloses(t *testing.T) {
 	}
 }
 
+// Once shutdown has begun no new unit may start, paused gate or not: a
+// remux queued behind another on its lock must skip, not start ffmpeg for
+// the grace-period cancel to kill.
+func TestEnterRefusesOnceStopHasClosed(t *testing.T) {
+	var g Gate
+	stop := make(chan struct{})
+	close(stop)
+	if g.Enter(stop) {
+		g.Leave()
+		t.Fatal("Enter on an open gate reported success after stop closed")
+	}
+	// Nothing was entered, so a pause does not wait on it.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	resume, err := g.Pause(ctx)
+	if err != nil {
+		t.Fatalf("Pause waited on a unit that was never entered: %v", err)
+	}
+	resume()
+}
+
 func TestPauseGivesUpWithContextAndReopens(t *testing.T) {
 	var g Gate
 	g.Enter(nil)
