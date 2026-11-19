@@ -92,14 +92,18 @@ func newPoolConfig(databaseURL string) (*pgxpool.Config, error) {
 		cfg.HealthCheckPeriod = time.Minute
 	}
 
-	// Cancel a query on the server when its context ends. pgx's default only
-	// closes the client's socket, and Postgres notices a dead client only the
-	// next time it talks to it: a query waiting on a lock or still executing
-	// runs on with its locks held, so an abandoned request kept blocking the
-	// writes behind it (and a cleanup that skips locked rows skipped them). A
-	// cancel request stops the query and releases its locks at once, and the
-	// connection goes back to the pool instead of being thrown away. If
-	// Postgres does not answer the cancel, the socket deadline is the fallback.
+	// Cancel a query on the server before the call returns. pgx's default
+	// closes the connection as soon as the context ends and sends Postgres
+	// its cancel request only afterwards, from a background goroutine. The
+	// call therefore returns while the query, if it was waiting on a lock or
+	// still executing, runs on with its transaction's locks held. A caller
+	// that moves straight on (the next request, a cleanup that skips locked
+	// rows) then still finds those rows locked. Here the call returns only
+	// once Postgres has acted on the cancel. A connection used outside a
+	// transaction also goes back to the pool instead of being thrown away.
+	// One inside a transaction is still discarded when its deferred Rollback
+	// runs on the cancelled context. If Postgres does not answer the cancel,
+	// the socket deadline is the fallback.
 	cfg.ConnConfig.BuildContextWatcherHandler = func(conn *pgconn.PgConn) ctxwatch.Handler {
 		return &pgconn.CancelRequestContextWatcherHandler{Conn: conn, DeadlineDelay: cancelledQueryDeadline}
 	}
