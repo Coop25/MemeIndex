@@ -14,7 +14,7 @@ import (
 func TestListAudiobooksPaging(t *testing.T) {
 	store := newTestAudiobookStore(t)
 	ctx := context.Background()
-	tag := "paging-" + uuid.Must(uuid.NewV6()).String()
+	tag := "paging-" + uuid.NewString()
 
 	const total = 7
 	for range total {

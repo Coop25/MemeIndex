@@ -19,7 +19,7 @@ import (
 
 func insertActivityBook(t *testing.T, store *audiobooks.PostgresStore, title, coverPath, chapters, seriesID string) string {
 	t.Helper()
-	id := uuid.Must(uuid.NewV6()).String()
+	id := uuid.NewString()
 	var series any
 	if seriesID != "" {
 		series = seriesID
@@ -110,7 +110,7 @@ func TestFailedRemuxAudiobookIDs(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	failedID, okID := uuid.Must(uuid.NewV6()).String(), uuid.Must(uuid.NewV6()).String()
+	failedID, okID := uuid.NewString(), uuid.NewString()
 	for id, p := range map[string]string{failedID: failedPath, okID: okPath} {
 		if _, err := store.Pool().Exec(ctx, `
 			INSERT INTO audiobooks (id, title, filename, size_bytes, duration_seconds, storage_path, mime_type, uploaded_by_user_id)

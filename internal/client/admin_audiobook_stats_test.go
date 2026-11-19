@@ -14,7 +14,7 @@ import (
 
 func insertAdminStatsBook(t *testing.T, store *audiobooks.PostgresStore, size int64, duration float64, createdAt time.Time, coverPath string) {
 	t.Helper()
-	id := uuid.Must(uuid.NewV6()).String()
+	id := uuid.NewString()
 	_, err := store.Pool().Exec(context.Background(), `
 		INSERT INTO audiobooks (id, title, filename, size_bytes, duration_seconds, storage_path, cover_path, uploaded_by_user_id, created_at)
 		VALUES ($1, 'Book', 'book.mp3', $2, $3, '/tmp/book.mp3', $4, 'u-admin', $5)
@@ -40,7 +40,7 @@ func TestAudiobookAdminStats(t *testing.T) {
 	if _, err := store.Pool().Exec(ctx, `
 		INSERT INTO audiobook_uploads (id, user_id, title, filename, mime_type, total_bytes, received_bytes, temp_path)
 		VALUES ($1, 'u-admin', 'T', 'f.mp3', 'audio/mpeg', 500, 50, '/tmp/x')
-	`, uuid.Must(uuid.NewV6()).String()); err != nil {
+	`, uuid.NewString()); err != nil {
 		t.Fatalf("insert upload: %v", err)
 	}
 
