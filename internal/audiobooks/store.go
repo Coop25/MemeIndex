@@ -1838,7 +1838,10 @@ func NormalizeTags(tags []string) []string {
 
 // ReplaceAudiobookTags overwrites an audiobook's whole tag set, reusing the
 // same shared `tags` table memes tag into, and drops any tag row left with no
-// remaining links (to either a meme or an audiobook).
+// remaining links (to a meme, an audiobook or an account restriction). Tags
+// are locked and cleaned up through accessor.LockTagsForLink and
+// accessor.DeleteOrphanTags, so an orphan-tag cleanup running at the same
+// moment can never cascade away the links written here.
 func (s *PostgresStore) ReplaceAudiobookTags(ctx context.Context, audiobookID string, tags []string) ([]string, error) {
 	names := NormalizeTags(tags)
 
@@ -1847,6 +1850,13 @@ func (s *PostgresStore) ReplaceAudiobookTags(ctx context.Context, audiobookID st
 		return nil, fmt.Errorf("begin replace audiobook tags: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Lock the new tags before touching any audiobook_tags row, the order
+	// every tag-linking path follows.
+	tagIDs, err := accessor.LockTagsForLink(ctx, tx, names)
+	if err != nil {
+		return nil, fmt.Errorf("lock audiobook tags: %w", err)
+	}
 
 	previousTagIDs, err := ScanInt64List(ctx, tx, `SELECT tag_id FROM audiobook_tags WHERE audiobook_id = $1`, audiobookID)
 	if err != nil {
@@ -1857,33 +1867,18 @@ func (s *PostgresStore) ReplaceAudiobookTags(ctx context.Context, audiobookID st
 		return nil, fmt.Errorf("clear audiobook tags: %w", err)
 	}
 
-	if len(names) > 0 {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO tags (name)
-			SELECT unnest($1::text[])
-			ON CONFLICT (name) DO NOTHING
-		`, names); err != nil {
-			return nil, fmt.Errorf("ensure audiobook tags exist: %w", err)
-		}
+	if len(tagIDs) > 0 {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO audiobook_tags (audiobook_id, tag_id)
-			SELECT $1, t.id FROM tags t WHERE t.name = ANY($2::text[])
+			SELECT $1, unnest($2::bigint[])
 			ON CONFLICT DO NOTHING
-		`, audiobookID, names); err != nil {
+		`, audiobookID, tagIDs); err != nil {
 			return nil, fmt.Errorf("link audiobook tags: %w", err)
 		}
 	}
 
-	if len(previousTagIDs) > 0 {
-		if _, err := tx.Exec(ctx, `
-			DELETE FROM tags
-			WHERE id = ANY($1::bigint[])
-			  AND NOT EXISTS (SELECT 1 FROM audiobook_tags at WHERE at.tag_id = tags.id)
-			  AND NOT EXISTS (SELECT 1 FROM meme_tags mt WHERE mt.tag_id = tags.id)
-			  AND NOT EXISTS (SELECT 1 FROM app_user_audiobook_tag_restrictions r WHERE r.tag_id = tags.id)
-		`, previousTagIDs); err != nil {
-			return nil, fmt.Errorf("delete orphaned audiobook tags: %w", err)
-		}
+	if err := accessor.DeleteOrphanTags(ctx, tx, previousTagIDs); err != nil {
+		return nil, fmt.Errorf("delete orphaned audiobook tags: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {

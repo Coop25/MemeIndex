@@ -278,7 +278,7 @@ func (s *PostgresStore) ApprovePendingDelete(id string, actor AuditActor) error 
 	if _, err := s.pool.Exec(ctx, `DELETE FROM memes WHERE id = $1`, id); err != nil {
 		return err
 	}
-	if err := s.deleteOrphanTags(ctx, s.pool, orphanCandidates); err != nil {
+	if err := s.deleteOrphanTagsInTx(ctx, orphanCandidates); err != nil {
 		return err
 	}
 

@@ -560,7 +560,6 @@ func (s *postgresAuthUserStore) SetUserAudiobookTagRestriction(ctx context.Conte
 	if normalized == "" {
 		return managedUserRecord{}, errors.New("user id is required")
 	}
-	names := audiobooks.NormalizeTags(tags)
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -568,42 +567,8 @@ func (s *postgresAuthUserStore) SetUserAudiobookTagRestriction(ctx context.Conte
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	previousTagIDs, err := audiobooks.ScanInt64List(ctx, tx, `SELECT tag_id FROM app_user_audiobook_tag_restrictions WHERE user_id = $1`, normalized)
-	if err != nil {
-		return managedUserRecord{}, fmt.Errorf("list previous audiobook tag restriction ids: %w", err)
-	}
-
-	if _, err := tx.Exec(ctx, `DELETE FROM app_user_audiobook_tag_restrictions WHERE user_id = $1`, normalized); err != nil {
-		return managedUserRecord{}, fmt.Errorf("clear audiobook tag restriction: %w", err)
-	}
-
-	if len(names) > 0 {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO tags (name)
-			SELECT unnest($1::text[])
-			ON CONFLICT (name) DO NOTHING
-		`, names); err != nil {
-			return managedUserRecord{}, fmt.Errorf("ensure audiobook tag restriction tags exist: %w", err)
-		}
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO app_user_audiobook_tag_restrictions (user_id, tag_id)
-			SELECT $1, t.id FROM tags t WHERE t.name = ANY($2::text[])
-			ON CONFLICT DO NOTHING
-		`, normalized, names); err != nil {
-			return managedUserRecord{}, fmt.Errorf("set audiobook tag restriction: %w", err)
-		}
-	}
-
-	if len(previousTagIDs) > 0 {
-		if _, err := tx.Exec(ctx, `
-			DELETE FROM tags
-			WHERE id = ANY($1::bigint[])
-			  AND NOT EXISTS (SELECT 1 FROM audiobook_tags at WHERE at.tag_id = tags.id)
-			  AND NOT EXISTS (SELECT 1 FROM meme_tags mt WHERE mt.tag_id = tags.id)
-			  AND NOT EXISTS (SELECT 1 FROM app_user_audiobook_tag_restrictions r WHERE r.tag_id = tags.id)
-		`, previousTagIDs); err != nil {
-			return managedUserRecord{}, fmt.Errorf("delete orphaned audiobook tag restriction tags: %w", err)
-		}
+	if err := setUserAudiobookTagRestrictionTx(ctx, tx, normalized, tags); err != nil {
+		return managedUserRecord{}, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -611,6 +576,45 @@ func (s *postgresAuthUserStore) SetUserAudiobookTagRestriction(ctx context.Conte
 	}
 
 	return s.getUserByID(ctx, normalized)
+}
+
+// setUserAudiobookTagRestrictionTx does SetUserAudiobookTagRestriction's
+// writes inside the caller's transaction. The new tags are locked through
+// accessor.LockTagsForLink before any restriction row is touched, and the old
+// ones are cleaned up with accessor.DeleteOrphanTags, so an orphan-tag cleanup
+// running at the same moment (a meme or an audiobook dropping the last other
+// use of one of these tags) can never cascade away a restriction written
+// here. That matters more here than for any other link: an account whose
+// last restriction row disappears is unrestricted.
+func setUserAudiobookTagRestrictionTx(ctx context.Context, tx pgx.Tx, userID string, tags []string) error {
+	tagIDs, err := accessor.LockTagsForLink(ctx, tx, audiobooks.NormalizeTags(tags))
+	if err != nil {
+		return fmt.Errorf("lock audiobook tag restriction tags: %w", err)
+	}
+
+	previousTagIDs, err := audiobooks.ScanInt64List(ctx, tx, `SELECT tag_id FROM app_user_audiobook_tag_restrictions WHERE user_id = $1`, userID)
+	if err != nil {
+		return fmt.Errorf("list previous audiobook tag restriction ids: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx, `DELETE FROM app_user_audiobook_tag_restrictions WHERE user_id = $1`, userID); err != nil {
+		return fmt.Errorf("clear audiobook tag restriction: %w", err)
+	}
+
+	if len(tagIDs) > 0 {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO app_user_audiobook_tag_restrictions (user_id, tag_id)
+			SELECT $1, unnest($2::bigint[])
+			ON CONFLICT DO NOTHING
+		`, userID, tagIDs); err != nil {
+			return fmt.Errorf("set audiobook tag restriction: %w", err)
+		}
+	}
+
+	if err := accessor.DeleteOrphanTags(ctx, tx, previousTagIDs); err != nil {
+		return fmt.Errorf("delete orphaned audiobook tag restriction tags: %w", err)
+	}
+	return nil
 }
 
 func (s *postgresAuthUserStore) DeleteUser(ctx context.Context, userID string) error {
