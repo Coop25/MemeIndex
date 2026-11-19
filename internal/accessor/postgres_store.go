@@ -31,6 +31,13 @@ type PostgresStore struct {
 	searchTrgmReady atomic.Bool
 }
 
+// isUniqueViolation reports whether err is, or wraps, a Postgres
+// unique-constraint violation (SQLSTATE 23505).
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
 // SearchIndexAvailable reports whether the optional trigram search indexes are
 // in place. It is false only when the database role could not enable pg_trgm.
 func (s *PostgresStore) SearchIndexAvailable() bool {
@@ -397,9 +404,8 @@ func (s *PostgresStore) Create(ctx context.Context, input CreateInput) (Meme, er
 		return Meme{}, err
 	}
 
-	if err := ensurePreviewAsset(s.uploadDir, s.previewDir, &meme); err != nil {
-		// Thumbnail generation is best-effort.
-	}
+	// Thumbnail generation is best-effort.
+	_ = ensurePreviewAsset(s.uploadDir, s.previewDir, &meme)
 	cleanup := func() { removeUploadAndThumbnail(s.uploadDir, s.previewDir, storedName) }
 
 	tx, err := s.pool.Begin(ctx)
@@ -407,7 +413,7 @@ func (s *PostgresStore) Create(ctx context.Context, input CreateInput) (Meme, er
 		cleanup()
 		return Meme{}, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO memes (
@@ -415,7 +421,7 @@ func (s *PostgresStore) Create(ctx context.Context, input CreateInput) (Meme, er
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 	`, meme.ID, meme.OriginalName, meme.StoredName, meme.FilePath, meme.ContentType, meme.ContentHash, meme.SizeBytes, meme.Notes, meme.SourceURL, meme.SuggestedTags, meme.AutoSuggestDisabled, meme.CreatedAt, meme.UpdatedAt); err != nil {
 		cleanup()
-		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23505" {
+		if isUniqueViolation(err) {
 			if existing, lookupErr := s.getByHash(ctx, meme.ContentHash); lookupErr == nil {
 				return Meme{}, s.duplicateError(ctx, existing)
 			}
@@ -466,7 +472,7 @@ func (s *PostgresStore) EditMeme(ctx context.Context, userID, id string, edit Me
 	if err != nil {
 		return Meme{}, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	var lockedID string
 	err = tx.QueryRow(ctx, `
@@ -558,7 +564,7 @@ func (s *PostgresStore) SetFavoriteWithActor(ctx context.Context, userID, id str
 	if err != nil {
 		return Meme{}, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	if err := s.setFavoriteInExecutor(ctx, tx, userID, strings.TrimSpace(id), favorite); err != nil {
 		return Meme{}, err

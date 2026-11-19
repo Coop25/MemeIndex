@@ -30,8 +30,11 @@ func TestRateLimiterRefillsOverTime(t *testing.T) {
 	rl := newRateLimiter(2, 2) // 2 tokens/sec
 	rl.now = func() time.Time { return now }
 
-	if !rl.allow("k") || !rl.allow("k") {
-		t.Fatal("burst tokens should be available")
+	if !rl.allow("k") {
+		t.Fatal("first burst token should be available")
+	}
+	if !rl.allow("k") {
+		t.Fatal("second burst token should be available")
 	}
 	if rl.allow("k") {
 		t.Fatal("bucket should be empty")

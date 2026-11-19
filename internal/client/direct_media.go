@@ -50,7 +50,7 @@ func directMediaHTTPClient() *http.Client {
 					return nil, err
 				}
 			}
-			var lastErr error = errors.New("remote host did not resolve")
+			var lastErr = errors.New("remote host did not resolve")
 			for _, address := range addresses {
 				conn, err := (&net.Dialer{Timeout: 20 * time.Second}).DialContext(ctx, network, net.JoinHostPort(address.IP.String(), port))
 				if err == nil {
@@ -93,7 +93,7 @@ func (s *Server) importDirectMedia(ctx context.Context, client *http.Client, act
 	if err != nil {
 		return accessor.Meme{}, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		if response.StatusCode == http.StatusForbidden || response.StatusCode == http.StatusNotFound {
 			return accessor.Meme{}, userError("the attachment is unavailable or its link has expired; copy a fresh attachment link and try again")
@@ -109,8 +109,8 @@ func (s *Server) importDirectMedia(ctx context.Context, client *http.Client, act
 	if err != nil {
 		return accessor.Meme{}, err
 	}
-	defer os.Remove(file.Name())
-	defer file.Close()
+	defer func() { _ = os.Remove(file.Name()) }()
+	defer func() { _ = file.Close() }()
 	n, err := io.Copy(file, io.LimitReader(response.Body, maxDirectMediaBytes+1))
 	if err != nil {
 		return accessor.Meme{}, err
@@ -126,7 +126,7 @@ func (s *Server) importDirectMedia(ctx context.Context, client *http.Client, act
 	}
 	prefix := make([]byte, 512)
 	count, err := file.Read(prefix)
-	if err != nil && err != io.EOF {
+	if err != nil && !errors.Is(err, io.EOF) {
 		return accessor.Meme{}, err
 	}
 	contentType := http.DetectContentType(prefix[:count])

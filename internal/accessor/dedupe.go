@@ -57,7 +57,7 @@ func computeFileHash(filePath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	hasher := newContentHashWriter()
 	if _, err := io.Copy(hasher, file); err != nil {

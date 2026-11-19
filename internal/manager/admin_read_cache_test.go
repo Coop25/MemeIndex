@@ -120,7 +120,7 @@ func TestAdminDashboardMemoizesWithinTTL(t *testing.T) {
 
 func TestTagHygieneReportMemoizedAndInvalidatedByMerge(t *testing.T) {
 	store := &adminReadCacheStore{memes: []accessor.Meme{
-		{ID: "a", Tags: []string{"buisness"}, CreatedAt: time.Now().UTC()},
+		{ID: "a", Tags: []string{"buisness"}, CreatedAt: time.Now().UTC()}, //nolint:misspell // deliberate typo: tag-variant fixture
 		{ID: "b", Tags: []string{"business"}, CreatedAt: time.Now().UTC()},
 	}}
 	manager := NewMemeManager(store)

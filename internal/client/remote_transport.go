@@ -18,7 +18,7 @@ func supportedSourceURL(raw string) bool {
 	if err != nil || u.User != nil || (u.Scheme != "http" && u.Scheme != "https") {
 		return false
 	}
-	if port := u.Port(); port != "" && !((u.Scheme == "http" && port == "80") || (u.Scheme == "https" && port == "443")) {
+	if port := u.Port(); port != "" && (u.Scheme != "http" || port != "80") && (u.Scheme != "https" || port != "443") {
 		return false
 	}
 	host := strings.ToLower(u.Hostname())

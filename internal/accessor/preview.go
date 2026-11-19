@@ -144,13 +144,6 @@ func ensureImagePreviewAsset(uploadDir, previewDir string, meme *Meme) (previewA
 	}
 }
 
-// hasThumbnailableType reports whether the preview backfill should look at a
-// meme of this content type: videos get a poster frame, images a downscaled
-// copy.
-func hasThumbnailableType(contentType string) bool {
-	return strings.HasPrefix(contentType, "video/") || strings.HasPrefix(contentType, "image/")
-}
-
 func ensurePreviewAsset(uploadDir, previewDir string, meme *Meme) error {
 	_, err := ensurePreviewAssetWithResult(uploadDir, previewDir, meme)
 	return err
