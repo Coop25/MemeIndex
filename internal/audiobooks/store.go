@@ -878,9 +878,14 @@ func (s *PostgresStore) ListAudiobooks(ctx context.Context, userID string, filte
 		args = append(args, filter.RestrictToTags)
 		_, _ = fmt.Fprintf(&query, " AND EXISTS (SELECT 1 FROM audiobook_tags at4 JOIN tags t4 ON t4.id = at4.tag_id WHERE at4.audiobook_id = a.id AND t4.name = ANY($%d::text[]))", len(args))
 	}
+	// Series groups come in the order the series were created. Not by
+	// series_id alone: IDs made before accessor.NewID (UUIDv6, "01f...") sort
+	// after the UUIDv7 ones made since ("01a..."), which would put every
+	// series created after an upgrade ahead of all the older ones. series_id
+	// still follows, to keep each group together on a created_at tie.
 	// a.id last so the order is total - otherwise rows tied on everything else
 	// could swap between two page queries and be skipped or shown twice.
-	query.WriteString(" ORDER BY a.series_id NULLS LAST, a.series_sequence NULLS LAST, a.created_at DESC, a.id")
+	query.WriteString(" ORDER BY s.created_at NULLS LAST, a.series_id NULLS LAST, a.series_sequence NULLS LAST, a.created_at DESC, a.id")
 	if filter.Limit > 0 {
 		args = append(args, filter.Limit, max(filter.Offset, 0))
 		_, _ = fmt.Fprintf(&query, " LIMIT $%d OFFSET $%d", len(args)-1, len(args))
