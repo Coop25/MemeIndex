@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -19,7 +20,7 @@ type adminDashboardMemeFakeStore struct {
 	leanErr   error
 }
 
-func (s *adminDashboardMemeFakeStore) AdminDashboardMemes() ([]accessor.Meme, error) {
+func (s *adminDashboardMemeFakeStore) AdminDashboardMemes(_ context.Context) ([]accessor.Meme, error) {
 	s.leanCalls++
 	if s.leanErr != nil {
 		return nil, s.leanErr
@@ -41,7 +42,7 @@ func TestAdminDashboardUsesLeanMemeScan(t *testing.T) {
 	}
 	m := NewMemeManager(store)
 
-	stats := m.AdminDashboard()
+	stats := m.AdminDashboard(context.Background())
 
 	if store.leanCalls != 1 {
 		t.Fatalf("AdminDashboardMemes called %d times, want 1", store.leanCalls)
@@ -63,7 +64,7 @@ func TestAdminDashboardFallsBackToListOnLeanScanError(t *testing.T) {
 	}
 	m := NewMemeManager(store)
 
-	stats := m.AdminDashboard()
+	stats := m.AdminDashboard(context.Background())
 
 	if store.leanCalls != 1 {
 		t.Fatalf("AdminDashboardMemes called %d times, want 1", store.leanCalls)

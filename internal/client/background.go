@@ -94,12 +94,95 @@ func (b *backgroundTasks) Stop(timeout time.Duration) bool {
 	}
 }
 
-// StopBackgroundWork stops the link retry queue and waits for detached link
-// imports, cancelling them if they outlast half of timeout. Call it after the
-// HTTP servers have shut down (so no new imports start) and before closing
-// the store.
+// StopBackgroundWork stops the link retry queue, the audiobook sweepers and
+// the remux backfill, cancels a migration import in progress, and waits for
+// those, detached link imports, remuxes and profile touches, cancelling them
+// if they outlast half of timeout. Call it after the HTTP
+// servers have shut down (so no new work starts) and before Close.
 func (s *Server) StopBackgroundWork(timeout time.Duration) {
 	if !s.background.Stop(timeout) {
-		log.Printf("background link work still running after %s; closing anyway", timeout)
+		log.Printf("background work still running after %s; closing anyway", timeout)
+	}
+}
+
+// stopping reports whether shutdown has begun.
+func (s *Server) stopping() bool {
+	select {
+	case <-s.background.Quit():
+		return true
+	default:
+		return false
+	}
+}
+
+// enterBackgroundJob waits out a restore in progress before one unit of
+// background work. It reports false if shutdown begins instead (a restore
+// never holds shutdown up this way); on true the caller must call
+// leaveBackgroundJob when the unit is done.
+func (s *Server) enterBackgroundJob() bool {
+	return s.jobs.Enter(s.background.Quit())
+}
+
+func (s *Server) leaveBackgroundJob() {
+	s.jobs.Leave()
+}
+
+// startBestEffortJob runs work as one tracked unit of background work, unless
+// a restore is holding background work or shutdown has begun: then it skips
+// work and reports false at once, without waiting. A restore that starts
+// while work runs waits for it like any other unit. It is for best-effort
+// writes that the next request simply retries, such as the auth profile
+// touch, which runs on every authenticated request and must never hold one
+// up.
+func (s *Server) startBestEffortJob(work func(ctx context.Context)) bool {
+	if !s.jobs.TryEnter() {
+		return false
+	}
+	started := s.background.Go(func(ctx context.Context) {
+		defer s.leaveBackgroundJob()
+		work(ctx)
+	})
+	if !started {
+		s.leaveBackgroundJob()
+	}
+	return started
+}
+
+// pauseBackgroundWork holds every background job still for a restore or
+// migration import: this server's own (link imports and retries, remuxes, the
+// metadata backfill, the sweepers) and the meme manager's workers. It waits
+// for the work each has in flight to finish, so nothing is writing when the
+// restore starts replacing tables and media directories. If ctx ends first
+// it lifts the pause again and returns ctx's error. The returned resume lets
+// everything run again; call it once the restored state has been reloaded.
+func (s *Server) pauseBackgroundWork(ctx context.Context) (resume func(), err error) {
+	resumeJobs, err := s.jobs.Pause(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if s.managers == nil {
+		return resumeJobs, nil
+	}
+	resumeWorkers, err := s.managers.PauseBackgroundWork(ctx)
+	if err != nil {
+		resumeJobs()
+		return nil, err
+	}
+	return func() {
+		resumeWorkers()
+		resumeJobs()
+	}, nil
+}
+
+// Close releases the database connections the Server opened itself: the auth
+// user store's pool and the audiobook store's pool. The meme store belongs to
+// main, which closes it separately. Call it after StopBackgroundWork, once
+// nothing is left to use them.
+func (s *Server) Close() {
+	if closer, ok := s.users.(interface{ Close() }); ok {
+		closer.Close()
+	}
+	if closer, ok := s.audiobooks.(interface{ Close() }); ok {
+		closer.Close()
 	}
 }

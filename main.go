@@ -63,18 +63,14 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	go runPreviewAssetBackfill(memeManager)
+	// Both run in the background as meme-manager work: shutdown waits for
+	// them, and a restore pauses them. The suggestion worker starts only once
+	// the tag-scratch sweep is done, so the sweep cannot delete files of a
+	// suggestion in flight.
+	memeManager.StartPreviewAssetBackfill()
 	memeManager.StartTagHygieneWorker()
-	// The first sweep after an upgrade can have tens of thousands of files to
-	// delete, so it runs off the startup path. The worker starts only once it
-	// is done, so the sweep cannot delete files of a suggestion in flight.
-	go func() {
-		if removed := memeManager.SweepTagScratch(); removed > 0 {
-			log.Printf("tag suggestion scratch: removed %d leftover working file(s) from the thumbnails folder", removed)
-		}
-		memeManager.StartTagSuggestionWorker()
-	}()
-	if queued := memeManager.SeedTagSuggestionQueue(); queued > 0 {
+	memeManager.StartTagSuggestionWorkerAfterSweep()
+	if queued := memeManager.SeedTagSuggestionQueue(ctx); queued > 0 {
 		log.Printf("tag suggestion worker: queued %d existing untagged meme(s) with no pending suggestions", queued)
 	}
 
@@ -148,13 +144,15 @@ func main() {
 	}
 
 	// Now that no new requests can arrive, stop the background workers and wait
-	// for the goroutines this process owns before closing the store they use.
+	// for the goroutines this process owns before closing the stores they use.
 	// Detached link imports go first: a finished one queues tag suggestions on
 	// the meme manager, which must still be running to accept them.
 	server.StopBackgroundWork(20 * time.Second)
 	memeManager.StopBackgroundWorkers(10 * time.Second)
 	bg.Wait()
 
+	// Every pool: the server's own (auth users, audiobooks) and the meme store.
+	server.Close()
 	store.Close()
 	log.Printf("storage connections closed")
 
@@ -215,7 +213,7 @@ func runNightlyReelSessionCleanup(ctx context.Context, memeManager *manager.Meme
 		case <-timer.C:
 		}
 
-		if err := memeManager.CleanupStaleReelSessions(); err != nil {
+		if err := memeManager.CleanupStaleReelSessions(ctx); err != nil {
 			log.Printf("nightly reel session cleanup failed: %v", err)
 			continue
 		}
@@ -229,12 +227,4 @@ func durationUntilNextUTCMidnight(now time.Time) time.Duration {
 	now = now.UTC()
 	next := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, time.UTC)
 	return next.Sub(now)
-}
-
-func runPreviewAssetBackfill(memeManager *manager.MemeManager) {
-	if err := memeManager.EnsurePreviewAssets(); err != nil {
-		log.Printf("preview asset backfill failed: %v", err)
-		return
-	}
-	log.Printf("preview asset backfill completed")
 }

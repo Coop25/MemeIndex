@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -15,7 +16,7 @@ type searchTextFakeStore struct {
 	calls map[string]string
 }
 
-func (s *searchTextFakeStore) SetSearchText(id, text string) error {
+func (s *searchTextFakeStore) SetSearchText(_ context.Context, id, text string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.calls == nil {
@@ -34,7 +35,7 @@ func TestResetTagSuggestionsClearsSearchTextForSuggestedMemes(t *testing.T) {
 	}}}
 	m := NewMemeManager(store)
 
-	if _, err := m.ResetTagSuggestionsAndRequeueUntagged(accessor.AuditActor{UserID: "admin"}); err != nil {
+	if _, err := m.ResetTagSuggestionsAndRequeueUntagged(context.Background(), accessor.AuditActor{UserID: "admin"}); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
 

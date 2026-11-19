@@ -18,6 +18,11 @@ services:
     image: ${MEMEINDEX_IMAGE:-ghcr.io/your-github-user-or-org/memeindex:latest}
     pull_policy: always
     restart: unless-stopped
+    # A graceful stop drains requests for up to 30s, then gives background jobs
+    # (link imports, tag suggestions, audiobook conversions, a running restore)
+    # up to 30s more before closing the database pools. Docker's default 10s
+    # would SIGKILL the app partway through that.
+    stop_grace_period: 75s
     # The image starts as root only to fix ownership of ./data, then drops to a
     # non-root user (uid 10001) on its own - no host `chown` needed. To pin the
     # process to a specific uid:gid instead, uncomment and set this (that also
@@ -48,7 +53,9 @@ services:
       # forward proxy, which should allow ONLY the public media hosts. When it is
       # blank, outbound downloader connections are pinned to public IP addresses
       # only (private/reserved/loopback ranges are refused at connect time).
-      # NO_PROXY keeps internal services (Postgres, Ollama) on a direct path.
+      # The app's Ollama and Discord clients always go direct and ignore these
+      # proxy variables; NO_PROXY is a safety net for anything else that reads
+      # them.
       # See "Downloader network isolation" in the README.
       MEMEINDEX_MEDIAFETCH_PROXY: ${MEMEINDEX_MEDIAFETCH_PROXY:-}
       HTTP_PROXY: ${MEMEINDEX_MEDIAFETCH_PROXY:-}
@@ -58,9 +65,14 @@ services:
       MEMEINDEX_MEDIAFETCH_RETRY_MAX_ATTEMPTS: ${MEMEINDEX_MEDIAFETCH_RETRY_MAX_ATTEMPTS:-3}
       MEMEINDEX_RATE_LIMIT_ENABLED: ${MEMEINDEX_RATE_LIMIT_ENABLED:-true}
       # Header carrying the real client IP for rate limiting. Left blank, the
-      # app still honours CF-Connecting-IP from private-network peers (where
-      # cloudflared sits), so tunnel visitors no longer share one bucket.
+      # app reads CF-Connecting-IP, which cloudflared sends.
       MEMEINDEX_CLIENT_IP_HEADER: ${MEMEINDEX_CLIENT_IP_HEADER:-}
+      # Peers whose client-IP header is believed: CIDR ranges, addresses, or
+      # hostnames. The default trusts loopback and the cloudflared service
+      # below, looked up by name on this compose network, so tunnel visitors
+      # each get their own rate-limit bucket while a direct connection to the
+      # published port (which arrives from the Docker gateway) cannot pick one.
+      MEMEINDEX_TRUSTED_PROXIES: ${MEMEINDEX_TRUSTED_PROXIES:-127.0.0.0/8,::1/128,cloudflared}
       MEMEINDEX_MIGRATION_SOURCE_ENABLED: ${MEMEINDEX_MIGRATION_SOURCE_ENABLED:-false}
       MEMEINDEX_MIGRATION_IMPORT_ENABLED: ${MEMEINDEX_MIGRATION_IMPORT_ENABLED:-false}
       MEMEINDEX_TAGSUGGEST_OLLAMA_URL: ${MEMEINDEX_TAGSUGGEST_OLLAMA_URL:-http://ollama:11434}
@@ -162,6 +174,8 @@ services:
   #   tiktok.com, tiktokcdn.com, tiktokv.com,
   #   twitter.com, x.com, twimg.com,
   #   reddit.com, redd.it, v.redd.it, redditmedia.com
+  # plus api.audible.com, which the audiobook series suggestions look titles up
+  # in; that lookup goes through this proxy too.
   # Then set MEMEINDEX_MEDIAFETCH_PROXY=http://egress-proxy:3128 and start this
   # profile. Do NOT let this proxy reach postgres, ollama, the container network
   # gateway, or 169.254.169.254.

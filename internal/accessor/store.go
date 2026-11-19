@@ -6,14 +6,16 @@ import (
 )
 
 type Store interface {
-	List(userID, query string, favoritesOnly bool, tag string) []Meme
-	SuggestTags(prefix string, limit int) []string
-	GetByID(userID, id string) (Meme, error)
-	Random(excludedIDs []string) (Meme, error)
-	Create(input CreateInput) (Meme, error)
-	Update(userID, id string, update MemeUpdate) (Meme, error)
-	SetFavorite(userID, id string, favorite bool) (Meme, error)
-	Delete(input DeleteInput) (DeleteResult, error)
+	List(ctx context.Context, userID, query string, favoritesOnly bool, tag string) []Meme
+	SuggestTags(ctx context.Context, prefix string, limit int) []string
+	GetByID(ctx context.Context, userID, id string) (Meme, error)
+	Random(ctx context.Context, excludedIDs []string) (Meme, error)
+	Create(ctx context.Context, input CreateInput) (Meme, error)
+	// EditMeme applies a partial edit to one meme atomically against its
+	// current state; see MemeEdit.
+	EditMeme(ctx context.Context, userID, id string, edit MemeEdit) (Meme, error)
+	SetFavorite(ctx context.Context, userID, id string, favorite bool) (Meme, error)
+	Delete(ctx context.Context, input DeleteInput) (DeleteResult, error)
 	UploadDir() string
 }
 
@@ -89,8 +91,8 @@ type MemeDashboardData struct {
 // The capability interfaces below group the store methods beyond Store by
 // what they serve. PostgresStore, the only production store, implements every
 // one of them (see the assertions at the end of this file). The manager still
-// type-asserts each capability so the in-process MemeStore and the narrow test
-// fakes can stand in for the parts a test exercises.
+// type-asserts each capability so test stores (accessortest.MemeStore and the
+// narrow fakes in tests) can stand in for the parts a test exercises.
 
 // QueryableMemeStore resolves browse, dashboard, and popular-tag reads in the
 // database. They are the reads a viewer triggers most and that cost the most,
@@ -118,42 +120,42 @@ type MemeShareStore interface {
 	// share keeps its generation and link and only has its expiry moved to
 	// expiresAt, while an expired or revoked one gets a new generation and a
 	// new link.
-	GetOrCreateMemeShare(memeID, userID string, now, expiresAt time.Time) (MemeShareState, error)
-	GetMemeShareState(memeID string) (MemeShareState, error)
+	GetOrCreateMemeShare(ctx context.Context, memeID, userID string, now, expiresAt time.Time) (MemeShareState, error)
+	GetMemeShareState(ctx context.Context, memeID string) (MemeShareState, error)
 	// ResolveMemeShareSlug maps a share link code, current or historical, to
 	// its meme and the share generation it was issued for. An unknown code
 	// returns os.ErrNotExist.
-	ResolveMemeShareSlug(slug string) (memeID string, generation int64, err error)
-	ListActiveMemeShares(now time.Time) ([]MemeShareState, error)
-	RevokeMemeShare(memeID string) error
-	RevokeAllMemeShares(now time.Time) (int, error)
+	ResolveMemeShareSlug(ctx context.Context, slug string) (memeID string, generation int64, err error)
+	ListActiveMemeShares(ctx context.Context, now time.Time) ([]MemeShareState, error)
+	RevokeMemeShare(ctx context.Context, memeID string) error
+	RevokeAllMemeShares(ctx context.Context, now time.Time) (int, error)
 }
 
 // AuditStore is the audit log: per-meme history, the admin feed, the
 // pending-delete approval queue, entries not tied to one meme, and favorite
 // changes recorded in the same transaction as the favorite itself.
 type AuditStore interface {
-	ListMemeAudit(id string, limit int) ([]MemeAuditEntry, error)
-	ListAuditFeed(offset int, limit int, actorUserID string) (PagedAuditFeed, error)
-	ListPendingDeletes(offset int, limit int) (PagedPendingDeletes, error)
-	ApprovePendingDelete(id string, actor AuditActor) error
-	RejectPendingDelete(id string, actor AuditActor) error
+	ListMemeAudit(ctx context.Context, id string, limit int) ([]MemeAuditEntry, error)
+	ListAuditFeed(ctx context.Context, offset int, limit int, actorUserID string) (PagedAuditFeed, error)
+	ListPendingDeletes(ctx context.Context, offset int, limit int) (PagedPendingDeletes, error)
+	ApprovePendingDelete(ctx context.Context, id string, actor AuditActor) error
+	RejectPendingDelete(ctx context.Context, id string, actor AuditActor) error
 	// RecordSystemAudit records an entry that is not tied to a single meme
 	// (for example, an admin resetting the tag-suggestion queue).
-	RecordSystemAudit(action string, actor AuditActor, description string) error
+	RecordSystemAudit(ctx context.Context, action string, actor AuditActor, description string) error
 	// CountAuditActionsByActor counts audit events of one action per actor.
-	CountAuditActionsByActor(action string) (map[string]int, error)
-	SetFavoriteWithActor(userID, id string, favorite bool, actor AuditActor) (Meme, error)
+	CountAuditActionsByActor(ctx context.Context, action string) (map[string]int, error)
+	SetFavoriteWithActor(ctx context.Context, userID, id string, favorite bool, actor AuditActor) (Meme, error)
 }
 
 // FavoriteAnalyticsStore exposes favorite aggregates that are intentionally
 // independent of the current viewer.
 type FavoriteAnalyticsStore interface {
 	// TotalFavoriteAssignments counts favorites across all users.
-	TotalFavoriteAssignments() (int, error)
-	FavoriteActivitySince(since time.Time) ([]AdminFavoriteActivity, error)
+	TotalFavoriteAssignments(ctx context.Context) (int, error)
+	FavoriteActivitySince(ctx context.Context, since time.Time) ([]AdminFavoriteActivity, error)
 	// CountFavoritesByUser counts favorites per user.
-	CountFavoritesByUser() (map[string]int, error)
+	CountFavoritesByUser(ctx context.Context) (map[string]int, error)
 }
 
 type AdminFavoriteActivity struct {
@@ -166,23 +168,23 @@ type AdminFavoriteActivity struct {
 // looking and, for storage and approval work, regardless of visibility.
 type AdminMemeStore interface {
 	// GetAnyByID returns a meme without applying a viewer's favorites.
-	GetAnyByID(id string) (Meme, error)
+	GetAnyByID(ctx context.Context, id string) (Meme, error)
 	// MemesByIDs resolves many visible memes by id in a single query. It backs
 	// the admin panels that would otherwise issue one GetByID per queued or
 	// shared meme on every poll.
-	MemesByIDs(ids []string) (map[string]Meme, error)
+	MemesByIDs(ctx context.Context, ids []string) (map[string]Meme, error)
 	// AdminDashboardMemes returns every visible meme, newest first, without the
 	// per-row favourites subquery List would add: the admin overview takes
 	// favourite totals from FavoriteAnalyticsStore instead.
-	AdminDashboardMemes() ([]Meme, error)
+	AdminDashboardMemes(ctx context.Context) ([]Meme, error)
 	// AllStoredFiles lists every meme row regardless of visibility. The admin
 	// storage scan uses it to decide which files under uploads/ and
 	// thumbnails/ are referenced: the visible-only listings would make a
 	// hidden or pending-delete meme's files look orphaned.
-	AllStoredFiles() ([]StoredFile, error)
+	AllStoredFiles(ctx context.Context) ([]StoredFile, error)
 	// HiddenMemeIDs lists memes hidden from the app without being deleted (a
 	// delete request awaiting approval), so their files stop being served.
-	HiddenMemeIDs() ([]string, error)
+	HiddenMemeIDs(ctx context.Context) ([]string, error)
 }
 
 // TagAdminStore resolves tag housekeeping and the tag-suggestion admin panel in
@@ -193,33 +195,44 @@ type TagAdminStore interface {
 	// Audiobook tag links and account audiobook-tag
 	// restrictions are re-pointed too. It returns how many memes, audiobooks
 	// and restrictions carried sourceTag.
-	MergeTag(sourceTag, targetTag string, actor AuditActor) (TagMergeCounts, error)
+	MergeTag(ctx context.Context, sourceTag, targetTag string, actor AuditActor) (TagMergeCounts, error)
 	// UntaggedWithoutSuggestionsCount counts visible memes with no tags, no
 	// stored suggestions, and auto-suggest still enabled.
-	UntaggedWithoutSuggestionsCount() (int, error)
+	UntaggedWithoutSuggestionsCount(ctx context.Context) (int, error)
 	// UntaggedWithoutSuggestionIDs returns the ids of those same memes so the
 	// suggestion queue can be seeded without loading every meme.
-	UntaggedWithoutSuggestionIDs() ([]string, error)
+	UntaggedWithoutSuggestionIDs(ctx context.Context) ([]string, error)
 	// PendingSuggestionMemes returns the total number of visible memes that have
 	// stored suggestions plus one newest-first page of them.
-	PendingSuggestionMemes(offset, limit int) (total int, memes []Meme, err error)
+	PendingSuggestionMemes(ctx context.Context, offset, limit int) (total int, memes []Meme, err error)
 	// TagUsageCounts returns how many visible memes carry each tag.
-	TagUsageCounts() (map[string]int, error)
+	TagUsageCounts(ctx context.Context) (map[string]int, error)
 }
 
 // SuggestedTagStore keeps the tag-suggestion pass's output: the suggested tags
 // awaiting review, the per-meme opt-out, and the free-text blob (on-image text
 // plus audio transcript) that is folded into search.
 type SuggestedTagStore interface {
-	ListSuggestedTags(id string) ([]string, error)
-	ReplaceSuggestedTags(id string, tags []string) error
-	SetAutoSuggestDisabled(id string, disabled bool) error
-	SetSearchText(id, text string) error
+	ListSuggestedTags(ctx context.Context, id string) ([]string, error)
+	ReplaceSuggestedTags(ctx context.Context, id string, tags []string) error
+	// RemoveSuggestedTag drops one tag from a meme's suggestions in a single
+	// write against the stored list, so a refresh that replaced the list
+	// after the caller last read the meme is kept rather than overwritten
+	// with an older list minus that tag.
+	RemoveSuggestedTag(ctx context.Context, id, tag string) error
+	SetAutoSuggestDisabled(ctx context.Context, id string, disabled bool) error
+	SetSearchText(ctx context.Context, id, text string) error
 }
 
 type PreviewAssetStore interface {
 	ThumbnailDir() string
-	EnsurePreviewAssets() error
+	// EnsurePreviewAssets generates the thumbnails missing from ThumbnailDir.
+	// Each meme is one unit of work, run by passing it to step, which may hold
+	// it back (while a restore runs) or refuse it (on shutdown, or after a
+	// restore replaced the memes this pass listed) by returning false without
+	// running it; the pass then stops there and returns nil. A nil step runs
+	// every unit straight away.
+	EnsurePreviewAssets(ctx context.Context, step func(work func()) bool) error
 }
 
 type ReelSessionRecord struct {
@@ -229,10 +242,10 @@ type ReelSessionRecord struct {
 }
 
 type ReelSessionPersistence interface {
-	LoadReelSessions() (map[string]ReelSessionRecord, error)
-	SaveReelSession(sessionID string, session ReelSessionRecord) error
-	DeleteReelSession(sessionID string) error
-	CleanupStaleReelSessions(before time.Time) error
+	LoadReelSessions(ctx context.Context) (map[string]ReelSessionRecord, error)
+	SaveReelSession(ctx context.Context, sessionID string, session ReelSessionRecord) error
+	DeleteReelSession(ctx context.Context, sessionID string) error
+	CleanupStaleReelSessions(ctx context.Context, before time.Time) error
 }
 
 // StoredFile names the on-disk files of one meme row, hidden and

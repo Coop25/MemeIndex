@@ -23,7 +23,7 @@ func TestSessionStoreErrorIsNotTreatedAsLoggedOut(t *testing.T) {
 	a := newRevocationAuthService(store)
 	server := &Server{auth: a}
 
-	_, token, err := a.createSession(discordUser{ID: "u1", Username: "user"})
+	_, token, err := a.createSession(context.Background(), discordUser{ID: "u1", Username: "user"})
 	if err != nil {
 		t.Fatalf("createSession: %v", err)
 	}

@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -71,7 +72,7 @@ func TestCreateMemeShareReturnsStableFileLink(t *testing.T) {
 func TestShareLinkServesFileToEveryUserAgent(t *testing.T) {
 	server, store, meme := newShareTestServer(t)
 	now := time.Now().UTC()
-	share, err := store.GetOrCreateMemeShare(meme.ID, "admin-1", now, now.Add(memeShareLifetime))
+	share, err := store.GetOrCreateMemeShare(context.Background(), meme.ID, "admin-1", now, now.Add(memeShareLifetime))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +128,7 @@ func TestShareLinkLetsBrowsersPlaySharedMedia(t *testing.T) {
 	server, store, png := newShareTestServer(t)
 	create := func(name, contentType, body string) accessor.Meme {
 		t.Helper()
-		meme, err := store.Create(accessor.CreateInput{File: strings.NewReader(body), Filename: name, ContentType: contentType})
+		meme, err := store.Create(context.Background(), accessor.CreateInput{File: strings.NewReader(body), Filename: name, ContentType: contentType})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -153,7 +154,7 @@ func TestShareLinkLetsBrowsersPlaySharedMedia(t *testing.T) {
 		{create("codecs.mp4", `video/mp4; codecs="avc1.42E01E"`, "codecs video bytes"), true},
 	} {
 		now := time.Now().UTC()
-		share, err := store.GetOrCreateMemeShare(tc.meme.ID, "admin-1", now, now.Add(memeShareLifetime))
+		share, err := store.GetOrCreateMemeShare(context.Background(), tc.meme.ID, "admin-1", now, now.Add(memeShareLifetime))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -197,7 +198,7 @@ func TestShareLinkLetsBrowsersPlaySharedMedia(t *testing.T) {
 func TestShareLinkLetsCloudflareCacheTheOfficialLinkForADay(t *testing.T) {
 	server, store, meme := newShareTestServer(t)
 	now := time.Now().UTC()
-	share, err := store.GetOrCreateMemeShare(meme.ID, "admin-1", now, now.Add(memeShareLifetime))
+	share, err := store.GetOrCreateMemeShare(context.Background(), meme.ID, "admin-1", now, now.Add(memeShareLifetime))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +250,7 @@ func TestShareLinkLetsCloudflareCacheTheOfficialLinkForADay(t *testing.T) {
 	}
 	assertNotEdgeCached("legacy signed link", legacy)
 
-	if err := store.RevokeMemeShare(meme.ID); err != nil {
+	if err := store.RevokeMemeShare(context.Background(), meme.ID); err != nil {
 		t.Fatal(err)
 	}
 	revoked := getShareLink(server, official)
@@ -259,11 +260,97 @@ func TestShareLinkLetsCloudflareCacheTheOfficialLinkForADay(t *testing.T) {
 	assertNotEdgeCached("revoked link redirect", revoked)
 }
 
+// A share link's extension comes from the original filename, which can hold
+// anything. The link must still be clean, so chat apps do not cut it at a
+// space, and the edge cache must accept exactly that link. A link handed out
+// before this, with the odd spelling, must still serve, and legacy /m/ media
+// links keep validating against the name they were issued with.
+func TestShareLinkExtensionIsCleanForHostileOriginalNames(t *testing.T) {
+	server, store, _ := newShareTestServer(t)
+	cleanShareLink := regexp.MustCompile(`^https://memes\.example\.com/s/[0-9a-f-]{36}(\.[a-z0-9]{1,10})?$`)
+	for _, tc := range []struct {
+		name, contentType, wantExt, oldSpelling string
+	}{
+		{"clip.mp4 (1)", "video/mp4", ".mp4", ".mp4 (1)"},
+		{"pic.png?x=1", "image/png", ".png", ".png?x=1"},
+		{"photo.JPG#frag", "image/jpeg", ".jpg", ".jpg#frag"},
+		{"song.mp3%20", "audio/mpeg", ".mp3", ".mp3%20"},
+		{"notes.weird ext", "application/octet-stream", "", ".weird ext"},
+	} {
+		meme, err := store.Create(context.Background(), accessor.CreateInput{File: strings.NewReader("bytes of " + tc.name), Filename: tc.name, ContentType: tc.contentType})
+		if err != nil {
+			t.Fatal(err)
+		}
+		link := createShareLink(t, server, meme)
+		parsed, err := url.Parse(link)
+		if err != nil {
+			t.Fatalf("%q: link %q does not parse: %v", tc.name, link, err)
+		}
+		slug := strings.TrimSuffix(strings.TrimPrefix(parsed.Path, "/s/"), tc.wantExt)
+		if parsed.RawQuery != "" || parsed.Fragment != "" || parsed.EscapedPath() != "/s/"+slug+tc.wantExt || len(slug) != shareSlugLength {
+			t.Fatalf("%q: share link = %q, want /s/<code>%s", tc.name, link, tc.wantExt)
+		}
+		if !cleanShareLink.MatchString(link) {
+			t.Fatalf("%q: share link %q carries characters a chat app may cut it at", tc.name, link)
+		}
+
+		recorder := getShareLink(server, link)
+		if recorder.Code != http.StatusOK || recorder.Body.String() != "bytes of "+tc.name {
+			t.Fatalf("%q: link status = %d, body = %q", tc.name, recorder.Code, recorder.Body.String())
+		}
+		if got := recorder.Header().Get("Cloudflare-CDN-Cache-Control"); got != "public, max-age=86400" {
+			t.Fatalf("%q: Cloudflare-CDN-Cache-Control = %q, the link handed out must be edge-cacheable", tc.name, got)
+		}
+
+		// The spelling a link carried before still finds the share, but is
+		// not the link handed out now, so it is not cached at the edge.
+		old := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, "https://memes.example.com/s/"+slug, nil)
+		request.URL.Path += tc.oldSpelling
+		request.URL.RawPath = ""
+		request.URL.RawQuery = ""
+		server.handleShareLink(old, request)
+		if old.Code != http.StatusOK || old.Body.String() != "bytes of "+tc.name {
+			t.Fatalf("%q: old link status = %d", tc.name, old.Code)
+		}
+		if got := old.Header().Get("Cloudflare-CDN-Cache-Control"); got != "no-store" {
+			t.Fatalf("%q: old link Cloudflare-CDN-Cache-Control = %q, want no-store", tc.name, got)
+		}
+	}
+}
+
+// The legacy /m/<id>/media/<name> links were issued with the original name's
+// extension as-is, odd characters included, and must keep validating.
+func TestLegacyMediaLinkKeepsTheOriginalExtension(t *testing.T) {
+	server, store, _ := newShareTestServer(t)
+	meme, err := store.Create(context.Background(), accessor.CreateInput{File: strings.NewReader("clip bytes"), Filename: "clip.MP4 (1)", ContentType: "video/mp4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	share, err := store.GetOrCreateMemeShare(context.Background(), meme.ID, "admin-1", now, now.Add(30*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := url.QueryEscape(server.signMemeShare(share))
+	get := func(name string) int {
+		recorder := httptest.NewRecorder()
+		server.handleMemeLink(recorder, httptest.NewRequest(http.MethodGet, "https://memes.example.com/m/"+meme.ID+"/media/"+url.PathEscape(name)+"?share="+token, nil))
+		return recorder.Code
+	}
+	if code := get("shared.mp4 (1)"); code != http.StatusOK {
+		t.Fatalf("legacy media link status = %d, want 200", code)
+	}
+	if code := get("shared.mp4"); code != http.StatusNotFound {
+		t.Fatalf("legacy media link with another name status = %d, want 404", code)
+	}
+}
+
 // A share close to its expiry must not outlive it at the edge.
 func TestShareLinkEdgeCacheNeverOutlivesTheShare(t *testing.T) {
 	server, store, meme := newShareTestServer(t)
 	now := time.Now().UTC()
-	share, err := store.GetOrCreateMemeShare(meme.ID, "admin-1", now, now.Add(2*time.Hour))
+	share, err := store.GetOrCreateMemeShare(context.Background(), meme.ID, "admin-1", now, now.Add(2*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +374,7 @@ func TestShareLinkEdgeCacheNeverOutlivesTheShare(t *testing.T) {
 func TestShareLinkErrorIsNotEdgeCached(t *testing.T) {
 	server, store, meme := newShareTestServer(t)
 	now := time.Now().UTC()
-	share, err := store.GetOrCreateMemeShare(meme.ID, "admin-1", now, now.Add(memeShareLifetime))
+	share, err := store.GetOrCreateMemeShare(context.Background(), meme.ID, "admin-1", now, now.Add(memeShareLifetime))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,14 +405,14 @@ func TestDeadShareLinkRedirectsToMemeAndNeverRevives(t *testing.T) {
 	}
 
 	// A share that has run past its expiry.
-	expired, err := store.GetOrCreateMemeShare(meme.ID, "admin-1", now.Add(-2*time.Hour), now.Add(-time.Hour))
+	expired, err := store.GetOrCreateMemeShare(context.Background(), meme.ID, "admin-1", now.Add(-2*time.Hour), now.Add(-time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertRedirectsToMeme("expired", expired.Slug)
 
 	// Sharing again issues a new link; the old one stays dead.
-	second, err := store.GetOrCreateMemeShare(meme.ID, "admin-1", now, now.Add(memeShareLifetime))
+	second, err := store.GetOrCreateMemeShare(context.Background(), meme.ID, "admin-1", now, now.Add(memeShareLifetime))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -338,7 +425,7 @@ func TestDeadShareLinkRedirectsToMemeAndNeverRevives(t *testing.T) {
 	assertRedirectsToMeme("expired after re-share", expired.Slug)
 
 	// Renewing an active share keeps its link and moves the expiry.
-	renewed, err := store.GetOrCreateMemeShare(meme.ID, "someone-else", now.Add(time.Minute), now.Add(2*memeShareLifetime))
+	renewed, err := store.GetOrCreateMemeShare(context.Background(), meme.ID, "someone-else", now.Add(time.Minute), now.Add(2*memeShareLifetime))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,12 +436,12 @@ func TestDeadShareLinkRedirectsToMemeAndNeverRevives(t *testing.T) {
 		t.Fatalf("renewal reassigned the share to %q", renewed.SharedByUserID)
 	}
 
-	if err := store.RevokeMemeShare(meme.ID); err != nil {
+	if err := store.RevokeMemeShare(context.Background(), meme.ID); err != nil {
 		t.Fatal(err)
 	}
 	assertRedirectsToMeme("revoked", second.Slug)
 
-	third, err := store.GetOrCreateMemeShare(meme.ID, "admin-1", now, now.Add(memeShareLifetime))
+	third, err := store.GetOrCreateMemeShare(context.Background(), meme.ID, "admin-1", now, now.Add(memeShareLifetime))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -369,7 +456,7 @@ func TestDeadShareLinkRedirectsToMemeAndNeverRevives(t *testing.T) {
 func TestLegacySignedLinkServesFileUntilRevoked(t *testing.T) {
 	server, store, meme := newShareTestServer(t)
 	now := time.Now().UTC()
-	share, err := store.GetOrCreateMemeShare(meme.ID, "admin-1", now, now.Add(30*24*time.Hour))
+	share, err := store.GetOrCreateMemeShare(context.Background(), meme.ID, "admin-1", now, now.Add(30*24*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -394,12 +481,12 @@ func TestLegacySignedLinkServesFileUntilRevoked(t *testing.T) {
 	assertServesFile("active")
 
 	// Renewing the share moves its expiry; the old token must survive that.
-	if _, err := store.GetOrCreateMemeShare(meme.ID, "admin-1", now.Add(time.Minute), now.Add(memeShareLifetime)); err != nil {
+	if _, err := store.GetOrCreateMemeShare(context.Background(), meme.ID, "admin-1", now.Add(time.Minute), now.Add(memeShareLifetime)); err != nil {
 		t.Fatal(err)
 	}
 	assertServesFile("renewed")
 
-	if err := store.RevokeMemeShare(meme.ID); err != nil {
+	if err := store.RevokeMemeShare(context.Background(), meme.ID); err != nil {
 		t.Fatal(err)
 	}
 	if recorder := get(""); recorder.Code != http.StatusFound || recorder.Header().Get("Location") != "/m/"+meme.ID {
@@ -413,12 +500,12 @@ func TestLegacySignedLinkServesFileUntilRevoked(t *testing.T) {
 func TestLegacyTokenIsNotHonouredPastItsOwnExpiry(t *testing.T) {
 	server, store, meme := newShareTestServer(t)
 	now := time.Now().UTC()
-	share, err := store.GetOrCreateMemeShare(meme.ID, "admin-1", now.Add(-time.Hour), now.Add(time.Minute))
+	share, err := store.GetOrCreateMemeShare(context.Background(), meme.ID, "admin-1", now.Add(-time.Hour), now.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
 	token := server.signMemeShare(share)
-	renewed, err := store.GetOrCreateMemeShare(meme.ID, "admin-1", now, now.Add(memeShareLifetime))
+	renewed, err := store.GetOrCreateMemeShare(context.Background(), meme.ID, "admin-1", now, now.Add(memeShareLifetime))
 	if err != nil {
 		t.Fatal(err)
 	}

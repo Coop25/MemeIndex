@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -8,19 +9,20 @@ import (
 	"time"
 
 	"memeindex/internal/accessor"
+	"memeindex/internal/accessor/accessortest"
 	"memeindex/internal/manager"
 )
 
 // auditFeedStore serves a fixed audit feed and honors the actor filter, so the
 // test proves the handler passes ?actor= through and returns filtered paging.
 type auditFeedStore struct {
-	*accessor.MemeStore
+	*accessortest.MemeStore
 	accessor.AuditStore
 	events    []accessor.GlobalMemeAuditEntry
 	gotActors []string
 }
 
-func (a *auditFeedStore) ListAuditFeed(offset, limit int, actorUserID string) (accessor.PagedAuditFeed, error) {
+func (a *auditFeedStore) ListAuditFeed(_ context.Context, offset, limit int, actorUserID string) (accessor.PagedAuditFeed, error) {
 	a.gotActors = append(a.gotActors, actorUserID)
 	out := []accessor.GlobalMemeAuditEntry{}
 	for _, e := range a.events {

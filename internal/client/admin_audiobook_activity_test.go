@@ -12,13 +12,14 @@ import (
 	"github.com/google/uuid"
 
 	"memeindex/internal/accessor"
+	"memeindex/internal/accessor/accessortest"
 	"memeindex/internal/audiobooks"
 	"memeindex/internal/manager"
 )
 
 func insertActivityBook(t *testing.T, store *audiobooks.PostgresStore, title, coverPath, chapters, seriesID string) string {
 	t.Helper()
-	id := uuid.Must(uuid.NewV6()).String()
+	id := uuid.NewString()
 	var series any
 	if seriesID != "" {
 		series = seriesID
@@ -109,7 +110,7 @@ func TestFailedRemuxAudiobookIDs(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	failedID, okID := uuid.Must(uuid.NewV6()).String(), uuid.Must(uuid.NewV6()).String()
+	failedID, okID := uuid.NewString(), uuid.NewString()
 	for id, p := range map[string]string{failedID: failedPath, okID: okPath} {
 		if _, err := store.Pool().Exec(ctx, `
 			INSERT INTO audiobooks (id, title, filename, size_bytes, duration_seconds, storage_path, mime_type, uploaded_by_user_id)
@@ -134,18 +135,18 @@ func TestFailedRemuxAudiobookIDs(t *testing.T) {
 }
 
 // pendingDeleteStore reports a fixed number of pending deletes while the
-// file-backed MemeStore stays the real store underneath.
+// in-memory accessortest.MemeStore stays the real store underneath.
 type pendingDeleteStore struct {
-	*accessor.MemeStore
+	*accessortest.MemeStore
 	accessor.AuditStore
 	pending int
 }
 
-func (p pendingDeleteStore) ListPendingDeletes(offset, limit int) (accessor.PagedPendingDeletes, error) {
+func (p pendingDeleteStore) ListPendingDeletes(_ context.Context, offset, limit int) (accessor.PagedPendingDeletes, error) {
 	return accessor.PagedPendingDeletes{Total: p.pending}, nil
 }
 
-func (p pendingDeleteStore) ListAuditFeed(offset, limit int, actorUserID string) (accessor.PagedAuditFeed, error) {
+func (p pendingDeleteStore) ListAuditFeed(_ context.Context, offset, limit int, actorUserID string) (accessor.PagedAuditFeed, error) {
 	return accessor.PagedAuditFeed{}, nil
 }
 

@@ -26,7 +26,7 @@ func TestRemoveOnlyUserCannotApplySuggestedTag(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("remove-only user added a tag: status %d", w.Code)
 	}
-	stored, err := s.managers.GetMeme("remove-only", meme.ID)
+	stored, err := s.managers.GetMeme(context.Background(), "remove-only", meme.ID)
 	if err != nil || len(stored.Tags) != 0 {
 		t.Fatalf("unauthorized mutation: %+v, %v", stored.Tags, err)
 	}

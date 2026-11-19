@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -48,6 +47,10 @@ var ErrDuplicateTitle = errors.New("an audiobook with this title already exists"
 // ErrNotAudio is returned by CompleteUpload when the uploaded bytes
 // are recognisably not an audio file (markup, plain text, images, ...).
 var ErrNotAudio = errors.New("that file is not an audio file")
+
+// ErrUploadIncomplete is returned by CompleteUpload when not every byte of
+// the file has arrived yet.
+var ErrUploadIncomplete = errors.New("upload incomplete")
 
 type Record struct {
 	ID               string
@@ -436,7 +439,7 @@ func NewPostgresStore(ctx context.Context, databaseURL, dataDir string) (Store, 
 }
 
 func (s *PostgresStore) CreateUpload(ctx context.Context, seed UploadSeed) (Upload, error) {
-	id := uuid.Must(uuid.NewV6()).String()
+	id := accessor.NewID()
 	tempPath := filepath.Join(s.tmpDir, id+".part")
 
 	file, err := os.OpenFile(tempPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
@@ -566,17 +569,35 @@ func (s *PostgresStore) RecordUploadRange(ctx context.Context, id, userID string
 }
 
 func (s *PostgresStore) CompleteUpload(ctx context.Context, id, userID string, fallbackDurationSeconds float64) (Record, error) {
+	// Completing moves the temp file into the library before the row that
+	// points at it is written, and removes the moved file again on any
+	// failure. Stopped part-way by a cancelled request it would lose the upload
+	// (the temp file is gone, the upload row still points at it), and a commit
+	// cancelled in flight may have been applied before the cleanup deletes the
+	// file it points at. Every byte is already on disk, so finish it even if
+	// the uploader has gone away.
+	ctx = context.WithoutCancel(ctx)
 	upload, err := s.GetUpload(ctx, id, userID)
 	if err != nil {
 		return Record{}, err
 	}
 	if upload.ReceivedBytes != upload.TotalBytes {
-		return Record{}, fmt.Errorf("upload incomplete: received %d of %d bytes", upload.ReceivedBytes, upload.TotalBytes)
+		return Record{}, fmt.Errorf("%w: received %d of %d bytes", ErrUploadIncomplete, upload.ReceivedBytes, upload.TotalBytes)
 	}
 
-	ext := strings.ToLower(filepath.Ext(upload.Filename))
-	finalID := uuid.Must(uuid.NewV6()).String()
+	// The extension is cleaned the way a meme's stored name is, since the
+	// filename comes from the client. A rename silently replaces a file that
+	// is already there, so check first: a new ID cannot name an existing
+	// book's file, but if it ever did (see accessor.NewID) the upload fails
+	// instead of overwriting that book.
+	ext := accessor.StoredFileExtension(upload.Filename, "")
+	finalID := accessor.NewID()
 	finalPath := filepath.Join(s.dir, finalID+ext)
+	if _, err := os.Lstat(finalPath); err == nil {
+		return Record{}, fmt.Errorf("move completed audiobook: %s already exists", filepath.Base(finalPath))
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return Record{}, fmt.Errorf("move completed audiobook: %w", err)
+	}
 	if err := os.Rename(upload.TempPath, finalPath); err != nil {
 		return Record{}, fmt.Errorf("move completed audiobook: %w", err)
 	}
@@ -752,6 +773,9 @@ func SniffMimeType(path string) string {
 }
 
 func (s *PostgresStore) AbortUpload(ctx context.Context, id, userID string) (Upload, error) {
+	// The row goes first and the temp file after it; a request cancelled in
+	// between would leave a temp file no sweep knows about, so run to the end.
+	ctx = context.WithoutCancel(ctx)
 	upload, err := s.GetUpload(ctx, id, userID)
 	if err != nil {
 		return Upload{}, err
@@ -865,9 +889,14 @@ func (s *PostgresStore) ListAudiobooks(ctx context.Context, userID string, filte
 		args = append(args, filter.RestrictToTags)
 		_, _ = fmt.Fprintf(&query, " AND EXISTS (SELECT 1 FROM audiobook_tags at4 JOIN tags t4 ON t4.id = at4.tag_id WHERE at4.audiobook_id = a.id AND t4.name = ANY($%d::text[]))", len(args))
 	}
+	// Series groups come in the order the series were created. Not by
+	// series_id alone: IDs made before accessor.NewID (UUIDv6, "01f...") sort
+	// after the UUIDv7 ones made since ("01a..."), which would put every
+	// series created after an upgrade ahead of all the older ones. series_id
+	// still follows, to keep each group together on a created_at tie.
 	// a.id last so the order is total - otherwise rows tied on everything else
 	// could swap between two page queries and be skipped or shown twice.
-	query.WriteString(" ORDER BY a.series_id NULLS LAST, a.series_sequence NULLS LAST, a.created_at DESC, a.id")
+	query.WriteString(" ORDER BY s.created_at NULLS LAST, a.series_id NULLS LAST, a.series_sequence NULLS LAST, a.created_at DESC, a.id")
 	if filter.Limit > 0 {
 		args = append(args, filter.Limit, max(filter.Offset, 0))
 		_, _ = fmt.Fprintf(&query, " LIMIT $%d OFFSET $%d", len(args)-1, len(args))
@@ -1439,7 +1468,7 @@ func insertAudiobookBookmark(ctx context.Context, q interface {
 		INSERT INTO audiobook_bookmarks (id, audiobook_id, user_id, position_seconds, label)
 		VALUES ($1, $2, $3, $4, $5)
 		RETURNING `+audiobookBookmarkColumns,
-		uuid.Must(uuid.NewV6()).String(), audiobookID, userID, positionSeconds, label))
+		accessor.NewID(), audiobookID, userID, positionSeconds, label))
 	if err != nil {
 		return Bookmark{}, fmt.Errorf("create audiobook bookmark: %w", err)
 	}
@@ -1582,7 +1611,7 @@ func (s *PostgresStore) CreateSeries(ctx context.Context, name, createdByUserID 
 		INSERT INTO audiobook_series (id, name, created_by_user_id)
 		VALUES ($1, $2, $3)
 		RETURNING id, name, created_by_user_id, created_at
-	`, uuid.Must(uuid.NewV6()).String(), name, createdByUserID).Scan(
+	`, accessor.NewID(), name, createdByUserID).Scan(
 		&series.ID, &series.Name, &series.CreatedByUserID, &series.CreatedAt,
 	)
 	if err != nil {
@@ -1749,6 +1778,11 @@ func CoverExtensionForBytes(data []byte) string {
 // cover_path, then removes whatever cover file - embedded at upload time or
 // set by an earlier call to this method - it had before.
 func (s *PostgresStore) SetAudiobookCover(ctx context.Context, id string, imageBytes []byte) (Record, error) {
+	// The new cover file is written before cover_path points at it and
+	// removed if that update fails. An update cancelled in flight may still
+	// have been applied, and removing the file then would leave the row
+	// pointing at nothing, so this runs to completion once started.
+	ctx = context.WithoutCancel(ctx)
 	existing, err := s.GetAudiobook(ctx, id)
 	if err != nil {
 		return Record{}, err
@@ -1775,6 +1809,9 @@ func (s *PostgresStore) SetAudiobookCover(ctx context.Context, id string, imageB
 // RemoveAudiobookCover clears an audiobook's cover, falling back to the
 // default placeholder art in the UI.
 func (s *PostgresStore) RemoveAudiobookCover(ctx context.Context, id string) (Record, error) {
+	// cover_path is cleared before the file is removed; stopped in between,
+	// the file would stay on disk with nothing pointing at it.
+	ctx = context.WithoutCancel(ctx)
 	existing, err := s.GetAudiobook(ctx, id)
 	if err != nil {
 		return Record{}, err
@@ -1834,7 +1871,10 @@ func NormalizeTags(tags []string) []string {
 
 // ReplaceAudiobookTags overwrites an audiobook's whole tag set, reusing the
 // same shared `tags` table memes tag into, and drops any tag row left with no
-// remaining links (to either a meme or an audiobook).
+// remaining links (to a meme, an audiobook or an account restriction). Tags
+// are locked and cleaned up through accessor.LockTagsForLink and
+// accessor.DeleteOrphanTags, so an orphan-tag cleanup running at the same
+// moment can never cascade away the links written here.
 func (s *PostgresStore) ReplaceAudiobookTags(ctx context.Context, audiobookID string, tags []string) ([]string, error) {
 	names := NormalizeTags(tags)
 
@@ -1843,6 +1883,13 @@ func (s *PostgresStore) ReplaceAudiobookTags(ctx context.Context, audiobookID st
 		return nil, fmt.Errorf("begin replace audiobook tags: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Lock the new tags before touching any audiobook_tags row, the order
+	// every tag-linking path follows.
+	tagIDs, err := accessor.LockTagsForLink(ctx, tx, names)
+	if err != nil {
+		return nil, fmt.Errorf("lock audiobook tags: %w", err)
+	}
 
 	previousTagIDs, err := ScanInt64List(ctx, tx, `SELECT tag_id FROM audiobook_tags WHERE audiobook_id = $1`, audiobookID)
 	if err != nil {
@@ -1853,33 +1900,18 @@ func (s *PostgresStore) ReplaceAudiobookTags(ctx context.Context, audiobookID st
 		return nil, fmt.Errorf("clear audiobook tags: %w", err)
 	}
 
-	if len(names) > 0 {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO tags (name)
-			SELECT unnest($1::text[])
-			ON CONFLICT (name) DO NOTHING
-		`, names); err != nil {
-			return nil, fmt.Errorf("ensure audiobook tags exist: %w", err)
-		}
+	if len(tagIDs) > 0 {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO audiobook_tags (audiobook_id, tag_id)
-			SELECT $1, t.id FROM tags t WHERE t.name = ANY($2::text[])
+			SELECT $1, unnest($2::bigint[])
 			ON CONFLICT DO NOTHING
-		`, audiobookID, names); err != nil {
+		`, audiobookID, tagIDs); err != nil {
 			return nil, fmt.Errorf("link audiobook tags: %w", err)
 		}
 	}
 
-	if len(previousTagIDs) > 0 {
-		if _, err := tx.Exec(ctx, `
-			DELETE FROM tags
-			WHERE id = ANY($1::bigint[])
-			  AND NOT EXISTS (SELECT 1 FROM audiobook_tags at WHERE at.tag_id = tags.id)
-			  AND NOT EXISTS (SELECT 1 FROM meme_tags mt WHERE mt.tag_id = tags.id)
-			  AND NOT EXISTS (SELECT 1 FROM app_user_audiobook_tag_restrictions r WHERE r.tag_id = tags.id)
-		`, previousTagIDs); err != nil {
-			return nil, fmt.Errorf("delete orphaned audiobook tags: %w", err)
-		}
+	if err := accessor.DeleteOrphanTags(ctx, tx, previousTagIDs); err != nil {
+		return nil, fmt.Errorf("delete orphaned audiobook tags: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {

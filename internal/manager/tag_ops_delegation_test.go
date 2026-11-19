@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -39,26 +40,26 @@ type tagOpsFakeStore struct {
 	usage map[string]int
 }
 
-func (s *tagOpsFakeStore) MergeTag(sourceTag, targetTag string, _ accessor.AuditActor) (accessor.TagMergeCounts, error) {
+func (s *tagOpsFakeStore) MergeTag(_ context.Context, sourceTag, targetTag string, _ accessor.AuditActor) (accessor.TagMergeCounts, error) {
 	s.mergeCalls++
 	s.mergeSource, s.mergeTarget = sourceTag, targetTag
 	return accessor.TagMergeCounts{Memes: s.mergeAffected, Audiobooks: s.mergeAudiobooks, Restrictions: s.mergeRestrictions}, nil
 }
 
-func (s *tagOpsFakeStore) UntaggedWithoutSuggestionsCount() (int, error) {
+func (s *tagOpsFakeStore) UntaggedWithoutSuggestionsCount(_ context.Context) (int, error) {
 	return s.untagged, nil
 }
 
-func (s *tagOpsFakeStore) UntaggedWithoutSuggestionIDs() ([]string, error) {
+func (s *tagOpsFakeStore) UntaggedWithoutSuggestionIDs(_ context.Context) ([]string, error) {
 	return append([]string(nil), s.untaggedIDs...), nil
 }
 
-func (s *tagOpsFakeStore) PendingSuggestionMemes(offset, limit int) (int, []accessor.Meme, error) {
+func (s *tagOpsFakeStore) PendingSuggestionMemes(_ context.Context, offset, limit int) (int, []accessor.Meme, error) {
 	s.pendingOffset, s.pendingLimit = offset, limit
 	return s.pendingTotal, append([]accessor.Meme(nil), s.pendingMemes...), nil
 }
 
-func (s *tagOpsFakeStore) TagUsageCounts() (map[string]int, error) {
+func (s *tagOpsFakeStore) TagUsageCounts(_ context.Context) (map[string]int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := map[string]int{}
@@ -89,7 +90,7 @@ func TestMergeTagsDelegatesToStore(t *testing.T) {
 	store.mergeRestrictions = 1
 	m := NewMemeManager(store)
 
-	result, err := m.MergeTags("  Bizness ", "BUSINESS", accessor.AuditActor{UserID: "admin"})
+	result, err := m.MergeTags(context.Background(), "  Bizness ", "BUSINESS", accessor.AuditActor{UserID: "admin"})
 	if err != nil {
 		t.Fatalf("MergeTags: %v", err)
 	}
@@ -121,7 +122,7 @@ func TestTagSuggestionQueueStatusDelegatesToStore(t *testing.T) {
 	}
 	m := NewMemeManager(store)
 
-	status := m.TagSuggestionQueueStatus(50, 50)
+	status := m.TagSuggestionQueueStatus(context.Background(), 50, 50)
 
 	if store.callCount() != 0 {
 		t.Fatalf("whole-archive scan was used %d times, want 0", store.callCount())
@@ -148,7 +149,7 @@ func TestSeedTagSuggestionQueueUsesStoreIDs(t *testing.T) {
 	store.untaggedIDs = []string{"a", "b", "c"}
 	m := NewMemeManagerWithTagSuggester(store, stubTagSuggester(), nil, TagSuggestionRuntimeConfig{}, 60)
 
-	queued := m.SeedTagSuggestionQueue()
+	queued := m.SeedTagSuggestionQueue(context.Background())
 
 	if store.callCount() != 0 {
 		t.Fatalf("whole-archive scan was used %d times, want 0", store.callCount())
@@ -163,7 +164,7 @@ func TestTagHygieneReportUsesTagAdminStore(t *testing.T) {
 	store.usage = map[string]int{"buisness": 1, "business": 9} //nolint:misspell // deliberate typo: tag-variant fixture
 	m := NewMemeManager(store)
 
-	report := m.TagHygieneReport()
+	report := m.TagHygieneReport(context.Background())
 
 	if store.callCount() != 0 {
 		t.Fatalf("whole-archive scan was used %d times, want 0", store.callCount())
@@ -189,7 +190,7 @@ func TestTagHygienePagePaginatesAndFilters(t *testing.T) {
 	store.usage = usage
 	m := NewMemeManager(store)
 
-	first := m.TagHygienePage(TagHygienePageParams{View: "tags", Offset: 0, Limit: 50})
+	first := m.TagHygienePage(context.Background(), TagHygienePageParams{View: "tags", Offset: 0, Limit: 50})
 	if !first.Ready {
 		t.Fatal("expected the inline-computed snapshot to be ready without a worker")
 	}
@@ -203,12 +204,12 @@ func TestTagHygienePagePaginatesAndFilters(t *testing.T) {
 		t.Fatalf("pagination = has_more %v next %d, want true and 50", first.HasMore, first.NextOffset)
 	}
 
-	last := m.TagHygienePage(TagHygienePageParams{View: "tags", Offset: 100, Limit: 50})
+	last := m.TagHygienePage(context.Background(), TagHygienePageParams{View: "tags", Offset: 100, Limit: 50})
 	if len(last.Tags) != 30 || last.HasMore {
 		t.Fatalf("tail page = %d rows has_more %v, want 30 and false", len(last.Tags), last.HasMore)
 	}
 
-	filtered := m.TagHygienePage(TagHygienePageParams{View: "tags", Search: "tag-01"})
+	filtered := m.TagHygienePage(context.Background(), TagHygienePageParams{View: "tags", Search: "tag-01"})
 	if filtered.TagTotal != 10 {
 		t.Fatalf("search tag_total = %d, want 10 (tag-010..tag-019)", filtered.TagTotal)
 	}
@@ -225,9 +226,9 @@ func TestTagHygieneWorkerRefreshesAfterTagChange(t *testing.T) {
 	m.StartTagHygieneWorker()
 
 	waitFor(t, "initial snapshot", func() bool {
-		return m.TagHygienePage(TagHygienePageParams{View: "tags"}).Ready
+		return m.TagHygienePage(context.Background(), TagHygienePageParams{View: "tags"}).Ready
 	})
-	if got := m.TagHygienePage(TagHygienePageParams{View: "pairs"}).PairTotal; got != 0 {
+	if got := m.TagHygienePage(context.Background(), TagHygienePageParams{View: "pairs"}).PairTotal; got != 0 {
 		t.Fatalf("pair_total = %d before the variant exists, want 0", got)
 	}
 
@@ -236,7 +237,7 @@ func TestTagHygieneWorkerRefreshesAfterTagChange(t *testing.T) {
 	m.markTagsChanged()
 
 	waitFor(t, "worker refresh", func() bool {
-		return m.TagHygienePage(TagHygienePageParams{View: "pairs"}).PairTotal == 1
+		return m.TagHygienePage(context.Background(), TagHygienePageParams{View: "pairs"}).PairTotal == 1
 	})
 }
 

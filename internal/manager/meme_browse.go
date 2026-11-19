@@ -97,7 +97,7 @@ func (m *MemeManager) ListMemesSorted(ctx context.Context, userID, query string,
 		}, nil
 	}
 
-	source := m.store.List(strings.TrimSpace(userID), strings.TrimSpace(query), false, strings.TrimSpace(tag))
+	source := m.store.List(ctx, strings.TrimSpace(userID), strings.TrimSpace(query), false, strings.TrimSpace(tag))
 	counts := buildMemeCounts(source)
 	visible := filterMemesByView(source, strings.TrimSpace(view))
 	if favoritesOnly {
@@ -140,7 +140,7 @@ func (m *MemeManager) Dashboard(ctx context.Context, userID string) (VaultDashbo
 		return vaultDashboardFromData(data), nil
 	}
 
-	items := m.store.List(strings.TrimSpace(userID), "", false, "")
+	items := m.store.List(ctx, strings.TrimSpace(userID), "", false, "")
 	dashboard := VaultDashboard{
 		Counts:        buildMemeCounts(items),
 		RecentItems:   []accessor.Meme{},
@@ -236,7 +236,7 @@ func (m *MemeManager) PopularTags(ctx context.Context, userID string, limit int)
 	}
 
 	tagCounts := map[string]int{}
-	for _, item := range m.store.List(strings.TrimSpace(userID), "", false, "") {
+	for _, item := range m.store.List(ctx, strings.TrimSpace(userID), "", false, "") {
 		for _, tag := range item.Tags {
 			normalized := strings.TrimSpace(tag)
 			if normalized != "" {

@@ -35,10 +35,10 @@ func TestHeartbeatPlaybackSessionClearsStopRequested(t *testing.T) {
 	store := st.(*PostgresStore)
 	t.Cleanup(store.pool.Close)
 
-	audiobookID := uuid.Must(uuid.NewV6()).String()
-	userID := "u-" + uuid.Must(uuid.NewV6()).String()
-	deviceA := "dev-a-" + uuid.Must(uuid.NewV6()).String()
-	deviceB := "dev-b-" + uuid.Must(uuid.NewV6()).String()
+	audiobookID := uuid.NewString()
+	userID := "u-" + uuid.NewString()
+	deviceA := "dev-a-" + uuid.NewString()
+	deviceB := "dev-b-" + uuid.NewString()
 
 	_, err = store.pool.Exec(ctx, `
 		INSERT INTO audiobooks (id, title, filename, size_bytes, storage_path, uploaded_by_user_id)
@@ -110,11 +110,11 @@ func TestStalePlaybackStopRequestDoesNotPauseResumedDevice(t *testing.T) {
 	store := st.(*PostgresStore)
 	t.Cleanup(store.pool.Close)
 
-	audiobookID := uuid.Must(uuid.NewV6()).String()
-	userID := "u-" + uuid.Must(uuid.NewV6()).String()
-	deviceA := "dev-a-" + uuid.Must(uuid.NewV6()).String()
-	deviceB := "dev-b-" + uuid.Must(uuid.NewV6()).String()
-	deviceC := "dev-c-" + uuid.Must(uuid.NewV6()).String()
+	audiobookID := uuid.NewString()
+	userID := "u-" + uuid.NewString()
+	deviceA := "dev-a-" + uuid.NewString()
+	deviceB := "dev-b-" + uuid.NewString()
+	deviceC := "dev-c-" + uuid.NewString()
 
 	_, err = store.pool.Exec(ctx, `
 		INSERT INTO audiobooks (id, title, filename, size_bytes, storage_path, uploaded_by_user_id)

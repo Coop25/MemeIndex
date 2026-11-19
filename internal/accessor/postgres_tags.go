@@ -12,8 +12,8 @@ import (
 
 // TagUsageCounts returns, for every tag on a visible meme, how many visible
 // memes carry it. It backs the admin tag-hygiene report.
-func (s *PostgresStore) TagUsageCounts() (map[string]int, error) {
-	rows, err := s.pool.Query(context.Background(), `
+func (s *PostgresStore) TagUsageCounts(ctx context.Context) (map[string]int, error) {
+	rows, err := s.pool.Query(ctx, `
 		SELECT t.name, COUNT(*) AS c
 		FROM meme_tags mt
 		JOIN tags t ON t.id = mt.tag_id
@@ -41,9 +41,9 @@ func (s *PostgresStore) TagUsageCounts() (map[string]int, error) {
 // UntaggedWithoutSuggestionsCount counts visible memes with no tags, no stored
 // suggestions, and auto-suggest still enabled - the memes the suggestion worker
 // would pick up.
-func (s *PostgresStore) UntaggedWithoutSuggestionsCount() (int, error) {
+func (s *PostgresStore) UntaggedWithoutSuggestionsCount(ctx context.Context) (int, error) {
 	var n int
-	err := s.pool.QueryRow(context.Background(), `
+	err := s.pool.QueryRow(ctx, `
 		SELECT COUNT(*)
 		FROM memes m
 		WHERE `+visibleMemePredicate+`
@@ -56,8 +56,8 @@ func (s *PostgresStore) UntaggedWithoutSuggestionsCount() (int, error) {
 
 // UntaggedWithoutSuggestionIDs returns the ids of the memes counted by
 // UntaggedWithoutSuggestionsCount, newest first.
-func (s *PostgresStore) UntaggedWithoutSuggestionIDs() ([]string, error) {
-	return scanIDList(context.Background(), s.pool, `
+func (s *PostgresStore) UntaggedWithoutSuggestionIDs(ctx context.Context) ([]string, error) {
+	return scanIDList(ctx, s.pool, `
 		SELECT m.id
 		FROM memes m
 		WHERE `+visibleMemePredicate+`
@@ -70,8 +70,7 @@ func (s *PostgresStore) UntaggedWithoutSuggestionIDs() ([]string, error) {
 
 // PendingSuggestionMemes returns the total count of visible memes that carry
 // stored suggestions and one newest-first page of them (id, name, suggestions).
-func (s *PostgresStore) PendingSuggestionMemes(offset, limit int) (int, []Meme, error) {
-	ctx := context.Background()
+func (s *PostgresStore) PendingSuggestionMemes(ctx context.Context, offset, limit int) (int, []Meme, error) {
 	if offset < 0 {
 		offset = 0
 	}
@@ -138,8 +137,7 @@ var auxTagLinkTables = []struct{ table, keyColumn string }{
 // single transaction, creating targetTag if needed and deleting sourceTag. It
 // returns how many of each were affected and writes the same tag_removed /
 // tag_added audit trail the per-meme path produced.
-func (s *PostgresStore) MergeTag(sourceTag, targetTag string, actor AuditActor) (TagMergeCounts, error) {
-	ctx := context.Background()
+func (s *PostgresStore) MergeTag(ctx context.Context, sourceTag, targetTag string, actor AuditActor) (TagMergeCounts, error) {
 	sourceTag = normalizeTag(sourceTag)
 	targetTag = normalizeTag(targetTag)
 	if sourceTag == "" || targetTag == "" {
@@ -149,15 +147,99 @@ func (s *PostgresStore) MergeTag(sourceTag, targetTag string, actor AuditActor) 
 		return TagMergeCounts{}, nil
 	}
 
-	tx, err := s.pool.Begin(ctx)
+	// The whole merge runs on one connection: one that queues for the merge
+	// lock below holds its connection while it waits, so a merge that needed
+	// a second one once it had the lock could be starved of it by merges
+	// queued behind it.
+	conn, err := s.pool.Acquire(ctx)
 	if err != nil {
 		return TagMergeCounts{}, err
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer conn.Release()
 
+	// Merges run one at a time, so two of them can never wait on each
+	// other's tag locks (a merge of a into b next to one of b into a). The
+	// lock is the session's, not the transaction's, so it also covers the
+	// cleanup of a target this created after the transaction has ended.
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock(hashtextextended('tag-merge', 0))`); err != nil {
+		return TagMergeCounts{}, err
+	}
+	// The unlock, the rollback and the cleanup of a target this created run
+	// past a cancelled request. The target is committed on its own, so a merge
+	// its admin abandoned must still remove it; and a rollback on a cancelled
+	// context fails and makes pgx close the connection, which would drop the
+	// merge lock before that cleanup ran.
+	cleanupCtx := context.WithoutCancel(ctx)
+	defer func() {
+		if _, err := conn.Exec(cleanupCtx, `SELECT pg_advisory_unlock(hashtextextended('tag-merge', 0))`); err != nil {
+			// Never hand a connection still holding the lock back to the
+			// pool; closing it releases the lock.
+			_ = conn.Conn().Close(cleanupCtx)
+		}
+	}()
+
+	var sourceExists bool
+	if err := conn.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM tags WHERE name = $1)`, sourceTag).Scan(&sourceExists); err != nil {
+		return TagMergeCounts{}, err
+	}
+	if !sourceExists {
+		return TagMergeCounts{}, nil
+	}
+
+	// Create a missing target in a statement of its own, committed before
+	// the merge transaction takes any row lock. Created inside it, the new
+	// row would stay uncommitted until the merge ends, and an edit that adds
+	// the same name to a meme carrying the source - holding that meme's row,
+	// which the merge locks below - would wait on the insert while the merge
+	// waits on the meme: a deadlock. If the merge then fails or moves
+	// nothing, the target it created is cleaned up again, still under the
+	// merge lock, so the next merge cannot find it existing and then lose it.
+	var createdTargetID int64
+	err = conn.QueryRow(ctx, `INSERT INTO tags (name) VALUES ($1) ON CONFLICT (name) DO NOTHING RETURNING id`, targetTag).Scan(&createdTargetID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) { // no row: it already existed
+		return TagMergeCounts{}, err
+	}
+
+	// BEGIN and COMMIT run on cleanupCtx too: pgx closes the connection when
+	// either fails on a context that has already ended, which would drop the
+	// merge lock and leave the target behind. A request that ends between
+	// statements still stops the merge at its next one, before the commit.
+	tx, err := conn.Begin(cleanupCtx)
+	if err != nil {
+		if createdTargetID != 0 {
+			_ = pgx.BeginFunc(cleanupCtx, conn, func(tx pgx.Tx) error { return DeleteOrphanTags(cleanupCtx, tx, []int64{createdTargetID}) })
+		}
+		return TagMergeCounts{}, err
+	}
+	committed := false
+	defer func() {
+		_ = tx.Rollback(cleanupCtx)
+		if !committed && createdTargetID != 0 {
+			// After the rollback, so the cleanup is not skipped over this
+			// transaction's own lock on the target.
+			_ = pgx.BeginFunc(cleanupCtx, conn, func(tx pgx.Tx) error { return DeleteOrphanTags(cleanupCtx, tx, []int64{createdTargetID}) })
+		}
+	}()
+
+	// The target is locked like any linker locks a tag before the source is
+	// locked.
+	targetIDs, err := LockTagsForLink(ctx, tx, []string{targetTag})
+	if err != nil {
+		return TagMergeCounts{}, err
+	}
+	targetID := targetIDs[0]
+
+	// Lock the source exclusively. This waits for any transaction that is
+	// linking it right now, and makes every later one wait for this merge
+	// (and then re-create the tag), so the links read below are all of them
+	// and none can be added before the source row is deleted. Without the
+	// lock, a link committed after these reads would be cascaded away by the
+	// DELETE at the end instead of being moved to the target.
 	var sourceID int64
-	if err := tx.QueryRow(ctx, `SELECT id FROM tags WHERE name = $1`, sourceTag).Scan(&sourceID); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT id FROM tags WHERE name = $1 FOR UPDATE`, sourceTag).Scan(&sourceID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			// Deleted while this waited; a target this created is
+			// cleaned up again.
 			return TagMergeCounts{}, nil
 		}
 		return TagMergeCounts{}, err
@@ -166,6 +248,21 @@ func (s *PostgresStore) MergeTag(sourceTag, targetTag string, actor AuditActor) 
 	affected, err := scanIDList(ctx, tx, `SELECT meme_id FROM meme_tags WHERE tag_id = $1 ORDER BY meme_id`, sourceID)
 	if err != nil {
 		return TagMergeCounts{}, err
+	}
+	if len(affected) > 0 {
+		// Take the affected memes' row locks, in id order, before touching
+		// their meme_tags rows - the same order a meme edit takes them in
+		// (meme row, then its tags) - so an edit removing the source tag from
+		// one of them cannot deadlock with this merge. Nothing can add the
+		// source to another meme meanwhile, but an edit this waited on may
+		// have removed it, so read the list again under the locks.
+		if _, err := tx.Exec(ctx, `SELECT id FROM memes WHERE id = ANY($1::text[]) ORDER BY id FOR UPDATE`, affected); err != nil {
+			return TagMergeCounts{}, err
+		}
+		affected, err = scanIDList(ctx, tx, `SELECT meme_id FROM meme_tags WHERE tag_id = $1 ORDER BY meme_id`, sourceID)
+		if err != nil {
+			return TagMergeCounts{}, err
+		}
 	}
 
 	// Which of the audiobook-side link tables exist and still reference the
@@ -196,16 +293,16 @@ func (s *PostgresStore) MergeTag(sourceTag, targetTag string, actor AuditActor) 
 		if _, err := tx.Exec(ctx, `DELETE FROM tags WHERE id = $1`, sourceID); err != nil {
 			return TagMergeCounts{}, err
 		}
-		return TagMergeCounts{}, tx.Commit(ctx)
-	}
-
-	var targetID int64
-	if err := tx.QueryRow(ctx, `
-		INSERT INTO tags (name) VALUES ($1)
-		ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
-		RETURNING id
-	`, targetTag).Scan(&targetID); err != nil {
-		return TagMergeCounts{}, err
+		// Nothing moved onto the target, so do not leave it behind unused
+		// if it was created above.
+		if err := DeleteOrphanTags(ctx, tx, targetIDs); err != nil {
+			return TagMergeCounts{}, err
+		}
+		if err := tx.Commit(cleanupCtx); err != nil {
+			return TagMergeCounts{}, err
+		}
+		committed = true
+		return TagMergeCounts{}, nil
 	}
 
 	counts := TagMergeCounts{Memes: len(affected)}
@@ -281,9 +378,10 @@ func (s *PostgresStore) MergeTag(sourceTag, targetTag string, actor AuditActor) 
 		return TagMergeCounts{}, err
 	}
 
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit(cleanupCtx); err != nil {
 		return TagMergeCounts{}, err
 	}
+	committed = true
 	return counts, nil
 }
 
@@ -316,8 +414,7 @@ func scanIDList(ctx context.Context, q queryable, sql string, args ...any) ([]st
 	return out, rows.Err()
 }
 
-func (s *PostgresStore) SuggestTags(prefix string, limit int) []string {
-	ctx := context.Background()
+func (s *PostgresStore) SuggestTags(ctx context.Context, prefix string, limit int) []string {
 	prefix = normalizeTag(prefix)
 	if limit <= 0 {
 		limit = 8
@@ -348,9 +445,9 @@ func (s *PostgresStore) SuggestTags(prefix string, limit int) []string {
 	return tags
 }
 
-func (s *PostgresStore) ListSuggestedTags(id string) ([]string, error) {
+func (s *PostgresStore) ListSuggestedTags(ctx context.Context, id string) ([]string, error) {
 	var tags []string
-	err := s.pool.QueryRow(context.Background(), `
+	err := s.pool.QueryRow(ctx, `
 		SELECT COALESCE(suggested_tags, '{}')
 		FROM memes
 		WHERE id = $1
@@ -364,8 +461,8 @@ func (s *PostgresStore) ListSuggestedTags(id string) ([]string, error) {
 	return normalizeTags(tags), nil
 }
 
-func (s *PostgresStore) ReplaceSuggestedTags(id string, tags []string) error {
-	commandTag, err := s.pool.Exec(context.Background(), `
+func (s *PostgresStore) ReplaceSuggestedTags(ctx context.Context, id string, tags []string) error {
+	commandTag, err := s.pool.Exec(ctx, `
 		UPDATE memes
 		SET suggested_tags = $2,
 			auto_suggest_disabled = CASE WHEN cardinality($2::text[]) > 0 THEN FALSE ELSE auto_suggest_disabled END,
@@ -381,11 +478,31 @@ func (s *PostgresStore) ReplaceSuggestedTags(id string, tags []string) error {
 	return nil
 }
 
+// RemoveSuggestedTag drops one tag from a meme's stored suggestions with
+// array_remove, so it works on whatever list is stored when it runs rather
+// than on a copy the caller read earlier. updated_at only moves when the tag
+// was actually there.
+func (s *PostgresStore) RemoveSuggestedTag(ctx context.Context, id, tag string) error {
+	commandTag, err := s.pool.Exec(ctx, `
+		UPDATE memes
+		SET suggested_tags = array_remove(suggested_tags, $2::text),
+			updated_at = CASE WHEN $2::text = ANY(suggested_tags) THEN NOW() ELSE updated_at END
+		WHERE id = $1
+	`, strings.TrimSpace(id), normalizeTag(tag))
+	if err != nil {
+		return err
+	}
+	if commandTag.RowsAffected() == 0 {
+		return os.ErrNotExist
+	}
+	return nil
+}
+
 // SetSearchText stores the derived search blob for a meme. It deliberately does
 // not touch updated_at: this is background-derived data, and the same
 // tag-suggestion pass already bumped the row via ReplaceSuggestedTags.
-func (s *PostgresStore) SetSearchText(id, text string) error {
-	commandTag, err := s.pool.Exec(context.Background(), `
+func (s *PostgresStore) SetSearchText(ctx context.Context, id, text string) error {
+	commandTag, err := s.pool.Exec(ctx, `
 		UPDATE memes
 		SET search_text = $2
 		WHERE id = $1
@@ -399,8 +516,8 @@ func (s *PostgresStore) SetSearchText(id, text string) error {
 	return nil
 }
 
-func (s *PostgresStore) SetAutoSuggestDisabled(id string, disabled bool) error {
-	commandTag, err := s.pool.Exec(context.Background(), `
+func (s *PostgresStore) SetAutoSuggestDisabled(ctx context.Context, id string, disabled bool) error {
+	commandTag, err := s.pool.Exec(ctx, `
 		UPDATE memes
 		SET auto_suggest_disabled = $2,
 			updated_at = NOW()
@@ -416,11 +533,19 @@ func (s *PostgresStore) SetAutoSuggestDisabled(id string, disabled bool) error {
 }
 
 // replaceTags rewrites the tag set for one meme. It resolves the whole set in a
-// fixed number of round trips - one batched tag upsert and one batched link
-// insert - instead of two statements per tag, and it scopes the orphan-tag
-// cleanup to just the tags this meme used to carry rather than re-sweeping the
-// entire tags table on every upload and every edit.
+// fixed number of round trips - one batched tag upsert-and-lock and one
+// batched link insert - instead of two statements per tag, and it scopes the
+// orphan-tag cleanup to just the tags this meme used to carry rather than
+// re-sweeping the entire tags table on every upload. Edits go through
+// addMemeTags and removeMemeTags instead, which touch only the tags that
+// change. The new tags are locked before any meme_tags row is touched (see
+// LockTagsForLink).
 func (s *PostgresStore) replaceTags(ctx context.Context, tx pgx.Tx, memeID string, tags []string) error {
+	tagIDs, err := LockTagsForLink(ctx, tx, tags)
+	if err != nil {
+		return err
+	}
+
 	previousTagIDs, err := scanInt64List(ctx, tx, `SELECT tag_id FROM meme_tags WHERE meme_id = $1`, memeID)
 	if err != nil {
 		return err
@@ -430,56 +555,64 @@ func (s *PostgresStore) replaceTags(ctx context.Context, tx pgx.Tx, memeID strin
 		return err
 	}
 
-	names := normalizeTags(tags)
-	if len(names) > 0 {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO tags (name)
-			SELECT unnest($1::text[])
-			ON CONFLICT (name) DO NOTHING
-		`, names); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO meme_tags (meme_id, tag_id)
-			SELECT $1, t.id FROM tags t WHERE t.name = ANY($2::text[])
-			ON CONFLICT DO NOTHING
-		`, memeID, names); err != nil {
-			return err
-		}
+	if err := linkMemeTagIDs(ctx, tx, memeID, tagIDs); err != nil {
+		return err
 	}
 
-	return s.deleteOrphanTags(ctx, tx, previousTagIDs)
+	return DeleteOrphanTags(ctx, tx, previousTagIDs)
 }
 
-// deleteOrphanTags removes any of the given tag ids that no longer have a single
-// meme_tags link. It is the scoped replacement for the old whole-`tags`-table
-// anti-join that ran on every write: callers pass just the ids that a delete or
-// a tag-set rewrite might have orphaned.
-func (s *PostgresStore) deleteOrphanTags(ctx context.Context, db queryable, tagIDs []int64) error {
+// addMemeTags links just the named tags to one meme, creating any tag that
+// does not exist yet, and leaves the meme's other tags alone.
+func (s *PostgresStore) addMemeTags(ctx context.Context, tx pgx.Tx, memeID string, tags []string) error {
+	tagIDs, err := LockTagsForLink(ctx, tx, tags)
+	if err != nil {
+		return err
+	}
+	return linkMemeTagIDs(ctx, tx, memeID, tagIDs)
+}
+
+// linkMemeTagIDs inserts meme_tags rows for tag ids that LockTagsForLink has
+// locked in this transaction.
+func linkMemeTagIDs(ctx context.Context, tx pgx.Tx, memeID string, tagIDs []int64) error {
 	if len(tagIDs) == 0 {
 		return nil
 	}
-	// audiobook_tags and app_user_audiobook_tag_restrictions tag into this
-	// same shared `tags` table from the client package, so a tag a meme just
-	// stopped using can still be in use by an audiobook, or by an account's
-	// audiobook tag restriction, and must not be deleted out from under
-	// either - checked here too, not just meme_tags. This package's own
-	// schema never creates those two tables, so whether they exist is
-	// checked at runtime (a plain query that names a nonexistent relation
-	// fails before a conditional inside it is even evaluated - "IF EXISTS"
-	// only works on DDL, not a row-level condition like this) rather than
-	// assumed, so this package still works standalone - e.g. its own tests -
-	// without hard-depending on client-package tables that may not be there.
-	query := `DELETE FROM tags WHERE id = ANY($1::bigint[]) AND NOT EXISTS (SELECT 1 FROM meme_tags mt WHERE mt.tag_id = tags.id)`
-	for _, table := range []string{"audiobook_tags", "app_user_audiobook_tag_restrictions"} {
-		exists, err := tableExists(ctx, db, table)
-		if err != nil {
-			return err
-		}
-		if exists {
-			query += fmt.Sprintf(` AND NOT EXISTS (SELECT 1 FROM %s WHERE tag_id = tags.id)`, table)
-		}
-	}
-	_, err := db.Exec(ctx, query, tagIDs)
+	_, err := tx.Exec(ctx, `
+		INSERT INTO meme_tags (meme_id, tag_id)
+		SELECT $1, unnest($2::bigint[])
+		ON CONFLICT DO NOTHING
+	`, memeID, tagIDs)
 	return err
+}
+
+// removeMemeTags unlinks just the named tags from one meme, then deletes any
+// of them that nothing uses any more.
+func (s *PostgresStore) removeMemeTags(ctx context.Context, tx pgx.Tx, memeID string, tags []string) error {
+	names := normalizeTags(tags)
+	if len(names) == 0 {
+		return nil
+	}
+	removedIDs, err := scanInt64List(ctx, tx, `
+		DELETE FROM meme_tags mt
+		USING tags t
+		WHERE mt.meme_id = $1 AND mt.tag_id = t.id AND t.name = ANY($2::text[])
+		RETURNING mt.tag_id
+	`, memeID, names)
+	if err != nil {
+		return err
+	}
+	return DeleteOrphanTags(ctx, tx, removedIDs)
+}
+
+// deleteOrphanTagsInTx runs DeleteOrphanTags in a transaction of its own, for
+// the meme-delete paths that otherwise work statement by statement on the
+// pool: its lock has to outlive the statement that takes it.
+func (s *PostgresStore) deleteOrphanTagsInTx(ctx context.Context, tagIDs []int64) error {
+	if len(tagIDs) == 0 {
+		return nil
+	}
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		return DeleteOrphanTags(ctx, tx, tagIDs)
+	})
 }

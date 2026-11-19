@@ -58,8 +58,11 @@ func (s *Server) createMemeShare(w http.ResponseWriter, r *http.Request, memeID 
 		return
 	}
 	now := time.Now().UTC()
-	share, err := s.managers.GetOrCreateMemeShare(memeID, currentUserID(r), now)
+	share, err := s.managers.GetOrCreateMemeShare(r.Context(), memeID, currentUserID(r), now)
 	if err != nil {
+		if requestAbandoned(r, err) {
+			return
+		}
 		if errors.Is(err, os.ErrNotExist) {
 			http.NotFound(w, r)
 			return
@@ -67,8 +70,11 @@ func (s *Server) createMemeShare(w http.ResponseWriter, r *http.Request, memeID 
 		http.Error(w, "failed to create share link", http.StatusInternalServerError)
 		return
 	}
-	_, meme, err := s.managers.GetMemeShare(memeID)
+	_, meme, err := s.managers.GetMemeShare(r.Context(), memeID)
 	if err != nil {
+		if requestAbandoned(r, err) {
+			return
+		}
 		http.Error(w, "failed to load shared meme", http.StatusInternalServerError)
 		return
 	}
@@ -112,7 +118,7 @@ func (s *Server) handleMemeLink(w http.ResponseWriter, r *http.Request) {
 
 	token := strings.TrimSpace(r.URL.Query().Get("share"))
 	if token != "" {
-		share, meme, err := s.managers.GetMemeShare(memeID)
+		share, meme, err := s.managers.GetMemeShare(r.Context(), memeID)
 		if err == nil && s.validMemeShareToken(token, share, time.Now().UTC()) {
 			if len(parts) == 3 && parts[2] != sharedAssetFileName(meme, assetKind == "preview") {
 				http.NotFound(w, r)
@@ -175,8 +181,11 @@ func (s *Server) handleShareLink(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	share, meme, current, err := s.managers.ResolveMemeShareLink(slug)
+	share, meme, current, err := s.managers.ResolveMemeShareLink(r.Context(), slug)
 	if err != nil {
+		if requestAbandoned(r, err) {
+			return
+		}
 		if !errors.Is(err, os.ErrNotExist) {
 			http.Error(w, "failed to load shared meme", http.StatusInternalServerError)
 			return
@@ -190,7 +199,7 @@ func (s *Server) handleShareLink(w http.ResponseWriter, r *http.Request) {
 		// spelling of it (another extension, a query string) would be a
 		// separate cache entry for the same file.
 		edgeCacheFor := time.Duration(0)
-		if name == slug+filepath.Ext(sharedAssetFileName(meme, false)) && r.URL.RawQuery == "" && !r.URL.ForceQuery {
+		if name == slug+shareLinkExtension(meme) && r.URL.RawQuery == "" && !r.URL.ForceQuery {
 			edgeCacheFor = min(shareLinkEdgeCacheTTL, share.ExpiresAt.Sub(now))
 		}
 		s.serveSharedMemeAsset(w, r, meme, false, edgeCacheFor)
@@ -211,8 +220,11 @@ const shareLinkEdgeCacheTTL = 24 * time.Hour
 func (s *Server) handleAdminShares(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/api/admin/shares" {
 		if r.Method == http.MethodDelete {
-			revoked, err := s.managers.RevokeAllMemeShares(time.Now().UTC())
+			revoked, err := s.managers.RevokeAllMemeShares(r.Context(), time.Now().UTC())
 			if err != nil {
+				if requestAbandoned(r, err) {
+					return
+				}
 				http.Error(w, "failed to revoke shares", http.StatusInternalServerError)
 				return
 			}
@@ -226,8 +238,11 @@ func (s *Server) handleAdminShares(w http.ResponseWriter, r *http.Request) {
 		query := r.URL.Query()
 		requestedOffset, _ := strconv.Atoi(query.Get("offset"))
 		requestedLimit, _ := strconv.Atoi(query.Get("limit"))
-		shares, total, offset, limit, err := s.managers.ListActiveMemeSharesPage(time.Now().UTC(), requestedOffset, requestedLimit)
+		shares, total, offset, limit, err := s.managers.ListActiveMemeSharesPage(r.Context(), time.Now().UTC(), requestedOffset, requestedLimit)
 		if err != nil {
+			if requestAbandoned(r, err) {
+				return
+			}
 			http.Error(w, "failed to list shared memes", http.StatusInternalServerError)
 			return
 		}
@@ -279,7 +294,10 @@ func (s *Server) handleAdminShares(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if err := s.managers.RevokeMemeShare(memeID); err != nil {
+	if err := s.managers.RevokeMemeShare(r.Context(), memeID); err != nil {
+		if requestAbandoned(r, err) {
+			return
+		}
 		if errors.Is(err, os.ErrNotExist) {
 			http.NotFound(w, r)
 			return
@@ -297,7 +315,17 @@ func (s *Server) memeShareURL(r *http.Request, share accessor.MemeShareState, me
 		// it is next renewed, which issues it a code.
 		return s.publicOrigin(r) + "/m/" + url.PathEscape(share.MemeID) + "?share=" + url.QueryEscape(s.signMemeShare(share))
 	}
-	return s.publicOrigin(r) + "/s/" + url.PathEscape(share.Slug) + filepath.Ext(sharedAssetFileName(meme, false))
+	return s.publicOrigin(r) + "/s/" + url.PathEscape(share.Slug) + shareLinkExtension(meme)
+}
+
+// shareLinkExtension is the extension a /s/ link carries, so chat apps can
+// tell the media type from the URL. It is picked the way a stored upload's is,
+// so it is always plain lower-case letters and digits, or nothing: an original
+// name like "clip.mp4 (1)" would otherwise put a space in the link, where chat
+// apps cut it short. Links already handed out with such an extension still
+// serve, since only the code is looked up; they are just not edge-cached.
+func shareLinkExtension(meme accessor.Meme) string {
+	return accessor.StoredFileExtension(meme.OriginalName, meme.ContentType)
 }
 
 // publicOrigin returns the origin shared links should use. Memes can be
@@ -394,7 +422,7 @@ func (s *Server) serveSharedMemeAsset(w http.ResponseWriter, r *http.Request, me
 			w.Header().Set("Content-Disposition", disposition)
 		}
 	}
-	setUntrustedAssetHeaders(w, "/uploads/"+fileName)
+	w = setUntrustedAssetHeaders(w, "/uploads/"+fileName)
 	if mediaType, ok := browserViewableMediaType(w.Header().Get("Content-Type")); ok {
 		// Send the one type that was checked, not the stored value: a browser
 		// reads the last type in a list, so `video/mp4, application/pdf`
@@ -454,6 +482,10 @@ func (w edgeCacheOnlySuccess) ReadFrom(src io.Reader) (int64, error) {
 	return io.Copy(w.ResponseWriter, src)
 }
 
+// sharedAssetFileName is the file name on a legacy /m/<id>/media/<name> or
+// /m/<id>/preview/<name> link. It keeps the original name's extension the way
+// those links were issued, so they still validate; /s/ links use
+// shareLinkExtension instead.
 func sharedAssetFileName(meme accessor.Meme, preview bool) string {
 	extension := filepath.Ext(meme.OriginalName)
 	if preview && strings.HasPrefix(meme.PreviewPath, "/thumbnails/") {

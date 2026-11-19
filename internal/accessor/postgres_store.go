@@ -12,7 +12,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -117,11 +116,17 @@ func (s *PostgresStore) ThumbnailDir() string {
 	return s.previewDir
 }
 
-func (s *PostgresStore) EnsurePreviewAssets() error {
+func (s *PostgresStore) EnsurePreviewAssets(ctx context.Context, step func(work func()) bool) error {
+	if step == nil {
+		step = func(work func()) bool {
+			work()
+			return true
+		}
+	}
 	// Only video and image rows get thumbnails, and only their stored name and
 	// content type are needed - not the per-row tag aggregation and favourites
 	// lookup that List() hydrates for the whole archive.
-	memes, err := s.videoMemesForPreview(context.Background())
+	memes, err := s.videoMemesForPreview(ctx)
 	if err != nil {
 		return fmt.Errorf("preview asset backfill: list videos: %w", err)
 	}
@@ -139,7 +144,21 @@ func (s *PostgresStore) EnsurePreviewAssets() error {
 
 	processedVideos := 0
 	for i := range memes {
-		result, err := ensurePreviewAssetWithResult(s.uploadDir, s.previewDir, &memes[i])
+		var (
+			result previewAssetResult
+			err    error
+		)
+		if !step(func() { result, err = ensurePreviewAssetWithResult(s.uploadDir, s.previewDir, &memes[i]) }) {
+			log.Printf(
+				"preview asset backfill: stopped after %d/%d videos (generated=%d existing=%d failed=%d)",
+				processedVideos,
+				totalVideos,
+				generated,
+				existing,
+				failed,
+			)
+			return nil
+		}
 		processedVideos += 1
 		switch result {
 		case previewAssetGenerated:
@@ -203,13 +222,11 @@ func (s *PostgresStore) videoMemesForPreview(ctx context.Context) ([]Meme, error
 	return memes, rows.Err()
 }
 
-func (s *PostgresStore) GetByID(userID, id string) (Meme, error) {
-	ctx := context.Background()
+func (s *PostgresStore) GetByID(ctx context.Context, userID, id string) (Meme, error) {
 	return s.getByID(ctx, s.pool, normalizeFavoriteUserID(userID), strings.TrimSpace(id))
 }
 
-func (s *PostgresStore) GetAnyByID(id string) (Meme, error) {
-	ctx := context.Background()
+func (s *PostgresStore) GetAnyByID(ctx context.Context, id string) (Meme, error) {
 	row := s.pool.QueryRow(ctx, `
 		SELECT
 			m.id,
@@ -247,7 +264,7 @@ func (s *PostgresStore) GetAnyByID(id string) (Meme, error) {
 // MemesByIDs resolves a batch of visible memes in one round trip, keyed by id.
 // Ids that do not match a visible meme are simply absent from the result, the
 // same outcome a per-id GetByID("", id) lookup would produce.
-func (s *PostgresStore) MemesByIDs(ids []string) (map[string]Meme, error) {
+func (s *PostgresStore) MemesByIDs(ctx context.Context, ids []string) (map[string]Meme, error) {
 	out := make(map[string]Meme, len(ids))
 	clean := make([]string, 0, len(ids))
 	seen := make(map[string]struct{}, len(ids))
@@ -266,7 +283,7 @@ func (s *PostgresStore) MemesByIDs(ids []string) (map[string]Meme, error) {
 		return out, nil
 	}
 
-	rows, err := s.pool.Query(context.Background(), "SELECT"+memeRowSelectColumns+`
+	rows, err := s.pool.Query(ctx, "SELECT"+memeRowSelectColumns+`
 		FROM memes m
 		WHERE m.id = ANY($2::text[])
 		  AND COALESCE(m.hidden_from_app, FALSE) = FALSE
@@ -287,8 +304,7 @@ func (s *PostgresStore) MemesByIDs(ids []string) (map[string]Meme, error) {
 	return out, rows.Err()
 }
 
-func (s *PostgresStore) Random(excludedIDs []string) (Meme, error) {
-	ctx := context.Background()
+func (s *PostgresStore) Random(ctx context.Context, excludedIDs []string) (Meme, error) {
 
 	normalizedExcluded := make([]string, 0, len(excludedIDs))
 	for _, id := range excludedIDs {
@@ -327,13 +343,22 @@ func (s *PostgresStore) Random(excludedIDs []string) (Meme, error) {
 	return s.getByID(ctx, s.pool, normalizeFavoriteUserID(""), id)
 }
 
-func (s *PostgresStore) Create(input CreateInput) (Meme, error) {
-	id := uuid.Must(uuid.NewV6()).String()
-	ext := filepath.Ext(input.Filename)
-	storedName := id + ext
+func (s *PostgresStore) Create(ctx context.Context, input CreateInput) (Meme, error) {
+	// The file is written before its row, and every failure after that
+	// removes it again. A cancelled request must not cut that short: a commit
+	// cancelled in flight may still have been applied, and the cleanup would
+	// then delete the file a committed row points at. The upload has already
+	// been received in full, so finish it even if the uploader has gone away.
+	ctx = context.WithoutCancel(ctx)
+	id := newMemeID()
+	contentType := detectContentType(input.Header, input.ContentType, input.Filename)
+	storedName := id + StoredFileExtension(input.Filename, contentType)
 	targetPath := filepath.Join(s.uploadDir, storedName)
 
-	dst, err := os.Create(targetPath)
+	// O_EXCL: never write over a file that is already there. A new ID cannot
+	// name an existing file, but if it ever did (see NewID), this upload fails
+	// instead of replacing that meme's file and then deleting it on cleanup.
+	dst, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o666)
 	if err != nil {
 		return Meme{}, fmt.Errorf("create upload file: %w", err)
 	}
@@ -356,7 +381,7 @@ func (s *PostgresStore) Create(input CreateInput) (Meme, error) {
 		OriginalName:        input.Filename,
 		StoredName:          storedName,
 		FilePath:            "/uploads/" + storedName,
-		ContentType:         detectContentType(input.Header, input.ContentType, input.Filename),
+		ContentType:         contentType,
 		ContentHash:         contentHashString(hasher),
 		SizeBytes:           size,
 		Tags:                normalizeTags(input.Tags),
@@ -367,8 +392,6 @@ func (s *PostgresStore) Create(input CreateInput) (Meme, error) {
 		CreatedAt:           now,
 		UpdatedAt:           now,
 	}
-
-	ctx := context.Background()
 
 	// Check for a duplicate before generating a thumbnail: an ffmpeg run for a
 	// file that is about to be rejected is wasted work, and its thumbnail used
@@ -435,50 +458,90 @@ func (s *PostgresStore) duplicateError(ctx context.Context, existing Meme) error
 	return &DuplicateMemeError{Existing: existing}
 }
 
-func (s *PostgresStore) Update(userID, id string, update MemeUpdate) (Meme, error) {
-	ctx := context.Background()
+// EditMeme applies a partial edit to one meme in a single transaction. It
+// locks the meme's row first, so concurrent edits to the same meme run one
+// after another and each one's change is worked out against the tags the
+// previous one left: two people adding different tags at once both keep
+// theirs. Only the tags in the change are linked or unlinked, and notes and
+// the viewer's favorite are written only when the edit sets them.
+func (s *PostgresStore) EditMeme(ctx context.Context, userID, id string, edit MemeEdit) (Meme, error) {
+	userID = normalizeFavoriteUserID(userID)
+	id = strings.TrimSpace(id)
+
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Meme{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	id = strings.TrimSpace(id)
-	update.Tags = normalizeTags(update.Tags)
-	update.Notes = strings.TrimSpace(update.Notes)
+	var lockedID string
+	err = tx.QueryRow(ctx, `
+		SELECT id FROM memes
+		WHERE id = $1 AND COALESCE(hidden_from_app, FALSE) = FALSE
+		FOR UPDATE
+	`, id).Scan(&lockedID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Meme{}, os.ErrNotExist
+	}
+	if err != nil {
+		return Meme{}, err
+	}
 
+	// Read after taking the lock: under READ COMMITTED each statement sees
+	// everything committed before it started, including an edit this one has
+	// just waited on.
 	existing, err := s.getByID(ctx, tx, userID, id)
 	if err != nil {
 		return Meme{}, err
 	}
-
-	commandTag, err := tx.Exec(ctx, `
-		UPDATE memes
-		SET notes = $2, updated_at = $3
-		WHERE id = $1
-	`, id, update.Notes, time.Now().UTC())
+	change, err := PlanMemeEdit(existing, edit)
 	if err != nil {
 		return Meme{}, err
 	}
-	if commandTag.RowsAffected() == 0 {
-		return Meme{}, os.ErrNotExist
-	}
-
-	if err := s.replaceTags(ctx, tx, id, update.Tags); err != nil {
-		return Meme{}, err
-	}
-	if err := s.setFavoriteInExecutor(ctx, tx, userID, id, update.Favorite); err != nil {
-		return Meme{}, err
-	}
-
-	addedTags, removedTags := diffAuditTags(existing.Tags, update.Tags)
-	for _, tag := range addedTags {
-		if err := s.insertAuditLog(ctx, tx, id, "tag_added", update.Actor, fmt.Sprintf("Added tag %q", tag)); err != nil {
+	if edit.Authorize != nil {
+		if err := edit.Authorize(change); err != nil {
 			return Meme{}, err
 		}
 	}
-	for _, tag := range removedTags {
-		if err := s.insertAuditLog(ctx, tx, id, "tag_removed", update.Actor, fmt.Sprintf("Removed tag %q", tag)); err != nil {
+	if change.Empty() {
+		return existing, nil
+	}
+
+	if change.Notes != nil || len(change.TagsAdded) > 0 || len(change.TagsRemoved) > 0 {
+		// A nil change.Notes binds as NULL and keeps the current notes.
+		if _, err := tx.Exec(ctx, `
+			UPDATE memes
+			SET notes = COALESCE($2::text, notes), updated_at = $3
+			WHERE id = $1
+		`, id, change.Notes, time.Now().UTC()); err != nil {
+			return Meme{}, err
+		}
+	}
+	if err := s.addMemeTags(ctx, tx, id, change.TagsAdded); err != nil {
+		return Meme{}, err
+	}
+	if err := s.removeMemeTags(ctx, tx, id, change.TagsRemoved); err != nil {
+		return Meme{}, err
+	}
+	for _, tag := range change.TagsAdded {
+		if err := s.insertAuditLog(ctx, tx, id, "tag_added", edit.Actor, fmt.Sprintf("Added tag %q", tag)); err != nil {
+			return Meme{}, err
+		}
+	}
+	for _, tag := range change.TagsRemoved {
+		if err := s.insertAuditLog(ctx, tx, id, "tag_removed", edit.Actor, fmt.Sprintf("Removed tag %q", tag)); err != nil {
+			return Meme{}, err
+		}
+	}
+	if change.Favorite != nil {
+		if err := s.setFavoriteInExecutor(ctx, tx, userID, id, *change.Favorite); err != nil {
+			return Meme{}, err
+		}
+		action, description := "favorited", "Added meme to favorites"
+		if !*change.Favorite {
+			action, description = "unfavorited", "Removed meme from favorites"
+		}
+		if err := s.insertAuditLog(ctx, tx, id, action, edit.Actor, description); err != nil {
 			return Meme{}, err
 		}
 	}
@@ -486,20 +549,17 @@ func (s *PostgresStore) Update(userID, id string, update MemeUpdate) (Meme, erro
 	if err := tx.Commit(ctx); err != nil {
 		return Meme{}, err
 	}
-
-	return s.GetByID(userID, id)
+	return s.GetByID(ctx, userID, id)
 }
 
-func (s *PostgresStore) SetFavorite(userID, id string, favorite bool) (Meme, error) {
-	ctx := context.Background()
+func (s *PostgresStore) SetFavorite(ctx context.Context, userID, id string, favorite bool) (Meme, error) {
 	if err := s.setFavoriteInExecutor(ctx, s.pool, userID, strings.TrimSpace(id), favorite); err != nil {
 		return Meme{}, err
 	}
-	return s.GetByID(userID, id)
+	return s.GetByID(ctx, userID, id)
 }
 
-func (s *PostgresStore) SetFavoriteWithActor(userID, id string, favorite bool, actor AuditActor) (Meme, error) {
-	ctx := context.Background()
+func (s *PostgresStore) SetFavoriteWithActor(ctx context.Context, userID, id string, favorite bool, actor AuditActor) (Meme, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Meme{}, err
@@ -521,16 +581,20 @@ func (s *PostgresStore) SetFavoriteWithActor(userID, id string, favorite bool, a
 	if err := tx.Commit(ctx); err != nil {
 		return Meme{}, err
 	}
-	return s.GetByID(userID, id)
+	return s.GetByID(ctx, userID, id)
 }
 
 // HiddenMemeIDs lists the memes hidden from the app pending delete approval.
-func (s *PostgresStore) HiddenMemeIDs() ([]string, error) {
-	return scanIDList(context.Background(), s.pool, `SELECT id FROM memes WHERE COALESCE(hidden_from_app, FALSE) = TRUE`)
+func (s *PostgresStore) HiddenMemeIDs(ctx context.Context) ([]string, error) {
+	return scanIDList(ctx, s.pool, `SELECT id FROM memes WHERE COALESCE(hidden_from_app, FALSE) = TRUE`)
 }
 
-func (s *PostgresStore) Delete(input DeleteInput) (DeleteResult, error) {
-	ctx := context.Background()
+func (s *PostgresStore) Delete(ctx context.Context, input DeleteInput) (DeleteResult, error) {
+	// A delete is several separate writes (the row, its orphaned tags, the
+	// audit entry) followed by removing the files. A request cancelled part-way
+	// would leave the files on disk with no row, or a meme hidden for approval
+	// with no audit entry, so it runs to completion once started.
+	ctx = context.WithoutCancel(ctx)
 	id := strings.TrimSpace(input.ID)
 	var storedName string
 	err := s.pool.QueryRow(ctx, `SELECT stored_name FROM memes WHERE id = $1`, id).Scan(&storedName)
@@ -576,7 +640,7 @@ func (s *PostgresStore) Delete(input DeleteInput) (DeleteResult, error) {
 		return DeleteResult{}, os.ErrNotExist
 	}
 
-	if err := s.deleteOrphanTags(ctx, s.pool, orphanCandidates); err != nil {
+	if err := s.deleteOrphanTagsInTx(ctx, orphanCandidates); err != nil {
 		return DeleteResult{}, err
 	}
 
@@ -752,8 +816,8 @@ func (s *PostgresStore) getByHash(ctx context.Context, contentHash string) (Meme
 }
 
 // AllStoredFiles returns every meme row, hidden and pending-delete included.
-func (s *PostgresStore) AllStoredFiles() ([]StoredFile, error) {
-	rows, err := s.pool.Query(context.Background(), `
+func (s *PostgresStore) AllStoredFiles(ctx context.Context) ([]StoredFile, error) {
+	rows, err := s.pool.Query(ctx, `
 		SELECT id, original_name, stored_name, file_path, COALESCE(hidden_from_app, FALSE), size_bytes
 		FROM memes
 	`)

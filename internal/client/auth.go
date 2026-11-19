@@ -133,6 +133,13 @@ type authService struct {
 	sessionMu        sync.Mutex
 	sessionCache     map[string]sessionCacheEntry
 	lastProfileWrite map[string]time.Time
+
+	// runBestEffort starts the "last active" profile write off the request
+	// path. NewServer points it at Server.startBestEffortJob, which tracks the
+	// write for shutdown and skips it while a restore holds background work;
+	// it reports false when the write was skipped. An authService built on its
+	// own (as in tests) leaves it nil and writes on a plain goroutine.
+	runBestEffort func(work func(ctx context.Context)) bool
 }
 
 type discordTokenResponse struct {
@@ -155,12 +162,20 @@ func newAuthService(config DiscordAuthConfig, users authUserStore) *authService 
 	return &authService{
 		config:           config,
 		secret:           []byte(config.SessionSecret),
-		client:           &http.Client{Timeout: 15 * time.Second},
+		client:           newDiscordAuthClient(),
 		users:            users,
 		pendingStates:    map[string]time.Time{},
 		sessionCache:     map[string]sessionCacheEntry{},
 		lastProfileWrite: map[string]time.Time{},
 	}
+}
+
+// newDiscordAuthClient talks to Discord's OAuth token and /users/@me endpoints.
+// It must not leave Transport nil: with MEMEINDEX_MEDIAFETCH_PROXY set, compose
+// exports HTTP(S)_PROXY for the downloader and discord.com is not on that
+// proxy's allowlist, so login would fail at the token exchange.
+func newDiscordAuthClient() *http.Client {
+	return &http.Client{Transport: newDiscordTransport(), Timeout: 15 * time.Second}
 }
 
 func (a *authService) enabled() bool {
@@ -237,13 +252,16 @@ func (a *authService) signedValue(value string) string {
 	return value + "." + a.sign(value)
 }
 
+// verifySignedValue checks a signedValue and returns the value it carries. The
+// signature is hex, so it never contains a dot, but the value can (a return
+// path such as /?q=foo.bar): split on the last dot only.
 func (a *authService) verifySignedValue(signed string) (string, bool) {
-	parts := strings.Split(signed, ".")
-	if len(parts) != 2 {
+	dot := strings.LastIndexByte(signed, '.')
+	if dot < 0 {
 		return "", false
 	}
-	value := parts[0]
-	signature := parts[1]
+	value := signed[:dot]
+	signature := signed[dot+1:]
 	if !hmac.Equal([]byte(signature), []byte(a.sign(value))) {
 		return "", false
 	}
@@ -363,14 +381,14 @@ func (a *authService) consumeValidState(r *http.Request) bool {
 	return ok && now.Before(expiresAt)
 }
 
-func (a *authService) createSession(user discordUser) (authSession, string, error) {
+func (a *authService) createSession(ctx context.Context, user discordUser) (authSession, string, error) {
 	if a.users != nil {
-		if err := a.users.UpsertDiscordProfile(context.Background(), user); err != nil {
+		if err := a.users.UpsertDiscordProfile(ctx, user); err != nil {
 			return authSession{}, "", err
 		}
 	}
 
-	permissions := a.permissionsForUser(user.ID)
+	permissions := a.permissionsForUser(ctx, user.ID)
 	displayName := strings.TrimSpace(user.GlobalName)
 	if displayName == "" {
 		displayName = user.Username
@@ -383,8 +401,14 @@ func (a *authService) createSession(user discordUser) (authSession, string, erro
 		DisplayName:    displayName,
 		AvatarURL:      discordAvatarURL(user),
 		Permissions:    permissions,
-		SessionVersion: a.currentSessionVersion(user.ID),
+		SessionVersion: a.currentSessionVersion(ctx, user.ID),
 		ExpiresAt:      expiresAt,
+	}
+	// Both lookups above fall back to defaults on any error. One the request's
+	// cancel cut short would otherwise read as an unapproved account at
+	// session version 1.
+	if err := ctx.Err(); err != nil {
+		return authSession{}, "", err
 	}
 
 	token, err := a.issueSessionToken(session)
@@ -580,6 +604,21 @@ func (a *authService) invalidateUser(userID string) {
 	delete(a.lastProfileWrite, userID)
 }
 
+// invalidateAll drops every cached session and profile write throttle. A
+// backup restore or migration import replaces app_users wholesale, so a
+// session cached from before it could belong to an account the restored data
+// no longer has, or carry permissions or a session version that changed;
+// without this it would keep validating for up to sessionCacheTTL.
+func (a *authService) invalidateAll() {
+	if a == nil {
+		return
+	}
+	a.sessionMu.Lock()
+	defer a.sessionMu.Unlock()
+	clear(a.sessionCache)
+	clear(a.lastProfileWrite)
+}
+
 // maybeTouchProfile refreshes the user's "last active" profile row at most once
 // per profileTouchInterval, off the request path. The write is best-effort: it
 // is not an auth gate (the session-version check is), so a failure only clears
@@ -601,27 +640,41 @@ func (a *authService) maybeTouchProfile(claims authClaims) {
 	a.lastProfileWrite[userID] = time.Now()
 	a.sessionMu.Unlock()
 
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	retryLater := func() {
+		a.sessionMu.Lock()
+		delete(a.lastProfileWrite, userID)
+		a.sessionMu.Unlock()
+	}
+	touch := func(ctx context.Context) {
+		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 		if err := a.users.UpsertSessionProfile(ctx, claims); err != nil {
 			log.Printf("auth: background profile refresh for %s failed: %v", sanitizeLogField(userID), err)
-			a.sessionMu.Lock()
-			delete(a.lastProfileWrite, userID)
-			a.sessionMu.Unlock()
+			retryLater()
 		}
-	}()
+	}
+	if a.runBestEffort == nil {
+		go touch(context.Background())
+		return
+	}
+	// Skipped, never waited for, while a restore replaces app_users (or once
+	// shutdown has begun): this runs on every authenticated request, reads
+	// included, and must not hold one up. The next request after the restore
+	// tries again.
+	if !a.runBestEffort(touch) {
+		retryLater()
+	}
 }
 
 // currentSessionVersion reads the user's session version for embedding in a
 // freshly minted token. It falls back to 1 (the schema default) when the store
 // is absent or has no row yet so the token is always well-formed; a token that
 // still fails to match on the next request is rejected by sessionFromRequest.
-func (a *authService) currentSessionVersion(userID string) int64 {
+func (a *authService) currentSessionVersion(ctx context.Context, userID string) int64 {
 	if a.users == nil {
 		return 1
 	}
-	version, err := a.users.SessionVersion(context.Background(), userID)
+	version, err := a.users.SessionVersion(ctx, userID)
 	if err != nil || version <= 0 {
 		return 1
 	}
@@ -696,7 +749,7 @@ func discordAvatarURL(user discordUser) string {
 	return fmt.Sprintf("https://cdn.discordapp.com/avatars/%s/%s.png", user.ID, user.Avatar)
 }
 
-func (a *authService) permissionsForUser(userID string) authPermissions {
+func (a *authService) permissionsForUser(ctx context.Context, userID string) authPermissions {
 	normalizedUserID := strings.TrimSpace(userID)
 	if normalizedUserID == "" {
 		return authPermissions{}
@@ -704,7 +757,7 @@ func (a *authService) permissionsForUser(userID string) authPermissions {
 
 	base := authPermissions{}
 	if a.users != nil {
-		if record, ok, err := a.users.GetUser(context.Background(), normalizedUserID); err == nil && ok {
+		if record, ok, err := a.users.GetUser(ctx, normalizedUserID); err == nil && ok {
 			base = record.Permissions
 		}
 	}

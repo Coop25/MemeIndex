@@ -2,6 +2,7 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -151,6 +152,25 @@ func TestCreatingASharePostsItsLinkToTheDiscordWarmupWebhook(t *testing.T) {
 	}
 	if output := logs.String(); !strings.Contains(output, "Discord warm-up: preview ready after") || !strings.Contains(output, "(video)") {
 		t.Fatalf("log does not say when Discord finished:\n%s", output)
+	}
+}
+
+// The warm-up must post the clean link the app hands out, which is the one
+// Cloudflare caches, even when the original filename has spaces in it.
+func TestDiscordWarmupPostsTheCleanLinkForAnOddOriginalName(t *testing.T) {
+	server, store, _ := newShareTestServer(t)
+	fake := newFakeDiscord(t, server, previewAfterPolls(1))
+	meme, err := store.Create(context.Background(), accessor.CreateInput{File: strings.NewReader("clip bytes"), Filename: "clip.mp4 (1)", ContentType: "video/mp4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	link := createShareLink(t, server, meme)
+	if !strings.HasSuffix(link, ".mp4") || strings.ContainsAny(link, " ()") {
+		t.Fatalf("share link = %q, want a clean .mp4 link", link)
+	}
+	if posts := fake.wait(server); len(posts) != 1 || posts[0] != link {
+		t.Fatalf("posted %q, want exactly the new link %q", posts, link)
 	}
 }
 

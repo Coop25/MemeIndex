@@ -23,7 +23,8 @@ function openAudiobookUploadModal() {
 // same as before) rather than forcing one trip through this modal per file.
 // ---------------------------------------------------------------------------
 
-// { file, status: "queued"|"uploading"|"done"|"error"|"cancelled", message }
+// { file, status: "queued"|"uploading"|"done"|"error"|"cancelled", message,
+//   resumable } - resumable marks an "error" the next Upload click retries.
 let audiobookUploadQueue = [];
 // Checked at the top of every queue iteration, not just mid-file (where
 // state.audiobooks.upload.cancelled is): Cancel can land in the brief gap
@@ -269,6 +270,16 @@ async function submitAudiobookUpload(event) {
   // click is what "resume the rest of the queue" means, including right
   // after a cancel.
   audiobookUploadQueueCancelled = false;
+  // The file that stopped the queue last time - an upload the server still
+  // has open, kept by its resume marker - is what "click Upload again"
+  // retries, so queue it again. Files the server refused stay done with.
+  for (const entry of audiobookUploadQueue) {
+    if (entry.status === "error" && entry.resumable) {
+      entry.status = "queued";
+      entry.message = "";
+      entry.resumable = false;
+    }
+  }
 
   setAudiobookUploadFormBusy(true);
   audiobookUploadCancel?.classList.remove("hidden");
@@ -312,12 +323,20 @@ async function submitAudiobookUpload(event) {
         showToast(`"${entry.file.name}": an audiobook with this title already exists.`, "error", { title: "Audiobooks" });
         continue;
       }
+      if (error instanceof AudiobookUploadRejected) {
+        entry.status = "error";
+        entry.message = error.message;
+        renderAudiobookUploadQueue();
+        showToast(`"${entry.file.name}": ${error.message}`, "error", { title: "Audiobooks" });
+        continue;
+      }
 
       entry.status = error instanceof AudiobookUploadCancelled ? "cancelled" : "error";
+      entry.resumable = !(error instanceof AudiobookUploadCancelled || error instanceof AudiobookUploadForbidden);
       if (error instanceof AudiobookUploadCancelled) {
         entry.message = "Cancelled";
         if (audiobookUploadStatus) audiobookUploadStatus.textContent = "Upload cancelled.";
-      } else if (error instanceof AudiobookUploadForbidden) {
+      } else if (error instanceof AudiobookUploadForbidden || error instanceof AudiobookUploadIncomplete) {
         entry.message = error.message;
         if (audiobookUploadStatus) audiobookUploadStatus.textContent = error.message;
       } else {
@@ -353,9 +372,11 @@ async function submitAudiobookUpload(event) {
 // uploadOneAudiobookFile runs the resumable-chunked-upload dance for a single
 // file: create or resume the upload session, stream whatever's missing over
 // several concurrent chunk workers, then finalize it server-side. Throws
-// AudiobookUploadDuplicate for a 409 (caller skips to the next queued file),
-// AudiobookUploadCancelled/AudiobookUploadForbidden to stop the whole queue,
-// or any other Error for a hard failure that also stops the queue.
+// AudiobookUploadDuplicate or AudiobookUploadRejected when the server refuses
+// the finished file (caller skips to the next queued file),
+// AudiobookUploadCancelled/AudiobookUploadForbidden/AudiobookUploadIncomplete
+// to stop the whole queue, or any other Error for a hard failure that also
+// stops the queue.
 async function uploadOneAudiobookFile(file, title, author) {
   let uploadId = "";
   let receivedRanges = [];
@@ -395,6 +416,45 @@ async function uploadOneAudiobookFile(file, title, author) {
   state.audiobooks.upload = { id: uploadId, cancelled: false };
   saveAudiobookUploadMarker({ uploadId, filename: file.name, totalBytes: file.size });
 
+  await uploadMissingAudiobookChunks(uploadId, file, receivedRanges);
+
+  if (audiobookUploadStatus) audiobookUploadStatus.textContent = "Finishing up...";
+  const duration = await probeAudioDuration(file);
+  let completeResponse = await completeAudiobookUpload(uploadId, duration);
+  let conflict = await readAudiobookUploadConflict(completeResponse);
+  if (conflict?.code === "incomplete") {
+    // Every chunk reported success, yet the server is missing bytes. The
+    // upload is still open there, so ask it which ranges it has, send the
+    // rest, and finish once more.
+    if (audiobookUploadStatus) audiobookUploadStatus.textContent = "Re-sending missing parts...";
+    await uploadMissingAudiobookChunks(uploadId, file, await fetchAudiobookUploadRanges(uploadId));
+    if (audiobookUploadStatus) audiobookUploadStatus.textContent = "Finishing up...";
+    completeResponse = await completeAudiobookUpload(uploadId, duration);
+    conflict = await readAudiobookUploadConflict(completeResponse);
+    if (conflict?.code === "incomplete") {
+      // Keep the resume marker: the next Upload click carries on from here.
+      state.audiobooks.upload = null;
+      throw new AudiobookUploadIncomplete("The server is still missing part of this file. Click Upload to try again.");
+    }
+  }
+  if (conflict) {
+    // A duplicate or a file that is not audio: the server has discarded it.
+    saveAudiobookUploadMarker(null);
+    state.audiobooks.upload = null;
+    if (conflict.code === "duplicate") throw new AudiobookUploadDuplicate();
+    throw new AudiobookUploadRejected(conflict.message || "The server refused this file.");
+  }
+  if (!(await expectAuthorized(completeResponse, "Could not finish the upload."))) {
+    throw new Error("audiobook upload complete failed");
+  }
+
+  saveAudiobookUploadMarker(null);
+  state.audiobooks.upload = null;
+}
+
+// uploadMissingAudiobookChunks sends every byte of file outside receivedRanges
+// (what the server already has), drawing the progress bar and part grid.
+async function uploadMissingAudiobookChunks(uploadId, file, receivedRanges) {
   let uploadedBytes = receivedRanges.reduce((sum, range) => sum + (range.end - range.start), 0);
   updateAudiobookUploadProgress(uploadedBytes, file.size);
 
@@ -434,26 +494,43 @@ async function uploadOneAudiobookFile(file, title, author) {
   }
 
   await Promise.all(Array.from({ length: workerCount }, runAudiobookUploadWorker));
+}
 
-  if (audiobookUploadStatus) audiobookUploadStatus.textContent = "Finishing up...";
-  const duration = await probeAudioDuration(file);
-  const completeResponse = await fetch(`/api/audiobooks/uploads/${encodeURIComponent(uploadId)}/complete`, {
+function completeAudiobookUpload(uploadId, durationSeconds) {
+  return fetch(`/api/audiobooks/uploads/${encodeURIComponent(uploadId)}/complete`, {
     method: "POST",
     credentials: "same-origin",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ durationSeconds: duration }),
+    body: JSON.stringify({ durationSeconds }),
   });
-  if (completeResponse.status === 409) {
-    saveAudiobookUploadMarker(null);
-    state.audiobooks.upload = null;
-    throw new AudiobookUploadDuplicate();
-  }
-  if (!(await expectAuthorized(completeResponse, "Could not finish the upload."))) {
-    throw new Error("audiobook upload complete failed");
-  }
+}
 
-  saveAudiobookUploadMarker(null);
-  state.audiobooks.upload = null;
+// readAudiobookUploadConflict returns null unless response is the 409 the
+// complete endpoint answers with when the uploader has something to fix. Its
+// code says what: "duplicate" and "not_audio" (the server has discarded the
+// upload) or "incomplete" (the upload is still open and missing bytes).
+async function readAudiobookUploadConflict(response) {
+  if (response.status !== 409) return null;
+  let body = null;
+  try {
+    body = await response.json();
+  } catch (error) {
+    // Not JSON: carry on with no code or message.
+  }
+  return { code: String(body?.code || ""), message: String(body?.error || "") };
+}
+
+// fetchAudiobookUploadRanges asks the server which byte ranges of an open
+// upload it has received: the same status call a resumed upload starts with.
+async function fetchAudiobookUploadRanges(uploadId) {
+  const response = await fetch(`/api/audiobooks/uploads/${encodeURIComponent(uploadId)}`, {
+    credentials: "same-origin",
+  });
+  if (!(await expectAuthorized(response, "Could not check the upload."))) {
+    throw new Error("audiobook upload status failed");
+  }
+  const payload = await response.json();
+  return payload.received_ranges || [];
 }
 
 async function cancelAudiobookUpload() {

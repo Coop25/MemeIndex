@@ -222,7 +222,7 @@ func (s *Server) collectStorageReferences(ctx context.Context) (storageReference
 		return refs, nil, fmt.Errorf("meme store directories do not match data dir %s", dataDir)
 	}
 
-	files, err := s.managers.StoredMemeFiles()
+	files, err := s.managers.StoredMemeFiles(ctx)
 	if err != nil {
 		return refs, nil, err
 	}
@@ -348,6 +348,29 @@ type adminStorageState struct {
 
 	// deleteMu runs orphan delete batches one at a time.
 	deleteMu sync.Mutex
+	// remove deletes one orphan; nil means os.Remove. Tests override it to
+	// make a removal fail.
+	remove func(string) error
+}
+
+func (st *adminStorageState) removeFile(path string) error {
+	if st.remove != nil {
+		return st.remove(path)
+	}
+	return os.Remove(path)
+}
+
+// orphanRemoveError describes a failed orphan removal for the admin's
+// per-file result. The common causes get a reason of their own; anything
+// else, like the operating system's own wording, stays in the server log.
+func orphanRemoveError(err error) error {
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return userErrorWrap("remove failed: the file is already gone", err)
+	case errors.Is(err, fs.ErrPermission):
+		return userErrorWrap("remove failed: permission denied", err)
+	}
+	return err
 }
 
 func (st *adminStorageState) invalidateReport() {
@@ -394,6 +417,9 @@ func (s *Server) handleAdminStorage(w http.ResponseWriter, r *http.Request) {
 	}
 	report, err := s.cachedStorageReport(r.Context(), r.URL.Query().Get("refresh") == "1")
 	if err != nil {
+		if requestAbandoned(r, err) {
+			return
+		}
 		log.Printf("admin storage report failed: %v", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "storage report failed"})
 		return
@@ -411,6 +437,12 @@ func (s *Server) cachedStorageReport(ctx context.Context, refresh bool) (adminSt
 	report, err := s.buildStorageReport(ctx)
 	if err != nil {
 		return adminStorageReport{}, err
+	}
+	if ctx.Err() != nil {
+		// Each part of the report is best-effort, so a request that went away
+		// part-way gets a report with pieces missing. Don't keep it for the
+		// next admin.
+		return report, nil
 	}
 	st.report, st.reportAt, st.reportValid = report, time.Now(), true
 	return report, nil
@@ -434,8 +466,10 @@ func (s *Server) buildStorageReport(ctx context.Context) (adminStorageReport, er
 		return userID
 	}
 
-	if files, err := s.managers.StoredMemeFiles(); err != nil {
-		log.Printf("admin storage meme sizes failed: %v", err)
+	if files, err := s.managers.StoredMemeFiles(ctx); err != nil {
+		if ctx.Err() == nil {
+			log.Printf("admin storage meme sizes failed: %v", err)
+		}
 	} else {
 		for _, f := range files {
 			report.Largest = append(report.Largest, storageLargeFile{Kind: "meme", ID: f.ID, Name: f.Title, Bytes: f.SizeBytes})
@@ -443,14 +477,18 @@ func (s *Server) buildStorageReport(ctx context.Context) (adminStorageReport, er
 	}
 	if s.audiobooks != nil {
 		if books, err := s.audiobooks.ListStoragePaths(ctx); err != nil {
-			log.Printf("admin storage audiobook sizes failed: %v", err)
+			if ctx.Err() == nil {
+				log.Printf("admin storage audiobook sizes failed: %v", err)
+			}
 		} else {
 			for _, b := range books {
 				report.Largest = append(report.Largest, storageLargeFile{Kind: "audiobook", ID: b.ID, Name: b.Title, Bytes: b.SizeBytes, Owner: owner(b.UploadedBy)})
 			}
 		}
 		if uploads, err := s.audiobooks.ListInProgressUploads(ctx); err != nil {
-			log.Printf("admin storage uploads failed: %v", err)
+			if ctx.Err() == nil {
+				log.Printf("admin storage uploads failed: %v", err)
+			}
 		} else {
 			for _, u := range uploads {
 				report.Uploads = append(report.Uploads, adminUploadInProgress{
@@ -480,7 +518,9 @@ func (s *Server) adminUserNames(ctx context.Context) map[string]string {
 	}
 	users, err := s.users.ListUsers(ctx)
 	if err != nil {
-		log.Printf("admin storage user names failed: %v", err)
+		if ctx.Err() == nil {
+			log.Printf("admin storage user names failed: %v", err)
+		}
 		return names
 	}
 	for _, user := range users {
@@ -514,6 +554,9 @@ func (s *Server) handleStorageOrphanScan(w http.ResponseWriter, r *http.Request)
 		// A failed scan clears the allow-list: nothing is deletable until a
 		// scan succeeds again.
 		s.storage.setScan(nil)
+		if requestAbandoned(r, err) {
+			return
+		}
 		log.Printf("admin storage orphan scan failed: %v", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "storage scan failed"})
 		return
@@ -570,6 +613,9 @@ func (s *Server) handleStorageOrphanDelete(w http.ResponseWriter, r *http.Reques
 		fresh, err = findOrphans(s.config.DataDir, refs, time.Now())
 	}
 	if err != nil {
+		if requestAbandoned(r, err) {
+			return
+		}
 		log.Printf("admin storage orphan delete: reference check failed, nothing deleted: %v", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not verify file references; nothing was deleted"})
 		return
@@ -590,8 +636,10 @@ func (s *Server) handleStorageOrphanDelete(w http.ResponseWriter, r *http.Reques
 		path, size, reason := s.checkOrphanDeletable(raw, root, resolvedRoot, rootErr, freshSet, seen)
 		if reason != "" {
 			res.Error = reason
-		} else if err := os.Remove(path); err != nil {
-			res.Error = "remove failed: " + err.Error()
+		} else if err := s.storage.removeFile(path); err != nil {
+			err = orphanRemoveError(err)
+			log.Printf("admin storage orphan delete: %s", sanitizeLogField(err.Error()))
+			res.Error = clientSafeError(err, "remove failed; the server log has the details")
 		} else {
 			res.Deleted = true
 			deleted++

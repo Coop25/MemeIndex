@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"errors"
 	"log"
 	"mime/multipart"
@@ -84,6 +85,12 @@ func (s *Server) handleShareTarget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = r.MultipartForm.RemoveAll() }()
+	// The share has been received in full. Save every file in it and queue
+	// each one for tag suggestions even if the sharer goes away now: the
+	// store finishes a save once started anyway, and a meme that is saved but
+	// never queued would get no suggestions until the next restart re-seeds
+	// the queue.
+	saveCtx := context.WithoutCancel(r.Context())
 
 	actor := currentAuditActor(r)
 	notes := sharedNotes(r.FormValue("title"), r.FormValue("text"))
@@ -101,7 +108,7 @@ func (s *Server) handleShareTarget(w http.ResponseWriter, r *http.Request) {
 				log.Printf("share-target: open shared file failed: %v", err)
 				continue
 			}
-			meme, err := s.managers.CreateMemeAs(actor, src, fileHeader.Header, fileHeader.Filename, nil, notes)
+			meme, err := s.managers.CreateMemeAs(saveCtx, actor, src, fileHeader.Header, fileHeader.Filename, nil, notes)
 			_ = src.Close()
 			if err != nil {
 				var duplicateErr *accessor.DuplicateMemeError
@@ -113,7 +120,7 @@ func (s *Server) handleShareTarget(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			created++
-			s.managers.QueueMemeTagSuggestions(meme.ID)
+			s.managers.QueueMemeTagSuggestions(saveCtx, meme.ID)
 		}
 		switch {
 		case created > 0:
@@ -150,7 +157,7 @@ func (s *Server) handleShareTarget(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		s.managers.QueueMemeTagSuggestions(meme.ID)
+		s.managers.QueueMemeTagSuggestions(saveCtx, meme.ID)
 		http.Redirect(w, r, "/?shared=ok&n=1", http.StatusSeeOther)
 		return
 	}

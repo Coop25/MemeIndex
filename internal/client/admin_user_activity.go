@@ -42,13 +42,17 @@ func (s *Server) handleAdminUserActivity(w http.ResponseWriter, r *http.Request)
 
 	// Each source is best-effort: a store that cannot report a figure leaves
 	// it at zero rather than failing the whole page.
-	uploads, err := s.managers.CountAuditActionsByActor("uploaded")
+	uploads, err := s.managers.CountAuditActionsByActor(r.Context(), "uploaded")
 	if err != nil {
-		log.Printf("admin user activity uploads failed: %v", err)
+		if !requestAbandoned(r, err) {
+			log.Printf("admin user activity uploads failed: %v", err)
+		}
 	}
-	favorites, err := s.managers.CountFavoritesByUser()
+	favorites, err := s.managers.CountFavoritesByUser(r.Context())
 	if err != nil {
-		log.Printf("admin user activity favorites failed: %v", err)
+		if !requestAbandoned(r, err) {
+			log.Printf("admin user activity favorites failed: %v", err)
+		}
 	}
 	var books map[string]audiobooks.UserTotals
 	if s.audiobooks != nil {

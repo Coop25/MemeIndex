@@ -22,7 +22,7 @@ func TestListAuditFeedFilterByActor(t *testing.T) {
 	token := "auditactor" + randToken(t)
 	userA, userB := token+"-a", token+"-b"
 	for i, u := range []string{userA, userB, userA} {
-		if _, err := store.Create(CreateInput{
+		if _, err := store.Create(context.Background(), CreateInput{
 			File:        strings.NewReader("bytes " + u + string(rune('a'+i))),
 			Header:      textproto.MIMEHeader{"Content-Type": []string{"image/png"}},
 			Filename:    u + ".png",
@@ -33,7 +33,7 @@ func TestListAuditFeedFilterByActor(t *testing.T) {
 		}
 	}
 
-	feed, err := store.ListAuditFeed(0, 50, userA)
+	feed, err := store.ListAuditFeed(context.Background(), 0, 50, userA)
 	if err != nil {
 		t.Fatalf("ListAuditFeed: %v", err)
 	}
@@ -45,11 +45,11 @@ func TestListAuditFeedFilterByActor(t *testing.T) {
 			t.Errorf("event actor %q, want %q", e.Actor.UserID, userA)
 		}
 	}
-	paged, err := store.ListAuditFeed(0, 1, userA)
+	paged, err := store.ListAuditFeed(context.Background(), 0, 1, userA)
 	if err != nil || paged.Total != 2 || len(paged.Events) != 1 || !paged.HasMore {
 		t.Fatalf("paged = %+v err %v, want total 2, 1 event, has_more", paged, err)
 	}
-	all, err := store.ListAuditFeed(0, 1, "")
+	all, err := store.ListAuditFeed(context.Background(), 0, 1, "")
 	if err != nil || all.Total < 3 {
 		t.Fatalf("unfiltered total = %d err %v, want >= 3", all.Total, err)
 	}
@@ -72,7 +72,7 @@ func newRegressionStore(t *testing.T) *PostgresStore {
 func TestSuggestTagsReturnsPrefixMatches(t *testing.T) {
 	store := newRegressionStore(t)
 	token := "sugg" + randToken(t)
-	if _, err := store.Create(CreateInput{
+	if _, err := store.Create(context.Background(), CreateInput{
 		File:        strings.NewReader("suggest bytes " + token),
 		Header:      textproto.MIMEHeader{"Content-Type": []string{"image/png"}},
 		Filename:    token + ".png",
@@ -82,7 +82,7 @@ func TestSuggestTagsReturnsPrefixMatches(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	got := store.SuggestTags(token, 10)
+	got := store.SuggestTags(context.Background(), token, 10)
 	if len(got) != 2 {
 		t.Fatalf("SuggestTags(%q) = %v, want 2 tags", token, got)
 	}
@@ -91,7 +91,7 @@ func TestSuggestTagsReturnsPrefixMatches(t *testing.T) {
 func TestListMemeAuditReturnsEntries(t *testing.T) {
 	store := newRegressionStore(t)
 	token := "mAudit" + randToken(t)
-	meme, err := store.Create(CreateInput{
+	meme, err := store.Create(context.Background(), CreateInput{
 		File:        strings.NewReader("audit bytes " + token),
 		Header:      textproto.MIMEHeader{"Content-Type": []string{"image/png"}},
 		Filename:    token + ".png",
@@ -101,7 +101,7 @@ func TestListMemeAuditReturnsEntries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	entries, err := store.ListMemeAudit(meme.ID, 10)
+	entries, err := store.ListMemeAudit(context.Background(), meme.ID, 10)
 	if err != nil {
 		t.Fatalf("ListMemeAudit: %v", err)
 	}

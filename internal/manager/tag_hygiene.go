@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"context"
 	"errors"
 	"log"
 	"memeindex/internal/accessor"
@@ -83,16 +84,16 @@ type TagMergeResult struct {
 // snapshot kept warm by the background worker (see StartTagHygieneWorker); with
 // no worker running it computes and memoizes the report inline on first use.
 // Callers receive an independent deep copy.
-func (m *MemeManager) TagHygieneReport() TagHygieneReport {
-	report, _, _ := m.tagHygieneSnapshot()
+func (m *MemeManager) TagHygieneReport(ctx context.Context) TagHygieneReport {
+	report, _, _ := m.tagHygieneSnapshot(ctx)
 	return report
 }
 
 // TagHygienePage returns a paged slice of the tag-hygiene report plus snapshot
 // freshness metadata, without ever running the O(n^2) recompute on the caller's
 // goroutine when the background worker is active.
-func (m *MemeManager) TagHygienePage(params TagHygienePageParams) TagHygienePageResult {
-	report, ready, computedAt := m.tagHygieneSnapshot()
+func (m *MemeManager) TagHygienePage(ctx context.Context, params TagHygienePageParams) TagHygienePageResult {
+	report, ready, computedAt := m.tagHygieneSnapshot(ctx)
 
 	limit := params.Limit
 	if limit <= 0 {
@@ -175,7 +176,7 @@ func pageBounds(n, offset, limit int) (int, int) {
 // tagHygieneSnapshot returns the current warm snapshot. With a running worker it
 // never blocks: a nil snapshot means the first computation is still in flight,
 // reported as Ready=false. With no worker it computes and memoizes inline.
-func (m *MemeManager) tagHygieneSnapshot() (report TagHygieneReport, ready bool, computedAt time.Time) {
+func (m *MemeManager) tagHygieneSnapshot(ctx context.Context) (report TagHygieneReport, ready bool, computedAt time.Time) {
 	m.adminReadMu.Lock()
 	snap := m.tagHygieneCache
 	at := m.tagHygieneCachedAt
@@ -190,7 +191,11 @@ func (m *MemeManager) tagHygieneSnapshot() (report TagHygieneReport, ready bool,
 		return TagHygieneReport{Tags: []TagHygieneTag{}, Pairs: []TagHygienePair{}}, false, time.Time{}
 	}
 
-	fresh := m.computeTagHygieneReport()
+	fresh := m.computeTagHygieneReport(ctx)
+	if ctx.Err() != nil {
+		// Computed from reads the cancelled request cut short; don't keep it.
+		return fresh, true, time.Now()
+	}
 	stored := cloneTagHygieneReport(fresh)
 	m.adminReadMu.Lock()
 	m.tagHygieneCache = &stored
@@ -255,12 +260,24 @@ func (m *MemeManager) runTagHygieneWorker() {
 	}
 }
 
+// refreshTagHygieneSnapshot recomputes the report on the worker goroutine. It
+// waits out a restore in progress rather than scanning half-restored tables,
+// and returns without recomputing if the workers stop in the meantime.
 func (m *MemeManager) refreshTagHygieneSnapshot() {
+	if !m.enterBackgroundWork() {
+		return
+	}
+	defer m.leaveBackgroundWork()
+
 	m.adminReadMu.Lock()
 	m.tagHygieneDirty = false
 	m.adminReadMu.Unlock()
 
-	report := m.computeTagHygieneReport()
+	report := m.computeTagHygieneReport(m.workerCtx)
+	if m.workerCtx.Err() != nil {
+		// Stopped part-way by shutdown; keep the last complete snapshot.
+		return
+	}
 	stored := cloneTagHygieneReport(report)
 
 	m.adminReadMu.Lock()
@@ -301,8 +318,8 @@ func (m *MemeManager) markTagsChanged() {
 	}
 }
 
-func (m *MemeManager) computeTagHygieneReport() TagHygieneReport {
-	tagCounts := m.tagUsageCounts()
+func (m *MemeManager) computeTagHygieneReport(ctx context.Context) TagHygieneReport {
+	tagCounts := m.tagUsageCounts(ctx)
 
 	tagNames := make([]string, 0, len(tagCounts))
 	for tag := range tagCounts {
@@ -372,17 +389,19 @@ func (m *MemeManager) computeTagHygieneReport() TagHygieneReport {
 
 // tagUsageCounts returns tag name -> number of visible memes carrying it,
 // resolved in SQL where the store supports it and by a full scan otherwise.
-func (m *MemeManager) tagUsageCounts() map[string]int {
+func (m *MemeManager) tagUsageCounts(ctx context.Context) map[string]int {
 	if tu, ok := m.store.(accessor.TagAdminStore); ok {
-		if counts, err := tu.TagUsageCounts(); err == nil {
+		if counts, err := tu.TagUsageCounts(ctx); err == nil {
 			return counts
+		} else if ctx.Err() != nil {
+			return map[string]int{}
 		} else {
 			log.Printf("tag usage counts: SQL failed, falling back to scan: %v", err)
 		}
 	}
 
 	counts := map[string]int{}
-	for _, meme := range m.store.List("", "", false, "") {
+	for _, meme := range m.store.List(ctx, "", "", false, "") {
 		for _, tag := range meme.Tags {
 			counts[tag] += 1
 		}
@@ -402,7 +421,7 @@ func cloneTagHygieneReport(in TagHygieneReport) TagHygieneReport {
 	return out
 }
 
-func (m *MemeManager) MergeTags(sourceTag string, targetTag string, actor accessor.AuditActor) (TagMergeResult, error) {
+func (m *MemeManager) MergeTags(ctx context.Context, sourceTag string, targetTag string, actor accessor.AuditActor) (TagMergeResult, error) {
 	sourceTag = strings.ToLower(strings.TrimSpace(sourceTag))
 	targetTag = strings.ToLower(strings.TrimSpace(targetTag))
 	if sourceTag == "" || targetTag == "" {
@@ -418,8 +437,13 @@ func (m *MemeManager) MergeTags(sourceTag string, targetTag string, actor access
 	// Fast path: one transaction that repoints tag links in bulk, instead of
 	// rewriting every affected meme (each of which re-swept the tags table).
 	if tm, ok := m.store.(accessor.TagAdminStore); ok {
-		counts, err := tm.MergeTag(sourceTag, targetTag, actor)
+		counts, err := tm.MergeTag(ctx, sourceTag, targetTag, actor)
 		if err != nil {
+			// A merge whose commit was cancelled in flight may still have
+			// been applied; drop the cached reads rather than keep them stale.
+			if ctx.Err() != nil {
+				m.invalidateAdminReadCache()
+			}
 			return TagMergeResult{}, err
 		}
 		if counts.Memes > 0 {
@@ -434,7 +458,7 @@ func (m *MemeManager) MergeTags(sourceTag string, targetTag string, actor access
 		}, nil
 	}
 
-	memes := m.store.List("", "", false, "")
+	memes := m.store.List(ctx, "", "", false, "")
 	result := TagMergeResult{
 		SourceTag: sourceTag,
 		TargetTag: targetTag,
@@ -443,21 +467,16 @@ func (m *MemeManager) MergeTags(sourceTag string, targetTag string, actor access
 		if !containsTag(meme.Tags, sourceTag) {
 			continue
 		}
-		nextTags := make([]string, 0, len(meme.Tags))
-		for _, tag := range meme.Tags {
-			normalized := strings.ToLower(strings.TrimSpace(tag))
-			if normalized == sourceTag {
-				nextTags = append(nextTags, targetTag)
-				continue
-			}
-			nextTags = append(nextTags, normalized)
-		}
-		if _, err := m.store.Update("", meme.ID, accessor.MemeUpdate{
-			Tags:     nextTags,
-			Notes:    meme.Notes,
-			Favorite: meme.Favorite,
-			Actor:    actor,
+		if _, err := m.store.EditMeme(ctx, "", meme.ID, accessor.MemeEdit{
+			TagsAdded:   []string{targetTag},
+			TagsRemoved: []string{sourceTag},
+			Actor:       actor,
 		}); err != nil {
+			// The memes already rewritten stay rewritten, and this one may
+			// have been too if the request ended after its commit.
+			if result.AffectedMemes > 0 || ctx.Err() != nil {
+				m.invalidateAdminReadCache()
+			}
 			return TagMergeResult{}, err
 		}
 		result.AffectedMemes += 1

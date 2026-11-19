@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"memeindex/internal/accessor"
+	"memeindex/internal/accessor/accessortest"
 	"memeindex/internal/manager"
 )
 
@@ -101,7 +101,10 @@ func TestRateLimiterSweepEvictsIdleBuckets(t *testing.T) {
 }
 
 func TestClientIPUsesConfiguredHeaderThenRemoteAddr(t *testing.T) {
-	withHeader := &Server{config: Config{ClientIPHeader: "CF-Connecting-IP"}}
+	withHeader := &Server{config: Config{
+		ClientIPHeader: "CF-Connecting-IP",
+		TrustedProxies: testTrustedProxies(t, "10.0.0.0/24", nil),
+	}}
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.RemoteAddr = "10.0.0.1:5555"
 	r.Header.Set("CF-Connecting-IP", "203.0.113.7")
@@ -109,17 +112,35 @@ func TestClientIPUsesConfiguredHeaderThenRemoteAddr(t *testing.T) {
 		t.Fatalf("clientIP with header = %q, want 203.0.113.7", got)
 	}
 
+	// The last address is the one the trusted proxy added; anything left of
+	// it came from the client.
 	r.Header.Set("CF-Connecting-IP", "198.51.100.4, 203.0.113.7")
-	if got := withHeader.clientIP(r); got != "198.51.100.4" {
-		t.Fatalf("clientIP with list header = %q, want 198.51.100.4", got)
+	if got := withHeader.clientIP(r); got != "203.0.113.7" {
+		t.Fatalf("clientIP with list header = %q, want 203.0.113.7", got)
 	}
 
-	noHeader := &Server{config: Config{}}
+	// The same header from a peer outside the trusted list is ignored, even
+	// though it was explicitly configured.
+	r.RemoteAddr = "10.0.1.1:5555"
+	if got := withHeader.clientIP(r); got != "10.0.1.1" {
+		t.Fatalf("clientIP with header from an untrusted peer = %q, want 10.0.1.1", got)
+	}
+
+	noHeader := &Server{config: Config{TrustedProxies: testTrustedProxies(t, "192.0.2.0/24", nil)}}
 	r2 := httptest.NewRequest(http.MethodGet, "/", nil)
 	r2.RemoteAddr = "192.0.2.9:41000"
-	r2.Header.Set("X-Forwarded-For", "1.2.3.4") // untrusted, must be ignored
+	r2.Header.Set("X-Forwarded-For", "1.2.3.4") // not the configured header, must be ignored
 	if got := noHeader.clientIP(r2); got != "192.0.2.9" {
 		t.Fatalf("clientIP without configured header = %q, want 192.0.2.9", got)
+	}
+
+	// No trusted proxies at all (the zero Config): nobody's header counts.
+	untrusting := &Server{config: Config{ClientIPHeader: "CF-Connecting-IP"}}
+	r3 := httptest.NewRequest(http.MethodGet, "/", nil)
+	r3.RemoteAddr = "127.0.0.1:41000"
+	r3.Header.Set("CF-Connecting-IP", "203.0.113.7")
+	if got := untrusting.clientIP(r3); got != "127.0.0.1" {
+		t.Fatalf("clientIP with no trusted proxies = %q, want 127.0.0.1", got)
 	}
 }
 
@@ -197,7 +218,7 @@ func TestRateLimitByIPMiddlewareBlocksAfterBurst(t *testing.T) {
 }
 
 func TestRoutesThrottleRepeatedLogins(t *testing.T) {
-	store, err := accessor.NewMemeStore(t.TempDir())
+	store, err := accessortest.NewMemeStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}

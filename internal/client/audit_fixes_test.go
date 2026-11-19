@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"mime"
 	"net/http"
 	"net/http/httptest"
 	"net/textproto"
@@ -12,6 +13,7 @@ import (
 	"testing"
 
 	"memeindex/internal/accessor"
+	"memeindex/internal/accessor/accessortest"
 	"memeindex/internal/audiobooks"
 	"memeindex/internal/manager"
 )
@@ -99,7 +101,7 @@ func TestUntrustedAssetHeadersNeutralizeScriptTypes(t *testing.T) {
 		{"/uploads/a.mjs", "", "application/octet-stream"},
 		{"/uploads/a.css", "", "application/octet-stream"},
 		{"/uploads/a.html", "", "application/octet-stream"},
-		{"/uploads/a.svg", "", ""},                                        // left to the file server, so <img> previews render
+		{"/uploads/a.svg", "", mime.TypeByExtension(".svg")},              // an image type, so <img> previews render
 		{"/uploads/a.png", "text/javascript", "application/octet-stream"}, // a client-claimed type on a share link
 		{"/uploads/a.png", "image/png", "image/png"},
 	} {
@@ -117,11 +119,11 @@ func TestUntrustedAssetHeadersNeutralizeScriptTypes(t *testing.T) {
 func newPatchTestServer(t *testing.T) (*Server, accessor.Meme) {
 	t.Helper()
 	server, _ := newShareTargetTestServer(t)
-	meme, err := server.managers.CreateMemeAs(accessor.AuditActor{}, strings.NewReader("hello"), textproto.MIMEHeader{}, "a.txt", []string{"cat", "dog"}, "original notes")
+	meme, err := server.managers.CreateMemeAs(context.Background(), accessor.AuditActor{}, strings.NewReader("hello"), textproto.MIMEHeader{}, "a.txt", []string{"cat", "dog"}, "original notes")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := server.managers.SetFavorite("", meme.ID, true); err != nil {
+	if _, err := server.managers.SetFavorite(context.Background(), "", meme.ID, true); err != nil {
 		t.Fatal(err)
 	}
 	return server, meme
@@ -142,7 +144,7 @@ func TestAnonymousModeCanEditMemes(t *testing.T) {
 	if code, body := patchMeme(t, server, meme.ID, `{"tags":["cat","dog","bird"],"notes":"hi"}`); code != http.StatusOK {
 		t.Fatalf("anonymous PATCH status = %d: %s", code, body)
 	}
-	got, err := server.managers.GetMeme("", meme.ID)
+	got, err := server.managers.GetMeme(context.Background(), "", meme.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +159,7 @@ func TestMemePatchKeepsOmittedFields(t *testing.T) {
 	if code, body := patchMeme(t, server, meme.ID, `{"notes":"only the notes changed"}`); code != http.StatusOK {
 		t.Fatalf("PATCH status = %d: %s", code, body)
 	}
-	got, err := server.managers.GetMeme("", meme.ID)
+	got, err := server.managers.GetMeme(context.Background(), "", meme.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +186,7 @@ func TestMemePatchTagDeltaMergesWithCurrentTags(t *testing.T) {
 	if code, body := patchMeme(t, server, meme.ID, `{"tags_added":["bird"],"tags_removed":["dog"]}`); code != http.StatusOK {
 		t.Fatalf("second PATCH status = %d: %s", code, body)
 	}
-	got, err := server.managers.GetMeme("", meme.ID)
+	got, err := server.managers.GetMeme(context.Background(), "", meme.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,8 +208,12 @@ func TestMemePatchTagDeltaStillEnforcesTagPermissions(t *testing.T) {
 	}
 }
 
-func TestClientIPTrustsCloudflareHeaderOnlyFromPrivatePeers(t *testing.T) {
-	server := &Server{}
+func TestClientIPTrustsCloudflareHeaderOnlyFromTrustedProxies(t *testing.T) {
+	// The default list, with "cloudflared" resolving to its container on the
+	// compose network.
+	server := &Server{config: Config{TrustedProxies: testTrustedProxies(t, defaultTrustedProxies, map[string][]string{
+		"cloudflared": {"172.18.0.5"},
+	})}}
 	request := func(remote string) *http.Request {
 		r := httptest.NewRequest(http.MethodGet, "/", nil)
 		r.RemoteAddr = remote
@@ -217,8 +223,19 @@ func TestClientIPTrustsCloudflareHeaderOnlyFromPrivatePeers(t *testing.T) {
 	if got := server.clientIP(request("172.18.0.5:41234")); got != "198.51.100.7" {
 		t.Errorf("cloudflared on the docker network: clientIP = %q, want the visitor's address", got)
 	}
+	if got := server.clientIP(request("127.0.0.1:41234")); got != "198.51.100.7" {
+		t.Errorf("proxy on loopback: clientIP = %q, want the visitor's address", got)
+	}
 	if got := server.clientIP(request("203.0.113.9:41234")); got != "203.0.113.9" {
 		t.Errorf("public peer spoofing the header: clientIP = %q, want the peer", got)
+	}
+	// A direct connection to the published port arrives from the Docker
+	// gateway, which is private but is not the proxy.
+	if got := server.clientIP(request("172.18.0.1:41234")); got != "172.18.0.1" {
+		t.Errorf("docker gateway spoofing the header: clientIP = %q, want the peer", got)
+	}
+	if got := server.clientIP(request("192.168.1.20:41234")); got != "192.168.1.20" {
+		t.Errorf("LAN peer spoofing the header: clientIP = %q, want the peer", got)
 	}
 	local := request("192.168.1.20:41234")
 	local = local.WithContext(context.WithValue(local.Context(), localTrustedContextKey{}, true))
@@ -245,15 +262,15 @@ func TestSessionCookieSecureBehindHTTPSProxy(t *testing.T) {
 }
 
 type hidingMemeStore struct {
-	*accessor.MemeStore
+	*accessortest.MemeStore
 	hidden []string
 }
 
-func (s hidingMemeStore) HiddenMemeIDs() ([]string, error) { return s.hidden, nil }
+func (s hidingMemeStore) HiddenMemeIDs(_ context.Context) ([]string, error) { return s.hidden, nil }
 
 func TestProtectedAssetsHideDirectoryListingsAndPendingDeletes(t *testing.T) {
 	dir := t.TempDir()
-	store, err := accessor.NewMemeStore(dir)
+	store, err := accessortest.NewMemeStore(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,7 +279,7 @@ func TestProtectedAssetsHideDirectoryListingsAndPendingDeletes(t *testing.T) {
 		t.Helper()
 		auth := newRevocationAuthService(&fakeSessionStore{version: 1, perms: perms})
 		server := &Server{managers: manager.NewMemeManager(hidingMemeStore{MemeStore: store, hidden: []string{"hidden-id"}}), auth: auth}
-		_, token, err := auth.createSession(discordUser{ID: "u1", Username: "user"})
+		_, token, err := auth.createSession(context.Background(), discordUser{ID: "u1", Username: "user"})
 		if err != nil {
 			t.Fatal(err)
 		}

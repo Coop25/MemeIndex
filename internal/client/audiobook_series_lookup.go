@@ -49,8 +49,10 @@ type audibleSeriesLookup struct {
 }
 
 func newAudibleSeriesLookup() *audibleSeriesLookup {
-	// http.DefaultTransport is the public-only pinned transport (or the
-	// configured egress proxy) - see pinDownloaderDefaultTransport.
+	// Transport is deliberately left nil: the Audible catalog is a public
+	// third-party host, so this rides http.DefaultTransport, which is the
+	// public-only pinned transport (or the configured egress proxy, which then
+	// has to allow api.audible.com) - see pinDownloaderDefaultTransport.
 	return &audibleSeriesLookup{client: &http.Client{Timeout: 15 * time.Second}, baseURL: audibleCatalogBaseURL}
 }
 

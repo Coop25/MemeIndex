@@ -1,6 +1,7 @@
 package accessor
 
 import (
+	"context"
 	"math"
 	"os"
 	"os/exec"
@@ -30,7 +31,7 @@ func TestRemuxMP3ToM4BKeepsChaptersAndAudio(t *testing.T) {
 	}
 
 	m4b := filepath.Join(dir, "book.m4b")
-	if err := RemuxMP3ToM4B(mp3, m4b); err != nil {
+	if err := RemuxMP3ToM4B(context.Background(), mp3, m4b); err != nil {
 		t.Fatalf("RemuxMP3ToM4B: %v", err)
 	}
 
@@ -95,7 +96,7 @@ func TestRemuxMP3ToM4BAcceptsJoinedMP3s(t *testing.T) {
 	}
 
 	m4b := filepath.Join(dir, "joined.m4b")
-	if err := RemuxMP3ToM4B(joined, m4b); err != nil {
+	if err := RemuxMP3ToM4B(context.Background(), joined, m4b); err != nil {
 		t.Fatalf("RemuxMP3ToM4B: %v", err)
 	}
 	got, err := ProbeAudioMetadata(m4b)
@@ -117,7 +118,7 @@ func TestRemuxMP3ToM4BRejectsNonAudio(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := filepath.Join(dir, "bogus.m4b")
-	if err := RemuxMP3ToM4B(bogus, out); err == nil {
+	if err := RemuxMP3ToM4B(context.Background(), bogus, out); err == nil {
 		t.Fatal("RemuxMP3ToM4B succeeded on a non-audio file")
 	}
 	if _, err := os.Stat(out); !os.IsNotExist(err) {

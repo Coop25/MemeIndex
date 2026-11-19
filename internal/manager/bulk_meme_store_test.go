@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"context"
 	"testing"
 
 	"memeindex/internal/accessor"
@@ -12,7 +13,7 @@ type bulkFakeStore struct {
 	lastIDs   []string
 }
 
-func (s *bulkFakeStore) MemesByIDs(ids []string) (map[string]accessor.Meme, error) {
+func (s *bulkFakeStore) MemesByIDs(_ context.Context, ids []string) (map[string]accessor.Meme, error) {
 	s.bulkCalls++
 	s.lastIDs = append([]string(nil), ids...)
 	out := map[string]accessor.Meme{}
@@ -35,7 +36,7 @@ func TestMemesByIDsUsesBatchWhenAvailable(t *testing.T) {
 	}}}}
 	m := NewMemeManager(store)
 
-	got := m.memeNamesByIDs([]string{"a", "b", "missing"})
+	got := m.memeNamesByIDs(context.Background(), []string{"a", "b", "missing"})
 
 	if store.bulkCalls != 1 {
 		t.Fatalf("bulk store queried %d times, want 1", store.bulkCalls)
@@ -58,7 +59,7 @@ func TestMemesByIDsFallsBackWithoutBulkCapability(t *testing.T) {
 	}}
 	m := NewMemeManager(store)
 
-	got := m.memesByIDs([]string{"a", "b"})
+	got := m.memesByIDs(context.Background(), []string{"a", "b"})
 
 	// adminReadCacheStore has no AdminMemeStore, so the only way these names come
 	// back is the per-id GetByID fallback path.

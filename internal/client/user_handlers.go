@@ -69,7 +69,7 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if s.auth.enabled() {
-			record.Permissions = s.auth.permissionsForUser(normalized)
+			record.Permissions = s.auth.permissionsForUser(r.Context(), normalized)
 		}
 		byID[normalized] = record
 	}
@@ -87,7 +87,7 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 		out = append(out, managedUserPayload(managedUserRecord{
 			UserID:      userID,
 			DisplayName: "Super Admin",
-			Permissions: s.auth.permissionsForUser(userID),
+			Permissions: s.auth.permissionsForUser(r.Context(), userID),
 		}, true))
 	}
 
@@ -126,7 +126,7 @@ func (s *Server) createManagedUser(w http.ResponseWriter, r *http.Request) {
 	// policy to apply) at all - s.auth is nil there, per s.auth.enabled().
 	if s.auth.enabled() {
 		s.auth.invalidateUser(record.UserID)
-		record.Permissions = s.auth.permissionsForUser(record.UserID)
+		record.Permissions = s.auth.permissionsForUser(r.Context(), record.UserID)
 	}
 	writeJSON(w, http.StatusCreated, managedUserPayload(record, false))
 }
@@ -192,7 +192,7 @@ func (s *Server) updateManagedUser(w http.ResponseWriter, r *http.Request, userI
 	// auth service at all - s.auth is nil there, per s.auth.enabled().
 	if s.auth.enabled() {
 		s.auth.invalidateUser(record.UserID)
-		record.Permissions = s.auth.permissionsForUser(record.UserID)
+		record.Permissions = s.auth.permissionsForUser(r.Context(), record.UserID)
 	}
 	writeJSON(w, http.StatusOK, managedUserPayload(record, false))
 }
@@ -226,46 +226,4 @@ func managedUserPayload(record managedUserRecord, isSuperAdmin bool) map[string]
 		"permissions":    record.Permissions,
 		"is_super_admin": isSuperAdmin,
 	}
-}
-
-func normalizePermissionTags(tags []string) []string {
-	out := make([]string, 0, len(tags))
-	seen := map[string]struct{}{}
-	for _, tag := range tags {
-		normalized := strings.ToLower(strings.TrimSpace(tag))
-		if normalized == "" {
-			continue
-		}
-		if _, exists := seen[normalized]; exists {
-			continue
-		}
-		seen[normalized] = struct{}{}
-		out = append(out, normalized)
-	}
-	return out
-}
-
-func diffTags(current []string, next []string) ([]string, []string) {
-	currentSet := map[string]struct{}{}
-	nextSet := map[string]struct{}{}
-	for _, tag := range current {
-		currentSet[tag] = struct{}{}
-	}
-	for _, tag := range next {
-		nextSet[tag] = struct{}{}
-	}
-
-	added := []string{}
-	removed := []string{}
-	for tag := range nextSet {
-		if _, exists := currentSet[tag]; !exists {
-			added = append(added, tag)
-		}
-	}
-	for tag := range currentSet {
-		if _, exists := nextSet[tag]; !exists {
-			removed = append(removed, tag)
-		}
-	}
-	return added, removed
 }

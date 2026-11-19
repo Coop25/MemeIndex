@@ -19,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"memeindex/internal/accessor"
+	"memeindex/internal/accessor/accessortest"
 	"memeindex/internal/manager"
 )
 
@@ -195,15 +196,15 @@ func TestSharedNotesNeverSplitsACharacter(t *testing.T) {
 
 // failingCreateStore fails every Create whose filename is in failNames.
 type failingCreateStore struct {
-	*accessor.MemeStore
+	*accessortest.MemeStore
 	failNames map[string]bool
 }
 
-func (s failingCreateStore) Create(input accessor.CreateInput) (accessor.Meme, error) {
+func (s failingCreateStore) Create(ctx context.Context, input accessor.CreateInput) (accessor.Meme, error) {
 	if s.failNames[input.Filename] {
 		return accessor.Meme{}, errors.New("disk full")
 	}
-	return s.MemeStore.Create(input)
+	return s.MemeStore.Create(ctx, input)
 }
 
 func multiFileUploadRequest(t *testing.T, files map[string]string, order []string) *http.Request {
@@ -228,7 +229,7 @@ func multiFileUploadRequest(t *testing.T, files map[string]string, order []strin
 }
 
 func TestCreateMemeReportsSavedFilesWhenALaterFileFails(t *testing.T) {
-	base, err := accessor.NewMemeStore(t.TempDir())
+	base, err := accessortest.NewMemeStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,7 +263,7 @@ func TestCreateMemeReportsSavedFilesWhenALaterFileFails(t *testing.T) {
 }
 
 func TestCreateMemeFailsWhenNoFileCouldBeSaved(t *testing.T) {
-	base, err := accessor.NewMemeStore(t.TempDir())
+	base, err := accessortest.NewMemeStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -477,11 +478,11 @@ func TestDashboardProbeReturnsOnlyTheNewestMemeID(t *testing.T) {
 	if got := probe(); got["newest_id"] != "" {
 		t.Fatalf("empty vault newest_id = %v, want empty", got["newest_id"])
 	}
-	if _, err := store.Create(accessor.CreateInput{File: strings.NewReader("older"), Filename: "older.png"}); err != nil {
+	if _, err := store.Create(context.Background(), accessor.CreateInput{File: strings.NewReader("older"), Filename: "older.png"}); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(5 * time.Millisecond)
-	newest, err := store.Create(accessor.CreateInput{File: strings.NewReader("newer"), Filename: "newer.png"})
+	newest, err := store.Create(context.Background(), accessor.CreateInput{File: strings.NewReader("newer"), Filename: "newer.png"})
 	if err != nil {
 		t.Fatal(err)
 	}

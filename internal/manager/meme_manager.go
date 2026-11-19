@@ -8,10 +8,12 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"memeindex/internal/accessor"
 	"memeindex/internal/tagsuggest"
+	"memeindex/internal/workgate"
 )
 
 type MemeManager struct {
@@ -38,13 +40,24 @@ type MemeManager struct {
 	suggestionLastSuccess time.Time
 
 	// Background-worker lifecycle. workerCtx is cancelled by
-	// StopBackgroundWorkers so the tag-hygiene and tag-suggestion loops exit
-	// their waits promptly during a graceful shutdown; workerWG lets the caller
-	// block until they have actually returned.
+	// StopBackgroundWorkers so the tag-hygiene and tag-suggestion loops, the
+	// preview backfill and the tag-scratch sweep exit their waits promptly
+	// during a graceful shutdown; workerWG lets the caller block until they
+	// have actually returned.
 	workerCtx      context.Context
 	workerCancel   context.CancelFunc
 	workerWG       sync.WaitGroup
 	stopWorkersOne sync.Once
+	// workGate holds the background workers still while a backup restore or
+	// migration replaces the database and media underneath them (see
+	// PauseBackgroundWork). Each meme the suggestion worker tags, each
+	// tag-hygiene recompute, each reel-session cleanup, each meme the preview
+	// backfill renders and the tag-scratch sweep is one unit of work.
+	workGate workgate.Gate
+	// restoreGeneration counts the restores ReloadAfterRestore has reloaded,
+	// so the preview backfill can tell that the memes it listed were replaced
+	// while it was paused.
+	restoreGeneration atomic.Uint64
 
 	// adminReadMu guards short-lived memoization of the two admin read models
 	// that each require a full store scan. This is a burst coalescer, not a
@@ -112,8 +125,9 @@ func NewMemeManagerWithTagSuggester(store accessor.Store, tagSuggester *tagsugge
 	return manager
 }
 
-// StopBackgroundWorkers signals the tag-hygiene and tag-suggestion workers to
-// stop and waits up to timeout for them to return. It is safe to call once;
+// StopBackgroundWorkers signals the tag-hygiene and tag-suggestion workers,
+// the preview backfill and the tag-scratch sweep to stop and waits up to
+// timeout for them to return. It is safe to call once;
 // further calls are no-ops. A long-running tag-suggestion request in flight is
 // cancelled via the worker context, but if it does not unwind within the
 // timeout this returns anyway so shutdown can proceed.
@@ -150,8 +164,29 @@ func (m *MemeManager) waitOrStop(d time.Duration) bool {
 	}
 }
 
-func (m *MemeManager) CreateMeme(file io.Reader, header textproto.MIMEHeader, filename string, tags []string, notes string) (accessor.Meme, error) {
-	return m.store.Create(accessor.CreateInput{
+// PauseBackgroundWork holds the tag-suggestion and tag-hygiene workers and
+// the reel-session cleanup still, for a restore that is about to replace the
+// database. It waits for the unit of work each has in flight to finish (or
+// for ctx to end, which lifts the pause and returns ctx's error), and returns
+// the function that lets them run again. Queued work is kept, not dropped;
+// ReloadAfterRestore re-seeds the suggestion queue before resuming.
+func (m *MemeManager) PauseBackgroundWork(ctx context.Context) (resume func(), err error) {
+	return m.workGate.Pause(ctx)
+}
+
+// enterBackgroundWork waits out any restore pause before a unit of
+// background work. It reports false if the workers are stopping instead; on
+// true the caller must call leaveBackgroundWork when the unit is done.
+func (m *MemeManager) enterBackgroundWork() bool {
+	return m.workGate.Enter(m.workerCtx.Done())
+}
+
+func (m *MemeManager) leaveBackgroundWork() {
+	m.workGate.Leave()
+}
+
+func (m *MemeManager) CreateMeme(ctx context.Context, file io.Reader, header textproto.MIMEHeader, filename string, tags []string, notes string) (accessor.Meme, error) {
+	return m.store.Create(ctx, accessor.CreateInput{
 		File:     file,
 		Header:   header,
 		Filename: filename,
@@ -160,12 +195,12 @@ func (m *MemeManager) CreateMeme(file io.Reader, header textproto.MIMEHeader, fi
 	})
 }
 
-func (m *MemeManager) CreateMemeAs(actor accessor.AuditActor, file io.Reader, header textproto.MIMEHeader, filename string, tags []string, notes string) (accessor.Meme, error) {
-	return m.CreateMemeAsWithSource(actor, file, header, filename, tags, notes, "")
+func (m *MemeManager) CreateMemeAs(ctx context.Context, actor accessor.AuditActor, file io.Reader, header textproto.MIMEHeader, filename string, tags []string, notes string) (accessor.Meme, error) {
+	return m.CreateMemeAsWithSource(ctx, actor, file, header, filename, tags, notes, "")
 }
 
-func (m *MemeManager) CreateMemeAsWithSource(actor accessor.AuditActor, file io.Reader, header textproto.MIMEHeader, filename string, tags []string, notes string, sourceURL string) (accessor.Meme, error) {
-	meme, err := m.store.Create(accessor.CreateInput{
+func (m *MemeManager) CreateMemeAsWithSource(ctx context.Context, actor accessor.AuditActor, file io.Reader, header textproto.MIMEHeader, filename string, tags []string, notes string, sourceURL string) (accessor.Meme, error) {
+	meme, err := m.store.Create(ctx, accessor.CreateInput{
 		File:      file,
 		Header:    header,
 		Filename:  filename,
@@ -180,45 +215,54 @@ func (m *MemeManager) CreateMemeAsWithSource(actor accessor.AuditActor, file io.
 	return meme, err
 }
 
-func (m *MemeManager) UpdateMeme(userID, id string, update accessor.MemeUpdate) (accessor.Meme, error) {
-	update.Tags = normalizeTags(update.Tags)
-	update.Notes = strings.TrimSpace(update.Notes)
-	meme, err := m.store.Update(strings.TrimSpace(userID), strings.TrimSpace(id), update)
-	if err == nil {
+// EditMeme applies a partial edit to one meme. The store works out what the
+// edit changes against the meme's current state with its row locked, and runs
+// edit.Authorize on that change before writing, so a permission check made
+// there cannot be invalidated by a concurrent edit.
+func (m *MemeManager) EditMeme(ctx context.Context, userID, id string, edit accessor.MemeEdit) (accessor.Meme, error) {
+	meme, err := m.store.EditMeme(ctx, strings.TrimSpace(userID), strings.TrimSpace(id), edit)
+	// An edit that fails because the request ended may still have committed:
+	// the store re-reads the meme after its commit, and a commit cancelled in
+	// flight may have been applied. Treat it as a change rather than leave the
+	// tag hygiene snapshot stale.
+	if err == nil || ctx.Err() != nil {
 		m.markTagsChanged()
 	}
 	return meme, err
 }
 
-func (m *MemeManager) SetFavorite(userID, id string, favorite bool) (accessor.Meme, error) {
-	return m.store.SetFavorite(strings.TrimSpace(userID), strings.TrimSpace(id), favorite)
+func (m *MemeManager) SetFavorite(ctx context.Context, userID, id string, favorite bool) (accessor.Meme, error) {
+	return m.store.SetFavorite(ctx, strings.TrimSpace(userID), strings.TrimSpace(id), favorite)
 }
 
-func (m *MemeManager) SetFavoriteAs(userID, id string, favorite bool, actor accessor.AuditActor) (accessor.Meme, error) {
+func (m *MemeManager) SetFavoriteAs(ctx context.Context, userID, id string, favorite bool, actor accessor.AuditActor) (accessor.Meme, error) {
 	if store, ok := m.store.(accessor.AuditStore); ok {
-		return store.SetFavoriteWithActor(strings.TrimSpace(userID), strings.TrimSpace(id), favorite, actor)
+		return store.SetFavoriteWithActor(ctx, strings.TrimSpace(userID), strings.TrimSpace(id), favorite, actor)
 	}
-	return m.SetFavorite(userID, id, favorite)
+	return m.SetFavorite(ctx, userID, id, favorite)
 }
 
-func (m *MemeManager) GetMeme(userID, id string) (accessor.Meme, error) {
-	return m.store.GetByID(strings.TrimSpace(userID), strings.TrimSpace(id))
+func (m *MemeManager) GetMeme(ctx context.Context, userID, id string) (accessor.Meme, error) {
+	return m.store.GetByID(ctx, strings.TrimSpace(userID), strings.TrimSpace(id))
 }
 
 // memesByIDs resolves visible memes by id in one batch where the store supports
 // it (AdminMemeStore), falling back to per-id lookups otherwise. Missing ids are
 // simply absent from the map.
-func (m *MemeManager) memesByIDs(ids []string) map[string]accessor.Meme {
+func (m *MemeManager) memesByIDs(ctx context.Context, ids []string) map[string]accessor.Meme {
 	if bulk, ok := m.store.(accessor.AdminMemeStore); ok {
-		memes, err := bulk.MemesByIDs(ids)
+		memes, err := bulk.MemesByIDs(ctx, ids)
 		if err == nil {
 			return memes
+		}
+		if ctx.Err() != nil {
+			return map[string]accessor.Meme{}
 		}
 		log.Printf("memes by ids: SQL batch failed, falling back to per-id reads: %v", err)
 	}
 	out := make(map[string]accessor.Meme, len(ids))
 	for _, id := range ids {
-		if meme, err := m.store.GetByID("", strings.TrimSpace(id)); err == nil {
+		if meme, err := m.store.GetByID(ctx, "", strings.TrimSpace(id)); err == nil {
 			out[meme.ID] = meme
 		}
 	}
@@ -226,8 +270,8 @@ func (m *MemeManager) memesByIDs(ids []string) map[string]accessor.Meme {
 }
 
 // memeNamesByIDs is memesByIDs reduced to just the original display name per id.
-func (m *MemeManager) memeNamesByIDs(ids []string) map[string]string {
-	memes := m.memesByIDs(ids)
+func (m *MemeManager) memeNamesByIDs(ctx context.Context, ids []string) map[string]string {
+	memes := m.memesByIDs(ctx, ids)
 	names := make(map[string]string, len(memes))
 	for id, meme := range memes {
 		names[id] = meme.OriginalName
@@ -235,16 +279,16 @@ func (m *MemeManager) memeNamesByIDs(ids []string) map[string]string {
 	return names
 }
 
-func (m *MemeManager) GetAdminMeme(id string) (accessor.Meme, error) {
+func (m *MemeManager) GetAdminMeme(ctx context.Context, id string) (accessor.Meme, error) {
 	store, ok := m.store.(accessor.AdminMemeStore)
 	if ok {
-		return store.GetAnyByID(strings.TrimSpace(id))
+		return store.GetAnyByID(ctx, strings.TrimSpace(id))
 	}
-	return m.store.GetByID("", strings.TrimSpace(id))
+	return m.store.GetByID(ctx, "", strings.TrimSpace(id))
 }
 
-func (m *MemeManager) DeleteMeme(id string, actor accessor.AuditActor) (accessor.DeleteResult, error) {
-	result, err := m.store.Delete(accessor.DeleteInput{
+func (m *MemeManager) DeleteMeme(ctx context.Context, id string, actor accessor.AuditActor) (accessor.DeleteResult, error) {
+	result, err := m.store.Delete(ctx, accessor.DeleteInput{
 		ID:    strings.TrimSpace(id),
 		Actor: actor,
 	})
@@ -255,15 +299,16 @@ func (m *MemeManager) DeleteMeme(id string, actor accessor.AuditActor) (accessor
 	return result, err
 }
 
-func (m *MemeManager) SuggestTags(prefix string, limit int) []string {
-	return m.store.SuggestTags(strings.TrimSpace(prefix), limit)
+func (m *MemeManager) SuggestTags(ctx context.Context, prefix string, limit int) []string {
+	return m.store.SuggestTags(ctx, strings.TrimSpace(prefix), limit)
 }
 
 // ReloadAfterRestore refreshes the small pieces of state cached in memory after
 // an administrator replaces the persistent database with a portable backup.
-func (m *MemeManager) ReloadAfterRestore() error {
+func (m *MemeManager) ReloadAfterRestore(ctx context.Context) error {
+	m.restoreGeneration.Add(1)
 	m.invalidateHiddenMemes()
-	if err := m.reelSessions.load(); err != nil {
+	if err := m.reelSessions.load(ctx); err != nil {
 		return err
 	}
 
@@ -274,7 +319,7 @@ func (m *MemeManager) ReloadAfterRestore() error {
 		m.queuedSuggestionIDs[m.suggestionCurrentID] = struct{}{}
 	}
 	m.suggestionQueueMu.Unlock()
-	m.SeedTagSuggestionQueue()
+	m.SeedTagSuggestionQueue(ctx)
 	m.invalidateAdminReadCache()
 	// The restore swapped the thumbnails directory; forget which thumbnails we
 	// have seen so preview paths are re-derived against the new contents.
@@ -282,7 +327,7 @@ func (m *MemeManager) ReloadAfterRestore() error {
 	return nil
 }
 
-func (m *MemeManager) RandomMeme(excludedIDs []string) (accessor.Meme, error) {
+func (m *MemeManager) RandomMeme(ctx context.Context, excludedIDs []string) (accessor.Meme, error) {
 	normalized := make([]string, 0, len(excludedIDs))
 	for _, id := range excludedIDs {
 		trimmed := strings.TrimSpace(id)
@@ -291,19 +336,26 @@ func (m *MemeManager) RandomMeme(excludedIDs []string) (accessor.Meme, error) {
 		}
 		normalized = append(normalized, trimmed)
 	}
-	return m.store.Random(normalized)
+	return m.store.Random(ctx, normalized)
 }
 
-func (m *MemeManager) StepRandomReel(sessionID string, direction string) (ReelStepResult, error) {
-	return m.reelSessions.Step(sessionID, direction)
+func (m *MemeManager) StepRandomReel(ctx context.Context, sessionID string, direction string) (ReelStepResult, error) {
+	return m.reelSessions.Step(ctx, sessionID, direction)
 }
 
-func (m *MemeManager) DeleteRandomReelSession(sessionID string) error {
-	return m.reelSessions.Delete(sessionID)
+func (m *MemeManager) DeleteRandomReelSession(ctx context.Context, sessionID string) error {
+	return m.reelSessions.Delete(ctx, sessionID)
 }
 
-func (m *MemeManager) CleanupStaleReelSessions() error {
-	return m.reelSessions.CleanupStale()
+// CleanupStaleReelSessions runs the nightly reel-session cleanup. It waits
+// for a restore in progress to finish first, and does nothing if the workers
+// are stopping in the meantime.
+func (m *MemeManager) CleanupStaleReelSessions(ctx context.Context) error {
+	if !m.enterBackgroundWork() {
+		return nil
+	}
+	defer m.leaveBackgroundWork()
+	return m.reelSessions.CleanupStale(ctx)
 }
 
 func (m *MemeManager) UploadDir() string {
@@ -324,12 +376,64 @@ func (m *MemeManager) ThumbnailDir() string {
 	return previewStore.ThumbnailDir()
 }
 
-func (m *MemeManager) EnsurePreviewAssets() error {
+// StartPreviewAssetBackfill generates missing video thumbnails in the
+// background, as worker-tracked work: StopBackgroundWorkers stops it between
+// memes and waits for the one in progress. Each meme is one unit of
+// background work, so a restore waits for the thumbnail being rendered and
+// holds the rest back. If the restore replaced the library in the meantime,
+// the pass starts again against the restored memes.
+func (m *MemeManager) StartPreviewAssetBackfill() {
 	previewStore, ok := m.store.(accessor.PreviewAssetStore)
 	if !ok {
-		return nil
+		return
 	}
-	return previewStore.EnsurePreviewAssets()
+	m.workerWG.Add(1)
+	go func() {
+		defer m.workerWG.Done()
+		m.runPreviewAssetBackfill(previewStore)
+	}()
+}
+
+func (m *MemeManager) runPreviewAssetBackfill(previewStore accessor.PreviewAssetStore) {
+	for {
+		// Wait out a restore already running before listing the memes.
+		if m.workerCtx.Err() != nil || !m.enterBackgroundWork() {
+			return
+		}
+		generation := m.restoreGeneration.Load()
+		m.leaveBackgroundWork()
+
+		var restored, stopping bool
+		err := previewStore.EnsurePreviewAssets(m.workerCtx, func(work func()) bool {
+			// Enter only gives up on shutdown while a restore is holding work
+			// back, so check for shutdown between memes as well.
+			if m.workerCtx.Err() != nil || !m.enterBackgroundWork() {
+				stopping = true
+				return false
+			}
+			defer m.leaveBackgroundWork()
+			if m.restoreGeneration.Load() != generation {
+				restored = true
+				return false
+			}
+			work()
+			return true
+		})
+		switch {
+		case err != nil && m.workerCtx.Err() != nil:
+			log.Printf("preview asset backfill: stopped for shutdown")
+		case err != nil:
+			log.Printf("preview asset backfill failed: %v", err)
+		case restored:
+			log.Printf("preview asset backfill: a restore replaced the library; starting over")
+			continue
+		case stopping:
+			log.Printf("preview asset backfill: stopped for shutdown")
+		default:
+			log.Printf("preview asset backfill completed")
+		}
+		return
+	}
 }
 
 func normalizeTags(tags []string) []string {
@@ -362,21 +466,4 @@ func containsTag(tags []string, needle string) bool {
 		}
 	}
 	return false
-}
-
-func removeTagValue(tags []string, remove string) []string {
-	normalizedRemove := strings.ToLower(strings.TrimSpace(remove))
-	if normalizedRemove == "" {
-		return normalizeTags(tags)
-	}
-
-	filtered := make([]string, 0, len(tags))
-	for _, tag := range tags {
-		normalizedTag := strings.ToLower(strings.TrimSpace(tag))
-		if normalizedTag == "" || normalizedTag == normalizedRemove {
-			continue
-		}
-		filtered = append(filtered, normalizedTag)
-	}
-	return normalizeTags(filtered)
 }

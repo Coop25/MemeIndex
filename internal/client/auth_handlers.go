@@ -73,8 +73,11 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session, token, err := s.auth.createSession(user)
+	session, token, err := s.auth.createSession(r.Context(), user)
 	if err != nil {
+		if requestAbandoned(r, err) {
+			return
+		}
 		log.Printf("create auth session failed for Discord user %s: %v", strings.TrimSpace(user.ID), err)
 		http.Error(w, "discord login failed", http.StatusInternalServerError)
 		return

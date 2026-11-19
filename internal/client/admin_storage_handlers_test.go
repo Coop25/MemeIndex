@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"memeindex/internal/accessor"
+	"memeindex/internal/accessor/accessortest"
 	"memeindex/internal/audiobooks"
 	"memeindex/internal/manager"
 )
@@ -23,13 +24,13 @@ import (
 // extraRefsMemeStore lets a test add meme rows that reference arbitrary stored
 // names, the way a meme row created between a scan and a delete would.
 type extraRefsMemeStore struct {
-	*accessor.MemeStore
+	*accessortest.MemeStore
 	mu    sync.Mutex
 	extra []accessor.StoredFile
 }
 
-func (s *extraRefsMemeStore) AllStoredFiles() ([]accessor.StoredFile, error) {
-	files, err := s.MemeStore.AllStoredFiles()
+func (s *extraRefsMemeStore) AllStoredFiles(ctx context.Context) ([]accessor.StoredFile, error) {
+	files, err := s.MemeStore.AllStoredFiles(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -59,7 +60,7 @@ func newStorageTestServer(t *testing.T) *storageTestServer {
 	t.Helper()
 	parent := t.TempDir()
 	dataDir := filepath.Join(parent, "data")
-	memes, err := accessor.NewMemeStore(dataDir)
+	memes, err := accessortest.NewMemeStore(dataDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,6 +299,45 @@ func TestStorageOrphanDeleteFailsClosedOnReferenceError(t *testing.T) {
 	}
 }
 
+// A removal that fails reports a reason the admin can act on when there is a
+// common one, and otherwise a fixed message, never the operating system's own
+// error text. The detail goes to the server log.
+func TestStorageOrphanDeleteReportsRemoveFailuresSafely(t *testing.T) {
+	logs := captureLog(t)
+	ts := newStorageTestServer(t)
+	names := []string{"denied.png", "gone.png", "odd.png"}
+	paths := make([]string, len(names))
+	for i, name := range names {
+		paths[i] = filepath.Join(ts.dataDir, "uploads", name)
+		writeOld(t, paths[i])
+	}
+	ts.scan(t)
+	ts.s.storage.remove = func(path string) error {
+		switch filepath.Base(path) {
+		case "denied.png":
+			return &os.PathError{Op: "remove", Path: path, Err: os.ErrPermission}
+		case "gone.png":
+			return &os.PathError{Op: "remove", Path: path, Err: os.ErrNotExist}
+		}
+		return &os.PathError{Op: "remove", Path: path, Err: errors.New("disk controller secret 0xdead")}
+	}
+
+	got := ts.deletePaths(t, paths...)
+	want := []string{
+		"remove failed: permission denied",
+		"remove failed: the file is already gone",
+		"remove failed; the server log has the details",
+	}
+	for i, res := range got.Results {
+		if res.Deleted || res.Error != want[i] {
+			t.Errorf("%s: deleted=%v error=%q, want %q", names[i], res.Deleted, res.Error, want[i])
+		}
+	}
+	if output := logs.String(); !strings.Contains(output, "disk controller secret 0xdead") || !strings.Contains(output, "odd.png") {
+		t.Fatalf("the server log must keep the detail:\n%s", output)
+	}
+}
+
 type failingStoragePathsStore struct{ audiobooks.Store }
 
 func (failingStoragePathsStore) ListStoragePaths(context.Context) ([]audiobooks.StoragePath, error) {
@@ -306,7 +346,7 @@ func (failingStoragePathsStore) ListStoragePaths(context.Context) ([]audiobooks.
 
 func TestStorageEndpointWithoutPostgres(t *testing.T) {
 	ts := newStorageTestServer(t)
-	meme, err := ts.store.Create(accessor.CreateInput{
+	meme, err := ts.store.Create(context.Background(), accessor.CreateInput{
 		File:        strings.NewReader("png bytes!"),
 		Header:      textproto.MIMEHeader{"Content-Type": []string{"image/png"}},
 		Filename:    "big.png",
@@ -426,7 +466,7 @@ func TestAdminDiscardUploadAndInProgressList(t *testing.T) {
 }
 
 func TestCollectStorageReferencesRejectsMismatchedUploadDir(t *testing.T) {
-	store, err := accessor.NewMemeStore(t.TempDir())
+	store, err := accessortest.NewMemeStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

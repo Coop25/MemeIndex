@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"context"
 	"errors"
 	"log"
 	"memeindex/internal/accessor"
@@ -70,7 +71,7 @@ type AdminDashboardTagStat struct {
 // AdminDashboard returns the admin overview stats, memoized for AdminReadCacheTTL
 // so repeated loads (and the merge-then-refresh burst) do not each trigger a full
 // store scan. Callers receive an independent deep copy.
-func (m *MemeManager) AdminDashboard() AdminDashboardStats {
+func (m *MemeManager) AdminDashboard(ctx context.Context) AdminDashboardStats {
 	m.adminReadMu.Lock()
 	if m.adminDashboardCache != nil && time.Since(m.adminDashboardCachedAt) < AdminReadCacheTTL {
 		cached := cloneAdminDashboardStats(*m.adminDashboardCache)
@@ -79,7 +80,13 @@ func (m *MemeManager) AdminDashboard() AdminDashboardStats {
 	}
 	m.adminReadMu.Unlock()
 
-	stats := m.computeAdminDashboard()
+	stats := m.computeAdminDashboard(ctx)
+	if ctx.Err() != nil {
+		// The request went away part-way, so some of the reads behind these
+		// stats were cut short and came back empty. Hand them back to the
+		// (departed) caller, but don't serve them to the next admin.
+		return stats
+	}
 
 	m.adminReadMu.Lock()
 	stored := cloneAdminDashboardStats(stats)
@@ -89,8 +96,8 @@ func (m *MemeManager) AdminDashboard() AdminDashboardStats {
 	return stats
 }
 
-func (m *MemeManager) computeAdminDashboard() AdminDashboardStats {
-	memes := m.adminDashboardMemes()
+func (m *MemeManager) computeAdminDashboard(ctx context.Context) AdminDashboardStats {
+	memes := m.adminDashboardMemes(ctx)
 	stats := AdminDashboardStats{
 		Counts:       buildMemeCounts(memes),
 		UploadSeries: make([]AdminDashboardDayStat, 30),
@@ -171,10 +178,10 @@ func (m *MemeManager) computeAdminDashboard() AdminDashboardStats {
 
 	favoriteDeltas := make([]int, len(stats.MetricSeries))
 	if analytics, ok := m.store.(accessor.FavoriteAnalyticsStore); ok {
-		if totalFavorites, err := analytics.TotalFavoriteAssignments(); err == nil {
+		if totalFavorites, err := analytics.TotalFavoriteAssignments(ctx); err == nil {
 			stats.Counts.Favorites = totalFavorites
 		}
-		if activity, err := analytics.FavoriteActivitySince(today.AddDate(0, 0, -29)); err == nil {
+		if activity, err := analytics.FavoriteActivitySince(ctx, today.AddDate(0, 0, -29)); err == nil {
 			for _, day := range activity {
 				if index, ok := seriesIndex[day.Date.UTC().Format("2006-01-02")]; ok {
 					favoriteDeltas[index] += day.Added - day.Removed
@@ -248,15 +255,17 @@ func (m *MemeManager) computeAdminDashboard() AdminDashboardStats {
 // offers it and falling back to a full List() otherwise. The admin favourites
 // total is sourced separately from FavoriteAnalyticsStore, so the dropped per-row
 // flag does not change the rendered dashboard.
-func (m *MemeManager) adminDashboardMemes() []accessor.Meme {
+func (m *MemeManager) adminDashboardMemes(ctx context.Context) []accessor.Meme {
 	if ads, ok := m.store.(accessor.AdminMemeStore); ok {
-		if memes, err := ads.AdminDashboardMemes(); err == nil {
+		if memes, err := ads.AdminDashboardMemes(ctx); err == nil {
 			return memes
+		} else if ctx.Err() != nil {
+			return nil
 		} else {
 			log.Printf("admin dashboard: lean meme scan failed, falling back to List: %v", err)
 		}
 	}
-	return m.store.List("", "", false, "")
+	return m.store.List(ctx, "", "", false, "")
 }
 
 // invalidateAdminReadCache drops the memoized admin dashboard and marks the
@@ -295,30 +304,30 @@ func cloneAdminDashboardStats(in AdminDashboardStats) AdminDashboardStats {
 // StoredMemeFiles lists the on-disk file names of every meme row, including
 // hidden and pending-delete ones. It errors when the store cannot enumerate
 // them, so a caller deciding what is safe to delete fails closed.
-func (m *MemeManager) StoredMemeFiles() ([]accessor.StoredFile, error) {
+func (m *MemeManager) StoredMemeFiles(ctx context.Context) ([]accessor.StoredFile, error) {
 	store, ok := m.store.(accessor.AdminMemeStore)
 	if !ok {
 		return nil, errors.New("meme store cannot list stored files")
 	}
-	return store.AllStoredFiles()
+	return store.AllStoredFiles(ctx)
 }
 
 // CountAuditActionsByActor counts audit events with the given action per actor.
 // Stores without an audit log yield an empty map, not an error.
-func (m *MemeManager) CountAuditActionsByActor(action string) (map[string]int, error) {
+func (m *MemeManager) CountAuditActionsByActor(ctx context.Context, action string) (map[string]int, error) {
 	store, ok := m.store.(accessor.AuditStore)
 	if !ok {
 		return map[string]int{}, nil
 	}
-	return store.CountAuditActionsByActor(action)
+	return store.CountAuditActionsByActor(ctx, action)
 }
 
 // CountFavoritesByUser counts favorites per user, or an empty map when the
 // store cannot report it.
-func (m *MemeManager) CountFavoritesByUser() (map[string]int, error) {
+func (m *MemeManager) CountFavoritesByUser(ctx context.Context) (map[string]int, error) {
 	store, ok := m.store.(accessor.FavoriteAnalyticsStore)
 	if !ok {
 		return map[string]int{}, nil
 	}
-	return store.CountFavoritesByUser()
+	return store.CountFavoritesByUser(ctx)
 }

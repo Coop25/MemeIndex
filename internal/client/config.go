@@ -37,6 +37,10 @@ type Config struct {
 	MediaFetchProxy         string
 	RateLimitEnabled        bool
 	ClientIPHeader          string
+	// TrustedProxies are the peers whose forwarded client-IP header is
+	// believed (MEMEINDEX_TRUSTED_PROXIES, trusted_proxies.go). Nil trusts
+	// nobody.
+	TrustedProxies *trustedProxies
 	// MigrationSourceEnabled lets this server issue migration tokens and
 	// stream its whole library to another server that presents one.
 	MigrationSourceEnabled bool
@@ -108,6 +112,7 @@ type rawConfig struct {
 	MediaFetchProxy                 string   `envconfig:"MEDIAFETCH_PROXY"`
 	RateLimitEnabled                bool     `envconfig:"RATE_LIMIT_ENABLED" default:"true"`
 	ClientIPHeader                  string   `envconfig:"CLIENT_IP_HEADER"`
+	TrustedProxies                  []string `envconfig:"TRUSTED_PROXIES" default:"127.0.0.0/8,::1/128,cloudflared"`
 	MigrationSourceEnabled          bool     `envconfig:"MIGRATION_SOURCE_ENABLED" default:"false"`
 	MigrationImportEnabled          bool     `envconfig:"MIGRATION_IMPORT_ENABLED" default:"false"`
 	MediaFetchRetryIntervalSecs     int      `envconfig:"MEDIAFETCH_RETRY_INTERVAL_SECONDS" default:"300"`
@@ -167,6 +172,10 @@ func LoadConfig() (Config, error) {
 			frameWidth = 480
 		}
 	}
+	trustedProxies, err := parseTrustedProxies(raw.TrustedProxies)
+	if err != nil {
+		return Config{}, fmt.Errorf("invalid MEMEINDEX_TRUSTED_PROXIES: %w", err)
+	}
 	disableTranscript := raw.TagSuggestDisableTranscript || raw.TagSuggestFastMode
 	modelName := strings.TrimSpace(raw.TagSuggestOllamaModel)
 	generateOnly := raw.TagSuggestGenerateOnly || shouldPreferGenerateOnlyModel(modelName)
@@ -201,6 +210,7 @@ func LoadConfig() (Config, error) {
 		),
 		RateLimitEnabled:       raw.RateLimitEnabled,
 		ClientIPHeader:         strings.TrimSpace(raw.ClientIPHeader),
+		TrustedProxies:         trustedProxies,
 		MigrationSourceEnabled: raw.MigrationSourceEnabled,
 		MigrationImportEnabled: raw.MigrationImportEnabled,
 		MediaFetchRetry: MediaFetchRetryConfig{

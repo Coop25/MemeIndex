@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/textproto"
@@ -9,17 +10,18 @@ import (
 	"time"
 
 	"memeindex/internal/accessor"
+	"memeindex/internal/accessor/accessortest"
 )
 
 func newSharedMemesManager(t *testing.T, count int) (*MemeManager, time.Time) {
 	t.Helper()
-	store, err := accessor.NewMemeStore(t.TempDir())
+	store, err := accessortest.NewMemeStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
 	for i := 0; i < count; i++ {
-		meme, err := store.Create(accessor.CreateInput{
+		meme, err := store.Create(context.Background(), accessor.CreateInput{
 			File:        strings.NewReader(fmt.Sprintf("bytes %d", i)),
 			Header:      textproto.MIMEHeader{"Content-Type": []string{"image/png"}},
 			Filename:    fmt.Sprintf("meme-%02d.png", i),
@@ -30,7 +32,7 @@ func newSharedMemesManager(t *testing.T, count int) (*MemeManager, time.Time) {
 		}
 		// Later memes are shared later, so the newest share is the last one.
 		sharedAt := now.Add(time.Duration(i) * time.Minute)
-		if _, err := store.GetOrCreateMemeShare(meme.ID, "admin-1", sharedAt, sharedAt.Add(MemeShareLifetime)); err != nil {
+		if _, err := store.GetOrCreateMemeShare(context.Background(), meme.ID, "admin-1", sharedAt, sharedAt.Add(MemeShareLifetime)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -40,7 +42,7 @@ func newSharedMemesManager(t *testing.T, count int) (*MemeManager, time.Time) {
 func TestListActiveMemeSharesPagePagesNewestFirst(t *testing.T) {
 	m, now := newSharedMemesManager(t, 7)
 
-	first, total, offset, limit, err := m.ListActiveMemeSharesPage(now, 0, 3)
+	first, total, offset, limit, err := m.ListActiveMemeSharesPage(context.Background(), now, 0, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +53,7 @@ func TestListActiveMemeSharesPagePagesNewestFirst(t *testing.T) {
 		t.Fatalf("first page order = %s .. %s", first[0].Meme.OriginalName, first[2].Meme.OriginalName)
 	}
 
-	last, _, offset, _, err := m.ListActiveMemeSharesPage(now, 6, 3)
+	last, _, offset, _, err := m.ListActiveMemeSharesPage(context.Background(), now, 6, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +66,7 @@ func TestListActiveMemeSharesPageClampsItsArguments(t *testing.T) {
 	m, now := newSharedMemesManager(t, 7)
 
 	// Past the end: pulled back to the last page rather than returning nothing.
-	page, total, offset, _, err := m.ListActiveMemeSharesPage(now, 30, 3)
+	page, total, offset, _, err := m.ListActiveMemeSharesPage(context.Background(), now, 30, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +74,7 @@ func TestListActiveMemeSharesPageClampsItsArguments(t *testing.T) {
 		t.Fatalf("past-the-end page: total=%d offset=%d len=%d", total, offset, len(page))
 	}
 
-	page, _, offset, limit, err := m.ListActiveMemeSharesPage(now, -5, 0)
+	page, _, offset, limit, err := m.ListActiveMemeSharesPage(context.Background(), now, -5, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +82,7 @@ func TestListActiveMemeSharesPageClampsItsArguments(t *testing.T) {
 		t.Fatalf("defaults: offset=%d limit=%d len=%d", offset, limit, len(page))
 	}
 
-	_, _, _, limit, err = m.ListActiveMemeSharesPage(now, 0, 100000)
+	_, _, _, limit, err = m.ListActiveMemeSharesPage(context.Background(), now, 0, 100000)
 	if err != nil || limit != activeSharesPageMaxLimit {
 		t.Fatalf("limit = %d, err = %v", limit, err)
 	}
@@ -88,7 +90,7 @@ func TestListActiveMemeSharesPageClampsItsArguments(t *testing.T) {
 
 func TestListActiveMemeSharesPageWithNoShares(t *testing.T) {
 	m, now := newSharedMemesManager(t, 0)
-	page, total, offset, _, err := m.ListActiveMemeSharesPage(now, 50, 25)
+	page, total, offset, _, err := m.ListActiveMemeSharesPage(context.Background(), now, 50, 25)
 	if err != nil || total != 0 || offset != 0 || len(page) != 0 {
 		t.Fatalf("empty: total=%d offset=%d len=%d err=%v", total, offset, len(page), err)
 	}
@@ -116,7 +118,7 @@ func TestRetryOrDropTagSuggestionGivesUpAfterCap(t *testing.T) {
 		t.Fatal("meme was requeued past the cap")
 	}
 
-	status := m.TagSuggestionQueueStatus(0, 10)
+	status := m.TagSuggestionQueueStatus(context.Background(), 0, 10)
 	if status.QueueLength != 0 || !strings.Contains(status.LastError, "gave up on meme-1") {
 		t.Fatalf("queue length = %d, last error = %q", status.QueueLength, status.LastError)
 	}

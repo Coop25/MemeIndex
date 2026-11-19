@@ -2,6 +2,7 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"mime/multipart"
 	"net/http"
@@ -11,13 +12,13 @@ import (
 	"strings"
 	"testing"
 
-	"memeindex/internal/accessor"
+	"memeindex/internal/accessor/accessortest"
 	"memeindex/internal/manager"
 )
 
-func newShareTargetTestServer(t *testing.T) (*Server, *accessor.MemeStore) {
+func newShareTargetTestServer(t *testing.T) (*Server, *accessortest.MemeStore) {
 	t.Helper()
-	store, err := accessor.NewMemeStore(t.TempDir())
+	store, err := accessortest.NewMemeStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +64,7 @@ func TestHandleShareTargetImportsSharedFile(t *testing.T) {
 	if location := recorder.Header().Get("Location"); location != "/?shared=ok&n=1" {
 		t.Fatalf("Location = %q", location)
 	}
-	memes := store.List("", "", false, "")
+	memes := store.List(context.Background(), "", "", false, "")
 	if len(memes) != 1 {
 		t.Fatalf("expected 1 stored meme, got %d", len(memes))
 	}
@@ -125,7 +126,7 @@ func TestHandleShareTargetGatesOnUploadPermission(t *testing.T) {
 	if got := viewer.Header().Get("Location"); got != "/?shared=forbidden" {
 		t.Fatalf("view-only session: Location = %q (status %d)", got, viewer.Code)
 	}
-	if got := len(store.List("", "", false, "")); got != 0 {
+	if got := len(store.List(context.Background(), "", "", false, "")); got != 0 {
 		t.Fatalf("view-only user stored %d meme(s) through the share target", got)
 	}
 
@@ -136,7 +137,7 @@ func TestHandleShareTargetGatesOnUploadPermission(t *testing.T) {
 	if got := uploader.Header().Get("Location"); got != "/?shared=ok&n=1" {
 		t.Fatalf("uploader session: Location = %q (status %d)", got, uploader.Code)
 	}
-	if got := len(store.List("", "", false, "")); got != 1 {
+	if got := len(store.List(context.Background(), "", "", false, "")); got != 1 {
 		t.Fatalf("expected 1 stored meme for an upload-permission user, got %d", got)
 	}
 }

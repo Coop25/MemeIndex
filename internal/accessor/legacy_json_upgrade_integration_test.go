@@ -55,11 +55,8 @@ func TestLegacyJSONStoreUpgradesIntoEmptyPostgres(t *testing.T) {
 	dsn := isolatedDatabaseURL(t)
 	dataDir := t.TempDir()
 
-	legacy, err := NewMemeStore(dataDir)
-	if err != nil {
-		t.Fatalf("NewMemeStore: %v", err)
-	}
-	cat, err := legacy.Create(CreateInput{
+	legacy := newLegacyJSONDataDir(t, dataDir)
+	cat := legacy.create(t, CreateInput{
 		File:        strings.NewReader("legacy cat bytes"),
 		Header:      textproto.MIMEHeader{"Content-Type": []string{"image/png"}},
 		Filename:    "cat.png",
@@ -68,30 +65,17 @@ func TestLegacyJSONStoreUpgradesIntoEmptyPostgres(t *testing.T) {
 		Notes:       "the classic",
 		SourceURL:   "https://example.com/cat",
 	})
-	if err != nil {
-		t.Fatalf("Create cat: %v", err)
-	}
-	dog, err := legacy.Create(CreateInput{
+	dog := legacy.create(t, CreateInput{
 		File:        strings.NewReader("legacy dog bytes"),
 		Header:      textproto.MIMEHeader{"Content-Type": []string{"video/mp4"}},
 		Filename:    "dog.mp4",
 		ContentType: "video/mp4",
 		Tags:        []string{"dog"},
 	})
-	if err != nil {
-		t.Fatalf("Create dog: %v", err)
-	}
-	if _, err := legacy.SetFavorite("discord-user-1", cat.ID, true); err != nil {
-		t.Fatalf("SetFavorite: %v", err)
-	}
-	if err := legacy.SetAutoSuggestDisabled(dog.ID, true); err != nil {
-		t.Fatalf("SetAutoSuggestDisabled: %v", err)
-	}
+	legacy.setFavorite(t, "discord-user-1", cat.ID)
+	legacy.setAutoSuggestDisabled(t, dog.ID, true)
 	now := time.Now().UTC().Truncate(time.Second)
-	share, err := legacy.GetOrCreateMemeShare(cat.ID, "discord-user-1", now, now.Add(365*24*time.Hour))
-	if err != nil {
-		t.Fatalf("GetOrCreateMemeShare: %v", err)
-	}
+	share := legacy.share(t, cat.ID, "discord-user-1", now, now.Add(365*24*time.Hour))
 	if share.Slug == "" || share.Generation <= 0 {
 		t.Fatalf("legacy share = %+v, want a slug and a generation", share)
 	}
@@ -107,7 +91,7 @@ func TestLegacyJSONStoreUpgradesIntoEmptyPostgres(t *testing.T) {
 	}
 	t.Cleanup(store.Close)
 
-	got, err := store.GetByID("discord-user-1", cat.ID)
+	got, err := store.GetByID(context.Background(), "discord-user-1", cat.ID)
 	if err != nil {
 		t.Fatalf("GetByID cat: %v", err)
 	}
@@ -141,11 +125,11 @@ func TestLegacyJSONStoreUpgradesIntoEmptyPostgres(t *testing.T) {
 	// A share link the JSON-store instance already handed out keeps working:
 	// same slug, same generation (which the share token's HMAC covers), same
 	// expiry.
-	memeID, generation, err := store.ResolveMemeShareSlug(share.Slug)
+	memeID, generation, err := store.ResolveMemeShareSlug(context.Background(), share.Slug)
 	if err != nil || memeID != cat.ID || generation != share.Generation {
 		t.Errorf("ResolveMemeShareSlug = %q/%d err %v, want %q/%d", memeID, generation, err, cat.ID, share.Generation)
 	}
-	state, err := store.GetMemeShareState(cat.ID)
+	state, err := store.GetMemeShareState(context.Background(), cat.ID)
 	if err != nil {
 		t.Fatalf("GetMemeShareState: %v", err)
 	}
@@ -164,7 +148,7 @@ func TestLegacyJSONStoreUpgradesIntoEmptyPostgres(t *testing.T) {
 		t.Errorf("tag:dog search = %+v, want only the dog", page.Memes)
 	}
 
-	sessions, err := store.LoadReelSessions()
+	sessions, err := store.LoadReelSessions(context.Background())
 	if err != nil {
 		t.Fatalf("LoadReelSessions: %v", err)
 	}

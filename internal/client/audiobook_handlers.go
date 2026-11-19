@@ -34,11 +34,73 @@ const audiobookUploadStaleAfter = 24 * time.Hour
 // own byte range of the pre-sized temp file, so they don't interfere with
 // each other - while completing/aborting/reclaiming the upload takes the
 // exclusive side and so waits for any in-flight chunk writes to finish first.
-var audiobookUploadLocks sync.Map // id -> *sync.RWMutex
+//
+// Entries are reference-counted: every caller holds a reference from before
+// it starts waiting on the mutex until after it has released it, and the
+// entry is deleted when the last reference goes. So an id from the URL that
+// names no upload (or one whose complete fails, or that the sweeper reclaims)
+// never leaves an entry behind, and an entry is never deleted while another
+// request is still queued on its mutex - which would let the next request
+// create a second mutex for the same upload.
+var (
+	audiobookUploadLocksMu sync.Mutex
+	audiobookUploadLocks   = map[string]*audiobookUploadLock{}
+)
 
-func lockAudiobookUpload(id string) *sync.RWMutex {
-	lock, _ := audiobookUploadLocks.LoadOrStore(id, &sync.RWMutex{})
-	return lock.(*sync.RWMutex)
+type audiobookUploadLock struct {
+	mu   sync.RWMutex
+	refs int // guarded by audiobookUploadLocksMu
+}
+
+func acquireAudiobookUploadLock(id string) *audiobookUploadLock {
+	audiobookUploadLocksMu.Lock()
+	defer audiobookUploadLocksMu.Unlock()
+	lock := audiobookUploadLocks[id]
+	if lock == nil {
+		lock = &audiobookUploadLock{}
+		audiobookUploadLocks[id] = lock
+	}
+	lock.refs++
+	return lock
+}
+
+func releaseAudiobookUploadLock(id string, lock *audiobookUploadLock) {
+	audiobookUploadLocksMu.Lock()
+	defer audiobookUploadLocksMu.Unlock()
+	lock.refs--
+	if lock.refs == 0 {
+		delete(audiobookUploadLocks, id)
+	}
+}
+
+// lockAudiobookUploadShared takes the shared side of id's lock (a chunk
+// write) and returns the function that releases it.
+func lockAudiobookUploadShared(id string) (unlock func()) {
+	lock := acquireAudiobookUploadLock(id)
+	lock.mu.RLock()
+	return func() {
+		lock.mu.RUnlock()
+		releaseAudiobookUploadLock(id, lock)
+	}
+}
+
+// lockAudiobookUploadExclusive takes the exclusive side of id's lock
+// (complete, abort, discard), first waiting for in-flight chunk writes, and
+// returns the function that releases it.
+func lockAudiobookUploadExclusive(id string) (unlock func()) {
+	lock := acquireAudiobookUploadLock(id)
+	lock.mu.Lock()
+	return func() {
+		lock.mu.Unlock()
+		releaseAudiobookUploadLock(id, lock)
+	}
+}
+
+// audiobookUploadLockCount reports how many upload ids have a lock entry.
+func audiobookUploadLockCount() int {
+	audiobookUploadLocksMu.Lock()
+	defer audiobookUploadLocksMu.Unlock()
+	return len(audiobookUploadLocks)
 }
 
 func audiobookMaxBytes(cfg Config) int64 {
@@ -261,7 +323,10 @@ func (s *Server) deleteAudiobook(w http.ResponseWriter, r *http.Request, id stri
 		return
 	}
 
-	deleted, err := s.audiobooks.DeleteAudiobook(r.Context(), id)
+	// The row is deleted before its files are removed below; a request
+	// cancelled in between would leave the files on disk with nothing pointing
+	// at them, so once the delete starts it runs to the end.
+	deleted, err := s.audiobooks.DeleteAudiobook(context.WithoutCancel(r.Context()), id)
 	if err != nil {
 		log.Printf("delete audiobook failed: %v", err)
 		http.Error(w, "failed to delete audiobook", http.StatusInternalServerError)
@@ -1150,14 +1215,12 @@ func (s *Server) appendAudiobookUploadChunk(w http.ResponseWriter, r *http.Reque
 	}
 
 	userID := currentAudiobookUserID(r)
-	lock := lockAudiobookUpload(id)
 	// Shared, not exclusive: several chunks for this same upload can be in
 	// flight at once (the client spreads one file over a few concurrent
 	// connections for speed), each writing to its own offset of the
 	// pre-sized temp file. Only completing/aborting the upload needs to wait
 	// for all of them to finish, via the exclusive side of this lock.
-	lock.RLock()
-	defer lock.RUnlock()
+	defer lockAudiobookUploadShared(id)()
 
 	upload, err := s.audiobooks.GetUpload(r.Context(), id, userID)
 	if errors.Is(err, audiobooks.ErrUploadNotFound) {
@@ -1243,9 +1306,7 @@ func (s *Server) completeAudiobookUpload(w http.ResponseWriter, r *http.Request,
 		}
 	}
 
-	lock := lockAudiobookUpload(id)
-	lock.Lock()
-	defer lock.Unlock()
+	defer lockAudiobookUploadExclusive(id)()
 
 	userID := currentAudiobookUserID(r)
 	record, err := s.audiobooks.CompleteUpload(r.Context(), id, userID, payload.DurationSeconds)
@@ -1253,22 +1314,46 @@ func (s *Server) completeAudiobookUpload(w http.ResponseWriter, r *http.Request,
 		http.NotFound(w, r)
 		return
 	}
-	if err != nil {
-		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
+	switch {
+	case errors.Is(err, audiobooks.ErrDuplicateTitle), errors.Is(err, audiobooks.ErrNotAudio), errors.Is(err, audiobooks.ErrUploadIncomplete):
+		// The uploader's to fix, and worded for them. code tells the client
+		// which it is, because each needs something different: a duplicate or
+		// a file that is not audio has been discarded, so the client drops its
+		// resume marker and moves on, while an incomplete upload is still open
+		// and the client re-sends the ranges it is missing.
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": audiobookUploadConflictCode(err)})
+		return
+	case err != nil:
+		// Anything else (a failed rename, a database error) can carry file
+		// paths and database text; that stays in the log.
+		log.Printf("complete audiobook upload %s failed: %v", sanitizeLogField(id), err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to save the audiobook"})
 		return
 	}
-	audiobookUploadLocks.Delete(id)
-	go s.remuxUploadedAudiobookMP3(record)
+	s.remuxUploadedAudiobookMP3(record)
 
 	writeJSON(w, http.StatusCreated, audiobookJSON(record))
 }
 
-func (s *Server) abortAudiobookUpload(w http.ResponseWriter, r *http.Request, id string) {
-	lock := lockAudiobookUpload(id)
-	lock.Lock()
-	defer lock.Unlock()
+// audiobookUploadConflictCode is the machine-readable code for each 409 that
+// completeAudiobookUpload returns: "duplicate", "not_audio" or "incomplete".
+func audiobookUploadConflictCode(err error) string {
+	switch {
+	case errors.Is(err, audiobooks.ErrDuplicateTitle):
+		return "duplicate"
+	case errors.Is(err, audiobooks.ErrNotAudio):
+		return "not_audio"
+	case errors.Is(err, audiobooks.ErrUploadIncomplete):
+		return "incomplete"
+	default:
+		return ""
+	}
+}
 
-	upload, err := s.audiobooks.AbortUpload(r.Context(), id, currentAudiobookUserID(r))
+func (s *Server) abortAudiobookUpload(w http.ResponseWriter, r *http.Request, id string) {
+	defer lockAudiobookUploadExclusive(id)()
+
+	_, err := s.audiobooks.AbortUpload(r.Context(), id, currentAudiobookUserID(r))
 	if errors.Is(err, audiobooks.ErrUploadNotFound) {
 		http.NotFound(w, r)
 		return
@@ -1278,35 +1363,48 @@ func (s *Server) abortAudiobookUpload(w http.ResponseWriter, r *http.Request, id
 		http.Error(w, "failed to abort upload", http.StatusInternalServerError)
 		return
 	}
-	audiobookUploadLocks.Delete(upload.ID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
 // startAudiobookUploadCleanupSweeper reclaims temp files for uploads that went
 // quiet (a closed tab, a device that never came back) instead of leaving
-// multi-gigabyte partial files on disk forever.
+// multi-gigabyte partial files on disk forever. It runs as tracked background
+// work, so it stops with the server, and each sweep waits out a restore.
 func (s *Server) startAudiobookUploadCleanupSweeper() {
 	if s.audiobooks == nil {
 		return
 	}
-	go func() {
+	s.background.Go(func(ctx context.Context) {
 		ticker := time.NewTicker(time.Hour)
 		defer ticker.Stop()
-		for range ticker.C {
-			stale, err := s.audiobooks.StaleUploads(context.Background(), time.Now().Add(-audiobookUploadStaleAfter))
-			if err != nil {
-				log.Printf("list stale audiobook uploads failed: %v", err)
-				continue
+		for {
+			select {
+			case <-s.background.Quit():
+				return
+			case <-ticker.C:
 			}
-			for _, upload := range stale {
-				if err := s.discardAudiobookUpload(context.Background(), upload); err != nil {
-					log.Printf("discard stale audiobook upload failed: %v", err)
-					continue
-				}
-				log.Printf("audiobooks: reclaimed stale upload %s (%d/%d bytes)", upload.ID, upload.ReceivedBytes, upload.TotalBytes)
-			}
+			s.sweepStaleAudiobookUploads(ctx)
 		}
-	}()
+	})
+}
+
+func (s *Server) sweepStaleAudiobookUploads(ctx context.Context) {
+	if !s.enterBackgroundJob() {
+		return
+	}
+	defer s.leaveBackgroundJob()
+	stale, err := s.audiobooks.StaleUploads(ctx, time.Now().Add(-audiobookUploadStaleAfter))
+	if err != nil {
+		log.Printf("list stale audiobook uploads failed: %v", err)
+		return
+	}
+	for _, upload := range stale {
+		if err := s.discardAudiobookUpload(ctx, upload); err != nil {
+			log.Printf("discard stale audiobook upload failed: %v", err)
+			continue
+		}
+		log.Printf("audiobooks: reclaimed stale upload %s (%d/%d bytes)", upload.ID, upload.ReceivedBytes, upload.TotalBytes)
+	}
 }
 
 // startAudiobookBookmarkExpirySweeper deletes bookmarks nobody has used
@@ -1314,20 +1412,31 @@ func (s *Server) startAudiobookUploadCleanupSweeper() {
 // It runs once at startup, so a server that was down at midnight doesn't
 // skip a day, then at the top of every day (server local time). Against a
 // window measured in months a day of slack is invisible, and the list
-// endpoint hides anything already past its expiry in the meantime.
+// endpoint hides anything already past its expiry in the meantime. Like the
+// upload sweeper it is tracked background work: it stops with the server and
+// waits out a restore before each sweep.
 func (s *Server) startAudiobookBookmarkExpirySweeper() {
 	if s.audiobooks == nil || s.config.AudiobookBookmarkExpiry <= 0 {
 		return
 	}
-	go func() {
+	s.background.Go(func(ctx context.Context) {
 		for {
-			s.sweepExpiredAudiobookBookmarks(context.Background(), time.Now())
+			if s.enterBackgroundJob() {
+				s.sweepExpiredAudiobookBookmarks(ctx, time.Now())
+				s.leaveBackgroundJob()
+			}
 			now := time.Now()
 			// A fresh timer each day rather than a 24h ticker, so the run
 			// stays on midnight across DST changes instead of drifting an hour.
-			time.Sleep(nextAudiobookBookmarkSweep(now).Sub(now))
+			timer := time.NewTimer(nextAudiobookBookmarkSweep(now).Sub(now))
+			select {
+			case <-s.background.Quit():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
 		}
-	}()
+	})
 }
 
 // nextAudiobookBookmarkSweep is the next midnight after now, in now's zone.
@@ -1353,30 +1462,28 @@ func (s *Server) sweepExpiredAudiobookBookmarks(ctx context.Context, now time.Ti
 // is still writing to it. Used by the stale-upload sweeper and the admin
 // discard endpoint.
 func (s *Server) discardAudiobookUpload(ctx context.Context, upload audiobooks.Upload) error {
-	lock := lockAudiobookUpload(upload.ID)
-	lock.Lock()
+	defer lockAudiobookUploadExclusive(upload.ID)()
 	if err := os.Remove(upload.TempPath); err != nil && !os.IsNotExist(err) {
-		lock.Unlock()
 		return fmt.Errorf("remove audiobook upload temp file: %w", err)
 	}
-	if err := s.audiobooks.DiscardUpload(ctx, upload.ID); err != nil {
-		lock.Unlock()
-		return err
-	}
-	lock.Unlock()
-	audiobookUploadLocks.Delete(upload.ID)
-	return nil
+	return s.audiobooks.DiscardUpload(ctx, upload.ID)
 }
 
 // backfillAudiobookMetadata catches up any audiobook stored before cover
 // art/chapter/duration extraction existed. It re-probes the file already on
 // disk - nothing needs to be re-uploaded - and runs once at startup, the same
-// way EnsurePreviewAssets backfills meme video thumbnails.
-func (s *Server) backfillAudiobookMetadata() {
+// way EnsurePreviewAssets backfills meme video thumbnails. It runs as tracked
+// background work: the metadata pass is one restore-pausable unit, and each
+// remux after it another.
+func (s *Server) backfillAudiobookMetadata(ctx context.Context) {
 	if s.audiobooks == nil {
 		return
 	}
-	updated, err := s.audiobooks.BackfillMetadata(context.Background())
+	if !s.enterBackgroundJob() {
+		return
+	}
+	updated, err := s.audiobooks.BackfillMetadata(ctx)
+	s.leaveBackgroundJob()
 	if err != nil {
 		log.Printf("audiobooks: metadata backfill failed: %v", err)
 	} else if updated > 0 {
@@ -1385,7 +1492,7 @@ func (s *Server) backfillAudiobookMetadata() {
 
 	// After the metadata pass, which reads tags and cover art from the MP3s
 	// this replaces. Once every MP3 is converted this finds nothing to do.
-	s.remuxStoredAudiobookMP3s(context.Background())
+	s.remuxStoredAudiobookMP3s(ctx)
 }
 
 func (s *Server) withAudiobookMediaAuth(next http.Handler) http.Handler {

@@ -37,10 +37,13 @@ import (
 
 const (
 	migrationTokenTTL = 24 * time.Hour
-	// migrationErrorTrailer carries the source's error when building the
-	// archive fails after the stream has started and the status code is
-	// already sent.
+	// migrationErrorTrailer says the source failed when building the archive
+	// fails after the stream has started and the status code is already
+	// sent. The detail stays in the source's log.
 	migrationErrorTrailer = "X-Memeindex-Migration-Error"
+	// migrationExportFailedMessage is what that trailer says when the
+	// failure is not one meant for the destination to read.
+	migrationExportFailedMessage = "building the archive failed; the source server's log has the details"
 	// migrationStallTimeout aborts a transfer that has received nothing for
 	// this long - a dead connection would otherwise hang the import forever.
 	migrationStallTimeout = 10 * time.Minute
@@ -190,7 +193,7 @@ func (s *Server) handleMigrationInfo(w http.ResponseWriter, r *http.Request) {
 	info, err := s.backup.migrationInfo(r.Context())
 	if err != nil {
 		log.Printf("migration info failed: %v", err)
-		http.Error(w, "failed to read this server's library: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "failed to read this server's library; its log has the details", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, http.StatusOK, info)
@@ -206,8 +209,10 @@ func (s *Server) handleMigrationExport(w http.ResponseWriter, r *http.Request) {
 	// database tables are dumped first) and the destination is waiting.
 	_ = http.NewResponseController(w).Flush()
 	if err := s.backup.writeArchive(r.Context(), w); err != nil {
+		// The trailer reaches the destination's admin, who need not see this
+		// server's file paths or database errors; the log here has them.
 		log.Printf("migration export to %s failed: %v", sanitizeLogField(s.clientIP(r)), err)
-		w.Header().Set(migrationErrorTrailer, sanitizeLogField(err.Error()))
+		w.Header().Set(migrationErrorTrailer, sanitizeLogField(clientSafeError(err, migrationExportFailedMessage)))
 		return
 	}
 	// The token is a 24-hour key to a full dump of this server, users
@@ -390,6 +395,10 @@ func (s *Server) startMigrationImport(base *url.URL, token string, info migratio
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	startedAt := time.Now().UTC()
+	s.migration.mu.Lock()
+	previous := s.migration.status
+	s.migration.mu.Unlock()
+	previousReceived := s.migration.received.Load()
 	s.migration.received.Store(0)
 	s.migration.update(func(st *migrationImportStatus) {
 		*st = migrationImportStatus{
@@ -405,10 +414,33 @@ func (s *Server) startMigrationImport(base *url.URL, token string, info migratio
 	s.migration.cancel = cancel
 	s.migration.mu.Unlock()
 
-	go func() {
+	// The import is tracked background work, so shutdown waits for it before
+	// closing the stores it restores into. Shutdown also cancels it as soon as
+	// it begins, at any phase: the database load rolls back and the media
+	// directories are swapped back, leaving this server as it was, and the
+	// deferred calls below release the maintenance lock and the pause.
+	started := s.background.Go(func(context.Context) {
 		defer s.restoring.Store(false)
 		defer cancel()
-		err := s.runMigrationImport(ctx, base, token)
+		go func() {
+			select {
+			case <-s.background.Quit():
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+		// As in runBackupRestore: hold the background jobs still for the whole
+		// import, and let them go only once the restored state is reloaded.
+		resume, err := s.pauseBackgroundWork(ctx)
+		if err == nil {
+			defer resume()
+			err = s.runMigrationImport(ctx, base, token)
+		}
+		if err == nil {
+			// Before the status says completed: the admin page reloads as
+			// soon as it does, and must not be served from stale caches.
+			s.reloadAfterRestore(ctx, "migration")
+		}
 		completedAt := time.Now().UTC()
 		s.migration.update(func(st *migrationImportStatus) {
 			st.CompletedAt = &completedAt
@@ -421,7 +453,10 @@ func (s *Server) startMigrationImport(base *url.URL, token string, info migratio
 				st.Error = "The migration was cancelled; this server was left unchanged."
 			default:
 				st.State = "failed"
-				st.Error = err.Error()
+				// runMigrationImport already turned anything from this
+				// server's own restore into a userFacingError; what is left
+				// describes the source or the connection to it.
+				st.Error = clientSafeError(err, err.Error())
 			}
 		})
 		s.migration.mu.Lock()
@@ -432,10 +467,18 @@ func (s *Server) startMigrationImport(base *url.URL, token string, info migratio
 			return
 		}
 		log.Printf("migration from %s completed", base.Host)
-		if err := s.managers.ReloadAfterRestore(); err != nil {
-			log.Printf("reload in-memory state after migration failed: %v", err)
-		}
-	}()
+	})
+	if !started {
+		// Shutdown has begun: nothing ran, so put everything back.
+		cancel()
+		s.migration.mu.Lock()
+		s.migration.cancel = nil
+		s.migration.status = previous
+		s.migration.mu.Unlock()
+		s.migration.received.Store(previousReceived)
+		s.restoring.Store(false)
+		return migrationImportStatus{}, errors.New("the server is shutting down")
+	}
 	return s.migration.snapshot(), nil
 }
 
@@ -506,7 +549,13 @@ func (s *Server) runMigrationImport(ctx context.Context, base *url.URL, token st
 	if reason := strings.TrimSpace(resp.Trailer.Get(migrationErrorTrailer)); reason != "" {
 		return fmt.Errorf("the source failed while sending its library: %s", reason)
 	}
-	return err
+	// A problem with the archive is reported as is; a failure inside this
+	// server's restore (database errors, its own file paths) only in the log.
+	var friendly *userFacingError
+	if errors.As(err, &friendly) {
+		return err
+	}
+	return userErrorWrap("the restore failed on this server; its log has the details", err)
 }
 
 func (s *Server) cancelMigrationImport() bool {

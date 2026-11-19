@@ -101,7 +101,7 @@ func (s *Server) createMemeFromSourceURL(ctx context.Context, actor accessor.Aud
 		header.Set("Content-Type", contentType)
 	}
 
-	return s.managers.CreateMemeAsWithSource(
+	return s.managers.CreateMemeAsWithSource(ctx,
 		actor,
 		src,
 		header,
@@ -127,7 +127,12 @@ func (s *Server) shouldQueueLinkRetry(sourceURL string, err error) bool {
 }
 
 func (s *Server) processRetriedLinkJob(ctx context.Context, job LinkRetryJob) error {
-	if s.auth.enabled() && !hasPermission(s.auth.permissionsForUser(job.Actor.UserID), permissionUpload) {
+	if s.auth.enabled() && !hasPermission(s.auth.permissionsForUser(ctx, job.Actor.UserID), permissionUpload) {
+		// A lookup cut short by shutdown finds no permissions at all; that is an
+		// interrupted attempt, not a revoked permission.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return errors.New("upload permission was revoked before retry")
 	}
 	meme, err := s.createMemeFromSourceURL(ctx, job.Actor, job.SourceURL, job.Tags, job.Notes)
@@ -138,7 +143,7 @@ func (s *Server) processRetriedLinkJob(ctx context.Context, job LinkRetryJob) er
 		}
 		return err
 	}
-	s.managers.QueueMemeTagSuggestions(meme.ID)
+	s.managers.QueueMemeTagSuggestions(ctx, meme.ID)
 	return nil
 }
 

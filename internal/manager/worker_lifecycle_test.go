@@ -4,12 +4,12 @@ import (
 	"testing"
 	"time"
 
-	"memeindex/internal/accessor"
+	"memeindex/internal/accessor/accessortest"
 )
 
 func newLifecycleManager(t *testing.T) *MemeManager {
 	t.Helper()
-	store, err := accessor.NewMemeStore(t.TempDir())
+	store, err := accessortest.NewMemeStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewMemeStore: %v", err)
 	}

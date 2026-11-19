@@ -117,6 +117,12 @@ func shouldPinDownloaderTransport(proxy string) bool {
 // non-reserved IP addresses, so a redirect or media URL pointing at a
 // private/link-local/loopback host fails at connection time. It runs once per
 // process and is a no-op afterward.
+//
+// mediafetch (as of v0.1.10) offers no way to inject an http.Client, so the pin
+// has to be process-wide. Every first-party client that leaves Transport nil
+// inherits it too, so any client that must reach a private address or skip the
+// downloader proxy sets its own Transport: Ollama (tagsuggest), Discord
+// (newDiscordTransport) and migration sources (migrationHTTPClient).
 func pinDownloaderDefaultTransport(proxy string) {
 	pinDownloaderTransportOnce.Do(func() {
 		if !shouldPinDownloaderTransport(proxy) {

@@ -70,29 +70,29 @@ func exportPartName(index int) string {
 
 func validateBackupPartsManifest(m backupPartsManifest) error {
 	if m.Kind != backupPartsManifestKind {
-		return errors.New("file is not a MemeIndex backup manifest")
+		return userError("file is not a MemeIndex backup manifest")
 	}
 	if !backupIDPattern.MatchString(m.BackupID) {
-		return errors.New("backup manifest has an invalid backup id")
+		return userError("backup manifest has an invalid backup id")
 	}
 	if m.PartCount < 1 || m.PartCount > maxBackupParts || m.PartCount != len(m.Parts) {
-		return errors.New("backup manifest part count does not match its part list")
+		return userError("backup manifest part count does not match its part list")
 	}
 	var total int64
 	for i, part := range m.Parts {
 		if part.Index != i+1 || part.Filename != backupPartFilename(m.BackupID, i+1) {
-			return fmt.Errorf("backup manifest part %d has an unexpected name", i+1)
+			return userError(fmt.Sprintf("backup manifest part %d has an unexpected name", i+1))
 		}
 		if part.SizeBytes <= 0 {
-			return fmt.Errorf("backup manifest part %d has an invalid size", i+1)
+			return userError(fmt.Sprintf("backup manifest part %d has an invalid size", i+1))
 		}
 		if decoded, err := hex.DecodeString(part.SHA256); err != nil || len(decoded) != sha256.Size || part.SHA256 != strings.ToLower(part.SHA256) {
-			return fmt.Errorf("backup manifest part %d has an invalid checksum", i+1)
+			return userError(fmt.Sprintf("backup manifest part %d has an invalid checksum", i+1))
 		}
 		total += part.SizeBytes
 	}
 	if total != m.TotalSizeBytes {
-		return errors.New("backup manifest total size does not match its parts")
+		return userError("backup manifest total size does not match its parts")
 	}
 	return nil
 }
@@ -305,7 +305,7 @@ func (b *portableBackup) incomingStatus() (backupIncomingStatus, error) {
 func (b *portableBackup) stageImportManifest(payload []byte) (backupIncomingStatus, error) {
 	var manifest backupPartsManifest
 	if err := json.Unmarshal(payload, &manifest); err != nil {
-		return backupIncomingStatus{}, errors.New("file is not a MemeIndex backup manifest")
+		return backupIncomingStatus{}, userError("file is not a MemeIndex backup manifest")
 	}
 	if err := validateBackupPartsManifest(manifest); err != nil {
 		return backupIncomingStatus{}, err
@@ -338,7 +338,7 @@ func (b *portableBackup) receiveImportPart(filename string, body io.Reader) (bac
 		return backupIncomingStatus{}, err
 	}
 	if manifest == nil {
-		return backupIncomingStatus{}, errors.New("upload the backup's .manifest.json file before its parts")
+		return backupIncomingStatus{}, userError("upload the backup's .manifest.json file before its parts")
 	}
 	var expected *backupPart
 	for i := range manifest.Parts {
@@ -348,7 +348,7 @@ func (b *portableBackup) receiveImportPart(filename string, body io.Reader) (bac
 		}
 	}
 	if expected == nil {
-		return backupIncomingStatus{}, fmt.Errorf("%q is not a part of backup %s", filename, manifest.BackupID)
+		return backupIncomingStatus{}, userError(fmt.Sprintf("%q is not a part of backup %s", filename, manifest.BackupID))
 	}
 
 	temp, err := os.CreateTemp(b.incomingDir(), ".uploading-*")
@@ -366,16 +366,16 @@ func (b *portableBackup) receiveImportPart(filename string, body io.Reader) (bac
 	written, copyErr := io.Copy(io.MultiWriter(temp, digest), io.LimitReader(body, expected.SizeBytes+1))
 	closeErr := temp.Close()
 	if copyErr != nil {
-		return backupIncomingStatus{}, fmt.Errorf("receive %s: %w", filename, copyErr)
+		return backupIncomingStatus{}, userErrorWrap(fmt.Sprintf("receiving %s failed - check the server has free disk space for it, then choose it again", filename), copyErr)
 	}
 	if closeErr != nil {
 		return backupIncomingStatus{}, closeErr
 	}
 	if written != expected.SizeBytes {
-		return backupIncomingStatus{}, fmt.Errorf("%s is %d bytes but the manifest expects %d - the file may be incomplete", filename, written, expected.SizeBytes)
+		return backupIncomingStatus{}, userError(fmt.Sprintf("%s is %d bytes but the manifest expects %d - the file may be incomplete", filename, written, expected.SizeBytes))
 	}
 	if hex.EncodeToString(digest.Sum(nil)) != expected.SHA256 {
-		return backupIncomingStatus{}, fmt.Errorf("%s does not match the manifest checksum - the file is damaged or from a different backup", filename)
+		return backupIncomingStatus{}, userError(fmt.Sprintf("%s does not match the manifest checksum - the file is damaged or from a different backup", filename))
 	}
 	if err := os.Rename(tempPath, filepath.Join(b.incomingDir(), filename)); err != nil {
 		return backupIncomingStatus{}, err
@@ -423,10 +423,10 @@ func (b *portableBackup) openStagedParts() (io.Reader, func(), int64, error) {
 		return nil, nil, 0, err
 	}
 	if manifest == nil {
-		return nil, nil, 0, errors.New("no backup parts have been uploaded")
+		return nil, nil, 0, userError("no backup parts have been uploaded")
 	}
 	if !status.Complete {
-		return nil, nil, 0, fmt.Errorf("backup is incomplete: %d of %d parts received", status.ReceivedCount, status.PartCount)
+		return nil, nil, 0, userError(fmt.Sprintf("backup is incomplete: %d of %d parts received", status.ReceivedCount, status.PartCount))
 	}
 	paths := make([]string, 0, len(manifest.Parts))
 	for _, part := range manifest.Parts {

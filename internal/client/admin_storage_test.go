@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"memeindex/internal/accessor"
+	"memeindex/internal/accessor/accessortest"
 	"memeindex/internal/audiobooks"
 	"memeindex/internal/manager"
 )
@@ -158,11 +159,11 @@ func (s storagePathsStore) ListUploadTempPaths(context.Context) ([]string, error
 
 func TestCollectStorageReferences(t *testing.T) {
 	dataDir := t.TempDir()
-	store, err := accessor.NewMemeStore(dataDir)
+	store, err := accessortest.NewMemeStore(dataDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	meme, err := store.Create(accessor.CreateInput{
+	meme, err := store.Create(context.Background(), accessor.CreateInput{
 		File:        strings.NewReader("png bytes"),
 		Header:      textproto.MIMEHeader{"Content-Type": []string{"image/png"}},
 		Filename:    "m.png",
@@ -171,7 +172,7 @@ func TestCollectStorageReferences(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ghost, err := store.Create(accessor.CreateInput{
+	ghost, err := store.Create(context.Background(), accessor.CreateInput{
 		File:        strings.NewReader("gone"),
 		Header:      textproto.MIMEHeader{"Content-Type": []string{"image/png"}},
 		Filename:    "ghost.png",

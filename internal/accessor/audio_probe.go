@@ -215,13 +215,16 @@ func remuxTimeout(sizeBytes int64) time.Duration {
 //
 // Before this returns nil the output is checked to hold exactly as many
 // audio packets as the source; on any failure outputPath is removed and the
-// caller should keep serving the original file.
-func RemuxMP3ToM4B(inputPath, outputPath string) error {
+// caller should keep serving the original file. That includes ctx being
+// cancelled (a server shutting down), which kills ffmpeg mid-write: the
+// partial output is removed the same way rather than left looking like a
+// finished .m4b.
+func RemuxMP3ToM4B(ctx context.Context, inputPath, outputPath string) error {
 	info, err := os.Stat(inputPath)
 	if err != nil {
 		return fmt.Errorf("stat source: %w", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), remuxTimeout(info.Size()))
+	ctx, cancel := context.WithTimeout(ctx, remuxTimeout(info.Size()))
 	defer cancel()
 
 	cmd := localMediaCommand(ctx,
