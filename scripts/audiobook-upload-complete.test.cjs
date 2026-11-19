@@ -209,3 +209,41 @@ test("the queue shows a not-audio file's error and carries on with the next file
   assert.equal(harness.run("toasts").length, 1);
   assert.match(harness.run("toasts")[0], /notes\.m4b.*not an audio file/);
 });
+
+test("clicking Upload again after a still-incomplete upload retries that file", async () => {
+  const file = fakeFile("book.m4b", 20 * MiB);
+  const server = fakeUploadServer({
+    totalBytes: file.size,
+    reply: (complete) => (complete ? created() : incomplete()),
+    lose: [8 * MiB, 8 * MiB], // lost on the first send and on the re-send
+  });
+  const harness = createHarness(server.fetch);
+  harness.run("setQueue = (files) => { audiobookUploadQueue = files.map((file) => ({ file, status: 'queued', message: '' })); }")([file]);
+  await harness.run("submitAudiobookUpload")({ preventDefault() {} });
+  let queue = harness.run("audiobookUploadQueue");
+  assert.equal(queue[0].status, "error");
+  assert.match(harness.run("audiobookUploadStatus").textContent, /Click Upload to try again/);
+
+  // The message says to click Upload, so that click has to pick the file up
+  // again and resume it from the saved marker.
+  await harness.run("submitAudiobookUpload")({ preventDefault() {} });
+  queue = harness.run("audiobookUploadQueue");
+  assert.equal(queue[0].status, "done", `the retry did not upload the file: ${queue[0].message}`);
+  assert.equal(server.completes, 3);
+  assert.deepEqual(server.ranges(), [{ start: 0, end: file.size }]);
+  assert.equal(harness.marker(), null);
+});
+
+test("clicking Upload again does not resend a file the server refused", async () => {
+  const files = [fakeFile("notes.m4b", 1 * MiB)];
+  const server = fakeUploadServer({
+    totalBytes: 1 * MiB,
+    reply: () => response(409, { error: "that file is not an audio file", code: "not_audio" }),
+  });
+  const harness = createHarness(server.fetch);
+  harness.run("setQueue = (files) => { audiobookUploadQueue = files.map((file) => ({ file, status: 'queued', message: '' })); }")(files);
+  await harness.run("submitAudiobookUpload")({ preventDefault() {} });
+  await harness.run("submitAudiobookUpload")({ preventDefault() {} });
+  assert.equal(server.completes, 1, "a refused file must not be uploaded again");
+  assert.equal(harness.run("audiobookUploadQueue")[0].status, "error");
+});
