@@ -164,11 +164,17 @@ func (s *PostgresStore) MergeTag(ctx context.Context, sourceTag, targetTag strin
 	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock(hashtextextended('tag-merge', 0))`); err != nil {
 		return TagMergeCounts{}, err
 	}
+	// The unlock, the rollback and the cleanup of a target this created run
+	// past a cancelled request. The target is committed on its own, so a merge
+	// its admin abandoned must still remove it; and a rollback on a cancelled
+	// context fails and makes pgx close the connection, which would drop the
+	// merge lock before that cleanup ran.
+	cleanupCtx := context.WithoutCancel(ctx)
 	defer func() {
-		if _, err := conn.Exec(ctx, `SELECT pg_advisory_unlock(hashtextextended('tag-merge', 0))`); err != nil {
+		if _, err := conn.Exec(cleanupCtx, `SELECT pg_advisory_unlock(hashtextextended('tag-merge', 0))`); err != nil {
 			// Never hand a connection still holding the lock back to the
 			// pool; closing it releases the lock.
-			_ = conn.Conn().Close(ctx)
+			_ = conn.Conn().Close(cleanupCtx)
 		}
 	}()
 
@@ -197,17 +203,17 @@ func (s *PostgresStore) MergeTag(ctx context.Context, sourceTag, targetTag strin
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		if createdTargetID != 0 {
-			_ = pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error { return DeleteOrphanTags(ctx, tx, []int64{createdTargetID}) })
+			_ = pgx.BeginFunc(cleanupCtx, conn, func(tx pgx.Tx) error { return DeleteOrphanTags(cleanupCtx, tx, []int64{createdTargetID}) })
 		}
 		return TagMergeCounts{}, err
 	}
 	committed := false
 	defer func() {
-		_ = tx.Rollback(ctx)
+		_ = tx.Rollback(cleanupCtx)
 		if !committed && createdTargetID != 0 {
 			// After the rollback, so the cleanup is not skipped over this
 			// transaction's own lock on the target.
-			_ = pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error { return DeleteOrphanTags(ctx, tx, []int64{createdTargetID}) })
+			_ = pgx.BeginFunc(cleanupCtx, conn, func(tx pgx.Tx) error { return DeleteOrphanTags(cleanupCtx, tx, []int64{createdTargetID}) })
 		}
 	}()
 

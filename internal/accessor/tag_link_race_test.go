@@ -280,6 +280,58 @@ func TestMergeTagIntoNewTagDoesNotDeadlockWithEditAddingIt(t *testing.T) {
 	}
 }
 
+// A merge into a new tag whose request is abandoned while it waits must not
+// leave that tag behind. MergeTag commits the target before its own
+// transaction starts locking, so the cleanup has to run past the cancelled
+// request context; on the request's own context it would fail at once.
+func TestCancelledMergeIntoNewTagLeavesNoTarget(t *testing.T) {
+	f := newTagMergeFixture(t)
+	ctx := context.Background()
+	src, dst := f.tag("abandon"), f.tag("abandoned")
+	f.cleanupTags(src, dst)
+	meme := f.raceMeme(src)
+
+	// Hold the meme row so the merge blocks after it has created the target.
+	tx, err := f.store.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT id FROM memes WHERE id = $1 FOR UPDATE`, meme); err != nil {
+		t.Fatalf("lock meme: %v", err)
+	}
+	pid := backendPID(t, tx)
+
+	mergeCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan struct{})
+	var mergeErr error
+	go func() {
+		defer close(done)
+		_, mergeErr = f.store.MergeTag(mergeCtx, src, dst, mergeActor)
+	}()
+	waitBlockedOrDone(t, f, pid, done)
+	if !f.tagExists(dst) {
+		t.Fatalf("target tag %s was not created before the merge blocked", dst)
+	}
+
+	cancel() // the admin's browser goes away
+	<-done
+	if mergeErr == nil {
+		t.Fatal("MergeTag succeeded although its context was cancelled while it waited")
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatalf("release meme: %v", err)
+	}
+
+	if f.tagExists(dst) {
+		t.Errorf("target tag %s was left behind by the abandoned merge", dst)
+	}
+	if got := f.memeTags(meme); !slices.Equal(got, []string{src}) {
+		t.Errorf("meme tags = %v, want [%s] unchanged", got, src)
+	}
+}
+
 // A merge of a source nothing links creates no target: the target the merge
 // commits up front (see MergeTag) is cleaned up again when nothing moves.
 func TestMergeTagOfUnusedSourceLeavesNoNewTarget(t *testing.T) {
