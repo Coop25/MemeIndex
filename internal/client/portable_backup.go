@@ -1139,6 +1139,11 @@ func extractPortableArchiveWithLimits(source io.Reader, destination string, maxB
 		return userError("file is not a valid MemeIndex backup")
 	}
 	defer gz.Close()
+	// A backup is one gzip member (see the export). Stop at its end, so the
+	// drain after the tar loop checks its trailer and bytes after it are
+	// ignored as they always were - with multistream on, gzip would try to
+	// read them as the next member's header.
+	gz.Multistream(false)
 	tr := tar.NewReader(gz)
 	var expanded int64
 	entries := 0
@@ -1197,6 +1202,21 @@ func extractPortableArchiveWithLimits(source io.Reader, destination string, maxB
 		default:
 			return userError(fmt.Sprintf("backup contains unsupported entry %q", header.Name))
 		}
+	}
+	// Read the gzip stream to its end. The tar reader stops at the
+	// end-of-archive marker, short of the gzip trailer, and only there does
+	// gzip check the CRC and length of everything decompressed: without this
+	// a backup changed in storage or transit (a flipped bit in a stored
+	// block, a cut-off trailer) restores silently. Only to the end of the
+	// gzip member (see Multistream above); what's left of the tar stream
+	// counts against the size limit.
+	remaining := maxBytes - expanded
+	n, err := io.Copy(io.Discard, io.LimitReader(gz, remaining+1))
+	if err != nil { // io.Discard never fails, so this is the read side
+		return userErrorWrap("the backup archive is truncated or damaged", err)
+	}
+	if n > remaining {
+		return userError("backup exceeds extraction limits")
 	}
 	return nil
 }
