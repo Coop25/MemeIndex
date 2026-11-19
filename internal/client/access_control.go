@@ -1,7 +1,6 @@
 package client
 
 import (
-	"context"
 	"io"
 	"mime"
 	"net/http"
@@ -91,7 +90,7 @@ func (s *Server) withProtectedAssetAuth(next http.Handler) http.Handler {
 		// its file and thumbnail too, so it is not still one copied URL away
 		// while the request waits for approval. Admins keep access because the
 		// approval queue previews exactly these files.
-		if !session.Permissions.CanManageUsers && s.managers.IsMemeHidden(context.TODO(), assetMemeID(r.URL.Path)) {
+		if !session.Permissions.CanManageUsers && s.managers.IsMemeHidden(r.Context(), assetMemeID(r.URL.Path)) {
 			http.NotFound(w, r)
 			return
 		}

@@ -96,18 +96,18 @@ func (s *Server) importLinkWithinBudget(r *http.Request, actor accessor.AuditAct
 	case <-timer.C:
 	case <-r.Context().Done():
 	}
-	if !s.background.Go(func(context.Context) {
-		s.finishBackgroundLinkImport(done, actor, sourceURL, tags, notes)
+	if !s.background.Go(func(ctx context.Context) {
+		s.finishBackgroundLinkImport(ctx, done, actor, sourceURL, tags, notes)
 	}) {
 		log.Printf("background link import of %q will not be followed up: server is shutting down", sanitizeLogField(sourceURL))
 	}
 	return accessor.Meme{}, nil, true
 }
 
-func (s *Server) finishBackgroundLinkImport(done <-chan linkImportOutcome, actor accessor.AuditActor, sourceURL string, tags []string, notes string) {
+func (s *Server) finishBackgroundLinkImport(ctx context.Context, done <-chan linkImportOutcome, actor accessor.AuditActor, sourceURL string, tags []string, notes string) {
 	out := <-done
 	if out.err == nil {
-		s.managers.QueueMemeTagSuggestions(context.TODO(), out.meme.ID)
+		s.managers.QueueMemeTagSuggestions(ctx, out.meme.ID)
 		log.Printf("background link import of %q finished", sanitizeLogField(sourceURL))
 		return
 	}

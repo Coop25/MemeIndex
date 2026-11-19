@@ -131,7 +131,11 @@ func (s *Server) swapAudiobookToRemuxedM4B(ctx context.Context, book audiobooks.
 	if err != nil {
 		return 0, err
 	}
-	if err := s.audiobooks.RecordRemuxedM4B(ctx, book, m4bPath, size); err != nil {
+	// The .m4b is removed again if recording it fails. An update cancelled by
+	// shutdown while in flight may still have been applied, and removing the
+	// file then would leave the book pointing at nothing, so the conversion
+	// stays cancellable but recording its result does not.
+	if err := s.audiobooks.RecordRemuxedM4B(context.WithoutCancel(ctx), book, m4bPath, size); err != nil {
 		_ = os.Remove(m4bPath)
 		if errors.Is(err, audiobooks.ErrNotFound) {
 			return 0, errors.New("audiobook was deleted or replaced during the remux")

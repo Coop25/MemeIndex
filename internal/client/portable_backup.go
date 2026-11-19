@@ -794,7 +794,12 @@ func (b *portableBackup) restoreArchive(ctx context.Context, source io.Reader, m
 	if err != nil {
 		return err
 	}
-	if _, err := conn.Exec(ctx, "COMMIT"); err != nil {
+	// The media directories are already swapped, and a failed commit swaps
+	// them back. A commit cancelled while in flight may still have been
+	// applied, which would leave the restored database pointing at the old
+	// media, so once sent it is not cancelled. Up to here a cancel still
+	// rolls everything back and leaves the server as it was.
+	if _, err := conn.Exec(context.WithoutCancel(ctx), "COMMIT"); err != nil {
 		rollbackFiles()
 		return fmt.Errorf("commit restored database: %w", err)
 	}

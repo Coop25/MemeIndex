@@ -161,7 +161,7 @@ func (s *Server) runBackupRestore(w http.ResponseWriter, r *http.Request, restor
 		httpErrorClientSafe(w, err, "the server could not complete the restore; its log has the details", "backup import failed: ")
 		return
 	}
-	s.reloadAfterRestore("backup import")
+	s.reloadAfterRestore(r.Context(), "backup import")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":      true,
 		"message": "Backup imported successfully.",
@@ -178,8 +178,11 @@ func (s *Server) runBackupRestore(w http.ResponseWriter, r *http.Request, restor
 // outlive the files it was taken against. The audiobook series lookup cache
 // is left alone: it holds catalog answers keyed by title and author, not
 // restored data.
-func (s *Server) reloadAfterRestore(what string) {
-	if err := s.managers.ReloadAfterRestore(context.TODO()); err != nil {
+func (s *Server) reloadAfterRestore(ctx context.Context, what string) {
+	// The restore has already replaced the database and media, so the state
+	// kept in memory must follow it even if the admin's request (or the
+	// migration job) is cancelled now.
+	if err := s.managers.ReloadAfterRestore(context.WithoutCancel(ctx)); err != nil {
 		log.Printf("reload in-memory state after %s failed: %v", what, err)
 	}
 	s.auth.invalidateAll()

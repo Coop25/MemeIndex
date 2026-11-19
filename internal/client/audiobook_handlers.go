@@ -323,7 +323,10 @@ func (s *Server) deleteAudiobook(w http.ResponseWriter, r *http.Request, id stri
 		return
 	}
 
-	deleted, err := s.audiobooks.DeleteAudiobook(r.Context(), id)
+	// The row is deleted before its files are removed below; a request
+	// cancelled in between would leave the files on disk with nothing pointing
+	// at them, so once the delete starts it runs to the end.
+	deleted, err := s.audiobooks.DeleteAudiobook(context.WithoutCancel(r.Context()), id)
 	if err != nil {
 		log.Printf("delete audiobook failed: %v", err)
 		http.Error(w, "failed to delete audiobook", http.StatusInternalServerError)
