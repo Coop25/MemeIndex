@@ -169,11 +169,30 @@ func (s *PostgresStore) MergeTag(sourceTag, targetTag string, actor AuditActor) 
 		return TagMergeCounts{}, nil
 	}
 
-	// The target is locked like any linker locks a tag (creating it if
-	// needed) before the source is locked. Creating it can wait for another
-	// transaction that is inserting the same name; doing that while already
-	// holding the source would deadlock if that transaction were also
-	// linking the source.
+	// Create a missing target in a statement of its own, committed before
+	// this transaction takes any row lock. Created inside it, the new row
+	// would stay uncommitted until the merge ends, and an edit that adds the
+	// same name to a meme carrying the source - holding that meme's row,
+	// which the merge locks below - would wait on the insert while the merge
+	// waits on the meme: a deadlock. If the merge then fails or moves
+	// nothing, the target it created is cleaned up again.
+	var createdTargetID int64
+	err = s.pool.QueryRow(ctx, `INSERT INTO tags (name) VALUES ($1) ON CONFLICT (name) DO NOTHING RETURNING id`, targetTag).Scan(&createdTargetID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) { // no row: it already existed
+		return TagMergeCounts{}, err
+	}
+	committed := false
+	defer func() {
+		if !committed && createdTargetID != 0 {
+			// Roll back first, so the cleanup is not skipped over this
+			// transaction's own lock on the target.
+			_ = tx.Rollback(ctx)
+			_ = s.deleteOrphanTagsInTx(ctx, []int64{createdTargetID})
+		}
+	}()
+
+	// The target is locked like any linker locks a tag before the source is
+	// locked.
 	targetIDs, err := LockTagsForLink(ctx, tx, []string{targetTag})
 	if err != nil {
 		return TagMergeCounts{}, err
@@ -189,8 +208,8 @@ func (s *PostgresStore) MergeTag(sourceTag, targetTag string, actor AuditActor) 
 	var sourceID int64
 	if err := tx.QueryRow(ctx, `SELECT id FROM tags WHERE name = $1 FOR UPDATE`, sourceTag).Scan(&sourceID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			// Deleted while this waited; the rollback also drops a target
-			// this created.
+			// Deleted while this waited; a target this created is
+			// cleaned up again.
 			return TagMergeCounts{}, nil
 		}
 		return TagMergeCounts{}, err
@@ -249,7 +268,11 @@ func (s *PostgresStore) MergeTag(sourceTag, targetTag string, actor AuditActor) 
 		if err := DeleteOrphanTags(ctx, tx, targetIDs); err != nil {
 			return TagMergeCounts{}, err
 		}
-		return TagMergeCounts{}, tx.Commit(ctx)
+		if err := tx.Commit(ctx); err != nil {
+			return TagMergeCounts{}, err
+		}
+		committed = true
+		return TagMergeCounts{}, nil
 	}
 
 	counts := TagMergeCounts{Memes: len(affected)}
@@ -328,6 +351,7 @@ func (s *PostgresStore) MergeTag(sourceTag, targetTag string, actor AuditActor) 
 	if err := tx.Commit(ctx); err != nil {
 		return TagMergeCounts{}, err
 	}
+	committed = true
 	return counts, nil
 }
 

@@ -222,3 +222,78 @@ func TestMergeTagMovesConcurrentlyAddedLink(t *testing.T) {
 		t.Errorf("source tag %s still exists", src)
 	}
 }
+
+// A merge into a tag that does not exist yet, while an edit of a meme that
+// carries the source adds that same new tag. The edit holds the meme row and
+// creates the tag; the merge has to lock that meme. If the merge created the
+// target inside its own transaction first, the edit's upsert of the name would
+// wait on the merge's uncommitted insert while the merge waits on the edit's
+// meme row: a deadlock that Postgres resolves by failing one of the two.
+func TestMergeTagIntoNewTagDoesNotDeadlockWithEditAddingIt(t *testing.T) {
+	f := newTagMergeFixture(t)
+	ctx := context.Background()
+	src, dst := f.tag("catt"), f.tag("cats")
+	f.cleanupTags(src, dst)
+	meme := f.raceMeme(src)
+
+	// The edit, held open: EditMeme locks the meme row first.
+	tx, err := f.store.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT id FROM memes WHERE id = $1 FOR UPDATE`, meme); err != nil {
+		t.Fatalf("lock meme: %v", err)
+	}
+	pid := backendPID(t, tx)
+
+	done := make(chan struct{})
+	var counts TagMergeCounts
+	var mergeErr error
+	go func() {
+		defer close(done)
+		counts, mergeErr = f.store.MergeTag(src, dst, mergeActor)
+	}()
+	waitBlockedOrDone(t, f, pid, done)
+
+	// The rest of the edit: link the merge target, which is new.
+	if err := f.store.addMemeTags(ctx, tx, meme, []string{dst}); err != nil {
+		t.Fatalf("addMemeTags: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit edit: %v", err)
+	}
+	<-done
+	if mergeErr != nil {
+		t.Fatalf("MergeTag: %v", mergeErr)
+	}
+
+	if got := f.memeTags(meme); !slices.Equal(got, []string{dst}) {
+		t.Errorf("meme tags = %v, want [%s]", got, dst)
+	}
+	if counts.Memes != 1 {
+		t.Errorf("merged memes = %d, want 1", counts.Memes)
+	}
+	if f.tagExists(src) {
+		t.Errorf("source tag %s still exists", src)
+	}
+}
+
+// A merge of a source nothing links creates no target: the target the merge
+// commits up front (see MergeTag) is cleaned up again when nothing moves.
+func TestMergeTagOfUnusedSourceLeavesNoNewTarget(t *testing.T) {
+	f := newTagMergeFixture(t)
+	src, dst := f.tag("lonely"), f.tag("lonelier")
+	f.cleanupTags(src, dst)
+	f.tagID(src)
+
+	if _, err := f.store.MergeTag(src, dst, mergeActor); err != nil {
+		t.Fatalf("MergeTag: %v", err)
+	}
+	if f.tagExists(src) {
+		t.Errorf("source tag %s still exists", src)
+	}
+	if f.tagExists(dst) {
+		t.Errorf("target tag %s was left behind with nothing linking it", dst)
+	}
+}

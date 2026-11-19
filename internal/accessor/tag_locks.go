@@ -33,7 +33,9 @@ import (
 //     gone, and creates it afresh.
 //   - Merging (MergeTag) runs one at a time and takes the source row FOR
 //     UPDATE, waiting for linkers already in flight, after it has locked
-//     the target the way a linker does.
+//     the target the way a linker does. A target that does not exist yet is
+//     created and committed first, outside the merge's transaction, so the
+//     merge never holds an uncommitted insert another linker could wait on.
 //
 // This cannot deadlock on tag rows. Orphan deletes never wait for a tag lock
 // (SKIP LOCKED), so they can never close a wait cycle. Linkers only take
