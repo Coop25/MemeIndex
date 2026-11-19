@@ -93,7 +93,7 @@ func TestMemeStoreCreateWithClashingIDLeavesExistingFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	original, err := store.Create(accessor.CreateInput{
+	original, err := store.Create(context.Background(), accessor.CreateInput{
 		File:     strings.NewReader("original bytes"),
 		Header:   textproto.MIMEHeader{"Content-Type": []string{"image/png"}},
 		Filename: "original.png",
@@ -105,7 +105,7 @@ func TestMemeStoreCreateWithClashingIDLeavesExistingFile(t *testing.T) {
 	newMemeID = func() string { return original.ID }
 	t.Cleanup(func() { newMemeID = previous })
 
-	if _, err := store.Create(accessor.CreateInput{
+	if _, err := store.Create(context.Background(), accessor.CreateInput{
 		File:     strings.NewReader("clashing bytes"),
 		Header:   textproto.MIMEHeader{"Content-Type": []string{"image/png"}},
 		Filename: "clash.png",
