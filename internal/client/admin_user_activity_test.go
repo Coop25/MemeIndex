@@ -57,7 +57,7 @@ func TestUserActivityWithoutPostgres(t *testing.T) {
 	}
 	s.users = users
 	s.auth = newAuthService(DiscordAuthConfig{ClientID: "c", ClientSecret: "s", RedirectURL: "https://example.com/auth/callback", SessionSecret: "test"}, users)
-	if _, err := store.SetFavorite("u1", meme.ID, true); err != nil {
+	if _, err := store.SetFavorite(context.Background(), "u1", meme.ID, true); err != nil {
 		t.Fatal(err)
 	}
 	token, err := s.auth.issueSessionToken(authSession{UserID: "admin", SessionVersion: 1, ExpiresAt: time.Now().Add(time.Hour)})

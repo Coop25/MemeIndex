@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/textproto"
@@ -20,7 +21,7 @@ func newSharedMemesManager(t *testing.T, count int) (*MemeManager, time.Time) {
 	}
 	now := time.Now().UTC()
 	for i := 0; i < count; i++ {
-		meme, err := store.Create(accessor.CreateInput{
+		meme, err := store.Create(context.Background(), accessor.CreateInput{
 			File:        strings.NewReader(fmt.Sprintf("bytes %d", i)),
 			Header:      textproto.MIMEHeader{"Content-Type": []string{"image/png"}},
 			Filename:    fmt.Sprintf("meme-%02d.png", i),
@@ -31,7 +32,7 @@ func newSharedMemesManager(t *testing.T, count int) (*MemeManager, time.Time) {
 		}
 		// Later memes are shared later, so the newest share is the last one.
 		sharedAt := now.Add(time.Duration(i) * time.Minute)
-		if _, err := store.GetOrCreateMemeShare(meme.ID, "admin-1", sharedAt, sharedAt.Add(MemeShareLifetime)); err != nil {
+		if _, err := store.GetOrCreateMemeShare(context.Background(), meme.ID, "admin-1", sharedAt, sharedAt.Add(MemeShareLifetime)); err != nil {
 			t.Fatal(err)
 		}
 	}

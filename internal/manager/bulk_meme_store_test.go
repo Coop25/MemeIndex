@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"context"
 	"testing"
 
 	"memeindex/internal/accessor"
@@ -12,7 +13,7 @@ type bulkFakeStore struct {
 	lastIDs   []string
 }
 
-func (s *bulkFakeStore) MemesByIDs(ids []string) (map[string]accessor.Meme, error) {
+func (s *bulkFakeStore) MemesByIDs(_ context.Context, ids []string) (map[string]accessor.Meme, error) {
 	s.bulkCalls++
 	s.lastIDs = append([]string(nil), ids...)
 	out := map[string]accessor.Meme{}

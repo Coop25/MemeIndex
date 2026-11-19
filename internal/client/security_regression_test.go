@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -40,7 +41,7 @@ func TestOAuthStateRequiresInitiatingBrowserAndCannotBeReplayed(t *testing.T) {
 func TestSharedResponsesRejectForwardedHostAndDisableCaching(t *testing.T) {
 	s, store, meme := newShareTestServer(t)
 	now := time.Now().UTC()
-	share, err := store.GetOrCreateMemeShare(meme.ID, "viewer", now, now.Add(time.Hour))
+	share, err := store.GetOrCreateMemeShare(context.Background(), meme.ID, "viewer", now, now.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}

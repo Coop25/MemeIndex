@@ -25,7 +25,7 @@ func TestPostgresAllStoredFilesIncludesHiddenAndPendingDelete(t *testing.T) {
 	admin := AuditActor{UserID: "u-sf", Username: "sf", IsSuperAdmin: true}
 	create := func(name string) Meme {
 		t.Helper()
-		m, err := store.Create(CreateInput{
+		m, err := store.Create(context.Background(), CreateInput{
 			File:        strings.NewReader("fake png bytes " + name),
 			Header:      textproto.MIMEHeader{"Content-Type": []string{"image/png"}},
 			Filename:    token + "-" + name + ".png",
@@ -35,7 +35,7 @@ func TestPostgresAllStoredFilesIncludesHiddenAndPendingDelete(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Create %s: %v", name, err)
 		}
-		t.Cleanup(func() { store.Delete(DeleteInput{ID: m.ID, Actor: admin}) })
+		t.Cleanup(func() { store.Delete(context.Background(), DeleteInput{ID: m.ID, Actor: admin}) })
 		return m
 	}
 	visible := create("visible")
@@ -45,12 +45,12 @@ func TestPostgresAllStoredFilesIncludesHiddenAndPendingDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A non-admin delete only flags the row for approval (pending_delete).
-	res, err := store.Delete(DeleteInput{ID: pending.ID, Actor: AuditActor{UserID: "u-viewer", Username: "viewer"}})
+	res, err := store.Delete(context.Background(), DeleteInput{ID: pending.ID, Actor: AuditActor{UserID: "u-viewer", Username: "viewer"}})
 	if err != nil || !res.PendingApproval {
 		t.Fatalf("request delete = %+v, %v", res, err)
 	}
 
-	files, err := store.AllStoredFiles()
+	files, err := store.AllStoredFiles(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

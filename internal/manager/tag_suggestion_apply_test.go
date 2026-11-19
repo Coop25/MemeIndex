@@ -26,12 +26,12 @@ type notesRaceStore struct {
 	fired bool
 }
 
-func (s *notesRaceStore) GetByID(userID, id string) (accessor.Meme, error) {
-	meme, err := s.suggestionTestStore.GetByID(userID, id)
+func (s *notesRaceStore) GetByID(_ context.Context, userID, id string) (accessor.Meme, error) {
+	meme, err := s.suggestionTestStore.GetByID(context.Background(), userID, id)
 	if err == nil && !s.fired {
 		s.fired = true
 		notes := "edited by someone else"
-		if _, editErr := s.EditMeme("u-other", id, accessor.MemeEdit{Notes: &notes}); editErr != nil {
+		if _, editErr := s.EditMeme(context.Background(), "u-other", id, accessor.MemeEdit{Notes: &notes}); editErr != nil {
 			return accessor.Meme{}, editErr
 		}
 	}
@@ -67,7 +67,7 @@ func testApplySuggestionKeepsNotes(t *testing.T, store suggestionTestStore) {
 		t.Fatal(err)
 	}
 	token := "apply" + hex.EncodeToString(b)
-	meme, err := store.Create(accessor.CreateInput{
+	meme, err := store.Create(context.Background(), accessor.CreateInput{
 		File:        strings.NewReader("apply suggestion bytes " + token),
 		Header:      textproto.MIMEHeader{"Content-Type": []string{"image/png"}},
 		Filename:    token + ".png",
@@ -79,9 +79,9 @@ func testApplySuggestionKeepsNotes(t *testing.T, store suggestionTestStore) {
 		t.Fatalf("Create: %v", err)
 	}
 	t.Cleanup(func() {
-		_, _ = store.Delete(accessor.DeleteInput{ID: meme.ID, Actor: accessor.AuditActor{IsSuperAdmin: true}})
+		_, _ = store.Delete(context.Background(), accessor.DeleteInput{ID: meme.ID, Actor: accessor.AuditActor{IsSuperAdmin: true}})
 	})
-	if err := store.ReplaceSuggestedTags(meme.ID, []string{token + "-dog", token + "-fish"}); err != nil {
+	if err := store.ReplaceSuggestedTags(context.Background(), meme.ID, []string{token + "-dog", token + "-fish"}); err != nil {
 		t.Fatalf("ReplaceSuggestedTags: %v", err)
 	}
 
@@ -90,7 +90,7 @@ func testApplySuggestionKeepsNotes(t *testing.T, store suggestionTestStore) {
 		t.Fatalf("ApplyMemeTagSuggestion: %v", err)
 	}
 
-	got, err := store.GetByID("", meme.ID)
+	got, err := store.GetByID(context.Background(), "", meme.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

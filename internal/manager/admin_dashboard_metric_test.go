@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"context"
 	"os"
 	"testing"
 	"time"
@@ -14,33 +15,33 @@ type dashboardMetricStore struct {
 	favoriteActivities []accessor.AdminFavoriteActivity
 }
 
-func (s *dashboardMetricStore) List(string, string, bool, string) []accessor.Meme {
+func (s *dashboardMetricStore) List(context.Context, string, string, bool, string) []accessor.Meme {
 	return append([]accessor.Meme(nil), s.memes...)
 }
-func (s *dashboardMetricStore) SuggestTags(string, int) []string { return nil }
-func (s *dashboardMetricStore) GetByID(string, string) (accessor.Meme, error) {
+func (s *dashboardMetricStore) SuggestTags(context.Context, string, int) []string { return nil }
+func (s *dashboardMetricStore) GetByID(context.Context, string, string) (accessor.Meme, error) {
 	return accessor.Meme{}, os.ErrNotExist
 }
-func (s *dashboardMetricStore) Random([]string) (accessor.Meme, error) {
+func (s *dashboardMetricStore) Random(context.Context, []string) (accessor.Meme, error) {
 	return accessor.Meme{}, os.ErrNotExist
 }
-func (s *dashboardMetricStore) Create(accessor.CreateInput) (accessor.Meme, error) {
+func (s *dashboardMetricStore) Create(context.Context, accessor.CreateInput) (accessor.Meme, error) {
 	return accessor.Meme{}, os.ErrNotExist
 }
-func (s *dashboardMetricStore) EditMeme(string, string, accessor.MemeEdit) (accessor.Meme, error) {
+func (s *dashboardMetricStore) EditMeme(context.Context, string, string, accessor.MemeEdit) (accessor.Meme, error) {
 	return accessor.Meme{}, os.ErrNotExist
 }
-func (s *dashboardMetricStore) SetFavorite(string, string, bool) (accessor.Meme, error) {
+func (s *dashboardMetricStore) SetFavorite(context.Context, string, string, bool) (accessor.Meme, error) {
 	return accessor.Meme{}, os.ErrNotExist
 }
-func (s *dashboardMetricStore) Delete(accessor.DeleteInput) (accessor.DeleteResult, error) {
+func (s *dashboardMetricStore) Delete(context.Context, accessor.DeleteInput) (accessor.DeleteResult, error) {
 	return accessor.DeleteResult{}, os.ErrNotExist
 }
 func (s *dashboardMetricStore) UploadDir() string { return os.TempDir() }
-func (s *dashboardMetricStore) TotalFavoriteAssignments() (int, error) {
+func (s *dashboardMetricStore) TotalFavoriteAssignments(_ context.Context) (int, error) {
 	return s.favoriteTotal, nil
 }
-func (s *dashboardMetricStore) FavoriteActivitySince(time.Time) ([]accessor.AdminFavoriteActivity, error) {
+func (s *dashboardMetricStore) FavoriteActivitySince(context.Context, time.Time) ([]accessor.AdminFavoriteActivity, error) {
 	return append([]accessor.AdminFavoriteActivity(nil), s.favoriteActivities...), nil
 }
 

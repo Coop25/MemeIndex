@@ -36,7 +36,7 @@ func newPostgresPatchTestServer(t *testing.T, tags []string) (*Server, *accessor
 	for i, tag := range tags {
 		tagged[i] = token + "-" + tag
 	}
-	meme, err := store.Create(accessor.CreateInput{
+	meme, err := store.Create(context.Background(), accessor.CreateInput{
 		File:        strings.NewReader("patch test bytes " + token),
 		Header:      textproto.MIMEHeader{"Content-Type": []string{"image/png"}},
 		Filename:    token + ".png",
@@ -48,7 +48,7 @@ func newPostgresPatchTestServer(t *testing.T, tags []string) (*Server, *accessor
 		t.Fatalf("Create: %v", err)
 	}
 	t.Cleanup(func() {
-		_, _ = store.Delete(accessor.DeleteInput{ID: meme.ID, Actor: accessor.AuditActor{IsSuperAdmin: true}})
+		_, _ = store.Delete(context.Background(), accessor.DeleteInput{ID: meme.ID, Actor: accessor.AuditActor{IsSuperAdmin: true}})
 	})
 	return &Server{managers: manager.NewMemeManager(store), auth: &authService{}}, store, meme, token
 }
@@ -112,7 +112,7 @@ func TestConcurrentTagPatchesKeepEveryTag(t *testing.T) {
 		t.Error(failure)
 	}
 
-	got, err := store.GetByID("", meme.ID)
+	got, err := store.GetByID(context.Background(), "", meme.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestConcurrentTagPatchesKeepEveryTag(t *testing.T) {
 	if got.Notes != "original notes" {
 		t.Fatalf("notes = %q, want them untouched by tag-only patches", got.Notes)
 	}
-	entries, err := store.ListMemeAudit(meme.ID, 200)
+	entries, err := store.ListMemeAudit(context.Background(), meme.ID, 200)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestStaleFullTagPatchCannotExceedPermissions(t *testing.T) {
 	if code, body := patchMemeAs(server, "adder", addOnlyPermissions, meme.ID, fmt.Sprintf(`{"tags_added":[%q]}`, b)); code != http.StatusOK {
 		t.Fatalf("add-only delta: status %d: %s", code, body)
 	}
-	got, err := store.GetByID("", meme.ID)
+	got, err := store.GetByID(context.Background(), "", meme.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +174,7 @@ func TestStaleFullTagPatchCannotExceedPermissions(t *testing.T) {
 	if code != http.StatusForbidden || !strings.Contains(body, "missing add-tag permission") {
 		t.Fatalf("stale full set from a remove-only user: status %d body %s, want 403 missing add-tag permission", code, body)
 	}
-	got, err = store.GetByID("", meme.ID)
+	got, err = store.GetByID(context.Background(), "", meme.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +182,7 @@ func TestStaleFullTagPatchCannotExceedPermissions(t *testing.T) {
 		t.Fatalf("tags = %v, want %s", got.Tags, want)
 	}
 
-	entries, err := store.ListMemeAudit(meme.ID, 200)
+	entries, err := store.ListMemeAudit(context.Background(), meme.ID, 200)
 	if err != nil {
 		t.Fatal(err)
 	}

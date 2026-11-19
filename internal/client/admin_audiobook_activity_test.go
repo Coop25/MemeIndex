@@ -142,11 +142,11 @@ type pendingDeleteStore struct {
 	pending int
 }
 
-func (p pendingDeleteStore) ListPendingDeletes(offset, limit int) (accessor.PagedPendingDeletes, error) {
+func (p pendingDeleteStore) ListPendingDeletes(_ context.Context, offset, limit int) (accessor.PagedPendingDeletes, error) {
 	return accessor.PagedPendingDeletes{Total: p.pending}, nil
 }
 
-func (p pendingDeleteStore) ListAuditFeed(offset, limit int, actorUserID string) (accessor.PagedAuditFeed, error) {
+func (p pendingDeleteStore) ListAuditFeed(_ context.Context, offset, limit int, actorUserID string) (accessor.PagedAuditFeed, error) {
 	return accessor.PagedAuditFeed{}, nil
 }
 

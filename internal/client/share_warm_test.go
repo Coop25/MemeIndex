@@ -2,6 +2,7 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -159,7 +160,7 @@ func TestCreatingASharePostsItsLinkToTheDiscordWarmupWebhook(t *testing.T) {
 func TestDiscordWarmupPostsTheCleanLinkForAnOddOriginalName(t *testing.T) {
 	server, store, _ := newShareTestServer(t)
 	fake := newFakeDiscord(t, server, previewAfterPolls(1))
-	meme, err := store.Create(accessor.CreateInput{File: strings.NewReader("clip bytes"), Filename: "clip.mp4 (1)", ContentType: "video/mp4"})
+	meme, err := store.Create(context.Background(), accessor.CreateInput{File: strings.NewReader("clip bytes"), Filename: "clip.mp4 (1)", ContentType: "video/mp4"})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -15,7 +15,7 @@ func TestPostgresRemoveSuggestedTag(t *testing.T) {
 	f := newTagMergeFixture(t)
 	id := f.raceMeme()
 	bird, dog, fish := f.tag("bird"), f.tag("dog"), f.tag("fish")
-	if err := f.store.ReplaceSuggestedTags(id, []string{bird, dog, fish}); err != nil {
+	if err := f.store.ReplaceSuggestedTags(context.Background(), id, []string{bird, dog, fish}); err != nil {
 		t.Fatal(err)
 	}
 	updatedAt := func() time.Time {
@@ -28,10 +28,10 @@ func TestPostgresRemoveSuggestedTag(t *testing.T) {
 	}
 
 	before := updatedAt()
-	if err := f.store.RemoveSuggestedTag(id, " "+dog+" "); err != nil {
+	if err := f.store.RemoveSuggestedTag(context.Background(), id, " "+dog+" "); err != nil {
 		t.Fatalf("RemoveSuggestedTag: %v", err)
 	}
-	got, err := f.store.ListSuggestedTags(id)
+	got, err := f.store.ListSuggestedTags(context.Background(), id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,14 +43,14 @@ func TestPostgresRemoveSuggestedTag(t *testing.T) {
 		t.Errorf("updated_at did not move when a suggestion was removed")
 	}
 
-	if err := f.store.RemoveSuggestedTag(id, dog); err != nil {
+	if err := f.store.RemoveSuggestedTag(context.Background(), id, dog); err != nil {
 		t.Fatalf("RemoveSuggestedTag of an absent tag: %v", err)
 	}
 	if !updatedAt().Equal(removedAt) {
 		t.Errorf("updated_at moved although nothing was removed")
 	}
 
-	if err := f.store.RemoveSuggestedTag("missing-"+f.token, dog); !errors.Is(err, os.ErrNotExist) {
+	if err := f.store.RemoveSuggestedTag(context.Background(), "missing-"+f.token, dog); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("missing meme: err = %v, want os.ErrNotExist", err)
 	}
 }

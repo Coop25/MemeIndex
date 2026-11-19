@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -109,7 +110,7 @@ func (s *ReelSessionStore) Step(sessionID string, direction string) (ReelStepRes
 			session.Position += 1
 		} else {
 			excluded := s.recentHistoryLocked(session)
-			meme, err := s.store.Random(excluded)
+			meme, err := s.store.Random(context.TODO(), excluded)
 			if err != nil {
 				return ReelStepResult{}, err
 			}
@@ -131,12 +132,12 @@ func (s *ReelSessionStore) Step(sessionID string, direction string) (ReelStepRes
 		return ReelStepResult{}, err
 	}
 	memeID := session.History[session.Position]
-	meme, err := s.store.GetByID("", memeID)
+	meme, err := s.store.GetByID(context.TODO(), "", memeID)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			delete(s.sessions, sessionID)
 			if s.backend != nil {
-				_ = s.backend.DeleteReelSession(sessionID)
+				_ = s.backend.DeleteReelSession(context.TODO(), sessionID)
 			}
 		}
 		return ReelStepResult{}, err
@@ -176,7 +177,7 @@ func (s *ReelSessionStore) Delete(sessionID string) error {
 
 	delete(s.sessions, sessionID)
 	if s.backend != nil {
-		return s.backend.DeleteReelSession(sessionID)
+		return s.backend.DeleteReelSession(context.TODO(), sessionID)
 	}
 	return s.saveLocked()
 }
@@ -193,7 +194,7 @@ func (s *ReelSessionStore) newSessionLocked(now time.Time) (string, *reelSession
 		return "", nil, err
 	}
 
-	meme, err := s.store.Random(nil)
+	meme, err := s.store.Random(context.TODO(), nil)
 	if err != nil {
 		return "", nil, err
 	}
@@ -228,7 +229,7 @@ func (s *ReelSessionStore) cleanupLocked() error {
 	changed := s.pruneMemoryLocked(cutoff)
 
 	if s.backend != nil {
-		return s.backend.CleanupStaleReelSessions(cutoff)
+		return s.backend.CleanupStaleReelSessions(context.TODO(), cutoff)
 	}
 	if changed {
 		return s.saveLocked()
@@ -245,7 +246,7 @@ func (s *ReelSessionStore) persistSessionLocked(sessionID string) error {
 		return nil
 	}
 	if s.backend != nil {
-		return s.backend.SaveReelSession(sessionID, accessor.ReelSessionRecord{
+		return s.backend.SaveReelSession(context.TODO(), sessionID, accessor.ReelSessionRecord{
 			History:      append([]string(nil), session.History...),
 			Position:     session.Position,
 			LastActivity: session.LastActivity,
@@ -274,7 +275,7 @@ func (s *ReelSessionStore) ensureAheadLocked(session *reelSession, count int) er
 	targetLength := session.Position + 1 + count
 	for len(session.History) < targetLength {
 		excluded := s.recentHistoryLocked(session)
-		meme, err := s.store.Random(excluded)
+		meme, err := s.store.Random(context.TODO(), excluded)
 		if err != nil {
 			return err
 		}
@@ -295,7 +296,7 @@ func (s *ReelSessionStore) windowMemesLocked(session *reelSession, startOffset i
 			if index < 0 || index >= len(session.History) {
 				continue
 			}
-			meme, err := s.store.GetByID("", session.History[index])
+			meme, err := s.store.GetByID(context.TODO(), "", session.History[index])
 			if err != nil {
 				return nil, err
 			}
@@ -309,7 +310,7 @@ func (s *ReelSessionStore) windowMemesLocked(session *reelSession, startOffset i
 		if index < 0 || index >= len(session.History) {
 			continue
 		}
-		meme, err := s.store.GetByID("", session.History[index])
+		meme, err := s.store.GetByID(context.TODO(), "", session.History[index])
 		if err != nil {
 			return nil, err
 		}
@@ -328,7 +329,7 @@ func (s *ReelSessionStore) load() error {
 	defer s.mu.Unlock()
 
 	if s.backend != nil {
-		records, err := s.backend.LoadReelSessions()
+		records, err := s.backend.LoadReelSessions(context.TODO())
 		if err != nil {
 			return err
 		}
@@ -372,7 +373,7 @@ func (s *ReelSessionStore) load() error {
 func (s *ReelSessionStore) saveLocked() error {
 	if s.backend != nil {
 		for sessionID, session := range s.sessions {
-			if err := s.backend.SaveReelSession(sessionID, accessor.ReelSessionRecord{
+			if err := s.backend.SaveReelSession(context.TODO(), sessionID, accessor.ReelSessionRecord{
 				History:      append([]string(nil), session.History...),
 				Position:     session.Position,
 				LastActivity: session.LastActivity,

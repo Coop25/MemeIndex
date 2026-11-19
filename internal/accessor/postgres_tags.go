@@ -12,8 +12,8 @@ import (
 
 // TagUsageCounts returns, for every tag on a visible meme, how many visible
 // memes carry it. It backs the admin tag-hygiene report.
-func (s *PostgresStore) TagUsageCounts() (map[string]int, error) {
-	rows, err := s.pool.Query(context.Background(), `
+func (s *PostgresStore) TagUsageCounts(ctx context.Context) (map[string]int, error) {
+	rows, err := s.pool.Query(ctx, `
 		SELECT t.name, COUNT(*) AS c
 		FROM meme_tags mt
 		JOIN tags t ON t.id = mt.tag_id
@@ -41,9 +41,9 @@ func (s *PostgresStore) TagUsageCounts() (map[string]int, error) {
 // UntaggedWithoutSuggestionsCount counts visible memes with no tags, no stored
 // suggestions, and auto-suggest still enabled - the memes the suggestion worker
 // would pick up.
-func (s *PostgresStore) UntaggedWithoutSuggestionsCount() (int, error) {
+func (s *PostgresStore) UntaggedWithoutSuggestionsCount(ctx context.Context) (int, error) {
 	var n int
-	err := s.pool.QueryRow(context.Background(), `
+	err := s.pool.QueryRow(ctx, `
 		SELECT COUNT(*)
 		FROM memes m
 		WHERE `+visibleMemePredicate+`
@@ -56,8 +56,8 @@ func (s *PostgresStore) UntaggedWithoutSuggestionsCount() (int, error) {
 
 // UntaggedWithoutSuggestionIDs returns the ids of the memes counted by
 // UntaggedWithoutSuggestionsCount, newest first.
-func (s *PostgresStore) UntaggedWithoutSuggestionIDs() ([]string, error) {
-	return scanIDList(context.Background(), s.pool, `
+func (s *PostgresStore) UntaggedWithoutSuggestionIDs(ctx context.Context) ([]string, error) {
+	return scanIDList(ctx, s.pool, `
 		SELECT m.id
 		FROM memes m
 		WHERE `+visibleMemePredicate+`
@@ -70,8 +70,7 @@ func (s *PostgresStore) UntaggedWithoutSuggestionIDs() ([]string, error) {
 
 // PendingSuggestionMemes returns the total count of visible memes that carry
 // stored suggestions and one newest-first page of them (id, name, suggestions).
-func (s *PostgresStore) PendingSuggestionMemes(offset, limit int) (int, []Meme, error) {
-	ctx := context.Background()
+func (s *PostgresStore) PendingSuggestionMemes(ctx context.Context, offset, limit int) (int, []Meme, error) {
 	if offset < 0 {
 		offset = 0
 	}
@@ -138,8 +137,7 @@ var auxTagLinkTables = []struct{ table, keyColumn string }{
 // single transaction, creating targetTag if needed and deleting sourceTag. It
 // returns how many of each were affected and writes the same tag_removed /
 // tag_added audit trail the per-meme path produced.
-func (s *PostgresStore) MergeTag(sourceTag, targetTag string, actor AuditActor) (TagMergeCounts, error) {
-	ctx := context.Background()
+func (s *PostgresStore) MergeTag(ctx context.Context, sourceTag, targetTag string, actor AuditActor) (TagMergeCounts, error) {
 	sourceTag = normalizeTag(sourceTag)
 	targetTag = normalizeTag(targetTag)
 	if sourceTag == "" || targetTag == "" {
@@ -406,8 +404,7 @@ func scanIDList(ctx context.Context, q queryable, sql string, args ...any) ([]st
 	return out, rows.Err()
 }
 
-func (s *PostgresStore) SuggestTags(prefix string, limit int) []string {
-	ctx := context.Background()
+func (s *PostgresStore) SuggestTags(ctx context.Context, prefix string, limit int) []string {
 	prefix = normalizeTag(prefix)
 	if limit <= 0 {
 		limit = 8
@@ -438,9 +435,9 @@ func (s *PostgresStore) SuggestTags(prefix string, limit int) []string {
 	return tags
 }
 
-func (s *PostgresStore) ListSuggestedTags(id string) ([]string, error) {
+func (s *PostgresStore) ListSuggestedTags(ctx context.Context, id string) ([]string, error) {
 	var tags []string
-	err := s.pool.QueryRow(context.Background(), `
+	err := s.pool.QueryRow(ctx, `
 		SELECT COALESCE(suggested_tags, '{}')
 		FROM memes
 		WHERE id = $1
@@ -454,8 +451,8 @@ func (s *PostgresStore) ListSuggestedTags(id string) ([]string, error) {
 	return normalizeTags(tags), nil
 }
 
-func (s *PostgresStore) ReplaceSuggestedTags(id string, tags []string) error {
-	commandTag, err := s.pool.Exec(context.Background(), `
+func (s *PostgresStore) ReplaceSuggestedTags(ctx context.Context, id string, tags []string) error {
+	commandTag, err := s.pool.Exec(ctx, `
 		UPDATE memes
 		SET suggested_tags = $2,
 			auto_suggest_disabled = CASE WHEN cardinality($2::text[]) > 0 THEN FALSE ELSE auto_suggest_disabled END,
@@ -475,8 +472,8 @@ func (s *PostgresStore) ReplaceSuggestedTags(id string, tags []string) error {
 // array_remove, so it works on whatever list is stored when it runs rather
 // than on a copy the caller read earlier. updated_at only moves when the tag
 // was actually there.
-func (s *PostgresStore) RemoveSuggestedTag(id, tag string) error {
-	commandTag, err := s.pool.Exec(context.Background(), `
+func (s *PostgresStore) RemoveSuggestedTag(ctx context.Context, id, tag string) error {
+	commandTag, err := s.pool.Exec(ctx, `
 		UPDATE memes
 		SET suggested_tags = array_remove(suggested_tags, $2::text),
 			updated_at = CASE WHEN $2::text = ANY(suggested_tags) THEN NOW() ELSE updated_at END
@@ -494,8 +491,8 @@ func (s *PostgresStore) RemoveSuggestedTag(id, tag string) error {
 // SetSearchText stores the derived search blob for a meme. It deliberately does
 // not touch updated_at: this is background-derived data, and the same
 // tag-suggestion pass already bumped the row via ReplaceSuggestedTags.
-func (s *PostgresStore) SetSearchText(id, text string) error {
-	commandTag, err := s.pool.Exec(context.Background(), `
+func (s *PostgresStore) SetSearchText(ctx context.Context, id, text string) error {
+	commandTag, err := s.pool.Exec(ctx, `
 		UPDATE memes
 		SET search_text = $2
 		WHERE id = $1
@@ -509,8 +506,8 @@ func (s *PostgresStore) SetSearchText(id, text string) error {
 	return nil
 }
 
-func (s *PostgresStore) SetAutoSuggestDisabled(id string, disabled bool) error {
-	commandTag, err := s.pool.Exec(context.Background(), `
+func (s *PostgresStore) SetAutoSuggestDisabled(ctx context.Context, id string, disabled bool) error {
+	commandTag, err := s.pool.Exec(ctx, `
 		UPDATE memes
 		SET auto_suggest_disabled = $2,
 			updated_at = NOW()

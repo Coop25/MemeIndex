@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"testing"
@@ -17,15 +18,15 @@ type reelTestStore struct {
 	randomPickIDs []string
 }
 
-func (s *reelTestStore) List(userID, query string, favoritesOnly bool, tag string) []accessor.Meme {
+func (s *reelTestStore) List(_ context.Context, userID, query string, favoritesOnly bool, tag string) []accessor.Meme {
 	return nil
 }
 
-func (s *reelTestStore) SuggestTags(prefix string, limit int) []string {
+func (s *reelTestStore) SuggestTags(_ context.Context, prefix string, limit int) []string {
 	return nil
 }
 
-func (s *reelTestStore) GetByID(userID, id string) (accessor.Meme, error) {
+func (s *reelTestStore) GetByID(_ context.Context, userID, id string) (accessor.Meme, error) {
 	meme, ok := s.memes[id]
 	if !ok {
 		return accessor.Meme{}, os.ErrNotExist
@@ -33,7 +34,7 @@ func (s *reelTestStore) GetByID(userID, id string) (accessor.Meme, error) {
 	return meme, nil
 }
 
-func (s *reelTestStore) Random(excludedIDs []string) (accessor.Meme, error) {
+func (s *reelTestStore) Random(_ context.Context, excludedIDs []string) (accessor.Meme, error) {
 	s.lastExcluded = append([]string(nil), excludedIDs...)
 	s.allExcluded = append(s.allExcluded, append([]string(nil), excludedIDs...))
 	pickID := s.randomPickID
@@ -48,19 +49,19 @@ func (s *reelTestStore) Random(excludedIDs []string) (accessor.Meme, error) {
 	return meme, nil
 }
 
-func (s *reelTestStore) Create(input accessor.CreateInput) (accessor.Meme, error) {
+func (s *reelTestStore) Create(_ context.Context, input accessor.CreateInput) (accessor.Meme, error) {
 	return accessor.Meme{}, os.ErrNotExist
 }
 
-func (s *reelTestStore) EditMeme(userID, id string, edit accessor.MemeEdit) (accessor.Meme, error) {
+func (s *reelTestStore) EditMeme(_ context.Context, userID, id string, edit accessor.MemeEdit) (accessor.Meme, error) {
 	return accessor.Meme{}, os.ErrNotExist
 }
 
-func (s *reelTestStore) SetFavorite(userID, id string, favorite bool) (accessor.Meme, error) {
+func (s *reelTestStore) SetFavorite(_ context.Context, userID, id string, favorite bool) (accessor.Meme, error) {
 	return accessor.Meme{}, os.ErrNotExist
 }
 
-func (s *reelTestStore) Delete(input accessor.DeleteInput) (accessor.DeleteResult, error) {
+func (s *reelTestStore) Delete(_ context.Context, input accessor.DeleteInput) (accessor.DeleteResult, error) {
 	return accessor.DeleteResult{}, os.ErrNotExist
 }
 
@@ -201,15 +202,18 @@ type countingReelBackend struct {
 	cleanups    int
 }
 
-func (b *countingReelBackend) LoadReelSessions() (map[string]accessor.ReelSessionRecord, error) {
+func (b *countingReelBackend) LoadReelSessions(_ context.Context) (map[string]accessor.ReelSessionRecord, error) {
 	return nil, nil
 }
-func (b *countingReelBackend) SaveReelSession(id string, _ accessor.ReelSessionRecord) error {
+func (b *countingReelBackend) SaveReelSession(_ context.Context, id string, _ accessor.ReelSessionRecord) error {
 	b.saved[id]++
 	return nil
 }
-func (b *countingReelBackend) DeleteReelSession(string) error { b.deleteCalls++; return nil }
-func (b *countingReelBackend) CleanupStaleReelSessions(time.Time) error {
+func (b *countingReelBackend) DeleteReelSession(context.Context, string) error {
+	b.deleteCalls++
+	return nil
+}
+func (b *countingReelBackend) CleanupStaleReelSessions(context.Context, time.Time) error {
 	b.cleanups++
 	return nil
 }

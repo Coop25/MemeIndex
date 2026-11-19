@@ -1,6 +1,7 @@
 package accessortest
 
 import (
+	"context"
 	"errors"
 	"net/textproto"
 	"os"
@@ -29,7 +30,7 @@ func TestMemeStoreCreateSanitizesStoredExtension(t *testing.T) {
 		{"mystery.bin?x", "application/octet-stream", ""},
 	}
 	for i, tc := range cases {
-		meme, err := store.Create(accessor.CreateInput{
+		meme, err := store.Create(context.Background(), accessor.CreateInput{
 			File:     strings.NewReader("hostile name bytes " + tc.name + string(rune('a'+i))),
 			Header:   textproto.MIMEHeader{"Content-Type": []string{tc.contentType}},
 			Filename: tc.name,
@@ -59,7 +60,7 @@ func TestMemeStoreRemoveSuggestedTag(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	meme, err := store.Create(accessor.CreateInput{
+	meme, err := store.Create(context.Background(), accessor.CreateInput{
 		File:     strings.NewReader("remove suggestion bytes"),
 		Header:   textproto.MIMEHeader{"Content-Type": []string{"image/png"}},
 		Filename: "pic.png",
@@ -67,20 +68,20 @@ func TestMemeStoreRemoveSuggestedTag(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.ReplaceSuggestedTags(meme.ID, []string{"bird", "dog", "fish"}); err != nil {
+	if err := store.ReplaceSuggestedTags(context.Background(), meme.ID, []string{"bird", "dog", "fish"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RemoveSuggestedTag(meme.ID, " Dog "); err != nil {
+	if err := store.RemoveSuggestedTag(context.Background(), meme.ID, " Dog "); err != nil {
 		t.Fatalf("RemoveSuggestedTag: %v", err)
 	}
-	got, err := store.ListSuggestedTags(meme.ID)
+	got, err := store.ListSuggestedTags(context.Background(), meme.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Join(got, ",") != "bird,fish" {
 		t.Fatalf("suggested tags = %v, want [bird fish]", got)
 	}
-	if err := store.RemoveSuggestedTag("missing", "dog"); !errors.Is(err, os.ErrNotExist) {
+	if err := store.RemoveSuggestedTag(context.Background(), "missing", "dog"); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("missing meme: err = %v, want os.ErrNotExist", err)
 	}
 }

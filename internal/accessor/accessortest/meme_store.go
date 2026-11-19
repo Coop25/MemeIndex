@@ -6,6 +6,7 @@
 package accessortest
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -75,7 +76,7 @@ func NewMemeStore(dataDir string) (*MemeStore, error) {
 	}, nil
 }
 
-func (s *MemeStore) GetOrCreateMemeShare(memeID, userID string, now, expiresAt time.Time) (accessor.MemeShareState, error) {
+func (s *MemeStore) GetOrCreateMemeShare(_ context.Context, memeID, userID string, now, expiresAt time.Time) (accessor.MemeShareState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	memeID = strings.TrimSpace(memeID)
@@ -105,7 +106,7 @@ func (s *MemeStore) GetOrCreateMemeShare(memeID, userID string, now, expiresAt t
 	return accessor.MemeShareState{}, os.ErrNotExist
 }
 
-func (s *MemeStore) GetMemeShareState(memeID string) (accessor.MemeShareState, error) {
+func (s *MemeStore) GetMemeShareState(_ context.Context, memeID string) (accessor.MemeShareState, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	meme, ok := s.byID[strings.TrimSpace(memeID)]
@@ -115,7 +116,7 @@ func (s *MemeStore) GetMemeShareState(memeID string) (accessor.MemeShareState, e
 	return memeShareStateFromMeme(meme), nil
 }
 
-func (s *MemeStore) ResolveMemeShareSlug(slug string) (string, int64, error) {
+func (s *MemeStore) ResolveMemeShareSlug(_ context.Context, slug string) (string, int64, error) {
 	slug = strings.TrimSpace(slug)
 	if slug == "" {
 		return "", 0, os.ErrNotExist
@@ -132,7 +133,7 @@ func (s *MemeStore) ResolveMemeShareSlug(slug string) (string, int64, error) {
 	return "", 0, os.ErrNotExist
 }
 
-func (s *MemeStore) ListActiveMemeShares(now time.Time) ([]accessor.MemeShareState, error) {
+func (s *MemeStore) ListActiveMemeShares(_ context.Context, now time.Time) ([]accessor.MemeShareState, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	shares := []accessor.MemeShareState{}
@@ -145,7 +146,7 @@ func (s *MemeStore) ListActiveMemeShares(now time.Time) ([]accessor.MemeShareSta
 	return shares, nil
 }
 
-func (s *MemeStore) RevokeMemeShare(memeID string) error {
+func (s *MemeStore) RevokeMemeShare(_ context.Context, memeID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	memeID = strings.TrimSpace(memeID)
@@ -161,7 +162,7 @@ func (s *MemeStore) RevokeMemeShare(memeID string) error {
 	return os.ErrNotExist
 }
 
-func (s *MemeStore) RevokeAllMemeShares(now time.Time) (int, error) {
+func (s *MemeStore) RevokeAllMemeShares(_ context.Context, now time.Time) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	revoked := 0
@@ -181,7 +182,7 @@ func memeShareStateFromMeme(meme accessor.Meme) accessor.MemeShareState {
 	return accessor.MemeShareState{MemeID: meme.ID, Generation: meme.ShareGeneration, SharedByUserID: meme.SharedByUserID, SharedAt: meme.SharedAt, ExpiresAt: meme.ShareExpiresAt, Slug: meme.ShareSlugs[meme.ShareGeneration]}
 }
 
-func (s *MemeStore) List(userID, query string, favoritesOnly bool, tag string) []accessor.Meme {
+func (s *MemeStore) List(_ context.Context, userID, query string, favoritesOnly bool, tag string) []accessor.Meme {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -215,7 +216,7 @@ func (s *MemeStore) List(userID, query string, favoritesOnly bool, tag string) [
 	return out
 }
 
-func (s *MemeStore) SuggestTags(prefix string, limit int) []string {
+func (s *MemeStore) SuggestTags(_ context.Context, prefix string, limit int) []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -251,7 +252,7 @@ func (s *MemeStore) SuggestTags(prefix string, limit int) []string {
 	return out
 }
 
-func (s *MemeStore) GetByID(userID, id string) (accessor.Meme, error) {
+func (s *MemeStore) GetByID(_ context.Context, userID, id string) (accessor.Meme, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -265,12 +266,12 @@ func (s *MemeStore) GetByID(userID, id string) (accessor.Meme, error) {
 }
 
 // GetAnyByID returns a meme without a viewer's favorite flag.
-func (s *MemeStore) GetAnyByID(id string) (accessor.Meme, error) {
-	return s.GetByID("", id)
+func (s *MemeStore) GetAnyByID(ctx context.Context, id string) (accessor.Meme, error) {
+	return s.GetByID(ctx, "", id)
 }
 
 // MemesByIDs returns the memes among ids that exist, keyed by id.
-func (s *MemeStore) MemesByIDs(ids []string) (map[string]accessor.Meme, error) {
+func (s *MemeStore) MemesByIDs(_ context.Context, ids []string) (map[string]accessor.Meme, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make(map[string]accessor.Meme, len(ids))
@@ -284,7 +285,7 @@ func (s *MemeStore) MemesByIDs(ids []string) (map[string]accessor.Meme, error) {
 }
 
 // AdminDashboardMemes returns every meme, newest first.
-func (s *MemeStore) AdminDashboardMemes() ([]accessor.Meme, error) {
+func (s *MemeStore) AdminDashboardMemes(_ context.Context) ([]accessor.Meme, error) {
 	s.mu.RLock()
 	out := slices.Clone(s.memes)
 	s.mu.RUnlock()
@@ -296,12 +297,12 @@ func (s *MemeStore) AdminDashboardMemes() ([]accessor.Meme, error) {
 }
 
 // HiddenMemeIDs is always empty: MemeStore cannot hide a meme.
-func (s *MemeStore) HiddenMemeIDs() ([]string, error) {
+func (s *MemeStore) HiddenMemeIDs(_ context.Context) ([]string, error) {
 	return nil, nil
 }
 
 // SetSearchText checks the meme exists and otherwise does nothing.
-func (s *MemeStore) SetSearchText(id, _ string) error {
+func (s *MemeStore) SetSearchText(_ context.Context, id, _ string) error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if _, ok := s.byID[strings.TrimSpace(id)]; !ok {
@@ -310,7 +311,7 @@ func (s *MemeStore) SetSearchText(id, _ string) error {
 	return nil
 }
 
-func (s *MemeStore) ListSuggestedTags(id string) ([]string, error) {
+func (s *MemeStore) ListSuggestedTags(_ context.Context, id string) ([]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -321,7 +322,7 @@ func (s *MemeStore) ListSuggestedTags(id string) ([]string, error) {
 	return append([]string(nil), meme.SuggestedTags...), nil
 }
 
-func (s *MemeStore) ReplaceSuggestedTags(id string, tags []string) error {
+func (s *MemeStore) ReplaceSuggestedTags(_ context.Context, id string, tags []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -344,7 +345,7 @@ func (s *MemeStore) ReplaceSuggestedTags(id string, tags []string) error {
 
 // RemoveSuggestedTag drops one tag from a meme's suggestions under the store
 // mutex, working on the list as it is now rather than on a caller's copy.
-func (s *MemeStore) RemoveSuggestedTag(id, tag string) error {
+func (s *MemeStore) RemoveSuggestedTag(_ context.Context, id, tag string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -371,7 +372,7 @@ func (s *MemeStore) RemoveSuggestedTag(id, tag string) error {
 	return os.ErrNotExist
 }
 
-func (s *MemeStore) Random(excludedIDs []string) (accessor.Meme, error) {
+func (s *MemeStore) Random(_ context.Context, excludedIDs []string) (accessor.Meme, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -412,7 +413,7 @@ func (s *MemeStore) Random(excludedIDs []string) (accessor.Meme, error) {
 // with a meme that already exists.
 var newMemeID = accessor.NewID
 
-func (s *MemeStore) Create(input accessor.CreateInput) (accessor.Meme, error) {
+func (s *MemeStore) Create(_ context.Context, input accessor.CreateInput) (accessor.Meme, error) {
 	id := newMemeID()
 
 	contentType := detectContentType(input.Header, input.ContentType, input.Filename)
@@ -464,7 +465,7 @@ func (s *MemeStore) Create(input accessor.CreateInput) (accessor.Meme, error) {
 	return meme, nil
 }
 
-func (s *MemeStore) SetAutoSuggestDisabled(id string, disabled bool) error {
+func (s *MemeStore) SetAutoSuggestDisabled(_ context.Context, id string, disabled bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -484,7 +485,7 @@ func (s *MemeStore) SetAutoSuggestDisabled(id string, disabled bool) error {
 
 // EditMeme applies a partial edit under the store mutex, which serializes it
 // with every other write just as the row lock does in PostgresStore.
-func (s *MemeStore) EditMeme(userID, id string, edit accessor.MemeEdit) (accessor.Meme, error) {
+func (s *MemeStore) EditMeme(_ context.Context, userID, id string, edit accessor.MemeEdit) (accessor.Meme, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -530,7 +531,7 @@ func (s *MemeStore) EditMeme(userID, id string, edit accessor.MemeEdit) (accesso
 	return accessor.Meme{}, os.ErrNotExist
 }
 
-func (s *MemeStore) SetFavorite(userID, id string, favorite bool) (accessor.Meme, error) {
+func (s *MemeStore) SetFavorite(_ context.Context, userID, id string, favorite bool) (accessor.Meme, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -548,7 +549,7 @@ func (s *MemeStore) SetFavorite(userID, id string, favorite bool) (accessor.Meme
 	return accessor.Meme{}, os.ErrNotExist
 }
 
-func (s *MemeStore) TotalFavoriteAssignments() (int, error) {
+func (s *MemeStore) TotalFavoriteAssignments(_ context.Context) (int, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -562,12 +563,12 @@ func (s *MemeStore) TotalFavoriteAssignments() (int, error) {
 // FavoriteActivitySince is always empty: the store keeps no audit timeline,
 // and an empty series keeps the current favorite total accurate without
 // inventing historical changes.
-func (s *MemeStore) FavoriteActivitySince(time.Time) ([]accessor.AdminFavoriteActivity, error) {
+func (s *MemeStore) FavoriteActivitySince(context.Context, time.Time) ([]accessor.AdminFavoriteActivity, error) {
 	return []accessor.AdminFavoriteActivity{}, nil
 }
 
 // CountFavoritesByUser returns each user's favorite count.
-func (s *MemeStore) CountFavoritesByUser() (map[string]int, error) {
+func (s *MemeStore) CountFavoritesByUser(_ context.Context) (map[string]int, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -578,7 +579,7 @@ func (s *MemeStore) CountFavoritesByUser() (map[string]int, error) {
 	return counts, nil
 }
 
-func (s *MemeStore) Delete(input accessor.DeleteInput) (accessor.DeleteResult, error) {
+func (s *MemeStore) Delete(_ context.Context, input accessor.DeleteInput) (accessor.DeleteResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -616,12 +617,12 @@ func (s *MemeStore) ThumbnailDir() string {
 }
 
 // EnsurePreviewAssets does nothing: this store never generates thumbnails.
-func (s *MemeStore) EnsurePreviewAssets(func(work func()) bool) error {
+func (s *MemeStore) EnsurePreviewAssets(context.Context, func(work func()) bool) error {
 	return nil
 }
 
 // AllStoredFiles returns every meme's file names (nothing is ever hidden).
-func (s *MemeStore) AllStoredFiles() ([]accessor.StoredFile, error) {
+func (s *MemeStore) AllStoredFiles(_ context.Context) ([]accessor.StoredFile, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]accessor.StoredFile, 0, len(s.memes))

@@ -13,16 +13,16 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func (s *PostgresStore) TotalFavoriteAssignments() (int, error) {
+func (s *PostgresStore) TotalFavoriteAssignments(ctx context.Context) (int, error) {
 	var total int
-	if err := s.pool.QueryRow(context.Background(), `SELECT COUNT(*) FROM user_favorites`).Scan(&total); err != nil {
+	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM user_favorites`).Scan(&total); err != nil {
 		return 0, err
 	}
 	return total, nil
 }
 
-func (s *PostgresStore) FavoriteActivitySince(since time.Time) ([]AdminFavoriteActivity, error) {
-	rows, err := s.pool.Query(context.Background(), `
+func (s *PostgresStore) FavoriteActivitySince(ctx context.Context, since time.Time) ([]AdminFavoriteActivity, error) {
+	rows, err := s.pool.Query(ctx, `
 		SELECT
 			date_trunc('day', created_at) AS activity_day,
 			COUNT(*) FILTER (WHERE action = 'favorited') AS added,
@@ -49,7 +49,7 @@ func (s *PostgresStore) FavoriteActivitySince(since time.Time) ([]AdminFavoriteA
 	return activity, rows.Err()
 }
 
-func (s *PostgresStore) ListMemeAudit(id string, limit int) ([]MemeAuditEntry, error) {
+func (s *PostgresStore) ListMemeAudit(ctx context.Context, id string, limit int) ([]MemeAuditEntry, error) {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -57,7 +57,7 @@ func (s *PostgresStore) ListMemeAudit(id string, limit int) ([]MemeAuditEntry, e
 		limit = 100
 	}
 
-	rows, err := s.pool.Query(context.Background(), `
+	rows, err := s.pool.Query(ctx, `
 		SELECT id, meme_id, action, actor_user_id, actor_username, actor_display_name, actor_avatar_url, description, created_at
 		FROM meme_audit_logs
 		WHERE meme_id = $1
@@ -90,7 +90,7 @@ func (s *PostgresStore) ListMemeAudit(id string, limit int) ([]MemeAuditEntry, e
 	return out, rows.Err()
 }
 
-func (s *PostgresStore) ListAuditFeed(offset int, limit int, actorUserID string) (PagedAuditFeed, error) {
+func (s *PostgresStore) ListAuditFeed(ctx context.Context, offset int, limit int, actorUserID string) (PagedAuditFeed, error) {
 	actorUserID = strings.TrimSpace(actorUserID) // empty matches every actor
 	if offset < 0 {
 		offset = 0
@@ -103,11 +103,11 @@ func (s *PostgresStore) ListAuditFeed(offset int, limit int, actorUserID string)
 	}
 
 	var total int
-	if err := s.pool.QueryRow(context.Background(), `SELECT COUNT(*) FROM meme_audit_logs WHERE ($1 = '' OR actor_user_id = $1)`, actorUserID).Scan(&total); err != nil {
+	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM meme_audit_logs WHERE ($1 = '' OR actor_user_id = $1)`, actorUserID).Scan(&total); err != nil {
 		return PagedAuditFeed{}, err
 	}
 
-	rows, err := s.pool.Query(context.Background(), `
+	rows, err := s.pool.Query(ctx, `
 		SELECT
 			l.id,
 			l.meme_id,
@@ -165,7 +165,7 @@ func (s *PostgresStore) ListAuditFeed(offset int, limit int, actorUserID string)
 	}, nil
 }
 
-func (s *PostgresStore) ListPendingDeletes(offset int, limit int) (PagedPendingDeletes, error) {
+func (s *PostgresStore) ListPendingDeletes(ctx context.Context, offset int, limit int) (PagedPendingDeletes, error) {
 	if offset < 0 {
 		offset = 0
 	}
@@ -177,11 +177,11 @@ func (s *PostgresStore) ListPendingDeletes(offset int, limit int) (PagedPendingD
 	}
 
 	var total int
-	if err := s.pool.QueryRow(context.Background(), `SELECT COUNT(*) FROM memes WHERE COALESCE(pending_delete, FALSE) = TRUE`).Scan(&total); err != nil {
+	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM memes WHERE COALESCE(pending_delete, FALSE) = TRUE`).Scan(&total); err != nil {
 		return PagedPendingDeletes{}, err
 	}
 
-	rows, err := s.pool.Query(context.Background(), `
+	rows, err := s.pool.Query(ctx, `
 		SELECT
 			m.id,
 			m.original_name,
@@ -255,8 +255,12 @@ func (s *PostgresStore) ListPendingDeletes(offset int, limit int) (PagedPendingD
 	}, nil
 }
 
-func (s *PostgresStore) ApprovePendingDelete(id string, actor AuditActor) error {
-	ctx := context.Background()
+func (s *PostgresStore) ApprovePendingDelete(ctx context.Context, id string, actor AuditActor) error {
+	// Approving writes the audit entry, deletes the row and its orphaned tags,
+	// then removes the files. A request cancelled part-way would leave the
+	// files on disk with no row pointing at them, or an approval in the audit
+	// log for a meme that was never deleted, so it runs to completion.
+	ctx = context.WithoutCancel(ctx)
 	id = strings.TrimSpace(id)
 
 	var storedName string
@@ -293,8 +297,11 @@ func (s *PostgresStore) ApprovePendingDelete(id string, actor AuditActor) error 
 	return nil
 }
 
-func (s *PostgresStore) RejectPendingDelete(id string, actor AuditActor) error {
-	ctx := context.Background()
+func (s *PostgresStore) RejectPendingDelete(ctx context.Context, id string, actor AuditActor) error {
+	// Unhiding the meme and recording who did it are two separate writes; a
+	// request cancelled between them would restore the meme with no audit
+	// entry, so it runs to completion.
+	ctx = context.WithoutCancel(ctx)
 	commandTag, err := s.pool.Exec(ctx, `
 		UPDATE memes
 		SET hidden_from_app = FALSE,
@@ -316,8 +323,8 @@ func (s *PostgresStore) RejectPendingDelete(id string, actor AuditActor) error {
 // RecordSystemAudit writes an audit entry that is not associated with a specific
 // meme. The empty meme_id is surfaced by ListAuditFeed's LEFT JOIN as a row with
 // no meme attached.
-func (s *PostgresStore) RecordSystemAudit(action string, actor AuditActor, description string) error {
-	return s.insertAuditLog(context.Background(), s.pool, "", action, actor, description)
+func (s *PostgresStore) RecordSystemAudit(ctx context.Context, action string, actor AuditActor, description string) error {
+	return s.insertAuditLog(ctx, s.pool, "", action, actor, description)
 }
 
 func (s *PostgresStore) insertAuditLog(ctx context.Context, db queryable, memeID, action string, actor AuditActor, description string) error {
@@ -358,17 +365,17 @@ func diffAuditTags(current []string, next []string) ([]string, []string) {
 
 // CountAuditActionsByActor returns how many audit events with the given action
 // each actor has recorded, keyed by actor_user_id.
-func (s *PostgresStore) CountAuditActionsByActor(action string) (map[string]int, error) {
-	return s.countByUser(`SELECT actor_user_id, COUNT(*) FROM meme_audit_logs WHERE action = $1 GROUP BY actor_user_id`, action)
+func (s *PostgresStore) CountAuditActionsByActor(ctx context.Context, action string) (map[string]int, error) {
+	return s.countByUser(ctx, `SELECT actor_user_id, COUNT(*) FROM meme_audit_logs WHERE action = $1 GROUP BY actor_user_id`, action)
 }
 
 // CountFavoritesByUser returns how many memes each user has favorited.
-func (s *PostgresStore) CountFavoritesByUser() (map[string]int, error) {
-	return s.countByUser(`SELECT user_id, COUNT(*) FROM user_favorites GROUP BY user_id`)
+func (s *PostgresStore) CountFavoritesByUser(ctx context.Context) (map[string]int, error) {
+	return s.countByUser(ctx, `SELECT user_id, COUNT(*) FROM user_favorites GROUP BY user_id`)
 }
 
-func (s *PostgresStore) countByUser(query string, args ...any) (map[string]int, error) {
-	rows, err := s.pool.Query(context.Background(), query, args...)
+func (s *PostgresStore) countByUser(ctx context.Context, query string, args ...any) (map[string]int, error) {
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

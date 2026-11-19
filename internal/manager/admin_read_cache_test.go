@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"context"
 	"os"
 	"sync"
 	"testing"
@@ -22,14 +23,14 @@ type recordedSystemAudit struct {
 	description string
 }
 
-func (s *adminReadCacheStore) List(string, string, bool, string) []accessor.Meme {
+func (s *adminReadCacheStore) List(context.Context, string, string, bool, string) []accessor.Meme {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.listCalls++
 	return append([]accessor.Meme(nil), s.memes...)
 }
-func (s *adminReadCacheStore) SuggestTags(string, int) []string { return nil }
-func (s *adminReadCacheStore) GetByID(_ string, id string) (accessor.Meme, error) {
+func (s *adminReadCacheStore) SuggestTags(context.Context, string, int) []string { return nil }
+func (s *adminReadCacheStore) GetByID(_ context.Context, _ string, id string) (accessor.Meme, error) {
 	for _, meme := range s.memes {
 		if meme.ID == id {
 			return meme, nil
@@ -37,28 +38,28 @@ func (s *adminReadCacheStore) GetByID(_ string, id string) (accessor.Meme, error
 	}
 	return accessor.Meme{}, os.ErrNotExist
 }
-func (s *adminReadCacheStore) Random([]string) (accessor.Meme, error) {
+func (s *adminReadCacheStore) Random(context.Context, []string) (accessor.Meme, error) {
 	return accessor.Meme{}, os.ErrNotExist
 }
-func (s *adminReadCacheStore) Create(accessor.CreateInput) (accessor.Meme, error) {
+func (s *adminReadCacheStore) Create(context.Context, accessor.CreateInput) (accessor.Meme, error) {
 	return accessor.Meme{}, nil
 }
-func (s *adminReadCacheStore) EditMeme(string, string, accessor.MemeEdit) (accessor.Meme, error) {
+func (s *adminReadCacheStore) EditMeme(context.Context, string, string, accessor.MemeEdit) (accessor.Meme, error) {
 	return accessor.Meme{}, nil
 }
-func (s *adminReadCacheStore) SetFavorite(string, string, bool) (accessor.Meme, error) {
+func (s *adminReadCacheStore) SetFavorite(context.Context, string, string, bool) (accessor.Meme, error) {
 	return accessor.Meme{}, nil
 }
-func (s *adminReadCacheStore) Delete(accessor.DeleteInput) (accessor.DeleteResult, error) {
+func (s *adminReadCacheStore) Delete(context.Context, accessor.DeleteInput) (accessor.DeleteResult, error) {
 	return accessor.DeleteResult{}, nil
 }
 func (s *adminReadCacheStore) UploadDir() string { return os.TempDir() }
 
-func (s *adminReadCacheStore) ListSuggestedTags(id string) ([]string, error) {
-	meme, err := s.GetByID("", id)
+func (s *adminReadCacheStore) ListSuggestedTags(ctx context.Context, id string) ([]string, error) {
+	meme, err := s.GetByID(ctx, "", id)
 	return append([]string(nil), meme.SuggestedTags...), err
 }
-func (s *adminReadCacheStore) ReplaceSuggestedTags(id string, tags []string) error {
+func (s *adminReadCacheStore) ReplaceSuggestedTags(_ context.Context, id string, tags []string) error {
 	for index := range s.memes {
 		if s.memes[index].ID == id {
 			s.memes[index].SuggestedTags = append([]string(nil), tags...)
@@ -67,9 +68,9 @@ func (s *adminReadCacheStore) ReplaceSuggestedTags(id string, tags []string) err
 	}
 	return os.ErrNotExist
 }
-func (s *adminReadCacheStore) SetAutoSuggestDisabled(string, bool) error { return nil }
+func (s *adminReadCacheStore) SetAutoSuggestDisabled(context.Context, string, bool) error { return nil }
 
-func (s *adminReadCacheStore) RecordSystemAudit(action string, actor accessor.AuditActor, description string) error {
+func (s *adminReadCacheStore) RecordSystemAudit(_ context.Context, action string, actor accessor.AuditActor, description string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.auditCalls = append(s.auditCalls, recordedSystemAudit{action: action, actor: actor, description: description})

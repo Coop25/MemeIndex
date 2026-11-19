@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -39,26 +40,26 @@ type tagOpsFakeStore struct {
 	usage map[string]int
 }
 
-func (s *tagOpsFakeStore) MergeTag(sourceTag, targetTag string, _ accessor.AuditActor) (accessor.TagMergeCounts, error) {
+func (s *tagOpsFakeStore) MergeTag(_ context.Context, sourceTag, targetTag string, _ accessor.AuditActor) (accessor.TagMergeCounts, error) {
 	s.mergeCalls++
 	s.mergeSource, s.mergeTarget = sourceTag, targetTag
 	return accessor.TagMergeCounts{Memes: s.mergeAffected, Audiobooks: s.mergeAudiobooks, Restrictions: s.mergeRestrictions}, nil
 }
 
-func (s *tagOpsFakeStore) UntaggedWithoutSuggestionsCount() (int, error) {
+func (s *tagOpsFakeStore) UntaggedWithoutSuggestionsCount(_ context.Context) (int, error) {
 	return s.untagged, nil
 }
 
-func (s *tagOpsFakeStore) UntaggedWithoutSuggestionIDs() ([]string, error) {
+func (s *tagOpsFakeStore) UntaggedWithoutSuggestionIDs(_ context.Context) ([]string, error) {
 	return append([]string(nil), s.untaggedIDs...), nil
 }
 
-func (s *tagOpsFakeStore) PendingSuggestionMemes(offset, limit int) (int, []accessor.Meme, error) {
+func (s *tagOpsFakeStore) PendingSuggestionMemes(_ context.Context, offset, limit int) (int, []accessor.Meme, error) {
 	s.pendingOffset, s.pendingLimit = offset, limit
 	return s.pendingTotal, append([]accessor.Meme(nil), s.pendingMemes...), nil
 }
 
-func (s *tagOpsFakeStore) TagUsageCounts() (map[string]int, error) {
+func (s *tagOpsFakeStore) TagUsageCounts(_ context.Context) (map[string]int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := map[string]int{}

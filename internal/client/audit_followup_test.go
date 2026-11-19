@@ -200,11 +200,11 @@ type failingCreateStore struct {
 	failNames map[string]bool
 }
 
-func (s failingCreateStore) Create(input accessor.CreateInput) (accessor.Meme, error) {
+func (s failingCreateStore) Create(_ context.Context, input accessor.CreateInput) (accessor.Meme, error) {
 	if s.failNames[input.Filename] {
 		return accessor.Meme{}, errors.New("disk full")
 	}
-	return s.MemeStore.Create(input)
+	return s.MemeStore.Create(context.Background(), input)
 }
 
 func multiFileUploadRequest(t *testing.T, files map[string]string, order []string) *http.Request {
@@ -478,11 +478,11 @@ func TestDashboardProbeReturnsOnlyTheNewestMemeID(t *testing.T) {
 	if got := probe(); got["newest_id"] != "" {
 		t.Fatalf("empty vault newest_id = %v, want empty", got["newest_id"])
 	}
-	if _, err := store.Create(accessor.CreateInput{File: strings.NewReader("older"), Filename: "older.png"}); err != nil {
+	if _, err := store.Create(context.Background(), accessor.CreateInput{File: strings.NewReader("older"), Filename: "older.png"}); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(5 * time.Millisecond)
-	newest, err := store.Create(accessor.CreateInput{File: strings.NewReader("newer"), Filename: "newer.png"})
+	newest, err := store.Create(context.Background(), accessor.CreateInput{File: strings.NewReader("newer"), Filename: "newer.png"})
 	if err != nil {
 		t.Fatal(err)
 	}
