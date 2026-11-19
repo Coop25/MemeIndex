@@ -79,6 +79,20 @@ jobs:
 
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 
+      # Left at its default, the Dockerfile resolves yt-dlp's "latest" release
+      # through the GitHub API without a token. Shared runner IPs exhaust that
+      # anonymous rate limit, and the build then fails with a 403 before
+      # anything is pushed (the v2.49.0 release build did). Resolve the tag
+      # here with the job token instead, as image-scan.yml does.
+      - name: Resolve the latest yt-dlp release
+        id: ytdlp
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(gh api repos/yt-dlp/yt-dlp/releases/latest --jq .tag_name)"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       - name: Build and push image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
@@ -89,5 +103,6 @@ jobs:
           provenance: false
           build-args: |
             APP_VERSION=${{ steps.app_version.outputs.version }}
+            YTDLP_VERSION=${{ steps.ytdlp.outputs.version }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
