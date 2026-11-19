@@ -54,14 +54,14 @@ func NewReelSessionStore(store accessor.Store, sessionFile string) *ReelSessionS
 		store:       store,
 		sessionFile: sessionFile,
 	}
-	if err := out.load(); err != nil {
+	if err := out.load(context.Background()); err != nil {
 		// Keep startup resilient; sessions are disposable.
 		fmt.Printf("could not load reel sessions: %v\n", err)
 	}
 	return out
 }
 
-func (s *ReelSessionStore) Step(sessionID string, direction string) (ReelStepResult, error) {
+func (s *ReelSessionStore) Step(ctx context.Context, sessionID string, direction string) (ReelStepResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -85,7 +85,7 @@ func (s *ReelSessionStore) Step(sessionID string, direction string) (ReelStepRes
 			reason = "missing"
 		}
 		var err error
-		sessionID, session, err = s.newSessionLocked(now)
+		sessionID, session, err = s.newSessionLocked(ctx, now)
 		if err != nil {
 			return ReelStepResult{}, err
 		}
@@ -94,7 +94,7 @@ func (s *ReelSessionStore) Step(sessionID string, direction string) (ReelStepRes
 		replaced = true
 		reason = "stale"
 		var err error
-		sessionID, session, err = s.newSessionLocked(now)
+		sessionID, session, err = s.newSessionLocked(ctx, now)
 		if err != nil {
 			return ReelStepResult{}, err
 		}
@@ -110,7 +110,7 @@ func (s *ReelSessionStore) Step(sessionID string, direction string) (ReelStepRes
 			session.Position += 1
 		} else {
 			excluded := s.recentHistoryLocked(session)
-			meme, err := s.store.Random(context.TODO(), excluded)
+			meme, err := s.store.Random(ctx, excluded)
 			if err != nil {
 				return ReelStepResult{}, err
 			}
@@ -122,31 +122,31 @@ func (s *ReelSessionStore) Step(sessionID string, direction string) (ReelStepRes
 	}
 
 	session.LastActivity = now
-	if err := s.ensureAheadLocked(session, reelPrefetchAhead); err != nil {
+	if err := s.ensureAheadLocked(ctx, session, reelPrefetchAhead); err != nil {
 		return ReelStepResult{}, err
 	}
 	// Persist only the session that changed. The previous full save rewrote
 	// every in-memory session's row on every step, so N concurrent reel users
 	// meant N database writes per navigation.
-	if err := s.persistSessionLocked(sessionID); err != nil {
+	if err := s.persistSessionLocked(ctx, sessionID); err != nil {
 		return ReelStepResult{}, err
 	}
 	memeID := session.History[session.Position]
-	meme, err := s.store.GetByID(context.TODO(), "", memeID)
+	meme, err := s.store.GetByID(ctx, "", memeID)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			delete(s.sessions, sessionID)
 			if s.backend != nil {
-				_ = s.backend.DeleteReelSession(context.TODO(), sessionID)
+				_ = s.backend.DeleteReelSession(ctx, sessionID)
 			}
 		}
 		return ReelStepResult{}, err
 	}
-	prevMemes, err := s.windowMemesLocked(session, -reelPrefetchBehind, -1)
+	prevMemes, err := s.windowMemesLocked(ctx, session, -reelPrefetchBehind, -1)
 	if err != nil {
 		return ReelStepResult{}, err
 	}
-	nextMemes, err := s.windowMemesLocked(session, 1, reelPrefetchAhead)
+	nextMemes, err := s.windowMemesLocked(ctx, session, 1, reelPrefetchAhead)
 	if err != nil {
 		return ReelStepResult{}, err
 	}
@@ -162,7 +162,7 @@ func (s *ReelSessionStore) Step(sessionID string, direction string) (ReelStepRes
 	}, nil
 }
 
-func (s *ReelSessionStore) Delete(sessionID string) error {
+func (s *ReelSessionStore) Delete(ctx context.Context, sessionID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -177,24 +177,24 @@ func (s *ReelSessionStore) Delete(sessionID string) error {
 
 	delete(s.sessions, sessionID)
 	if s.backend != nil {
-		return s.backend.DeleteReelSession(context.TODO(), sessionID)
+		return s.backend.DeleteReelSession(ctx, sessionID)
 	}
-	return s.saveLocked()
+	return s.saveLocked(ctx)
 }
 
-func (s *ReelSessionStore) CleanupStale() error {
+func (s *ReelSessionStore) CleanupStale(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.cleanupLocked()
+	return s.cleanupLocked(ctx)
 }
 
-func (s *ReelSessionStore) newSessionLocked(now time.Time) (string, *reelSession, error) {
+func (s *ReelSessionStore) newSessionLocked(ctx context.Context, now time.Time) (string, *reelSession, error) {
 	id, err := randomSessionID()
 	if err != nil {
 		return "", nil, err
 	}
 
-	meme, err := s.store.Random(context.TODO(), nil)
+	meme, err := s.store.Random(ctx, nil)
 	if err != nil {
 		return "", nil, err
 	}
@@ -224,15 +224,15 @@ func (s *ReelSessionStore) pruneMemoryLocked(cutoff time.Time) bool {
 // cleanupLocked prunes memory and then persists the removal: the backend sweeps
 // stale rows in one statement, the file store rewrites its document. It is meant
 // for the nightly job and for load(), not the per-step hot path.
-func (s *ReelSessionStore) cleanupLocked() error {
+func (s *ReelSessionStore) cleanupLocked(ctx context.Context) error {
 	cutoff := time.Now().UTC().Add(-reelSessionTTL)
 	changed := s.pruneMemoryLocked(cutoff)
 
 	if s.backend != nil {
-		return s.backend.CleanupStaleReelSessions(context.TODO(), cutoff)
+		return s.backend.CleanupStaleReelSessions(ctx, cutoff)
 	}
 	if changed {
-		return s.saveLocked()
+		return s.saveLocked(ctx)
 	}
 	return nil
 }
@@ -240,19 +240,19 @@ func (s *ReelSessionStore) cleanupLocked() error {
 // persistSessionLocked writes just the one session that changed. The database
 // backend upserts a single row; the file backend must rewrite its whole
 // document, so it falls back to the full save.
-func (s *ReelSessionStore) persistSessionLocked(sessionID string) error {
+func (s *ReelSessionStore) persistSessionLocked(ctx context.Context, sessionID string) error {
 	session, ok := s.sessions[sessionID]
 	if !ok {
 		return nil
 	}
 	if s.backend != nil {
-		return s.backend.SaveReelSession(context.TODO(), sessionID, accessor.ReelSessionRecord{
+		return s.backend.SaveReelSession(ctx, sessionID, accessor.ReelSessionRecord{
 			History:      append([]string(nil), session.History...),
 			Position:     session.Position,
 			LastActivity: session.LastActivity,
 		})
 	}
-	return s.saveLocked()
+	return s.saveLocked(ctx)
 }
 
 func (s *ReelSessionStore) recentHistoryLocked(session *reelSession) []string {
@@ -267,7 +267,7 @@ func (s *ReelSessionStore) recentHistoryLocked(session *reelSession) []string {
 	return append([]string(nil), session.History[start:]...)
 }
 
-func (s *ReelSessionStore) ensureAheadLocked(session *reelSession, count int) error {
+func (s *ReelSessionStore) ensureAheadLocked(ctx context.Context, session *reelSession, count int) error {
 	if count <= 0 {
 		return nil
 	}
@@ -275,7 +275,7 @@ func (s *ReelSessionStore) ensureAheadLocked(session *reelSession, count int) er
 	targetLength := session.Position + 1 + count
 	for len(session.History) < targetLength {
 		excluded := s.recentHistoryLocked(session)
-		meme, err := s.store.Random(context.TODO(), excluded)
+		meme, err := s.store.Random(ctx, excluded)
 		if err != nil {
 			return err
 		}
@@ -284,7 +284,7 @@ func (s *ReelSessionStore) ensureAheadLocked(session *reelSession, count int) er
 	return nil
 }
 
-func (s *ReelSessionStore) windowMemesLocked(session *reelSession, startOffset int, endOffset int) ([]accessor.Meme, error) {
+func (s *ReelSessionStore) windowMemesLocked(ctx context.Context, session *reelSession, startOffset int, endOffset int) ([]accessor.Meme, error) {
 	if startOffset == 0 || endOffset == 0 {
 		return nil, nil
 	}
@@ -296,7 +296,7 @@ func (s *ReelSessionStore) windowMemesLocked(session *reelSession, startOffset i
 			if index < 0 || index >= len(session.History) {
 				continue
 			}
-			meme, err := s.store.GetByID(context.TODO(), "", session.History[index])
+			meme, err := s.store.GetByID(ctx, "", session.History[index])
 			if err != nil {
 				return nil, err
 			}
@@ -310,7 +310,7 @@ func (s *ReelSessionStore) windowMemesLocked(session *reelSession, startOffset i
 		if index < 0 || index >= len(session.History) {
 			continue
 		}
-		meme, err := s.store.GetByID(context.TODO(), "", session.History[index])
+		meme, err := s.store.GetByID(ctx, "", session.History[index])
 		if err != nil {
 			return nil, err
 		}
@@ -324,12 +324,12 @@ func randomSessionID() (string, error) {
 	return id.String(), err
 }
 
-func (s *ReelSessionStore) load() error {
+func (s *ReelSessionStore) load(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.backend != nil {
-		records, err := s.backend.LoadReelSessions(context.TODO())
+		records, err := s.backend.LoadReelSessions(ctx)
 		if err != nil {
 			return err
 		}
@@ -341,7 +341,7 @@ func (s *ReelSessionStore) load() error {
 				LastActivity: record.LastActivity,
 			}
 		}
-		return s.cleanupLocked()
+		return s.cleanupLocked(ctx)
 	}
 
 	if strings.TrimSpace(s.sessionFile) == "" {
@@ -367,13 +367,13 @@ func (s *ReelSessionStore) load() error {
 		sessions = map[string]*reelSession{}
 	}
 	s.sessions = sessions
-	return s.cleanupLocked()
+	return s.cleanupLocked(ctx)
 }
 
-func (s *ReelSessionStore) saveLocked() error {
+func (s *ReelSessionStore) saveLocked(ctx context.Context) error {
 	if s.backend != nil {
 		for sessionID, session := range s.sessions {
-			if err := s.backend.SaveReelSession(context.TODO(), sessionID, accessor.ReelSessionRecord{
+			if err := s.backend.SaveReelSession(ctx, sessionID, accessor.ReelSessionRecord{
 				History:      append([]string(nil), session.History...),
 				Position:     session.Position,
 				LastActivity: session.LastActivity,

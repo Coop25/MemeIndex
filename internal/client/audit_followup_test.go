@@ -200,11 +200,11 @@ type failingCreateStore struct {
 	failNames map[string]bool
 }
 
-func (s failingCreateStore) Create(_ context.Context, input accessor.CreateInput) (accessor.Meme, error) {
+func (s failingCreateStore) Create(ctx context.Context, input accessor.CreateInput) (accessor.Meme, error) {
 	if s.failNames[input.Filename] {
 		return accessor.Meme{}, errors.New("disk full")
 	}
-	return s.MemeStore.Create(context.Background(), input)
+	return s.MemeStore.Create(ctx, input)
 }
 
 func multiFileUploadRequest(t *testing.T, files map[string]string, order []string) *http.Request {

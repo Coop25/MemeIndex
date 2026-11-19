@@ -36,7 +36,7 @@ func TestMemesByIDsUsesBatchWhenAvailable(t *testing.T) {
 	}}}}
 	m := NewMemeManager(store)
 
-	got := m.memeNamesByIDs([]string{"a", "b", "missing"})
+	got := m.memeNamesByIDs(context.Background(), []string{"a", "b", "missing"})
 
 	if store.bulkCalls != 1 {
 		t.Fatalf("bulk store queried %d times, want 1", store.bulkCalls)
@@ -59,7 +59,7 @@ func TestMemesByIDsFallsBackWithoutBulkCapability(t *testing.T) {
 	}}
 	m := NewMemeManager(store)
 
-	got := m.memesByIDs([]string{"a", "b"})
+	got := m.memesByIDs(context.Background(), []string{"a", "b"})
 
 	// adminReadCacheStore has no AdminMemeStore, so the only way these names come
 	// back is the per-id GetByID fallback path.

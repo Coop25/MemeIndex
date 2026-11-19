@@ -42,7 +42,7 @@ func TestAdminDashboardUsesLeanMemeScan(t *testing.T) {
 	}
 	m := NewMemeManager(store)
 
-	stats := m.AdminDashboard()
+	stats := m.AdminDashboard(context.Background())
 
 	if store.leanCalls != 1 {
 		t.Fatalf("AdminDashboardMemes called %d times, want 1", store.leanCalls)
@@ -64,7 +64,7 @@ func TestAdminDashboardFallsBackToListOnLeanScanError(t *testing.T) {
 	}
 	m := NewMemeManager(store)
 
-	stats := m.AdminDashboard()
+	stats := m.AdminDashboard(context.Background())
 
 	if store.leanCalls != 1 {
 		t.Fatalf("AdminDashboardMemes called %d times, want 1", store.leanCalls)

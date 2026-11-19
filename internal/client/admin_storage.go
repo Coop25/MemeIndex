@@ -222,7 +222,7 @@ func (s *Server) collectStorageReferences(ctx context.Context) (storageReference
 		return refs, nil, fmt.Errorf("meme store directories do not match data dir %s", dataDir)
 	}
 
-	files, err := s.managers.StoredMemeFiles()
+	files, err := s.managers.StoredMemeFiles(context.TODO())
 	if err != nil {
 		return refs, nil, err
 	}
@@ -457,7 +457,7 @@ func (s *Server) buildStorageReport(ctx context.Context) (adminStorageReport, er
 		return userID
 	}
 
-	if files, err := s.managers.StoredMemeFiles(); err != nil {
+	if files, err := s.managers.StoredMemeFiles(context.TODO()); err != nil {
 		log.Printf("admin storage meme sizes failed: %v", err)
 	} else {
 		for _, f := range files {

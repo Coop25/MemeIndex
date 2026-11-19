@@ -120,7 +120,7 @@ func TestStepNextExcludesLastTwoHundredBeforePicking(t *testing.T) {
 		LastActivity: time.Now().UTC(),
 	}
 
-	result, err := store.Step("session-1", "next")
+	result, err := store.Step(context.Background(), "session-1", "next")
 	if err != nil {
 		t.Fatalf("Step returned error: %v", err)
 	}
@@ -170,7 +170,7 @@ func TestStepPrevIncludesRecentHistoryForPreload(t *testing.T) {
 		sessionFile: "",
 	}
 
-	result, err := store.Step("session-1", "prev")
+	result, err := store.Step(context.Background(), "session-1", "prev")
 	if err != nil {
 		t.Fatalf("Step returned error: %v", err)
 	}
@@ -239,7 +239,7 @@ func TestStepPersistsOnlyTheChangedSession(t *testing.T) {
 		},
 	}
 
-	if _, err := store.Step("b", "next"); err != nil {
+	if _, err := store.Step(context.Background(), "b", "next"); err != nil {
 		t.Fatalf("Step: %v", err)
 	}
 

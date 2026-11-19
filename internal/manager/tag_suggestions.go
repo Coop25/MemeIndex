@@ -67,13 +67,13 @@ type tagSuggestionAttemptOptions struct {
 	sourceSuffix      string
 }
 
-func (m *MemeManager) GetStoredMemeTagSuggestions(id string) (MemeTagSuggestionResult, error) {
+func (m *MemeManager) GetStoredMemeTagSuggestions(ctx context.Context, id string) (MemeTagSuggestionResult, error) {
 	suggestionStore, ok := m.store.(accessor.SuggestedTagStore)
 	if !ok {
 		return MemeTagSuggestionResult{}, tagsuggest.ErrDisabled
 	}
 
-	tags, err := suggestionStore.ListSuggestedTags(context.TODO(), strings.TrimSpace(id))
+	tags, err := suggestionStore.ListSuggestedTags(ctx, strings.TrimSpace(id))
 	if err != nil {
 		return MemeTagSuggestionResult{}, err
 	}
@@ -87,7 +87,7 @@ func (m *MemeManager) RefreshMemeTagSuggestions(ctx context.Context, userID stri
 		return MemeTagSuggestionResult{}, tagsuggest.ErrDisabled
 	}
 
-	meme, err := m.store.GetByID(context.TODO(), strings.TrimSpace(userID), strings.TrimSpace(id))
+	meme, err := m.store.GetByID(ctx, strings.TrimSpace(userID), strings.TrimSpace(id))
 	if err != nil {
 		return MemeTagSuggestionResult{}, err
 	}
@@ -104,16 +104,23 @@ func (m *MemeManager) RefreshMemeTagSuggestions(ctx context.Context, userID stri
 	}
 
 	if suggestionStore, ok := m.store.(accessor.SuggestedTagStore); ok {
-		if err := suggestionStore.ReplaceSuggestedTags(context.TODO(), meme.ID, output.Tags); err != nil {
+		// The pass behind this result can take minutes of model time, and its
+		// context (the request's, or the worker's per-meme deadline) may end
+		// just as it finishes. Record what it worked out regardless: these
+		// writes are quick, and dropping them only makes the next pass redo
+		// the work, or leave a meme with its new suggestions but still marked
+		// exhausted.
+		ctx := context.WithoutCancel(ctx)
+		if err := suggestionStore.ReplaceSuggestedTags(ctx, meme.ID, output.Tags); err != nil {
 			return MemeTagSuggestionResult{}, err
 		}
-		if err := suggestionStore.SetAutoSuggestDisabled(context.TODO(), meme.ID, false); err != nil {
+		if err := suggestionStore.SetAutoSuggestDisabled(ctx, meme.ID, false); err != nil {
 			return MemeTagSuggestionResult{}, err
 		}
 		// Persist the derived search text (on-image text + transcript) so it
 		// feeds meme search. Best-effort: a failure here must not fail the
 		// suggestion.
-		if err := suggestionStore.SetSearchText(context.TODO(), meme.ID, result.Text); err != nil {
+		if err := suggestionStore.SetSearchText(ctx, meme.ID, result.Text); err != nil {
 			log.Printf("tag suggestion: storing search text for meme %s failed: %v", meme.ID, err)
 		}
 	}
@@ -121,7 +128,7 @@ func (m *MemeManager) RefreshMemeTagSuggestions(ctx context.Context, userID stri
 	return output, nil
 }
 
-func (m *MemeManager) QueueMemeTagSuggestions(id string) {
+func (m *MemeManager) QueueMemeTagSuggestions(ctx context.Context, id string) {
 	if m.tagSuggester == nil || !m.tagSuggester.Enabled() {
 		return
 	}
@@ -130,7 +137,7 @@ func (m *MemeManager) QueueMemeTagSuggestions(id string) {
 		return
 	}
 
-	meme, err := m.store.GetByID(context.TODO(), "", memeID)
+	meme, err := m.store.GetByID(ctx, "", memeID)
 	if err != nil {
 		return
 	}
@@ -141,28 +148,32 @@ func (m *MemeManager) QueueMemeTagSuggestions(id string) {
 	m.enqueueTagSuggestion(memeID)
 }
 
-func (m *MemeManager) ResetTagSuggestionsAndRequeueUntagged(actor accessor.AuditActor) (ResetTagSuggestionQueueResult, error) {
+func (m *MemeManager) ResetTagSuggestionsAndRequeueUntagged(ctx context.Context, actor accessor.AuditActor) (ResetTagSuggestionQueueResult, error) {
+	// A reset is one write per meme followed by the audit entry that records
+	// it. Stopped part-way by a cancelled request it would leave the library
+	// half reset with nothing in the audit log, so it runs to the end.
+	ctx = context.WithoutCancel(ctx)
 	suggestionStore, ok := m.store.(accessor.SuggestedTagStore)
 	if !ok {
 		return ResetTagSuggestionQueueResult{}, tagsuggest.ErrDisabled
 	}
 
-	memes := m.store.List(context.TODO(), "", "", false, "")
+	memes := m.store.List(ctx, "", "", false, "")
 	result := ResetTagSuggestionQueueResult{}
 	for _, meme := range memes {
 		if len(meme.SuggestedTags) > 0 {
-			if err := suggestionStore.ReplaceSuggestedTags(context.TODO(), meme.ID, nil); err != nil {
+			if err := suggestionStore.ReplaceSuggestedTags(ctx, meme.ID, nil); err != nil {
 				return ResetTagSuggestionQueueResult{}, err
 			}
 			result.ClearedSuggestions += 1
 			// The same pass that produced those suggestions also set the
 			// derived search text; drop it so a re-run regenerates it cleanly.
-			if err := suggestionStore.SetSearchText(context.TODO(), meme.ID, ""); err != nil {
+			if err := suggestionStore.SetSearchText(ctx, meme.ID, ""); err != nil {
 				return ResetTagSuggestionQueueResult{}, err
 			}
 		}
 		if meme.AutoSuggestDisabled {
-			if err := suggestionStore.SetAutoSuggestDisabled(context.TODO(), meme.ID, false); err != nil {
+			if err := suggestionStore.SetAutoSuggestDisabled(ctx, meme.ID, false); err != nil {
 				return ResetTagSuggestionQueueResult{}, err
 			}
 			result.ClearedExhausted += 1
@@ -179,7 +190,7 @@ func (m *MemeManager) ResetTagSuggestionsAndRequeueUntagged(actor accessor.Audit
 			"Reset tag suggestions: cleared %d suggestion set(s), re-enabled %d exhausted, requeued %d untagged",
 			result.ClearedSuggestions, result.ClearedExhausted, result.QueuedUntagged,
 		)
-		if err := writer.RecordSystemAudit(context.TODO(), "tag_suggestions_reset", actor, description); err != nil {
+		if err := writer.RecordSystemAudit(ctx, "tag_suggestions_reset", actor, description); err != nil {
 			log.Printf("record tag suggestion reset audit failed: %v", err)
 		}
 	}
@@ -196,23 +207,26 @@ type RetryFailedTagSuggestionsResult struct {
 // it clears their auto-suggest-disabled mark and queues every untagged meme
 // that has no suggestions. Unlike the reset it leaves existing suggestions
 // alone.
-func (m *MemeManager) RetryFailedTagSuggestions(actor accessor.AuditActor) (RetryFailedTagSuggestionsResult, error) {
+func (m *MemeManager) RetryFailedTagSuggestions(ctx context.Context, actor accessor.AuditActor) (RetryFailedTagSuggestionsResult, error) {
+	// One write per exhausted meme and then the audit entry: like the reset,
+	// it runs to the end once started.
+	ctx = context.WithoutCancel(ctx)
 	suggestionStore, ok := m.store.(accessor.SuggestedTagStore)
 	if !ok || m.tagSuggester == nil || !m.tagSuggester.Enabled() {
 		return RetryFailedTagSuggestionsResult{}, tagsuggest.ErrDisabled
 	}
 
 	result := RetryFailedTagSuggestionsResult{}
-	for _, meme := range m.store.List(context.TODO(), "", "", false, "") {
+	for _, meme := range m.store.List(ctx, "", "", false, "") {
 		if !meme.AutoSuggestDisabled {
 			continue
 		}
-		if err := suggestionStore.SetAutoSuggestDisabled(context.TODO(), meme.ID, false); err != nil {
+		if err := suggestionStore.SetAutoSuggestDisabled(ctx, meme.ID, false); err != nil {
 			return RetryFailedTagSuggestionsResult{}, err
 		}
 		result.ReenabledExhausted++
 	}
-	result.Queued = m.SeedTagSuggestionQueue()
+	result.Queued = m.SeedTagSuggestionQueue(ctx)
 
 	m.invalidateAdminReadCache()
 	if writer, ok := m.store.(accessor.AuditStore); ok {
@@ -220,14 +234,14 @@ func (m *MemeManager) RetryFailedTagSuggestions(actor accessor.AuditActor) (Retr
 			"Retried failed tag suggestions: re-enabled %d exhausted, queued %d untagged",
 			result.ReenabledExhausted, result.Queued,
 		)
-		if err := writer.RecordSystemAudit(context.TODO(), "tag_suggestions_retry_failed", actor, description); err != nil {
+		if err := writer.RecordSystemAudit(ctx, "tag_suggestions_retry_failed", actor, description); err != nil {
 			log.Printf("record tag suggestion retry audit failed: %v", err)
 		}
 	}
 	return result, nil
 }
 
-func (m *MemeManager) TagSuggestionQueueStatus(reviewOffset int, reviewLimit int) TagSuggestionQueueStatus {
+func (m *MemeManager) TagSuggestionQueueStatus(ctx context.Context, reviewOffset int, reviewLimit int) TagSuggestionQueueStatus {
 	if reviewOffset < 0 {
 		reviewOffset = 0
 	}
@@ -265,7 +279,7 @@ func (m *MemeManager) TagSuggestionQueueStatus(reviewOffset int, reviewLimit int
 		nameLookup = append(nameLookup, status.CurrentMemeID)
 	}
 	nameLookup = append(nameLookup, queuedIDs...)
-	names := m.memeNamesByIDs(nameLookup)
+	names := m.memeNamesByIDs(ctx, nameLookup)
 
 	if status.CurrentMemeID != "" {
 		status.CurrentMemeName = names[status.CurrentMemeID]
@@ -279,26 +293,34 @@ func (m *MemeManager) TagSuggestionQueueStatus(reviewOffset int, reviewLimit int
 	}
 
 	if tq, ok := m.store.(accessor.TagAdminStore); ok {
-		if filled, ok := m.fillTagSuggestionCountsFromSQL(tq, &status, reviewOffset, reviewLimit); ok {
+		if filled, ok := m.fillTagSuggestionCountsFromSQL(ctx, tq, &status, reviewOffset, reviewLimit); ok {
 			return filled
 		}
 	}
 
-	m.fillTagSuggestionCountsFromScan(&status, reviewOffset, reviewLimit)
+	m.fillTagSuggestionCountsFromScan(ctx, &status, reviewOffset, reviewLimit)
 	return status
 }
 
 // fillTagSuggestionCountsFromSQL populates the untagged/pending counters and the
 // pending-review page from the database. It reports false (leaving status
 // untouched) if either query fails so the caller can fall back to a scan.
-func (m *MemeManager) fillTagSuggestionCountsFromSQL(tq accessor.TagAdminStore, status *TagSuggestionQueueStatus, reviewOffset, reviewLimit int) (TagSuggestionQueueStatus, bool) {
-	untagged, err := tq.UntaggedWithoutSuggestionsCount(context.TODO())
+func (m *MemeManager) fillTagSuggestionCountsFromSQL(ctx context.Context, tq accessor.TagAdminStore, status *TagSuggestionQueueStatus, reviewOffset, reviewLimit int) (TagSuggestionQueueStatus, bool) {
+	// A cancelled request reports true ("handled") so the caller does not
+	// fall back to a full scan for a client that has gone away.
+	untagged, err := tq.UntaggedWithoutSuggestionsCount(ctx)
 	if err != nil {
+		if ctx.Err() != nil {
+			return *status, true
+		}
 		log.Printf("tag suggestion status: untagged count SQL failed, falling back to scan: %v", err)
 		return TagSuggestionQueueStatus{}, false
 	}
-	total, pending, err := tq.PendingSuggestionMemes(context.TODO(), reviewOffset, reviewLimit)
+	total, pending, err := tq.PendingSuggestionMemes(ctx, reviewOffset, reviewLimit)
 	if err != nil {
+		if ctx.Err() != nil {
+			return *status, true
+		}
 		log.Printf("tag suggestion status: pending-review SQL failed, falling back to scan: %v", err)
 		return TagSuggestionQueueStatus{}, false
 	}
@@ -317,8 +339,8 @@ func (m *MemeManager) fillTagSuggestionCountsFromSQL(tq accessor.TagAdminStore, 
 	return *status, true
 }
 
-func (m *MemeManager) fillTagSuggestionCountsFromScan(status *TagSuggestionQueueStatus, reviewOffset, reviewLimit int) {
-	for _, meme := range m.store.List(context.TODO(), "", "", false, "") {
+func (m *MemeManager) fillTagSuggestionCountsFromScan(ctx context.Context, status *TagSuggestionQueueStatus, reviewOffset, reviewLimit int) {
+	for _, meme := range m.store.List(ctx, "", "", false, "") {
 		if shouldQueueTagSuggestionsForMeme(meme) {
 			status.UntaggedWithoutSuggestions += 1
 		}
@@ -352,7 +374,7 @@ func (m *MemeManager) StartTagSuggestionWorker() {
 	})
 }
 
-func (m *MemeManager) SeedTagSuggestionQueue() int {
+func (m *MemeManager) SeedTagSuggestionQueue(ctx context.Context) int {
 	if m.tagSuggester == nil || !m.tagSuggester.Enabled() {
 		return 0
 	}
@@ -362,14 +384,16 @@ func (m *MemeManager) SeedTagSuggestionQueue() int {
 		resolved bool
 	)
 	if tq, ok := m.store.(accessor.TagAdminStore); ok {
-		if got, err := tq.UntaggedWithoutSuggestionIDs(context.TODO()); err == nil {
+		if got, err := tq.UntaggedWithoutSuggestionIDs(ctx); err == nil {
 			ids, resolved = got, true
+		} else if ctx.Err() != nil {
+			return 0
 		} else {
 			log.Printf("seed tag suggestion queue: SQL failed, falling back to scan: %v", err)
 		}
 	}
 	if !resolved {
-		for _, meme := range m.store.List(context.TODO(), "", "", false, "") {
+		for _, meme := range m.store.List(ctx, "", "", false, "") {
 			if shouldQueueTagSuggestionsForMeme(meme) {
 				ids = append(ids, meme.ID)
 			}
@@ -630,23 +654,23 @@ func (m *MemeManager) recordTagSuggestionSuccess() {
 // DismissMemeTagSuggestion drops one tag from a meme's suggestions. The
 // removal runs against the stored list (RemoveSuggestedTag), not the meme read
 // here, so a refresh that lands in between keeps its new suggestions.
-func (m *MemeManager) DismissMemeTagSuggestion(userID string, id string, tag string) (accessor.Meme, error) {
+func (m *MemeManager) DismissMemeTagSuggestion(ctx context.Context, userID string, id string, tag string) (accessor.Meme, error) {
 	suggestionStore, ok := m.store.(accessor.SuggestedTagStore)
 	if !ok {
 		return accessor.Meme{}, tagsuggest.ErrDisabled
 	}
 
 	// Read first only to check the meme exists and this user can see it.
-	meme, err := m.store.GetByID(context.TODO(), strings.TrimSpace(userID), strings.TrimSpace(id))
+	meme, err := m.store.GetByID(ctx, strings.TrimSpace(userID), strings.TrimSpace(id))
 	if err != nil {
 		return accessor.Meme{}, err
 	}
 
-	if err := suggestionStore.RemoveSuggestedTag(context.TODO(), meme.ID, tag); err != nil {
+	if err := suggestionStore.RemoveSuggestedTag(ctx, meme.ID, tag); err != nil {
 		return accessor.Meme{}, err
 	}
 
-	return m.store.GetByID(context.TODO(), strings.TrimSpace(userID), meme.ID)
+	return m.store.GetByID(ctx, strings.TrimSpace(userID), meme.ID)
 }
 
 // DismissAllMemeTagSuggestions clears a meme's suggestions unconditionally.
@@ -657,21 +681,21 @@ func (m *MemeManager) DismissMemeTagSuggestion(userID string, id string, tag str
 // only when the list still matches what the client was shown would need the
 // client to send that list, and buys little - suggestions are advisory and a
 // refresh is one click away.
-func (m *MemeManager) DismissAllMemeTagSuggestions(userID string, id string) (accessor.Meme, error) {
+func (m *MemeManager) DismissAllMemeTagSuggestions(ctx context.Context, userID string, id string) (accessor.Meme, error) {
 	suggestionStore, ok := m.store.(accessor.SuggestedTagStore)
 	if !ok {
 		return accessor.Meme{}, tagsuggest.ErrDisabled
 	}
 
-	meme, err := m.store.GetByID(context.TODO(), strings.TrimSpace(userID), strings.TrimSpace(id))
+	meme, err := m.store.GetByID(ctx, strings.TrimSpace(userID), strings.TrimSpace(id))
 	if err != nil {
 		return accessor.Meme{}, err
 	}
-	if err := suggestionStore.ReplaceSuggestedTags(context.TODO(), meme.ID, nil); err != nil {
+	if err := suggestionStore.ReplaceSuggestedTags(ctx, meme.ID, nil); err != nil {
 		return accessor.Meme{}, err
 	}
 
-	return m.store.GetByID(context.TODO(), strings.TrimSpace(userID), meme.ID)
+	return m.store.GetByID(ctx, strings.TrimSpace(userID), meme.ID)
 }
 
 // ApplyMemeTagSuggestion adds one suggested tag to a meme and drops it from
@@ -680,13 +704,13 @@ func (m *MemeManager) DismissAllMemeTagSuggestions(userID string, id string) (ac
 // the suggestion is removed from the stored list in one write
 // (RemoveSuggestedTag), so a suggestion refresh that lands in between is not
 // overwritten with the list this read before it.
-func (m *MemeManager) ApplyMemeTagSuggestion(userID string, id string, tag string, actor accessor.AuditActor) (accessor.Meme, error) {
+func (m *MemeManager) ApplyMemeTagSuggestion(ctx context.Context, userID string, id string, tag string, actor accessor.AuditActor) (accessor.Meme, error) {
 	normalizedTag := strings.ToLower(strings.TrimSpace(tag))
 	if normalizedTag == "" {
-		return m.store.GetByID(context.TODO(), strings.TrimSpace(userID), strings.TrimSpace(id))
+		return m.store.GetByID(ctx, strings.TrimSpace(userID), strings.TrimSpace(id))
 	}
 
-	meme, err := m.EditMeme(userID, id, accessor.MemeEdit{
+	meme, err := m.EditMeme(ctx, userID, id, accessor.MemeEdit{
 		TagsAdded: []string{normalizedTag},
 		Actor:     actor,
 	})
@@ -696,12 +720,12 @@ func (m *MemeManager) ApplyMemeTagSuggestion(userID string, id string, tag strin
 
 	suggestionStore, ok := m.store.(accessor.SuggestedTagStore)
 	if ok {
-		if err := suggestionStore.RemoveSuggestedTag(context.TODO(), meme.ID, normalizedTag); err != nil {
+		if err := suggestionStore.RemoveSuggestedTag(ctx, meme.ID, normalizedTag); err != nil {
 			return accessor.Meme{}, err
 		}
 	}
 
-	return m.store.GetByID(context.TODO(), strings.TrimSpace(userID), meme.ID)
+	return m.store.GetByID(ctx, strings.TrimSpace(userID), meme.ID)
 }
 
 // SweepTagScratch removes leftover tag-suggestion working files from the
@@ -833,7 +857,7 @@ func (m *MemeManager) suggestTagsForMeme(ctx context.Context, meme accessor.Meme
 		request.Filename = meme.OriginalName
 		request.ContentType = meme.ContentType
 		request.ExistingTags = meme.Tags
-		request.KnownTags = m.store.SuggestTags(context.TODO(), "", m.knownTagHint)
+		request.KnownTags = m.store.SuggestTags(ctx, "", m.knownTagHint)
 
 		result, err := m.tagSuggester.Suggest(ctx, request)
 		if err == nil {
@@ -852,7 +876,9 @@ func (m *MemeManager) suggestTagsForMeme(ctx context.Context, meme accessor.Meme
 
 	if lastInvalidResponse != nil {
 		if suggestionStore, ok := m.store.(accessor.SuggestedTagStore); ok {
-			if err := suggestionStore.SetAutoSuggestDisabled(context.TODO(), meme.ID, true); err != nil {
+			// The model's verdict is in; record it even if the context ran out
+			// while the last attempt was answering (see RefreshMemeTagSuggestions).
+			if err := suggestionStore.SetAutoSuggestDisabled(context.WithoutCancel(ctx), meme.ID, true); err != nil {
 				return tagsuggest.Result{}, err
 			}
 		}

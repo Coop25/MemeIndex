@@ -116,7 +116,7 @@ func TestStopBackgroundWorkersDuringPause(t *testing.T) {
 	done := make(chan struct{})
 	var cleanupErr error
 	go func() {
-		cleanupErr = m.CleanupStaleReelSessions()
+		cleanupErr = m.CleanupStaleReelSessions(context.Background())
 		close(done)
 	}()
 	assertBlocked(t, done, "reel-session cleanup")

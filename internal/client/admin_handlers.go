@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -47,7 +48,7 @@ func (s *Server) handlePendingDeleteQueue(w http.ResponseWriter, r *http.Request
 
 	offset := parseQueryInt(r, "offset", 0)
 	limit := parseQueryInt(r, "limit", 50)
-	records, err := s.managers.ListPendingDeletes(offset, limit)
+	records, err := s.managers.ListPendingDeletes(context.TODO(), offset, limit)
 	if err != nil {
 		log.Printf("list pending deletes failed: %v", err)
 		http.Error(w, "failed to load pending deletes", http.StatusInternalServerError)
@@ -63,7 +64,7 @@ func (s *Server) handleAdminDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	stats := s.managers.AdminDashboard()
+	stats := s.managers.AdminDashboard(context.TODO())
 	for index := range stats.RecentMemes {
 		stats.RecentMemes[index].FilePath = s.protectAssetPathForResponse(r, stats.RecentMemes[index].FilePath)
 		stats.RecentMemes[index].PreviewPath = s.protectAssetPathForResponse(r, stats.RecentMemes[index].PreviewPath)
@@ -77,7 +78,7 @@ func (s *Server) handleAdminDashboard(w http.ResponseWriter, r *http.Request) {
 		},
 		GeneratedAt: time.Now().UTC(),
 	}
-	if shares, err := s.managers.ListActiveMemeShares(response.GeneratedAt); err != nil {
+	if shares, err := s.managers.ListActiveMemeShares(context.TODO(), response.GeneratedAt); err != nil {
 		log.Printf("admin dashboard active shares failed: %v", err)
 	} else {
 		response.ActiveShares = len(shares)
@@ -121,7 +122,7 @@ func (s *Server) handleAdminDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	response.SystemHealth = append(response.SystemHealth, adminSystemHealth{Name: "Database", Status: databaseStatus, Healthy: usersHealthy})
 
-	if activity, err := s.managers.ListAuditFeed(0, 10, ""); err != nil {
+	if activity, err := s.managers.ListAuditFeed(context.TODO(), 0, 10, ""); err != nil {
 		log.Printf("admin dashboard activity failed: %v", err)
 		response.SystemHealth = append(response.SystemHealth, adminSystemHealth{Name: "Activity Tracking", Status: "Unavailable", Healthy: false})
 	} else {
@@ -159,7 +160,7 @@ func (s *Server) handleAdminDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response.WorkQueues.SuggestedTags = stats.PendingSuggestionMemes
-	if pending, err := s.managers.ListPendingDeletes(0, 1); err != nil {
+	if pending, err := s.managers.ListPendingDeletes(context.TODO(), 0, 1); err != nil {
 		log.Printf("admin dashboard pending deletes failed: %v", err)
 	} else {
 		response.WorkQueues.DeleteQueue = pending.Total
@@ -244,7 +245,7 @@ func (s *Server) handleAuditLogs(w http.ResponseWriter, r *http.Request) {
 
 	offset := parseQueryInt(r, "offset", 0)
 	limit := parseQueryInt(r, "limit", 100)
-	events, err := s.managers.ListAuditFeed(offset, limit, strings.TrimSpace(r.URL.Query().Get("actor")))
+	events, err := s.managers.ListAuditFeed(context.TODO(), offset, limit, strings.TrimSpace(r.URL.Query().Get("actor")))
 	if err != nil {
 		log.Printf("list audit logs failed: %v", err)
 		http.Error(w, "failed to load audit logs", http.StatusInternalServerError)
@@ -264,7 +265,7 @@ func (s *Server) handleTagHygiene(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid view (want pairs or tags)", http.StatusBadRequest)
 			return
 		}
-		writeJSON(w, http.StatusOK, s.managers.TagHygienePage(manager.TagHygienePageParams{
+		writeJSON(w, http.StatusOK, s.managers.TagHygienePage(context.TODO(), manager.TagHygienePageParams{
 			View:   view,
 			Offset: parseQueryInt(r, "offset", 0),
 			Limit:  parseQueryInt(r, "limit", 0),
@@ -280,7 +281,7 @@ func (s *Server) handleTagHygiene(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		result, err := s.managers.MergeTags(payload.SourceTag, payload.TargetTag, currentAuditActor(r))
+		result, err := s.managers.MergeTags(context.TODO(), payload.SourceTag, payload.TargetTag, currentAuditActor(r))
 		if err != nil {
 			http.Error(w, "failed to merge tags", http.StatusBadRequest)
 			return
@@ -299,7 +300,7 @@ func (s *Server) handleTagSuggestionStatus(w http.ResponseWriter, r *http.Reques
 
 	reviewOffset := parseQueryInt(r, "review_offset", 0)
 	reviewLimit := parseQueryInt(r, "review_limit", 50)
-	writeJSON(w, http.StatusOK, s.managers.TagSuggestionQueueStatus(reviewOffset, reviewLimit))
+	writeJSON(w, http.StatusOK, s.managers.TagSuggestionQueueStatus(context.TODO(), reviewOffset, reviewLimit))
 }
 
 func (s *Server) handleResetTagSuggestions(w http.ResponseWriter, r *http.Request) {
@@ -308,7 +309,7 @@ func (s *Server) handleResetTagSuggestions(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	result, err := s.managers.ResetTagSuggestionsAndRequeueUntagged(currentAuditActor(r))
+	result, err := s.managers.ResetTagSuggestionsAndRequeueUntagged(context.TODO(), currentAuditActor(r))
 	if err != nil {
 		switch {
 		case errors.Is(err, tagsuggest.ErrDisabled):
@@ -331,7 +332,7 @@ func (s *Server) handleRetryFailedTagSuggestions(w http.ResponseWriter, r *http.
 		return
 	}
 
-	result, err := s.managers.RetryFailedTagSuggestions(currentAuditActor(r))
+	result, err := s.managers.RetryFailedTagSuggestions(context.TODO(), currentAuditActor(r))
 	if err != nil {
 		if errors.Is(err, tagsuggest.ErrDisabled) {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
@@ -409,7 +410,7 @@ func (s *Server) handleAdminMemeActions(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		id := strings.TrimSuffix(strings.TrimSuffix(path, "/approve-delete"), "/")
-		if err := s.managers.ApprovePendingDelete(id, currentAuditActor(r)); err != nil {
+		if err := s.managers.ApprovePendingDelete(context.TODO(), id, currentAuditActor(r)); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				http.NotFound(w, r)
 				return
@@ -425,7 +426,7 @@ func (s *Server) handleAdminMemeActions(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		id := strings.TrimSuffix(strings.TrimSuffix(path, "/reject-delete"), "/")
-		if err := s.managers.RejectPendingDelete(id, currentAuditActor(r)); err != nil {
+		if err := s.managers.RejectPendingDelete(context.TODO(), id, currentAuditActor(r)); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				http.NotFound(w, r)
 				return
@@ -441,7 +442,7 @@ func (s *Server) handleAdminMemeActions(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleAdminMemeByID(w http.ResponseWriter, r *http.Request, id string) {
-	meme, err := s.managers.GetAdminMeme(id)
+	meme, err := s.managers.GetAdminMeme(context.TODO(), id)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			http.NotFound(w, r)
@@ -457,7 +458,7 @@ func (s *Server) handleAdminMemeByID(w http.ResponseWriter, r *http.Request, id 
 
 func (s *Server) handleMemeAudit(w http.ResponseWriter, r *http.Request, id string) {
 	limit := parseQueryInt(r, "limit", 100)
-	audit, err := s.managers.ListMemeAudit(id, limit)
+	audit, err := s.managers.ListMemeAudit(context.TODO(), id, limit)
 	if err != nil {
 		log.Printf("list meme audit failed: %v", err)
 		http.Error(w, "failed to load meme audit", http.StatusInternalServerError)
