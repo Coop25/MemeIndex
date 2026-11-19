@@ -2,6 +2,7 @@ package client
 
 import (
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"path"
@@ -63,7 +64,7 @@ func (s *Server) withPageAuth(next http.Handler) http.Handler {
 func (s *Server) withProtectedAssetAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		setProtectedAssetHeaders(w)
-		setUntrustedAssetHeaders(w, r.URL.Path)
+		w = setUntrustedAssetHeaders(w, r.URL.Path)
 		// http.FileServer would otherwise answer a directory path with a
 		// listing of every stored file.
 		if strings.HasSuffix(r.URL.Path, "/") {
@@ -130,13 +131,18 @@ func noDirectoryListing(next http.Handler) http.Handler {
 	})
 }
 
-func setUntrustedAssetHeaders(w http.ResponseWriter, requestPath string) {
+// setUntrustedAssetHeaders sets the headers that keep an uploaded file from
+// running as code on this origin, and returns the writer the file must be
+// served through so the Content-Type check also covers a type that is only
+// decided while serving.
+func setUntrustedAssetHeaders(w http.ResponseWriter, requestPath string) http.ResponseWriter {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	if !strings.HasPrefix(requestPath, "/uploads/") {
-		return
+		return w
 	}
 	w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'; style-src 'unsafe-inline'")
-	switch strings.ToLower(filepath.Ext(requestPath)) {
+	extension := strings.ToLower(filepath.Ext(requestPath))
+	switch extension {
 	case ".html", ".htm", ".xhtml", ".svg", ".xml", ".js", ".mjs", ".css", ".url", ".exe", ".dll", ".msi", ".bat", ".cmd", ".ps1", ".sh":
 		w.Header().Set("Content-Disposition", "attachment")
 		// The CSP above only governs the upload when it is opened as a page.
@@ -147,14 +153,79 @@ func setUntrustedAssetHeaders(w http.ResponseWriter, requestPath string) {
 		// ServeContent keeps a Content-Type that is already set. SVG keeps its
 		// image type so <img> previews still render; an image context never
 		// runs script, and opening it directly hits the attachment + sandbox.
-		if strings.ToLower(filepath.Ext(requestPath)) != ".svg" {
+		if extension != ".svg" {
 			w.Header().Set("Content-Type", "application/octet-stream")
 		}
 	}
-	if scriptableContentType(w.Header().Get("Content-Type")) {
-		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Header().Set("Content-Disposition", "attachment")
+	// On /uploads/ nothing has set a type yet: http.FileServer only looks the
+	// extension up once it starts serving, after this has run, so the check
+	// below used to see an empty header and never fire for an extension
+	// missing from the list above (.xht, .shtml, .xsl, ...). Look the type up
+	// the same way the file server would; ServeContent keeps a type that is
+	// already set, so a file the check leaves alone is served exactly as
+	// before.
+	if w.Header().Get("Content-Type") == "" && extension != "" {
+		if byExtension := mime.TypeByExtension(extension); byExtension != "" {
+			w.Header().Set("Content-Type", byExtension)
+		}
 	}
+	neutralizeScriptableContentType(w.Header())
+	return &scriptableTypeGuard{ResponseWriter: w}
+}
+
+// neutralizeScriptableContentType turns a type the browser would run or apply
+// into an opaque download.
+func neutralizeScriptableContentType(header http.Header) {
+	if scriptableContentType(header.Get("Content-Type")) {
+		header.Set("Content-Type", "application/octet-stream")
+		header.Set("Content-Disposition", "attachment")
+	}
+}
+
+// scriptableTypeGuard repeats the scriptable Content-Type check when the
+// response header is written. The extension lookup in setUntrustedAssetHeaders
+// covers every file whose type the MIME table knows; for one it does not
+// know, http.ServeContent sniffs the first bytes, and that can come back as
+// text/html or text/xml.
+type scriptableTypeGuard struct {
+	http.ResponseWriter
+	wroteHeader bool
+}
+
+func (g *scriptableTypeGuard) WriteHeader(code int) {
+	// An informational 1xx is not the response header yet.
+	if !g.wroteHeader && code >= http.StatusOK {
+		g.wroteHeader = true
+		neutralizeScriptableContentType(g.Header())
+	}
+	g.ResponseWriter.WriteHeader(code)
+}
+
+// Write sniffs the type itself when nothing has, as net/http would on the
+// first write, so the check sees it before the header goes out.
+func (g *scriptableTypeGuard) Write(p []byte) (int, error) {
+	if !g.wroteHeader {
+		if _, typed := g.Header()["Content-Type"]; !typed {
+			g.Header().Set("Content-Type", http.DetectContentType(p))
+		}
+		g.WriteHeader(http.StatusOK)
+	}
+	return g.ResponseWriter.Write(p)
+}
+
+// ReadFrom keeps the file server's sendfile path for the underlying writer.
+// ServeContent always writes the header first; anything that does not goes
+// through Write, so the header is still checked.
+func (g *scriptableTypeGuard) ReadFrom(src io.Reader) (int64, error) {
+	if !g.wroteHeader {
+		return io.Copy(struct{ io.Writer }{g}, src)
+	}
+	return io.Copy(g.ResponseWriter, src)
+}
+
+// Unwrap lets http.ResponseController reach the underlying writer.
+func (g *scriptableTypeGuard) Unwrap() http.ResponseWriter {
+	return g.ResponseWriter
 }
 
 // scriptableContentType reports whether a Content-Type would let a browser run
