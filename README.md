@@ -222,7 +222,7 @@ MemeIndex exposes two unauthenticated probes for orchestration and load balancer
 
 Neither path is written to the request log. The bundled `Dockerfile` and `docker-compose.yml` wire `/healthz` into their container health checks.
 
-On `SIGINT` or `SIGTERM` the server stops accepting new connections, flips `/readyz` to `503`, drains in-flight requests for up to 30 seconds, then closes the database pool before exiting.
+On `SIGINT` or `SIGTERM` the server stops accepting new connections, flips `/readyz` to `503`, drains in-flight requests for up to 30 seconds, then stops its background jobs (link imports and retries, tag suggestions, audiobook conversions and cleanup sweeps), giving work in progress a short grace period to finish before cancelling it, and closes every database pool before exiting.
 
 ### Metrics and profiling
 
