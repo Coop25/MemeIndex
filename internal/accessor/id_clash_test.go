@@ -1,6 +1,7 @@
 package accessor
 
 import (
+	"context"
 	"net/textproto"
 	"os"
 	"path/filepath"
@@ -17,7 +18,7 @@ func TestPostgresCreateWithClashingIDLeavesExistingMemeIntact(t *testing.T) {
 	store := newRegressionStore(t)
 	token := randToken(t)
 
-	original, err := store.Create(CreateInput{
+	original, err := store.Create(context.Background(), CreateInput{
 		File:     strings.NewReader("original bytes " + token),
 		Header:   textproto.MIMEHeader{"Content-Type": []string{"image/png"}},
 		Filename: "original-" + token + ".png",
@@ -31,7 +32,7 @@ func TestPostgresCreateWithClashingIDLeavesExistingMemeIntact(t *testing.T) {
 	newMemeID = func() string { return original.ID }
 	t.Cleanup(func() { newMemeID = previous })
 
-	if _, err := store.Create(CreateInput{
+	if _, err := store.Create(context.Background(), CreateInput{
 		File:     strings.NewReader("clashing bytes " + token),
 		Header:   textproto.MIMEHeader{"Content-Type": []string{"image/png"}},
 		Filename: "clash-" + token + ".png",
@@ -46,7 +47,7 @@ func TestPostgresCreateWithClashingIDLeavesExistingMemeIntact(t *testing.T) {
 	if string(data) != "original bytes "+token {
 		t.Fatalf("existing meme's file was overwritten: %q", data)
 	}
-	saved, err := store.GetAnyByID(original.ID)
+	saved, err := store.GetAnyByID(context.Background(), original.ID)
 	if err != nil {
 		t.Fatalf("existing meme row is gone: %v", err)
 	}

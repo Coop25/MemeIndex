@@ -394,7 +394,7 @@ func TestConcurrentMergesDoNotExhaustThePool(t *testing.T) {
 	errs := make(chan error, len(pairs))
 	for _, p := range pairs {
 		go func() {
-			_, err := small.MergeTag(p[0], p[1], mergeActor)
+			_, err := small.MergeTag(context.Background(), p[0], p[1], mergeActor)
 			errs <- err
 		}()
 	}
