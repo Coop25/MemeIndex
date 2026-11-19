@@ -131,7 +131,7 @@ func TestTagHygieneReportMemoizedAndInvalidatedByMerge(t *testing.T) {
 		t.Fatalf("TagHygieneReport scanned the store %d times, want 1", store.callCount())
 	}
 
-	if _, err := manager.MergeTags(context.Background(), "buisness", "business", accessor.AuditActor{UserID: "admin"}); err != nil {
+	if _, err := manager.MergeTags(context.Background(), "buisness", "business", accessor.AuditActor{UserID: "admin"}); err != nil { //nolint:misspell // the misspelled tag is the one being merged away
 		t.Fatalf("MergeTags: %v", err)
 	}
 	before := store.callCount()

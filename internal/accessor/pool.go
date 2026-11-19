@@ -10,11 +10,14 @@ import (
 )
 
 // DefaultStatementTimeout bounds how long any single statement on a NewPool
-// connection may run before Postgres cancels it. Most store calls use
-// context.Background(), so without a server-side limit a stuck query (lock
-// wait, runaway plan) would hold its connection forever and, repeated, drain
-// the pool until every request hangs. Schema migrations lift it (see
-// dbschema.Apply), since an index build on a large library can take longer.
+// connection may run before Postgres cancels it. Store calls run on the
+// caller's context, so a request the client abandons stops its query, but
+// background jobs and the writes that must finish once started (they use
+// context.WithoutCancel) are not tied to any client. Without a server-side
+// limit a stuck query there (lock wait, runaway plan) would hold its
+// connection forever and, repeated, drain the pool until every request hangs.
+// Schema migrations lift it (see dbschema.Apply), since an index build on a
+// large library can take longer.
 const DefaultStatementTimeout = 30 * time.Second
 
 // NewPool opens a pgx connection pool with explicit, tunable sizing. The process

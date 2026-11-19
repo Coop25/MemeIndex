@@ -439,7 +439,7 @@ func (s *Server) startMigrationImport(base *url.URL, token string, info migratio
 		if err == nil {
 			// Before the status says completed: the admin page reloads as
 			// soon as it does, and must not be served from stale caches.
-			s.reloadAfterRestore("migration")
+			s.reloadAfterRestore(ctx, "migration")
 		}
 		completedAt := time.Now().UTC()
 		s.migration.update(func(st *migrationImportStatus) {

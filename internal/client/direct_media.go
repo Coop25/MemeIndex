@@ -145,5 +145,5 @@ func (s *Server) importDirectMedia(ctx context.Context, client *http.Client, act
 	}
 	header := textproto.MIMEHeader{}
 	header.Set("Content-Type", contentType)
-	return s.managers.CreateMemeAsWithSource(context.TODO(), actor, file, header, filename, tags, notes, sourceURL)
+	return s.managers.CreateMemeAsWithSource(ctx, actor, file, header, filename, tags, notes, sourceURL)
 }

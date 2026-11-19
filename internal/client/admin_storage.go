@@ -222,7 +222,7 @@ func (s *Server) collectStorageReferences(ctx context.Context) (storageReference
 		return refs, nil, fmt.Errorf("meme store directories do not match data dir %s", dataDir)
 	}
 
-	files, err := s.managers.StoredMemeFiles(context.TODO())
+	files, err := s.managers.StoredMemeFiles(ctx)
 	if err != nil {
 		return refs, nil, err
 	}
@@ -417,6 +417,9 @@ func (s *Server) handleAdminStorage(w http.ResponseWriter, r *http.Request) {
 	}
 	report, err := s.cachedStorageReport(r.Context(), r.URL.Query().Get("refresh") == "1")
 	if err != nil {
+		if requestAbandoned(r, err) {
+			return
+		}
 		log.Printf("admin storage report failed: %v", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "storage report failed"})
 		return
@@ -434,6 +437,12 @@ func (s *Server) cachedStorageReport(ctx context.Context, refresh bool) (adminSt
 	report, err := s.buildStorageReport(ctx)
 	if err != nil {
 		return adminStorageReport{}, err
+	}
+	if ctx.Err() != nil {
+		// Each part of the report is best-effort, so a request that went away
+		// part-way gets a report with pieces missing. Don't keep it for the
+		// next admin.
+		return report, nil
 	}
 	st.report, st.reportAt, st.reportValid = report, time.Now(), true
 	return report, nil
@@ -457,8 +466,10 @@ func (s *Server) buildStorageReport(ctx context.Context) (adminStorageReport, er
 		return userID
 	}
 
-	if files, err := s.managers.StoredMemeFiles(context.TODO()); err != nil {
-		log.Printf("admin storage meme sizes failed: %v", err)
+	if files, err := s.managers.StoredMemeFiles(ctx); err != nil {
+		if ctx.Err() == nil {
+			log.Printf("admin storage meme sizes failed: %v", err)
+		}
 	} else {
 		for _, f := range files {
 			report.Largest = append(report.Largest, storageLargeFile{Kind: "meme", ID: f.ID, Name: f.Title, Bytes: f.SizeBytes})
@@ -537,6 +548,9 @@ func (s *Server) handleStorageOrphanScan(w http.ResponseWriter, r *http.Request)
 		// A failed scan clears the allow-list: nothing is deletable until a
 		// scan succeeds again.
 		s.storage.setScan(nil)
+		if requestAbandoned(r, err) {
+			return
+		}
 		log.Printf("admin storage orphan scan failed: %v", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "storage scan failed"})
 		return
@@ -593,6 +607,9 @@ func (s *Server) handleStorageOrphanDelete(w http.ResponseWriter, r *http.Reques
 		fresh, err = findOrphans(s.config.DataDir, refs, time.Now())
 	}
 	if err != nil {
+		if requestAbandoned(r, err) {
+			return
+		}
 		log.Printf("admin storage orphan delete: reference check failed, nothing deleted: %v", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not verify file references; nothing was deleted"})
 		return

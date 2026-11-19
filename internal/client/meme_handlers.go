@@ -120,12 +120,15 @@ func (s *Server) handleMemeByID(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		meme, err := s.managers.GetMeme(context.TODO(), currentUserID(r), id)
+		meme, err := s.managers.GetMeme(r.Context(), currentUserID(r), id)
 		if errors.Is(err, os.ErrNotExist) {
 			http.NotFound(w, r)
 			return
 		}
 		if err != nil {
+			if requestAbandoned(r, err) {
+				return
+			}
 			http.Error(w, "failed to load meme", http.StatusInternalServerError)
 			return
 		}
@@ -143,9 +146,12 @@ func (s *Server) handleMemeByID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getStoredMemeTagSuggestions(w http.ResponseWriter, r *http.Request, id string) {
-	result, err := s.managers.GetStoredMemeTagSuggestions(context.TODO(), id)
+	result, err := s.managers.GetStoredMemeTagSuggestions(r.Context(), id)
 	if err == nil {
 		writeJSON(w, http.StatusOK, result)
+		return
+	}
+	if requestAbandoned(r, err) {
 		return
 	}
 
@@ -210,8 +216,11 @@ func (s *Server) updateStoredMemeTagSuggestions(w http.ResponseWriter, r *http.R
 
 	switch strings.ToLower(strings.TrimSpace(payload.Action)) {
 	case "dismiss":
-		meme, err := s.managers.DismissMemeTagSuggestion(context.TODO(), currentUserID(r), id, payload.Tag)
+		meme, err := s.managers.DismissMemeTagSuggestion(r.Context(), currentUserID(r), id, payload.Tag)
 		if err != nil {
+			if requestAbandoned(r, err) {
+				return
+			}
 			if errors.Is(err, os.ErrNotExist) {
 				http.NotFound(w, r)
 				return
@@ -222,8 +231,11 @@ func (s *Server) updateStoredMemeTagSuggestions(w http.ResponseWriter, r *http.R
 		}
 		writeJSON(w, http.StatusOK, s.protectMemeForResponse(r, meme))
 	case "dismiss_all":
-		meme, err := s.managers.DismissAllMemeTagSuggestions(context.TODO(), currentUserID(r), id)
+		meme, err := s.managers.DismissAllMemeTagSuggestions(r.Context(), currentUserID(r), id)
 		if err != nil {
+			if requestAbandoned(r, err) {
+				return
+			}
 			if errors.Is(err, os.ErrNotExist) {
 				http.NotFound(w, r)
 				return
@@ -241,8 +253,11 @@ func (s *Server) updateStoredMemeTagSuggestions(w http.ResponseWriter, r *http.R
 				return
 			}
 		}
-		meme, err := s.managers.ApplyMemeTagSuggestion(context.TODO(), currentUserID(r), id, payload.Tag, currentAuditActor(r))
+		meme, err := s.managers.ApplyMemeTagSuggestion(r.Context(), currentUserID(r), id, payload.Tag, currentAuditActor(r))
 		if err != nil {
+			if requestAbandoned(r, err) {
+				return
+			}
 			if errors.Is(err, os.ErrNotExist) {
 				http.NotFound(w, r)
 				return
@@ -336,7 +351,11 @@ func (s *Server) handleSaveLink(w http.ResponseWriter, r *http.Request) {
 	body := "[InternetShortcut]\r\nURL=" + parsed.String() + "\r\n"
 	header := textproto.MIMEHeader{}
 	header.Set("Content-Type", "application/internet-shortcut")
-	meme, err := s.managers.CreateMemeAsWithSource(context.TODO(), currentAuditActor(r), strings.NewReader(body), header, filename, payload.Tags, payload.Notes, parsed.String())
+	// Saving the link and favoriting it are one action for the user. The
+	// store finishes the save once started, so the favorite they asked for
+	// follows it too, even if they have gone by then.
+	saveCtx := context.WithoutCancel(r.Context())
+	meme, err := s.managers.CreateMemeAsWithSource(saveCtx, currentAuditActor(r), strings.NewReader(body), header, filename, payload.Tags, payload.Notes, parsed.String())
 	if err != nil {
 		var duplicateErr *accessor.DuplicateMemeError
 		if errors.As(err, &duplicateErr) {
@@ -352,7 +371,7 @@ func (s *Server) handleSaveLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if payload.Favorite {
-		if updated, favoriteErr := s.managers.SetFavorite(context.TODO(), currentUserID(r), meme.ID, true); favoriteErr == nil {
+		if updated, favoriteErr := s.managers.SetFavorite(saveCtx, currentUserID(r), meme.ID, true); favoriteErr == nil {
 			meme = updated
 		}
 	}
@@ -398,6 +417,12 @@ func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = r.MultipartForm.RemoveAll() }()
+	// The upload has been received in full. Save every file in it and queue
+	// each one for tag suggestions even if the uploader goes away now: the
+	// store finishes a save once started anyway, and a meme that is saved but
+	// never queued would get no suggestions until the next restart re-seeds
+	// the queue.
+	saveCtx := context.WithoutCancel(r.Context())
 
 	sourceURL := strings.TrimSpace(r.FormValue("source_url"))
 	fileHeaders := r.MultipartForm.File["file"]
@@ -465,7 +490,7 @@ func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
 			"duplicates": []map[string]any{},
 			"skipped":    0,
 		})
-		s.managers.QueueMemeTagSuggestions(context.TODO(), meme.ID)
+		s.managers.QueueMemeTagSuggestions(saveCtx, meme.ID)
 		return
 	}
 
@@ -484,7 +509,7 @@ func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		meme, err := s.managers.CreateMemeAs(context.TODO(),
+		meme, err := s.managers.CreateMemeAs(saveCtx,
 			currentAuditActor(r),
 			src,
 			fileHeader.Header,
@@ -509,7 +534,7 @@ func (s *Server) createMeme(w http.ResponseWriter, r *http.Request) {
 		}
 
 		created = append(created, meme)
-		s.managers.QueueMemeTagSuggestions(context.TODO(), meme.ID)
+		s.managers.QueueMemeTagSuggestions(saveCtx, meme.ID)
 	}
 
 	if len(created) == 0 && len(duplicates) == 0 {
@@ -615,7 +640,7 @@ func (s *Server) updateMeme(w http.ResponseWriter, r *http.Request, id string) {
 	edit.Actor = currentAuditActor(r)
 	edit.Authorize = authorizeMemeEdit(session.Permissions)
 
-	meme, err := s.managers.EditMeme(context.TODO(), currentUserID(r), id, edit)
+	meme, err := s.managers.EditMeme(r.Context(), currentUserID(r), id, edit)
 	var forbidden *memeEditForbiddenError
 	if errors.As(err, &forbidden) {
 		writeJSON(w, http.StatusForbidden, map[string]any{"error": forbidden.message})
@@ -626,6 +651,9 @@ func (s *Server) updateMeme(w http.ResponseWriter, r *http.Request, id string) {
 		return
 	}
 	if err != nil {
+		if requestAbandoned(r, err) {
+			return
+		}
 		log.Printf("update meme failed: %v", err)
 		http.Error(w, "failed to update meme", http.StatusInternalServerError)
 		return
@@ -643,12 +671,15 @@ func (s *Server) updateFavorite(w http.ResponseWriter, r *http.Request, id strin
 		return
 	}
 
-	meme, err := s.managers.SetFavoriteAs(context.TODO(), currentUserID(r), id, payload.Favorite, currentAuditActor(r))
+	meme, err := s.managers.SetFavoriteAs(r.Context(), currentUserID(r), id, payload.Favorite, currentAuditActor(r))
 	if errors.Is(err, os.ErrNotExist) {
 		http.NotFound(w, r)
 		return
 	}
 	if err != nil {
+		if requestAbandoned(r, err) {
+			return
+		}
 		log.Printf("update favorite failed: %v", err)
 		http.Error(w, "failed to update favorite", http.StatusInternalServerError)
 		return
@@ -658,7 +689,7 @@ func (s *Server) updateFavorite(w http.ResponseWriter, r *http.Request, id strin
 }
 
 func (s *Server) deleteMeme(w http.ResponseWriter, r *http.Request, id string) {
-	result, err := s.managers.DeleteMeme(context.TODO(), id, currentAuditActor(r))
+	result, err := s.managers.DeleteMeme(r.Context(), id, currentAuditActor(r))
 	if errors.Is(err, os.ErrNotExist) {
 		http.NotFound(w, r)
 		return
@@ -687,8 +718,16 @@ func (s *Server) handleTags(w http.ResponseWriter, r *http.Request) {
 
 	query := r.URL.Query().Get("q")
 	writeJSON(w, http.StatusOK, map[string]any{
-		"tags": s.managers.SuggestTags(context.TODO(), query, 8),
+		"tags": s.managers.SuggestTags(r.Context(), query, 8),
 	})
+}
+
+// requestAbandoned reports whether err is the request's own cancellation:
+// the client went away and the store stopped its query on purpose. Nobody is
+// waiting for the response and it is not a server fault, so handlers neither
+// log it nor answer it with a 500.
+func requestAbandoned(r *http.Request, err error) bool {
+	return r.Context().Err() != nil && errors.Is(err, context.Canceled)
 }
 
 // memeReadFailed answers a failed browse/dashboard read. When the request
@@ -696,7 +735,7 @@ func (s *Server) handleTags(w http.ResponseWriter, r *http.Request) {
 // purpose: nobody is waiting for the response and it is not a server error,
 // so it is neither logged nor counted as a 500.
 func memeReadFailed(w http.ResponseWriter, r *http.Request, what, message string, err error) {
-	if r.Context().Err() != nil && errors.Is(err, context.Canceled) {
+	if requestAbandoned(r, err) {
 		return
 	}
 	requestLogger(r).Error(what+" failed", "error", err)
@@ -729,12 +768,15 @@ func (s *Server) handleRandomMeme(w http.ResponseWriter, r *http.Request) {
 		sessionID = ""
 	}
 	direction := r.URL.Query().Get("direction")
-	result, err := s.managers.StepRandomReel(context.TODO(), sessionID, direction)
+	result, err := s.managers.StepRandomReel(r.Context(), sessionID, direction)
 	if errors.Is(err, os.ErrNotExist) {
 		http.Error(w, "no memes available", http.StatusNotFound)
 		return
 	}
 	if err != nil {
+		if requestAbandoned(r, err) {
+			return
+		}
 		log.Printf("random meme failed: %v", err)
 		http.Error(w, "failed to pick random meme", http.StatusInternalServerError)
 		return
@@ -762,7 +804,10 @@ func (s *Server) handleReelSession(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if err := s.managers.DeleteRandomReelSession(context.TODO(), sessionID); err != nil {
+	if err := s.managers.DeleteRandomReelSession(r.Context(), sessionID); err != nil {
+		if requestAbandoned(r, err) {
+			return
+		}
 		log.Printf("delete reel session failed: %v", err)
 		http.Error(w, "failed to delete reel session", http.StatusInternalServerError)
 		return
