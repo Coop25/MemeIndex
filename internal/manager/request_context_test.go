@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/textproto"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -469,5 +470,47 @@ func TestSuggestionResultIsStoredWhenTheContextEndsWithIt(t *testing.T) {
 	}
 	if len(stored) != 2 {
 		t.Fatalf("stored suggestions = %v, want the two the model returned", stored)
+	}
+}
+
+// leavesAfterEdit is a contextStore whose client goes away the moment an
+// edit has been written, as a browser closed right after the tag was saved.
+type leavesAfterEdit struct {
+	*contextStore
+	leave context.CancelFunc
+}
+
+func (s *leavesAfterEdit) EditMeme(ctx context.Context, userID, id string, edit accessor.MemeEdit) (accessor.Meme, error) {
+	meme, err := s.contextStore.EditMeme(ctx, userID, id, edit)
+	s.leave()
+	return meme, err
+}
+
+// TestApplyingASuggestionFinishesWhenTheRequestEndsAfterTheTagIsAdded checks
+// that applying a suggested tag also drops it from the suggestions when the
+// request is cancelled right after the tag has been added. Stopping there
+// would leave the tag both applied and still suggested.
+func TestApplyingASuggestionFinishesWhenTheRequestEndsAfterTheTagIsAdded(t *testing.T) {
+	ctx, cancel := context.WithCancel(requestScoped(context.Background()))
+	defer cancel()
+	store := &leavesAfterEdit{contextStore: newContextStore(t), leave: cancel}
+	m := NewMemeManager(store)
+	meme := createContextMeme(t, m, "to-apply")
+	if err := store.MemeStore.ReplaceSuggestedTags(context.Background(), meme.ID, []string{"dog", "bird"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := m.ApplyMemeTagSuggestion(ctx, "", meme.ID, "dog", accessor.AuditActor{UserID: "u-ctx"}); err != nil {
+		t.Fatalf("ApplyMemeTagSuggestion with the request ending after the edit: %v", err)
+	}
+	got, err := store.MemeStore.GetByID(context.Background(), "", meme.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(got.Tags, "dog") {
+		t.Fatalf("tags = %v, want dog applied", got.Tags)
+	}
+	if slices.Contains(got.SuggestedTags, "dog") {
+		t.Fatalf("suggestions = %v: dog was applied but is still suggested", got.SuggestedTags)
 	}
 }

@@ -710,6 +710,11 @@ func (m *MemeManager) ApplyMemeTagSuggestion(ctx context.Context, userID string,
 		return m.store.GetByID(ctx, strings.TrimSpace(userID), strings.TrimSpace(id))
 	}
 
+	// Adding the tag and dropping the suggestion are separate writes. A
+	// request cancelled between them would leave the tag applied but still
+	// suggested, keeping the meme in the review queue, so once started both
+	// run to the end.
+	ctx = context.WithoutCancel(ctx)
 	meme, err := m.EditMeme(ctx, userID, id, accessor.MemeEdit{
 		TagsAdded: []string{normalizedTag},
 		Actor:     actor,
