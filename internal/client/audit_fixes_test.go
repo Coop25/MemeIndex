@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"mime"
 	"net/http"
 	"net/http/httptest"
 	"net/textproto"
@@ -99,7 +100,7 @@ func TestUntrustedAssetHeadersNeutralizeScriptTypes(t *testing.T) {
 		{"/uploads/a.mjs", "", "application/octet-stream"},
 		{"/uploads/a.css", "", "application/octet-stream"},
 		{"/uploads/a.html", "", "application/octet-stream"},
-		{"/uploads/a.svg", "", ""},                                        // left to the file server, so <img> previews render
+		{"/uploads/a.svg", "", mime.TypeByExtension(".svg")},              // an image type, so <img> previews render
 		{"/uploads/a.png", "text/javascript", "application/octet-stream"}, // a client-claimed type on a share link
 		{"/uploads/a.png", "image/png", "image/png"},
 	} {

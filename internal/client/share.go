@@ -394,7 +394,7 @@ func (s *Server) serveSharedMemeAsset(w http.ResponseWriter, r *http.Request, me
 			w.Header().Set("Content-Disposition", disposition)
 		}
 	}
-	setUntrustedAssetHeaders(w, "/uploads/"+fileName)
+	w = setUntrustedAssetHeaders(w, "/uploads/"+fileName)
 	if mediaType, ok := browserViewableMediaType(w.Header().Get("Content-Type")); ok {
 		// Send the one type that was checked, not the stored value: a browser
 		// reads the last type in a list, so `video/mp4, application/pdf`
