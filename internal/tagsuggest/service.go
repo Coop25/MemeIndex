@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"slices"
@@ -112,8 +113,29 @@ func New(config Config) *Service {
 		timeout:      timeout,
 		generateOnly: config.GenerateOnly,
 		httpClient: &http.Client{
-			Timeout: timeout,
+			Transport: newOllamaTransport(),
+			Timeout:   timeout,
 		},
+	}
+}
+
+// newOllamaTransport builds the transport for requests to Ollama. It is built
+// from scratch rather than from http.DefaultTransport, because the server
+// replaces that with a public-IP-only dialer for the downloader
+// (pinDownloaderDefaultTransport in internal/client), and Ollama is an
+// operator-configured internal service that normally sits on a private Docker
+// or LAN address. It also ignores HTTP(S)_PROXY and always goes direct: in the
+// container those variables exist only to route the downloader through its
+// media-host allowlist proxy, which should never allow Ollama, so honouring
+// them would break any Ollama URL the operator forgot to add to NO_PROXY.
+func newOllamaTransport() *http.Transport {
+	return &http.Transport{
+		DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          10,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
 	}
 }
 

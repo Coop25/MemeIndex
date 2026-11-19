@@ -48,7 +48,9 @@ services:
       # forward proxy, which should allow ONLY the public media hosts. When it is
       # blank, outbound downloader connections are pinned to public IP addresses
       # only (private/reserved/loopback ranges are refused at connect time).
-      # NO_PROXY keeps internal services (Postgres, Ollama) on a direct path.
+      # The app's Ollama and Discord clients always go direct and ignore these
+      # proxy variables; NO_PROXY is a safety net for anything else that reads
+      # them.
       # See "Downloader network isolation" in the README.
       MEMEINDEX_MEDIAFETCH_PROXY: ${MEMEINDEX_MEDIAFETCH_PROXY:-}
       HTTP_PROXY: ${MEMEINDEX_MEDIAFETCH_PROXY:-}

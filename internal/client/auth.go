@@ -155,12 +155,20 @@ func newAuthService(config DiscordAuthConfig, users authUserStore) *authService 
 	return &authService{
 		config:           config,
 		secret:           []byte(config.SessionSecret),
-		client:           &http.Client{Timeout: 15 * time.Second},
+		client:           newDiscordAuthClient(),
 		users:            users,
 		pendingStates:    map[string]time.Time{},
 		sessionCache:     map[string]sessionCacheEntry{},
 		lastProfileWrite: map[string]time.Time{},
 	}
+}
+
+// newDiscordAuthClient talks to Discord's OAuth token and /users/@me endpoints.
+// It must not leave Transport nil: with MEMEINDEX_MEDIAFETCH_PROXY set, compose
+// exports HTTP(S)_PROXY for the downloader and discord.com is not on that
+// proxy's allowlist, so login would fail at the token exchange.
+func newDiscordAuthClient() *http.Client {
+	return &http.Client{Transport: newDiscordTransport(), Timeout: 15 * time.Second}
 }
 
 func (a *authService) enabled() bool {

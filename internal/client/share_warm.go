@@ -74,13 +74,21 @@ type shareCacheWarmer struct {
 	posted map[string]time.Time
 }
 
-func newDiscordWebhookClient() *http.Client {
+// newDiscordTransport is the transport for every call MemeIndex makes to
+// Discord itself: webhook warm-ups and the OAuth login exchange. The
+// container's HTTP(S)_PROXY sends traffic through the downloader's egress
+// allowlist, which does not include Discord, so it goes direct. It still clones
+// http.DefaultTransport, so once pinDownloaderDefaultTransport has run the dial
+// stays on public addresses - which Discord always is.
+func newDiscordTransport() *http.Transport {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	// The container's HTTP(S)_PROXY sends traffic through the downloader's
-	// egress allowlist, which does not include Discord.
 	transport.Proxy = nil
+	return transport
+}
+
+func newDiscordWebhookClient() *http.Client {
 	return &http.Client{
-		Transport:     transport,
+		Transport:     newDiscordTransport(),
 		Timeout:       discordRequestTimeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
