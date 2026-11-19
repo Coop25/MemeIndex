@@ -92,6 +92,35 @@ func TestUploadsServeMarkupTypesFromTheMIMETableAsDownloads(t *testing.T) {
 	}
 }
 
+// An XSLT stylesheet can transform the page that loads it, so it is code too.
+// text/xsl, its older name, has no "xml" in it to give it away.
+func TestXSLTTypesAreScriptable(t *testing.T) {
+	for _, value := range []string{"text/xsl", "TEXT/XSL; charset=utf-8", " application/xslt+xml ", "application/xslt+xml; charset=utf-8"} {
+		if !scriptableContentType(value) {
+			t.Errorf("scriptableContentType(%q) = false, want true", value)
+		}
+	}
+	for _, value := range []string{"image/png", "video/mp4", "image/svg+xml", "text/plain", ""} {
+		if scriptableContentType(value) {
+			t.Errorf("scriptableContentType(%q) = true, want false", value)
+		}
+	}
+
+	if err := mime.AddExtensionType(".xsl", "text/xsl"); err != nil {
+		t.Fatal(err)
+	}
+	handler, _ := uploadsTestServer(t, map[string]string{
+		"0190a0b8-0000-7000-8000-000000000004.xsl": `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform"/>`,
+	})
+	rec := fetchUpload(handler, "/uploads/0190a0b8-0000-7000-8000-000000000004.xsl", nil)
+	if got := rec.Header().Get("Content-Type"); got != "application/octet-stream" {
+		t.Errorf("xsl upload: Content-Type = %q, want application/octet-stream", got)
+	}
+	if got := rec.Header().Get("Content-Disposition"); got != "attachment" {
+		t.Errorf("xsl upload: Content-Disposition = %q, want attachment", got)
+	}
+}
+
 // The fix must not turn the media the app actually stores into downloads, or
 // break the partial and conditional requests video players and caches send.
 func TestUploadsKeepMediaPreviewsRangesAndRevalidation(t *testing.T) {

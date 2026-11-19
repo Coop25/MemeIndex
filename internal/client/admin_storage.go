@@ -348,6 +348,29 @@ type adminStorageState struct {
 
 	// deleteMu runs orphan delete batches one at a time.
 	deleteMu sync.Mutex
+	// remove deletes one orphan; nil means os.Remove. Tests override it to
+	// make a removal fail.
+	remove func(string) error
+}
+
+func (st *adminStorageState) removeFile(path string) error {
+	if st.remove != nil {
+		return st.remove(path)
+	}
+	return os.Remove(path)
+}
+
+// orphanRemoveError describes a failed orphan removal for the admin's
+// per-file result. The common causes get a reason of their own; anything
+// else, like the operating system's own wording, stays in the server log.
+func orphanRemoveError(err error) error {
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return userErrorWrap("remove failed: the file is already gone", err)
+	case errors.Is(err, fs.ErrPermission):
+		return userErrorWrap("remove failed: permission denied", err)
+	}
+	return err
 }
 
 func (st *adminStorageState) invalidateReport() {
@@ -590,8 +613,10 @@ func (s *Server) handleStorageOrphanDelete(w http.ResponseWriter, r *http.Reques
 		path, size, reason := s.checkOrphanDeletable(raw, root, resolvedRoot, rootErr, freshSet, seen)
 		if reason != "" {
 			res.Error = reason
-		} else if err := os.Remove(path); err != nil {
-			res.Error = "remove failed: " + err.Error()
+		} else if err := s.storage.removeFile(path); err != nil {
+			err = orphanRemoveError(err)
+			log.Printf("admin storage orphan delete: %s", sanitizeLogField(err.Error()))
+			res.Error = clientSafeError(err, "remove failed; the server log has the details")
 		} else {
 			res.Deleted = true
 			deleted++

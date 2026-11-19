@@ -169,6 +169,8 @@ services:
   #   tiktok.com, tiktokcdn.com, tiktokv.com,
   #   twitter.com, x.com, twimg.com,
   #   reddit.com, redd.it, v.redd.it, redditmedia.com
+  # plus api.audible.com, which the audiobook series suggestions look titles up
+  # in; that lookup goes through this proxy too.
   # Then set MEMEINDEX_MEDIAFETCH_PROXY=http://egress-proxy:3128 and start this
   # profile. Do NOT let this proxy reach postgres, ollama, the container network
   # gateway, or 169.254.169.254.

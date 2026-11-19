@@ -230,7 +230,9 @@ func (g *scriptableTypeGuard) Unwrap() http.ResponseWriter {
 
 // scriptableContentType reports whether a Content-Type would let a browser run
 // or apply the body as code (script, stylesheet, markup) when it is loaded
-// from another page on this origin.
+// from another page on this origin. XSLT stylesheets count: a page can apply
+// one to transform itself. application/xslt+xml is already caught as XML, but
+// text/xsl, its older name, has no "xml" in it, so both are named.
 func scriptableContentType(value string) bool {
 	base, _, _ := strings.Cut(strings.ToLower(strings.TrimSpace(value)), ";")
 	base = strings.TrimSpace(base)
@@ -239,6 +241,7 @@ func scriptableContentType(value string) bool {
 		return false
 	case strings.Contains(base, "javascript"), strings.Contains(base, "ecmascript"),
 		strings.Contains(base, "html"), strings.Contains(base, "xml"),
+		base == "text/xsl", base == "application/xslt+xml",
 		base == "text/css", base == "application/wasm":
 		return true
 	}
