@@ -200,7 +200,11 @@ func (s *PostgresStore) MergeTag(ctx context.Context, sourceTag, targetTag strin
 		return TagMergeCounts{}, err
 	}
 
-	tx, err := conn.Begin(ctx)
+	// BEGIN and COMMIT run on cleanupCtx too: pgx closes the connection when
+	// either fails on a context that has already ended, which would drop the
+	// merge lock and leave the target behind. A request that ends between
+	// statements still stops the merge at its next one, before the commit.
+	tx, err := conn.Begin(cleanupCtx)
 	if err != nil {
 		if createdTargetID != 0 {
 			_ = pgx.BeginFunc(cleanupCtx, conn, func(tx pgx.Tx) error { return DeleteOrphanTags(cleanupCtx, tx, []int64{createdTargetID}) })
@@ -294,7 +298,7 @@ func (s *PostgresStore) MergeTag(ctx context.Context, sourceTag, targetTag strin
 		if err := DeleteOrphanTags(ctx, tx, targetIDs); err != nil {
 			return TagMergeCounts{}, err
 		}
-		if err := tx.Commit(ctx); err != nil {
+		if err := tx.Commit(cleanupCtx); err != nil {
 			return TagMergeCounts{}, err
 		}
 		committed = true
@@ -374,7 +378,7 @@ func (s *PostgresStore) MergeTag(ctx context.Context, sourceTag, targetTag strin
 		return TagMergeCounts{}, err
 	}
 
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit(cleanupCtx); err != nil {
 		return TagMergeCounts{}, err
 	}
 	committed = true

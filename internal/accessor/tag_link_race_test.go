@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // These tests hold one side of a tag-link race open in a transaction of the
@@ -427,5 +428,86 @@ func TestConcurrentMergesDoNotExhaustThePool(t *testing.T) {
 		if f.tagExists(p[0]) || !f.tagExists(p[1]) {
 			t.Errorf("merge %s -> %s did not complete", p[0], p[1])
 		}
+	}
+}
+
+// cancelAfterQuery cancels a context once a query whose SQL is exactly sql has
+// finished without error - the moment between two of a caller's statements,
+// which no lock wait can reproduce.
+type cancelAfterQuery struct {
+	sql    string
+	cancel context.CancelFunc
+}
+
+type tracedSQLKey struct{}
+
+func (c *cancelAfterQuery) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	return context.WithValue(ctx, tracedSQLKey{}, data.SQL)
+}
+
+func (c *cancelAfterQuery) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryEndData) {
+	if sql, _ := ctx.Value(tracedSQLKey{}).(string); sql == c.sql && data.Err == nil {
+		c.cancel()
+	}
+}
+
+// A merge whose request ends between two of its statements, rather than
+// while one of them waits, must not leave the target it created behind
+// either. pgx closes the connection when BEGIN or COMMIT runs on a context
+// that has already ended, which drops the session's merge lock and leaves the
+// cleanup nothing to run on.
+func TestMergeCancelledBetweenStatementsLeavesNoStrayTarget(t *testing.T) {
+	for _, tc := range []struct {
+		name, after string
+		merged      bool // whether the merge should still finish
+	}{
+		{"before begin", `INSERT INTO tags (name) VALUES ($1) ON CONFLICT (name) DO NOTHING RETURNING id`, false},
+		{"before commit", `DELETE FROM tags WHERE id = $1`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newTagMergeFixture(t)
+			mergeCtx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			cfg, err := newPoolConfig(os.Getenv("MEMEINDEX_TEST_DATABASE_URL"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.ConnConfig.Tracer = &cancelAfterQuery{sql: tc.after, cancel: cancel}
+			pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(pool.Close)
+			f.store = &PostgresStore{pool: pool}
+
+			src, dst := f.tag("between"), f.tag("betweener")
+			f.cleanupTags(src, dst)
+			meme := f.raceMeme(src)
+
+			_, mergeErr := f.store.MergeTag(mergeCtx, src, dst, mergeActor)
+			if mergeCtx.Err() == nil {
+				t.Fatal("the merge never ran the statement the test cancels after")
+			}
+			got := f.memeTags(meme)
+			if tc.merged {
+				// Every statement had run: the merge is finished, not dropped.
+				if mergeErr != nil {
+					t.Errorf("MergeTag: %v", mergeErr)
+				}
+				if !slices.Equal(got, []string{dst}) {
+					t.Errorf("meme tags = %v, want [%s]", got, dst)
+				}
+				return
+			}
+			if mergeErr == nil {
+				t.Error("MergeTag succeeded although its context ended before its transaction began")
+			}
+			if f.tagExists(dst) {
+				t.Errorf("target tag %s was left behind by the abandoned merge (err %v)", dst, mergeErr)
+			}
+			if !slices.Equal(got, []string{src}) {
+				t.Errorf("merge failed but meme tags = %v, want [%s] unchanged", got, src)
+			}
+		})
 	}
 }
