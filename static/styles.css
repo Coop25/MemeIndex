@@ -5182,3 +5182,19 @@ body.home-mode .dashboard-recent .preview-frame {
   .home-tag-cloud { gap: 7px; padding-bottom: 16px; }
   .home-tag { font-size: calc(12px + var(--tag-weight, .5) * 7px); }
 }
+
+/* Firefox re-runs every backdrop-filter stacked over a playing <video> on each
+   frame, and with the page-wide ::backdrop blur plus the blurred control bar,
+   close button and actions on top of the video, playback in these modals
+   stutters (confirmed 2026-11-25: turning the blurs off stops it). Chromium and
+   Safari composite them without trouble, so only Firefox (the one engine that
+   still parses -moz-appearance) loses the frosted look; the overlays' own
+   backgrounds are near-opaque, so they stay readable. */
+@supports (-moz-appearance: none) {
+  .meme-modal::backdrop,
+  .meme-modal *,
+  .random-reel-modal::backdrop,
+  .random-reel-modal * {
+    backdrop-filter: none !important;
+  }
+}
